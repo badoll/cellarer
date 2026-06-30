@@ -3,15 +3,33 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "tsc -b",
-    "typecheck": "tsc -b"
+    "build": "tsc -b && vite build client",
+    "typecheck": "tsc -b && tsc -p client/tsconfig.json"
   },
   "dependencies": {
-    "@cellarer/core": "workspace:*"
+    "@cellarer/core": "workspace:*",
+    "@hono/node-server": "catalog:",
+    "hono": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "typescript": "catalog:"
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react": "^6.0.3",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:"
   }
 }

@@ -66,6 +66,14 @@ export function addEntries(ledger: Ledger, incoming: LedgerEntry[]): Ledger {
   return makeLedger([...map.values()]);
 }
 
+// 聚合台账中用到的全部密钥引用名(去重 + 排序;只名不值)。
+// 单一来源:CLI(secret 审计)与 web(/api/secrets)共用,避免两处各写聚合口径(不变量 1)。
+export function collectLedgerSecretRefs(ledger: Ledger): string[] {
+  const names = new Set<string>();
+  for (const e of ledger.entries) for (const r of e.secretRefs ?? []) names.add(r);
+  return [...names].sort();
+}
+
 export async function loadLedger(env: Env, storeRoot: string): Promise<Ledger> {
   const path = join(storeRoot, "state.json");
   const text = await readFileOrNull(env, path);

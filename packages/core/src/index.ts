@@ -97,7 +97,13 @@ export { sha256 } from "./store/checksum.js";
 // store
 export type { CellarerConfig } from "./store/config.js";
 export { loadConfig, parseConfig } from "./store/config.js";
-export { addEntries, emptyLedger, loadLedger, saveLedger } from "./store/ledger.js";
+export {
+  addEntries,
+  collectLedgerSecretRefs,
+  emptyLedger,
+  loadLedger,
+  saveLedger,
+} from "./store/ledger.js";
 export type { InitResult } from "./store/store.js";
 export {
   DEFAULT_CONFIG_TOML,

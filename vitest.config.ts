@@ -21,6 +21,14 @@ export default defineConfig({
           environment: "node",
         },
       },
+      {
+        test: {
+          name: "web",
+          root: "./packages/web",
+          include: ["tests/**/*.test.ts"],
+          environment: "node",
+        },
+      },
     ],
   },
 });

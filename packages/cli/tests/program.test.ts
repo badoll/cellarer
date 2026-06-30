@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import { buildProgram } from "../src/program.js";
 
 describe("cli program wiring", () => {
-  it("registers all M3 commands", () => {
+  it("registers all M4 commands", () => {
     const program = buildProgram();
     const names = program.commands.map((c) => c.name()).sort();
-    expect(names).toEqual(["apply", "init", "ls", "revert", "scan", "secret", "status"].sort());
+    expect(names).toEqual(
+      ["apply", "init", "ls", "revert", "scan", "secret", "status", "ui"].sort(),
+    );
   });
 
   it("scan exposes conflict/select/dry-run/json flags", () => {

@@ -6,6 +6,7 @@ import { revertCommand } from "./commands/revert.js";
 import { scanCommand } from "./commands/scan.js";
 import { secretCommand } from "./commands/secret.js";
 import { statusCommand } from "./commands/status.js";
+import { uiCommand } from "./commands/ui.js";
 
 // 程序构造与执行分离:buildProgram 便于测试(可注入 args)。
 // CLI 是薄壳:每个子命令一文件,只解析参数并调用 @cellarer/core(不变量 1)。
@@ -24,6 +25,7 @@ export function buildProgram(): Command {
   program.addCommand(revertCommand());
   program.addCommand(statusCommand());
   program.addCommand(secretCommand());
+  program.addCommand(uiCommand());
 
   return program;
 }
