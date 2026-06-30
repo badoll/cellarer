@@ -75,6 +75,80 @@ const SPECS: AgentSpec[] = [
       skills: ["global", "project"],
     },
   },
+  {
+    // Gemini CLI:GEMINI.md;MCP 在 settings.json 的 mcpServers(本机另有 config/mcp_config.json,
+    // v1 统一写 settings.json 一处,避免双源歧义,见计划 §8 开放问题)。无 skills 目录。
+    id: "gemini-cli",
+    displayName: "Gemini CLI",
+    detect: { global: ["~/.gemini"] },
+    rules: { global: "~/.gemini/GEMINI.md", project: "{dir}/AGENTS.md", format: "markdown" },
+    mcp: {
+      global: "~/.gemini/settings.json",
+      project: "{dir}/.gemini/settings.json",
+      format: "json",
+      serversKey: "mcpServers",
+    },
+    capabilities: { rules: ["global", "project"], mcp: ["global", "project"], skills: [] },
+  },
+  {
+    // opencode:AGENTS.md;MCP 顶层键 `mcp`,字段方言 command[](首元 cmd,余为 args)+ environment。
+    id: "opencode",
+    displayName: "opencode",
+    detect: { global: ["~/.config/opencode"] },
+    rules: {
+      global: "~/.config/opencode/AGENTS.md",
+      project: "{dir}/AGENTS.md",
+      format: "markdown",
+    },
+    mcp: {
+      global: "~/.config/opencode/opencode.json",
+      project: "{dir}/opencode.json",
+      format: "json",
+      serversKey: "mcp",
+      // opencode 方言:command[]、environment,且 server 必带 type:"local"/"remote"(否则 opencode 拒载)。
+      dialect: {
+        commandStyle: "array",
+        envKey: "environment",
+        typeField: "type",
+        stdioType: "local",
+        remoteType: "remote",
+      },
+    },
+    skills: { global: "~/.config/opencode/skills", project: "{dir}/.agents/skills", format: "dir" },
+    capabilities: {
+      rules: ["global", "project"],
+      mcp: ["global", "project"],
+      skills: ["global", "project"],
+    },
+  },
+  {
+    // windsurf:remote MCP 用 serverUrl 字段方言;rules 仅 project(workspace AGENTS.md)。
+    // 全局 rules 路径不确定(计划 §4 标注),不声明 global rules,避免写一个 windsurf 不读的文件。
+    id: "windsurf",
+    displayName: "Windsurf",
+    detect: { global: ["~/.codeium/windsurf"] },
+    rules: {
+      project: "{dir}/AGENTS.md",
+      format: "markdown",
+    },
+    mcp: {
+      global: "~/.codeium/windsurf/mcp_config.json",
+      project: "{dir}/.codeium/windsurf/mcp_config.json",
+      format: "json",
+      serversKey: "mcpServers",
+      dialect: { urlKey: "serverUrl" },
+    },
+    skills: {
+      global: "~/.codeium/windsurf/skills",
+      project: "{dir}/.agents/skills",
+      format: "dir",
+    },
+    capabilities: {
+      rules: ["project"],
+      mcp: ["global", "project"],
+      skills: ["global", "project"],
+    },
+  },
 ];
 
 export function builtinAdapters(): AgentAdapter[] {

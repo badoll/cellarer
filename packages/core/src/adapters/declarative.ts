@@ -21,6 +21,10 @@ const declSchema = z
         format: z.enum(["json", "toml"]).optional(),
         servers_key: z.string().optional(),
         merge_strategy: z.enum(["merge", "overwrite"]).optional(),
+        // 字段方言(opencode/windsurf 偏差);缺省 standard。
+        command_style: z.enum(["scalar", "array"]).optional(),
+        env_key: z.string().optional(),
+        url_key: z.string().optional(),
       })
       .optional(),
     skills: pathTemplate.extend({ format: z.literal("dir").optional() }).optional(),
@@ -72,8 +76,22 @@ function caps(
 export function parseDeclarativeAdapter(text: string): AgentSpec {
   const raw = parseToml(text);
   const d = declSchema.parse(raw);
+  // 字段方言:仅当声明了任一方言键时构造 dialect(否则 undefined → standard)。
+  const dialect =
+    d.mcp && (d.mcp.command_style || d.mcp.env_key || d.mcp.url_key)
+      ? {
+          ...(d.mcp.command_style ? { commandStyle: d.mcp.command_style } : {}),
+          ...(d.mcp.env_key ? { envKey: d.mcp.env_key } : {}),
+          ...(d.mcp.url_key ? { urlKey: d.mcp.url_key } : {}),
+        }
+      : undefined;
   const mcp = d.mcp
-    ? { ...d.mcp, serversKey: d.mcp.servers_key, mergeStrategy: d.mcp.merge_strategy }
+    ? {
+        ...d.mcp,
+        serversKey: d.mcp.servers_key,
+        mergeStrategy: d.mcp.merge_strategy,
+        dialect,
+      }
     : undefined;
   return {
     id: d.id,

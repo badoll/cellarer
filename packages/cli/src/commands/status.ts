@@ -16,7 +16,8 @@ export function statusCommand(): Command {
     .description("漂移检测(库房 vs 落地)")
     .option("--agent <ids>", "指定 agent")
     .option("--dir <path>", "指定工程目录")
-    .action(async (opts: { agent?: string; dir?: string }) => {
+    .option("--json", "JSON 输出(CI 漂移检查用)")
+    .action(async (opts: { agent?: string; dir?: string; json?: boolean }) => {
       const ctx = resolveContext(opts);
       const items = await status(ctx.env, {
         storeRoot: ctx.storeRoot,
@@ -24,6 +25,10 @@ export function statusCommand(): Command {
         dir: ctx.dir,
         agents: ctx.agents.length > 0 ? ctx.agents : undefined,
       });
+      if (opts.json) {
+        console.log(JSON.stringify({ items }, null, 2));
+        return;
+      }
       if (items.length === 0) {
         console.log("台账为空(尚未 apply)。");
         return;

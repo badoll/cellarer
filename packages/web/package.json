@@ -13,6 +13,13 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "client/dist"
+  ],
+  "engines": {
+    "node": ">=20.19"
+  },
   "scripts": {
     "build": "tsc -b && vite build client",
     "typecheck": "tsc -b && tsc -p client/tsconfig.json"

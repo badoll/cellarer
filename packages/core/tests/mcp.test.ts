@@ -200,3 +200,58 @@ describe("mcp/codec selection", () => {
     expect(mcpCodecFor("toml").format).toBe("toml");
   });
 });
+
+describe("mcp/model field dialects (opencode/windsurf)", () => {
+  const opencode = {
+    commandStyle: "array" as const,
+    envKey: "environment",
+    typeField: "type",
+    stdioType: "local",
+    remoteType: "remote",
+  };
+
+  it("opencode: command[]→command+args, environment→env, type round-trips without polluting extra", () => {
+    const raw = { type: "local", command: ["npx", "-y", "srv"], environment: { K: "v" } };
+    const s = serverFromRaw(raw, opencode);
+    expect(s.kind).toBe("stdio");
+    if (s.kind === "stdio") {
+      expect(s.command).toBe("npx");
+      expect(s.args).toEqual(["-y", "srv"]);
+      expect(s.env).toEqual({ K: "v" });
+      expect(s.extra?.type).toBeUndefined(); // type 不残留进 extra(回写重生成)
+    }
+    const back = serverToRaw(s, opencode);
+    expect(back.type).toBe("local");
+    expect(back.command).toEqual(["npx", "-y", "srv"]);
+    expect(back.environment).toEqual({ K: "v" });
+    expect(back.env).toBeUndefined();
+    expect(back.args).toBeUndefined();
+  });
+
+  it("opencode: a canonical stdio server gets type:local on write (opencode requires it)", () => {
+    const back = serverToRaw({ kind: "stdio", command: "npx", args: ["x"] }, opencode);
+    expect(back.type).toBe("local");
+    expect(back.command).toEqual(["npx", "x"]);
+  });
+
+  it("windsurf: serverUrl maps to canonical remote url", () => {
+    const dia = { urlKey: "serverUrl" };
+    const s = serverFromRaw({ serverUrl: "https://h/mcp" }, dia);
+    expect(s.kind).toBe("remote");
+    if (s.kind === "remote") expect(s.url).toBe("https://h/mcp");
+    const back = serverToRaw(s, dia);
+    expect(back.serverUrl).toBe("https://h/mcp");
+    expect(back.url).toBeUndefined();
+  });
+
+  it("opencode codec round-trips through applyMerge under top-level 'mcp' key", () => {
+    const codec = mcpCodecFor("json", opencode);
+    const incoming: McpServerSet = {
+      s: { kind: "stdio", command: "npx", args: ["x"], env: { K: "v" } },
+    };
+    const content = applyMerge(codec, null, incoming, "mcp", "merge");
+    const parsed = JSON.parse(content);
+    expect(parsed.mcp.s.command).toEqual(["npx", "x"]);
+    expect(parsed.mcp.s.environment).toEqual({ K: "v" });
+  });
+});

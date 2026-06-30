@@ -17,9 +17,9 @@ describe("adapters/codec markdownRulesCodec", () => {
 describe("adapters/builtin", () => {
   const adapters = Object.fromEntries(builtinAdapters().map((a) => [a.id, a]));
 
-  it("registers the four M1 builtin agents", () => {
+  it("registers the builtin agents (M1 four + M5 gemini/opencode/windsurf)", () => {
     expect(Object.keys(adapters).sort()).toEqual(
-      ["agents-md", "claude-code", "codex", "cursor"].sort(),
+      ["agents-md", "claude-code", "codex", "cursor", "gemini-cli", "opencode", "windsurf"].sort(),
     );
   });
 
@@ -129,7 +129,7 @@ describe("adapters/registry (builtin + declarative override)", () => {
   it("loads builtins when no declarative adapters exist", async () => {
     const reg = await loadRegistry(t.env, t.path("home", ".cellarer"));
     expect(reg.get("claude-code")).toBeDefined();
-    expect(reg.list().length).toBe(4);
+    expect(reg.list().length).toBe(7);
   });
 
   it("loads a valid declarative adapter from ~/.cellarer/adapters/*.toml", async () => {
@@ -235,5 +235,33 @@ capabilities = { rules = ["global", "project"], mcp = [], skills = [] }
     expect(a.capabilities.rules).toEqual(["global", "project"]);
     expect(a.capabilities.mcp).toEqual([]);
     expect(a.capabilities.skills).toEqual([]);
+  });
+
+  it("declarative adapter honors mcp field dialect (command_style/env_key/url_key)", async () => {
+    const dir = t.path("home", ".cellarer", "adapters");
+    await t.env.fs.mkdir(dir, { recursive: true });
+    await t.env.fs.writeFile(
+      t.path("home", ".cellarer", "adapters", "quirky.toml"),
+      `id = "quirky"
+[mcp]
+global = "~/.quirky/mcp.json"
+format = "json"
+servers_key = "mcp"
+command_style = "array"
+env_key = "environment"
+capabilities = { rules = [], mcp = ["global"], skills = [] }
+`,
+    );
+    const reg = await loadRegistry(t.env, t.path("home", ".cellarer"));
+    const codec = reg.get("quirky")?.mcp?.codec;
+    expect(codec).toBeDefined();
+    // 渲染应产出 command[] + environment(方言生效)。
+    const content = codec!.encode(
+      { servers: {}, doc: {}, serversKey: "mcp" },
+      { s: { kind: "stdio", command: "npx", args: ["x"], env: { K: "v" } } },
+    );
+    const parsed = JSON.parse(content);
+    expect(parsed.mcp.s.command).toEqual(["npx", "x"]);
+    expect(parsed.mcp.s.environment).toEqual({ K: "v" });
   });
 });

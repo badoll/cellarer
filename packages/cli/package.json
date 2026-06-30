@@ -3,8 +3,15 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "description": "多 AI agent 的 skills / mcp / rules 全局统一管理 CLI",
   "bin": {
     "cellarer": "./dist/bin.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.19"
   },
   "scripts": {
     "build": "tsc -b",

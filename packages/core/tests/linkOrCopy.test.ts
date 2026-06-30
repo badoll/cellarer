@@ -99,5 +99,27 @@ describe("fs/linkOrCopy", () => {
         await w.cleanup();
       }
     });
+
+    it("falls back to copy when a win32 file symlink fails (no Developer Mode)", async () => {
+      const w = makeTmpEnv({ platform: "win32" });
+      await ensureBaseDirs(w);
+      try {
+        const src = w.path("src.md");
+        const dest = w.path("dest.md");
+        await w.env.fs.writeFile(src, "content");
+        // 注入:文件软链抛错(模拟 Windows 无特权/无 Developer Mode),应回退 copy。
+        const realSymlink = w.env.fs.symlink.bind(w.env.fs);
+        w.env.fs.symlink = async (target, path, type) => {
+          if (type === "file") throw Object.assign(new Error("EPERM"), { code: "EPERM" });
+          return realSymlink(target, path, type);
+        };
+        const r = await linkOrCopy(w.env, src, dest, { method: "symlink", kind: "file" });
+        expect(r.method).toBe("copy");
+        expect((await w.env.fs.lstat(dest)).isSymbolicLink()).toBe(false);
+        expect(await w.env.fs.readFile(dest)).toBe("content");
+      } finally {
+        await w.cleanup();
+      }
+    });
   });
 });

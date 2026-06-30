@@ -5,6 +5,7 @@ import { isAbsolute, join } from "node:path";
 import type { Env } from "../env.js";
 import { mcpCodecFor } from "../mcp/codec.js";
 import type { MergeStrategy } from "../mcp/merge.js";
+import type { McpDialect } from "../mcp/model.js";
 import type { Capability, Scope } from "../model/index.js";
 import { markdownRulesCodec } from "./codec.js";
 import type { AdapterMcp, AgentAdapter, AgentPaths, DetectResult } from "./types.js";
@@ -25,6 +26,8 @@ export interface AgentSpec {
     format?: "json" | "toml";
     serversKey?: string;
     mergeStrategy?: MergeStrategy;
+    // 字段方言(opencode command[]/environment、windsurf serverUrl);缺省 standard。
+    dialect?: McpDialect;
   };
   skills?: PathTemplate & { format?: "dir" };
   capabilities: Record<Capability, Scope[]>;
@@ -52,12 +55,12 @@ function pickTemplate(t: PathTemplate | undefined, scope: Scope): string | undef
   return scope === "global" ? t.global : t.project;
 }
 
-// 从 AgentSpec.mcp 构造 mcp codec 绑定(format 缺省 json;serversKey 缺省 mcpServers)。
+// 从 AgentSpec.mcp 构造 mcp codec 绑定(format 缺省 json;serversKey 缺省 mcpServers;可带字段方言)。
 function buildMcp(spec: AgentSpec): AdapterMcp | undefined {
   if (!spec.mcp) return undefined;
   const format = spec.mcp.format ?? "json";
   return {
-    codec: mcpCodecFor(format),
+    codec: mcpCodecFor(format, spec.mcp.dialect),
     serversKey: spec.mcp.serversKey ?? (format === "toml" ? "mcp_servers" : "mcpServers"),
     defaultStrategy: spec.mcp.mergeStrategy ?? "merge",
   };

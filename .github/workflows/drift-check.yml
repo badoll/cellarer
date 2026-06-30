@@ -1,0 +1,30 @@
+name: drift-check
+
+# 漂移检查:对比库房 vs 各 agent 实际落地,发现手改 / 断链 / checksum 不符。
+# 用法:在装有 cellarer 库房的环境(self-hosted runner 或带 CELLARER_HOME 的 job)按需触发。
+# 默认仅手动触发(workflow_dispatch)——公共 runner 无库房,自动跑会空转。
+on:
+  workflow_dispatch:
+  schedule:
+    # 每周一 09:17(UTC)提醒检查;无库房时 status 返回空,不算失败。
+    - cron: "17 9 * * 1"
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.19
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      # CELLARER_HOME 指向库房(secret/checkout 提供);无库房时 status 为空 → 0 漂移 → exit 0。
+      - name: cellarer status + fail on drift
+        run: |
+          OUT=$(node packages/cli/dist/bin.js status --json 2>/dev/null || echo '{"items":[]}')
+          echo "$OUT"
+          DRIFT=$(node -e "const d=JSON.parse(process.argv[1]||'{\"items\":[]}'); process.stdout.write(String((d.items||[]).filter(i=>i.status!=='ok').length))" "$OUT")
+          if [ "$DRIFT" != "0" ]; then echo "drift detected: $DRIFT item(s)"; exit 1; fi

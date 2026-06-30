@@ -358,6 +358,27 @@ describe("engine skills distribution", () => {
     expect(r.entries[0]?.method).toBe("symlink");
   });
 
+  it("on win32, a skill dir lands as a junction (recorded in the ledger)", async () => {
+    const storeRoot = await seedStore(t, {
+      skills: { "win-skill": { "SKILL.md": "# Win" } },
+    });
+    // 复用同一 home(库房就在那),但 platform=win32 → 目录走 junction。
+    const w = makeTmpEnv({ platform: "win32", homedir: t.env.homedir() });
+    try {
+      const r = await apply(w.env, {
+        storeRoot,
+        scope: "global",
+        agents: ["claude-code"],
+        capabilities: ["skills"],
+      });
+      expect(r.entries[0]?.method).toBe("junction");
+      const led = await loadLedger(w.env, storeRoot);
+      expect(led.entries[0]?.method).toBe("junction");
+    } finally {
+      await w.cleanup();
+    }
+  });
+
   it("copy method materializes a real directory", async () => {
     const storeRoot = await seedStore(t, { skills: { s: { "a.txt": "A" } } });
     await apply(t.env, {

@@ -11,6 +11,12 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.19"
+  },
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b"

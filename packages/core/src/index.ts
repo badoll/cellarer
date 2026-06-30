@@ -50,7 +50,7 @@ export { GENERATED_HEADER, isGenerated, renderRules, sourceMarker } from "./mark
 export type { McpCodec } from "./mcp/codec.js";
 export { applyMerge, jsonMcpCodec, mcpCodecFor, tomlMcpCodec } from "./mcp/codec.js";
 export type { MergeStrategy } from "./mcp/merge.js";
-export type { McpServer, McpServerSet } from "./mcp/model.js";
+export type { McpDialect, McpServer, McpServerSet } from "./mcp/model.js";
 export type {
   AppliedMethod,
   Artifact,
