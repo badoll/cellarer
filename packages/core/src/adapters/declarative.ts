@@ -20,6 +20,7 @@ const declSchema = z
       .extend({
         format: z.enum(["json", "toml"]).optional(),
         servers_key: z.string().optional(),
+        merge_strategy: z.enum(["merge", "overwrite"]).optional(),
       })
       .optional(),
     skills: pathTemplate.extend({ format: z.literal("dir").optional() }).optional(),
@@ -71,7 +72,9 @@ function caps(
 export function parseDeclarativeAdapter(text: string): AgentSpec {
   const raw = parseToml(text);
   const d = declSchema.parse(raw);
-  const mcp = d.mcp ? { ...d.mcp, serversKey: d.mcp.servers_key } : undefined;
+  const mcp = d.mcp
+    ? { ...d.mcp, serversKey: d.mcp.servers_key, mergeStrategy: d.mcp.merge_strategy }
+    : undefined;
   return {
     id: d.id,
     displayName: d.displayName ?? d.id,

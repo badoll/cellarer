@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@cellarer/core": "workspace:*",
+    "@napi-rs/keyring": "catalog:",
     "commander": "catalog:"
   },
   "devDependencies": {

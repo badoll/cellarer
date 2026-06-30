@@ -6,11 +6,11 @@ import { GENERATED_HEADER } from "../src/markers.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
 describe("adapters/codec markdownRulesCodec", () => {
-  it("renders via the shared markers format and detects generated content", () => {
+  it("renders via the shared markers format", () => {
     const out = markdownRulesCodec.render([{ relPath: "rules/a.md", content: "A" }]);
     expect(out.startsWith(GENERATED_HEADER)).toBe(true);
-    expect(markdownRulesCodec.isGenerated(out)).toBe(true);
-    expect(markdownRulesCodec.isGenerated("hand written")).toBe(false);
+    expect(out).toContain("<!-- Source: rules/a.md -->");
+    expect(out).toContain("A");
   });
 });
 

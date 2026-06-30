@@ -1,6 +1,7 @@
 // CLI 共享上下文:解析公共选项为 core 调用参数。CLI 是薄壳,不写业务逻辑(不变量 1)。
 import { isAbsolute, resolve } from "node:path";
 import { createRealEnv, type Env, resolveStoreRoot, type Scope } from "@cellarer/core";
+import { tryKeychainStore } from "./keychain.js";
 
 export interface CommonOpts {
   global?: boolean;
@@ -33,6 +34,9 @@ export function parseAgents(spec: string | undefined): string[] {
 // 解析作用域:--dir → project(指定工程根);否则 global。
 export function resolveContext(opts: CommonOpts): ResolvedContext {
   const env = createRealEnv();
+  // keychain(密钥分层第 4 层)经此注入 Env.secretStore;native 不可用则保持 undefined(降级 vault)。
+  const keychain = tryKeychainStore();
+  if (keychain) env.secretStore = keychain;
   const storeRoot = resolveStoreRoot(env);
   // --dir 在边界 absolutize,使 core 拿到的 target 与台账过滤都基于绝对路径
   // (core 的 relativeInside/expand 对相对路径会读 process.cwd,故在此一次性消解)。

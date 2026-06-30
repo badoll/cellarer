@@ -16,6 +16,7 @@
     "typecheck": "tsc -b"
   },
   "dependencies": {
+    "age-encryption": "catalog:",
     "smol-toml": "catalog:",
     "zod": "catalog:"
   },

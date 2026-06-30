@@ -1,10 +1,15 @@
 // apply = plan + 执行 + 写台账(不变量 3/5)。dryRun 只返回 plan,不落地。
-// M1 rules:备份既有 → 安全校验 → 原子写 → 记台账(generated:true)→ project 维护 .gitignore。
+// 分派结构(M2 重构):按 PlanAction.op 查 handler 表,引擎不散写 if (cap === "rules" && op === "write")。
+// 每个 op handler 负责一种落地动作(write/merge/overwrite/symlink/copy),返回写入台账的条目。
+// op 未登记 handler → 显式抛错(防「plan 产出了某 op,apply 却静默忽略」),新增能力必须在此登记。
+//
 // 幂等关键:重复 apply 必须产出与磁盘一致的台账,且不丢失首次备份指针 ——
 //   故复用既有台账条目的 backup;内容未变时保留 appliedAt 并跳过重写(避免 mtime 抖动)。
 import type { Env } from "../env.js";
 import { atomicWrite } from "../fs/atomicWrite.js";
 import { backupIfNeeded } from "../fs/backup.js";
+import { linkOrCopy } from "../fs/linkOrCopy.js";
+import { lstatOrNull } from "../fs/probe.js";
 import { assertNotSymbolicLink } from "../fs/safety.js";
 import type { Ledger, LedgerEntry, PlanAction } from "../model/index.js";
 import { sha256 } from "../store/checksum.js";
@@ -12,6 +17,22 @@ import { addEntries, entryKey, loadLedger, saveLedger } from "../store/ledger.js
 import { syncGitignore } from "./gitignore-sync.js";
 import { plan } from "./plan.js";
 import type { ApplyResult, DistributeOptions } from "./types.js";
+
+// op handler:执行一种落地动作并返回台账条目。prior 是同键既有条目(供幂等复用 backup/appliedAt)。
+type OpHandler = (
+  env: Env,
+  action: PlanAction,
+  prior: LedgerEntry | undefined,
+) => Promise<LedgerEntry>;
+
+// op → handler 分派表。新增 op 必须在此登记,否则 applyAction 抛错(避免「成功却什么都没写」)。
+const OP_HANDLERS: Partial<Record<PlanAction["op"], OpHandler>> = {
+  write: applyContentWrite, // rules:渲染整文件写入
+  merge: applyContentWrite, // mcp:已在 plan 合并好,落地同为内容写入(generated:false,merge 进既有)
+  overwrite: applyContentWrite,
+  symlink: applyLink, // skills:目录级软链
+  copy: applyLink, // skills:目录级拷贝(或软链回退)
+};
 
 export async function apply(env: Env, opts: DistributeOptions): Promise<ApplyResult> {
   const distributePlan = await plan(env, opts);
@@ -25,17 +46,8 @@ export async function apply(env: Env, opts: DistributeOptions): Promise<ApplyRes
 
   for (const action of distributePlan.actions) {
     if (action.op === "skip") continue;
-    if (action.capability === "rules" && action.op === "write") {
-      const prior = findEntry(ledger, action);
-      const entry = await applyRulesWrite(env, action, prior);
-      entries.push(entry);
-    } else {
-      // 防御:plan 当前只产出 skip 或 rules/write;出现未知动作应显式失败而非静默丢弃
-      // (M2 加 mcp/skills 时强制在此登记处理,避免「返回成功却什么都没写」)。
-      throw new Error(
-        `apply: unhandled action ${action.capability}/${action.op} for agent "${action.agent}"`,
-      );
-    }
+    const prior = findEntry(ledger, action);
+    entries.push(await applyAction(env, action, prior));
   }
 
   // 写台账(同键替换,保证幂等)。
@@ -51,13 +63,30 @@ export async function apply(env: Env, opts: DistributeOptions): Promise<ApplyRes
   return { plan: distributePlan, entries };
 }
 
+// 按 op 分派到 handler;未登记的 op 显式失败(M2 新增能力必须在 OP_HANDLERS 登记)。
+function applyAction(
+  env: Env,
+  action: PlanAction,
+  prior: LedgerEntry | undefined,
+): Promise<LedgerEntry> {
+  const handler = OP_HANDLERS[action.op];
+  if (!handler) {
+    throw new Error(
+      `apply: no handler for op "${action.op}" (${action.capability}, agent "${action.agent}")`,
+    );
+  }
+  return handler(env, action, prior);
+}
+
 // 按台账唯一键查既有条目(供幂等复用 backup/appliedAt)。复用 entryKey,与 addEntries 合并口径一致。
 function findEntry(ledger: Ledger, action: PlanAction): LedgerEntry | undefined {
   const key = entryKey(action);
   return ledger.entries.find((e) => entryKey(e) === key);
 }
 
-async function applyRulesWrite(
+// 内容写入(rules render / mcp merge|overwrite):plan 已算好最终文本,这里只做备份 + 原子写。
+// generated:write(rules 整文件由 cellarer 生成)→ true;merge/overwrite(并入用户既有文件)→ false。
+async function applyContentWrite(
   env: Env,
   action: PlanAction,
   prior: LedgerEntry | undefined,
@@ -82,13 +111,57 @@ async function applyRulesWrite(
     artifact: action.artifact,
     agent: action.agent,
     scope: action.scope,
-    capability: "rules",
+    capability: action.capability,
     target: action.target,
     method: "write",
     checksum,
     backup,
-    generated: true,
+    generated: action.op === "write",
     appliedAt: env.now().toISOString(),
     secretRefs: action.secretRefs,
+  };
+}
+
+// skills 目录链接(symlink/copy)。实际落地方式可能因 Windows 回退(junction/copy),记台账。
+// 注:不调 assertNotSymbolicLink —— skills 的 target 本就是「由 cellarer 管理的软链」,
+// 既有同指向软链是幂等正常态(linkOrCopy 内部 short-circuit/clearDest 已安全处理)。
+async function applyLink(
+  env: Env,
+  action: PlanAction,
+  prior: LedgerEntry | undefined,
+): Promise<LedgerEntry> {
+  if (!action.source) {
+    throw new Error(`apply: skills action for "${action.agent}" missing source path`);
+  }
+
+  // copy 幂等:linkOrCopy 对 copy 无短路、每次都 clearDest+重拷(churn appliedAt)。
+  // 故先看「同源同方式」的既有台账 + target 仍在,则跳过整次拷贝,保留原条目(台账字节不变)。
+  if (prior?.method === "copy" && action.method === "copy") {
+    const want = sha256(`${action.source}\0copy`);
+    if (prior.checksum === want && (await lstatOrNull(env, action.target))) {
+      return prior;
+    }
+  }
+
+  const result = await linkOrCopy(env, action.source, action.target, {
+    method: action.method,
+    kind: "dir",
+  });
+
+  // 幂等短路命中(已是同指向软链)→ 保留既有台账条目(含 appliedAt)。
+  if (result.skipped && prior) return prior;
+
+  return {
+    artifact: action.artifact,
+    agent: action.agent,
+    scope: action.scope,
+    capability: action.capability,
+    target: action.target,
+    method: result.method,
+    // 目录无法廉价 checksum;以「源路径 + 落地方式」作稳定指纹(status 对目录只校验存在/断链)。
+    checksum: sha256(`${action.source}\0${result.method}`),
+    backup: null, // skills 是新目录落地,不覆盖用户文件,无备份。
+    generated: true, // 由 cellarer 落地的链接/拷贝,revert 可整体删除。
+    appliedAt: env.now().toISOString(),
   };
 }

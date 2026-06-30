@@ -3,9 +3,11 @@
 // 内置适配器 = 用 TS 写的 AgentSpec;声明式适配器 = 从 TOML 解析出的同形 AgentSpec。
 import { isAbsolute, join } from "node:path";
 import type { Env } from "../env.js";
+import { mcpCodecFor } from "../mcp/codec.js";
+import type { MergeStrategy } from "../mcp/merge.js";
 import type { Capability, Scope } from "../model/index.js";
 import { markdownRulesCodec } from "./codec.js";
-import type { AgentAdapter, AgentPaths, DetectResult } from "./types.js";
+import type { AdapterMcp, AgentAdapter, AgentPaths, DetectResult } from "./types.js";
 
 // 路径模板:支持 ~(家目录)与 {dir}(工程根)占位符。
 export interface PathTemplate {
@@ -19,7 +21,11 @@ export interface AgentSpec {
   // 探测:命中任一目录即视为已安装(空则回退到 rules 路径父目录)。
   detect?: { global?: string[]; project?: string[] };
   rules?: PathTemplate & { format?: "markdown" };
-  mcp?: PathTemplate & { format?: "json" | "toml"; serversKey?: string };
+  mcp?: PathTemplate & {
+    format?: "json" | "toml";
+    serversKey?: string;
+    mergeStrategy?: MergeStrategy;
+  };
   skills?: PathTemplate & { format?: "dir" };
   capabilities: Record<Capability, Scope[]>;
 }
@@ -46,6 +52,17 @@ function pickTemplate(t: PathTemplate | undefined, scope: Scope): string | undef
   return scope === "global" ? t.global : t.project;
 }
 
+// 从 AgentSpec.mcp 构造 mcp codec 绑定(format 缺省 json;serversKey 缺省 mcpServers)。
+function buildMcp(spec: AgentSpec): AdapterMcp | undefined {
+  if (!spec.mcp) return undefined;
+  const format = spec.mcp.format ?? "json";
+  return {
+    codec: mcpCodecFor(format),
+    serversKey: spec.mcp.serversKey ?? (format === "toml" ? "mcp_servers" : "mcpServers"),
+    defaultStrategy: spec.mcp.mergeStrategy ?? "merge",
+  };
+}
+
 export function specToAdapter(spec: AgentSpec): AgentAdapter {
   function paths(env: Env, scope: Scope, dir?: string): AgentPaths {
     const rulesT = pickTemplate(spec.rules, scope);
@@ -67,8 +84,11 @@ export function specToAdapter(spec: AgentSpec): AgentAdapter {
     } else if (scope === "project") {
       candidates.push(dir ?? env.cwd());
     } else {
-      const r = paths(env, scope, dir).rules;
-      if (r) candidates.push(join(r, "..")); // rules 文件父目录
+      // 全局回退:从已声明的能力路径推候选父目录(rules → mcp → skills),
+      // 支持 mcp-only / skills-only 适配器(否则无 rules 时探测不到根)。
+      const p = paths(env, scope, dir);
+      const anchor = p.rules ?? p.mcp ?? p.skillsDir;
+      if (anchor) candidates.push(join(anchor, ".."));
     }
     for (const c of candidates) {
       try {
@@ -86,6 +106,8 @@ export function specToAdapter(spec: AgentSpec): AgentAdapter {
     displayName: spec.displayName,
     capabilities: spec.capabilities,
     rules: spec.rules ? markdownRulesCodec : undefined,
+    mcp: buildMcp(spec),
+    skills: spec.skills ? { format: "dir" } : undefined,
     paths,
     detect,
   };

@@ -3,6 +3,7 @@ import { applyCommand } from "./commands/apply.js";
 import { initCommand } from "./commands/init.js";
 import { lsCommand } from "./commands/ls.js";
 import { revertCommand } from "./commands/revert.js";
+import { secretCommand } from "./commands/secret.js";
 import { statusCommand } from "./commands/status.js";
 
 // 程序构造与执行分离:buildProgram 便于测试(可注入 args)。
@@ -20,6 +21,7 @@ export function buildProgram(): Command {
   program.addCommand(applyCommand());
   program.addCommand(revertCommand());
   program.addCommand(statusCommand());
+  program.addCommand(secretCommand());
 
   return program;
 }
