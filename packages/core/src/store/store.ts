@@ -2,8 +2,10 @@
 import { join } from "node:path";
 import type { RuleFragment } from "../adapters/types.js";
 import type { Env } from "../env.js";
+import { atomicWrite } from "../fs/atomicWrite.js";
+import { linkOrCopy } from "../fs/linkOrCopy.js";
 import { lstatOrNull, readdirOrEmpty, readFileOrNull } from "../fs/probe.js";
-import { type McpServer, serverFromRaw } from "../mcp/model.js";
+import { type McpServer, serverFromRaw, serverToRaw } from "../mcp/model.js";
 import type { Artifact } from "../model/index.js";
 
 // 库房根:CELLARER_HOME 覆盖,否则 ~/.cellarer。
@@ -141,4 +143,54 @@ export async function listSkillArtifacts(env: Env, storeRoot: string): Promise<A
     sourcePath: join(dir, name),
     channels: [],
   }));
+}
+
+// —— 扫描回写(M3):写入库房制品。文件名安全(防路径穿越);内容已脱敏由调用方保证。 ——
+
+// 制品名安全校验:只允许字母数字/下划线/连字符/点(不含路径分隔与 ..),否则抛错。
+// 防止扫描来的 server/skill 名带 ../ 把写入穿越到库房外。
+function assertSafeName(name: string): void {
+  if (name.length === 0 || !/^[A-Za-z0-9._-]+$/.test(name) || name === "." || name === "..") {
+    throw new Error(`unsafe artifact name "${name}" (allowed: letters, digits, . _ -)`);
+  }
+}
+
+// 写入 rule 制品(store/rules/<name>.md)。原子写。
+export async function writeRuleArtifact(
+  env: Env,
+  storeRoot: string,
+  name: string,
+  content: string,
+): Promise<string> {
+  assertSafeName(name);
+  const abs = join(rulesDir(storeRoot), `${name}.md`);
+  await atomicWrite(env, abs, content);
+  return abs;
+}
+
+// 写入 mcp 制品(store/mcp/<name>.json,单 server 对象)。调用方须先脱敏(零明文红线)。
+export async function writeMcpArtifact(
+  env: Env,
+  storeRoot: string,
+  name: string,
+  server: McpServer,
+): Promise<string> {
+  assertSafeName(name);
+  const abs = join(mcpDir(storeRoot), `${name}.json`);
+  await atomicWrite(env, abs, `${JSON.stringify(serverToRaw(server), null, 2)}\n`);
+  return abs;
+}
+
+// 导入 skill 目录到库房(store/skills/<name>/),从 srcDir 拷贝(扫描回写恒用 copy:库房是真源,
+// 不软链回 agent 目录,避免循环/破链)。
+export async function importSkillArtifact(
+  env: Env,
+  storeRoot: string,
+  name: string,
+  srcDir: string,
+): Promise<string> {
+  assertSafeName(name);
+  const abs = join(skillsDir(storeRoot), name);
+  await linkOrCopy(env, srcDir, abs, { method: "copy", kind: "dir" });
+  return abs;
 }

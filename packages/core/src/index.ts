@@ -17,6 +17,15 @@ export { apply } from "./engine/apply.js";
 // engine
 export { inChannels, plan } from "./engine/plan.js";
 export { revert } from "./engine/revert.js";
+export {
+  applyScan,
+  type ConflictStrategy,
+  type ScanItem,
+  type ScanOptions,
+  type ScanPlan,
+  type ScanResult,
+  scanPlan,
+} from "./engine/scan.js";
 export { status } from "./engine/status.js";
 export type {
   ApplyResult,
@@ -92,6 +101,7 @@ export { addEntries, emptyLedger, loadLedger, saveLedger } from "./store/ledger.
 export type { InitResult } from "./store/store.js";
 export {
   DEFAULT_CONFIG_TOML,
+  importSkillArtifact,
   initStore,
   listMcpArtifacts,
   listRuleArtifacts,
@@ -99,4 +109,6 @@ export {
   readMcpArtifact,
   readRuleArtifact,
   resolveStoreRoot,
+  writeMcpArtifact,
+  writeRuleArtifact,
 } from "./store/store.js";

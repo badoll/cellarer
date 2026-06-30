@@ -3,6 +3,7 @@ import { applyCommand } from "./commands/apply.js";
 import { initCommand } from "./commands/init.js";
 import { lsCommand } from "./commands/ls.js";
 import { revertCommand } from "./commands/revert.js";
+import { scanCommand } from "./commands/scan.js";
 import { secretCommand } from "./commands/secret.js";
 import { statusCommand } from "./commands/status.js";
 
@@ -19,6 +20,7 @@ export function buildProgram(): Command {
   program.addCommand(initCommand());
   program.addCommand(lsCommand());
   program.addCommand(applyCommand());
+  program.addCommand(scanCommand());
   program.addCommand(revertCommand());
   program.addCommand(statusCommand());
   program.addCommand(secretCommand());

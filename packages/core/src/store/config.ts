@@ -75,3 +75,32 @@ export async function loadConfig(env: Env, storeRoot: string): Promise<CellarerC
     throw new Error(`invalid config at ${path}: ${msg}`);
   }
 }
+
+// 给一批制品打通道标签(scan --into-channel 用)。
+// 注:smol-toml stringify 丢注释(§6),故不整体重写,而是「追加」缺失的 [artifacts."<id>"] 块,
+// 保留用户既有内容与注释。已存在该制品标签的跳过(避免重复/破坏用户手改)。返回新打标的 id 列表。
+export async function tagArtifactChannels(
+  env: Env,
+  storeRoot: string,
+  artifactIds: string[],
+  channel: string,
+): Promise<string[]> {
+  const path = join(storeRoot, "cellarer.toml");
+  const existing = (await readFileOrNull(env, path)) ?? "";
+  // 已校验存在的制品标签键(原样字符串匹配,容忍格式差异从宽:出现即认为已标)。
+  const tagged: string[] = [];
+  const blocks: string[] = [];
+  for (const id of artifactIds) {
+    const header = `[artifacts."${id}"]`;
+    if (existing.includes(header)) continue; // 已有标签 → 不动
+    blocks.push(`${header}\nchannels = ["${channel}"]`);
+    tagged.push(id);
+  }
+  if (blocks.length === 0) return [];
+  const sep = existing.length === 0 || existing.endsWith("\n") ? "" : "\n";
+  const next = `${existing}${sep}\n${blocks.join("\n\n")}\n`;
+  // 写前自校验:确保追加后仍是合法配置(strict),否则不落地。
+  parseConfig(next);
+  await env.fs.writeFile(path, next);
+  return tagged;
+}
