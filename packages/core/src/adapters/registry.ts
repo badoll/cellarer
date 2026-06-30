@@ -2,6 +2,7 @@
 // 非法声明式适配器跳过并记 warning,不影响其余适配器。
 import { join } from "node:path";
 import type { Env } from "../env.js";
+import { readdirOrEmpty } from "../fs/probe.js";
 import { builtinAdapters } from "./builtin.js";
 import { parseDeclarativeAdapter } from "./declarative.js";
 import { specToAdapter } from "./spec.js";
@@ -20,17 +21,18 @@ async function loadDir(
   into: Map<string, AgentAdapter>,
   warnings: string[],
 ): Promise<void> {
-  let files: string[];
-  try {
-    files = await env.fs.readdir(dir);
-  } catch {
-    return; // 目录不存在 → 无自定义适配器
-  }
+  const files = await readdirOrEmpty(env, dir);
+  // 仅检测「同一目录内」的同 id 重复(跨层覆盖内置/全局是设计,不告警)。
+  const seenInDir = new Set<string>();
   for (const f of files.filter((x) => x.endsWith(".toml")).sort()) {
     const path = join(dir, f);
     try {
       const text = await env.fs.readFile(path);
       const spec = parseDeclarativeAdapter(text);
+      if (seenInDir.has(spec.id)) {
+        warnings.push(`adapter "${spec.id}" in ${f} shadows an earlier file in ${dir}`);
+      }
+      seenInDir.add(spec.id);
       into.set(spec.id, specToAdapter(spec));
     } catch (err) {
       warnings.push(

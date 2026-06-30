@@ -67,9 +67,16 @@ export function addEntries(ledger: Ledger, incoming: LedgerEntry[]): Ledger {
 }
 
 export async function loadLedger(env: Env, storeRoot: string): Promise<Ledger> {
-  const text = await readFileOrNull(env, join(storeRoot, "state.json"));
+  const path = join(storeRoot, "state.json");
+  const text = await readFileOrNull(env, path);
   if (text === null) return emptyLedger();
-  return ledgerSchema.parse(JSON.parse(text));
+  try {
+    return ledgerSchema.parse(JSON.parse(text));
+  } catch (err) {
+    // 损坏的台账若直接抛原始栈,会连 revert(唯一恢复路径)都用不了 → 给可操作信息。
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`corrupt ledger at ${path}: ${msg}. Fix or remove the file to recover.`);
+  }
 }
 
 export async function saveLedger(env: Env, storeRoot: string, ledger: Ledger): Promise<void> {

@@ -1,4 +1,5 @@
 // CLI 共享上下文:解析公共选项为 core 调用参数。CLI 是薄壳,不写业务逻辑(不变量 1)。
+import { isAbsolute, resolve } from "node:path";
 import { createRealEnv, type Env, resolveStoreRoot, type Scope } from "@cellarer/core";
 
 export interface CommonOpts {
@@ -33,13 +34,20 @@ export function parseAgents(spec: string | undefined): string[] {
 export function resolveContext(opts: CommonOpts): ResolvedContext {
   const env = createRealEnv();
   const storeRoot = resolveStoreRoot(env);
-  const scope: Scope = opts.dir ? "project" : "global";
+  // --dir 在边界 absolutize,使 core 拿到的 target 与台账过滤都基于绝对路径
+  // (core 的 relativeInside/expand 对相对路径会读 process.cwd,故在此一次性消解)。
+  const dir = opts.dir
+    ? isAbsolute(opts.dir)
+      ? opts.dir
+      : resolve(env.cwd(), opts.dir)
+    : undefined;
+  const scope: Scope = dir ? "project" : "global";
   return {
     env,
     storeRoot,
     scope,
-    scopeFilter: opts.dir ? "project" : undefined,
-    dir: opts.dir,
+    scopeFilter: dir ? "project" : undefined,
+    dir,
     agents: parseAgents(opts.agent),
     channels: opts.channel ? [opts.channel] : undefined,
   };

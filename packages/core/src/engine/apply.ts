@@ -5,11 +5,11 @@
 import type { Env } from "../env.js";
 import { atomicWrite } from "../fs/atomicWrite.js";
 import { backupIfNeeded } from "../fs/backup.js";
-import { updateGitignore } from "../fs/gitignore.js";
 import { assertNotSymbolicLink } from "../fs/safety.js";
 import type { Ledger, LedgerEntry, PlanAction } from "../model/index.js";
 import { sha256 } from "../store/checksum.js";
 import { addEntries, entryKey, loadLedger, saveLedger } from "../store/ledger.js";
+import { syncGitignore } from "./gitignore-sync.js";
 import { plan } from "./plan.js";
 import type { ApplyResult, DistributeOptions } from "./types.js";
 
@@ -22,8 +22,6 @@ export async function apply(env: Env, opts: DistributeOptions): Promise<ApplyRes
 
   const ledger = await loadLedger(env, opts.storeRoot);
   const entries: LedgerEntry[] = [];
-  // project scope 下需收集本次写入的目标供 .gitignore 维护。
-  const projectTargets: string[] = [];
 
   for (const action of distributePlan.actions) {
     if (action.op === "skip") continue;
@@ -31,17 +29,23 @@ export async function apply(env: Env, opts: DistributeOptions): Promise<ApplyRes
       const prior = findEntry(ledger, action);
       const entry = await applyRulesWrite(env, action, prior);
       entries.push(entry);
-      if (action.scope === "project") projectTargets.push(action.target);
+    } else {
+      // 防御:plan 当前只产出 skip 或 rules/write;出现未知动作应显式失败而非静默丢弃
+      // (M2 加 mcp/skills 时强制在此登记处理,避免「返回成功却什么都没写」)。
+      throw new Error(
+        `apply: unhandled action ${action.capability}/${action.op} for agent "${action.agent}"`,
+      );
     }
-    // mcp / skills 在 M2 落地。
   }
 
   // 写台账(同键替换,保证幂等)。
-  await saveLedger(env, opts.storeRoot, addEntries(ledger, entries));
+  const nextLedger = addEntries(ledger, entries);
+  await saveLedger(env, opts.storeRoot, nextLedger);
 
-  // project scope:维护 .gitignore managed block。
-  if (opts.scope === "project" && opts.dir && projectTargets.length > 0) {
-    await updateGitignore(env, opts.dir, projectTargets);
+  // project scope:.gitignore block 从「最终台账」整体重建(而非仅本次 targets),
+  // 否则换一组 --agent 再 apply 会丢掉先前 agent 的条目。
+  if (opts.scope === "project" && opts.dir) {
+    await syncGitignore(env, opts.dir, nextLedger);
   }
 
   return { plan: distributePlan, entries };

@@ -1,7 +1,8 @@
 // 安全护栏(照抄 ruler assertNotSymbolicLink + assertManagedPathInsideRoot,见计划 §7.2/§7.3)。
 // 所有写 / 删 / 还原前调用,防软链穿越与越界写入。
-// 注意:本文件只用 node:path(纯路径计算,无副作用),不违反不变量 2 的 fs 注入约束。
-import { relative, resolve } from "node:path";
+// 注意:本文件用 node:path 做纯路径计算;resolve 对相对路径会读 process.cwd,
+// 故调用方须传绝对路径(CLI 在边界已 absolutize --dir,adapter target 亦为绝对)。
+import { relative, resolve, sep } from "node:path";
 import type { Env } from "../env.js";
 import { lstatOrNull } from "./probe.js";
 
@@ -9,8 +10,11 @@ import { lstatOrNull } from "./probe.js";
 // 单一实现:isPathInside 与 gitignore 的相对化都走这里,Windows 跨盘语义一致。
 export function relativeInside(root: string, child: string): string | null {
   const rel = relative(resolve(root), resolve(child));
-  // 空 rel = 同一路径;以 .. 开头 = 在 root 之外;绝对(带盘符)= Windows 跨盘。
-  if (rel.length === 0 || rel.startsWith("..") || isAbsoluteLike(rel)) return null;
+  // 空 rel = 同一路径;rel 为 ".." 或以 "../" 开头 = 在 root 之外;绝对(带盘符)= Windows 跨盘。
+  // 注意:只判 ".." 段本身,不能用 startsWith("..") —— 否则名为 "..config" 的合法子项被误判越界。
+  if (rel.length === 0 || rel === ".." || rel.startsWith(`..${sep}`) || isAbsoluteLike(rel)) {
+    return null;
+  }
   return rel;
 }
 

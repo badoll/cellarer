@@ -5,9 +5,8 @@ import { resolveContext } from "../context.js";
 // 列出库房 rules 制品及其通道标签。
 export function lsCommand(): Command {
   return new Command("ls")
-    .description("列出库房制品与下发分布")
+    .description("列出库房 rules 制品及其通道标签")
     .option("--channel <channel>", "按通道过滤")
-    .option("--agent <ids>", "按 agent 过滤")
     .action(async (opts: { channel?: string }) => {
       const ctx = resolveContext(opts);
       const [config, arts] = await Promise.all([

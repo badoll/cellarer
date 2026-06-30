@@ -100,6 +100,44 @@ channels = ["common"]
     const p = await plan(t.env, { storeRoot, scope: "global", agents: ["nope"] });
     expect(p.warnings.some((w) => w.includes("nope"))).toBe(true);
   });
+
+  it("honors the per-OS method override ([defaults.os.win32].method)", async () => {
+    const storeRoot = await seedStore(
+      t,
+      { r: "R" },
+      `[defaults]
+method = "symlink"
+[defaults.os.win32]
+method = "copy"
+`,
+    );
+    const win = makeTmpEnv({ platform: "win32", homedir: t.env.homedir() });
+    const p = await plan(win.env, { storeRoot, scope: "global", agents: ["claude-code"] });
+    expect(p.actions[0]?.method).toBe("copy");
+    win.cleanup();
+    // darwin 不受 win32 覆盖影响。
+    const p2 = await plan(t.env, { storeRoot, scope: "global", agents: ["claude-code"] });
+    expect(p2.actions[0]?.method).toBe("symlink");
+  });
+
+  it("de-conflicts agents that map to the same target file (codex + agents-md → AGENTS.md)", async () => {
+    const storeRoot = await seedStore(t, { r: "R" });
+    const proj = t.path("proj");
+    await t.env.fs.mkdir(proj, { recursive: true });
+    // codex 与 agents-md 的 project rules 都是 {dir}/AGENTS.md。
+    const p = await plan(t.env, {
+      storeRoot,
+      scope: "project",
+      dir: proj,
+      agents: ["codex", "agents-md"],
+    });
+    const writes = p.actions.filter((a) => a.op === "write");
+    const skips = p.actions.filter((a) => a.op === "skip");
+    // 只保留一个写 AGENTS.md 的动作,另一个被去冲突。
+    expect(writes).toHaveLength(1);
+    expect(skips).toHaveLength(1);
+    expect(p.warnings.some((w) => w.includes("collides"))).toBe(true);
+  });
 });
 
 describe("engine/apply + revert", () => {
@@ -185,6 +223,35 @@ describe("engine/apply + revert", () => {
     await apply(t.env, { storeRoot, scope: "project", dir: proj, agents: ["claude-code"] });
     const gi = await t.env.fs.readFile(t.path("proj", ".gitignore"));
     expect(gi).toContain("/CLAUDE.md");
+  });
+
+  it("gitignore block accumulates across separate applies with different --agent (from ledger)", async () => {
+    const storeRoot = await seedStore(t, { r: "stuff" });
+    const proj = t.path("proj");
+    await t.env.fs.mkdir(proj, { recursive: true });
+    await apply(t.env, { storeRoot, scope: "project", dir: proj, agents: ["claude-code"] });
+    // 第二次换 cursor:block 应同时含两者(从台账整体重建),不丢 claude-code。
+    await apply(t.env, { storeRoot, scope: "project", dir: proj, agents: ["cursor"] });
+    const gi = await t.env.fs.readFile(t.path("proj", ".gitignore"));
+    expect(gi).toContain("/CLAUDE.md");
+    expect(gi).toContain("/.cursor/rules/cellarer.mdc");
+  });
+
+  it("partial revert keeps surviving agents' entries in the gitignore block", async () => {
+    const storeRoot = await seedStore(t, { r: "stuff" });
+    const proj = t.path("proj");
+    await t.env.fs.mkdir(proj, { recursive: true });
+    await apply(t.env, {
+      storeRoot,
+      scope: "project",
+      dir: proj,
+      agents: ["claude-code", "cursor"],
+    });
+    // 只 revert claude-code:cursor 的条目仍应留在 block 内。
+    await revert(t.env, { storeRoot, scope: "project", dir: proj, agents: ["claude-code"] });
+    const gi = await t.env.fs.readFile(t.path("proj", ".gitignore"));
+    expect(gi).not.toContain("/CLAUDE.md");
+    expect(gi).toContain("/.cursor/rules/cellarer.mdc");
   });
 
   it("revert restores .bak and removes the generated file + ledger entry", async () => {

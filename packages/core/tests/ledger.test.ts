@@ -72,8 +72,13 @@ describe("store/ledger", () => {
     expect(led.entries).toHaveLength(2);
   });
 
-  it("rejects a malformed state.json", async () => {
+  it("rejects a malformed state.json with an actionable message", async () => {
     await t.env.fs.writeFile(t.path("store", "state.json"), `{"version": 99}`);
-    await expect(loadLedger(t.env, storeRoot)).rejects.toThrow();
+    await expect(loadLedger(t.env, storeRoot)).rejects.toThrow(/corrupt ledger/);
+  });
+
+  it("rejects non-JSON state.json with an actionable message (not a raw SyntaxError stack)", async () => {
+    await t.env.fs.writeFile(t.path("store", "state.json"), `{not json`);
+    await expect(loadLedger(t.env, storeRoot)).rejects.toThrow(/corrupt ledger at .*state\.json/);
   });
 });

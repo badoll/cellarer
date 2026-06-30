@@ -63,8 +63,15 @@ export function parseConfig(text: string): CellarerConfig {
   return configSchema.parse(raw);
 }
 
-// 从库房根读取 cellarer.toml;不存在则返回全默认配置。
+// 从库房根读取 cellarer.toml;不存在则返回全默认配置;损坏则报可操作错误。
 export async function loadConfig(env: Env, storeRoot: string): Promise<CellarerConfig> {
-  const text = await readFileOrNull(env, join(storeRoot, "cellarer.toml"));
-  return parseConfig(text ?? "");
+  const path = join(storeRoot, "cellarer.toml");
+  const text = await readFileOrNull(env, path);
+  if (text === null) return parseConfig("");
+  try {
+    return parseConfig(text);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`invalid config at ${path}: ${msg}`);
+  }
 }

@@ -21,6 +21,11 @@ describe("fs/safety", () => {
       expect(isPathInside(t.path("other", "x"), t.path("root"))).toBe(false);
       expect(isPathInside(t.path("root", "..", "evil"), t.path("root"))).toBe(false);
     });
+    it("returns true for a child whose first segment merely starts with '..' (e.g. ..config)", () => {
+      // 回归:不能用 rel.startsWith("..") 判越界,否则 ..config 被误判在 root 外。
+      expect(isPathInside(t.path("root", "..config", "rules.md"), t.path("root"))).toBe(true);
+      expect(isPathInside(t.path("root", "..hidden"), t.path("root"))).toBe(true);
+    });
   });
 
   describe("assertPathInside", () => {

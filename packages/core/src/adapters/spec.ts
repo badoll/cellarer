@@ -24,22 +24,21 @@ export interface AgentSpec {
   capabilities: Record<Capability, Scope[]>;
 }
 
-// 展开模板:~ → homedir;{dir} → 工程根;非占位的相对路径相对工程根解析。
+// 展开模板:~ → homedir;{dir} → 工程根;非占位的相对路径相对 base 解析为绝对。
+// 保证返回绝对路径(PlanAction.target 契约):base 为 project 工程根 / global 家目录。
 function expand(env: Env, template: string, scope: Scope, dir?: string): string {
-  let out = template;
-  if (out === "~") out = env.homedir();
-  else if (out.startsWith("~/")) out = join(env.homedir(), out.slice(2));
+  if (template === "~") return env.homedir();
+  if (template.startsWith("~/")) return join(env.homedir(), template.slice(2));
 
-  if (out.includes("{dir}")) {
-    const base = dir ?? env.cwd();
-    out = out.replace(/\{dir\}/g, base);
-  }
-  if (!isAbsolute(out)) {
-    // project scope 下未带占位符的相对路径 → 相对工程根。
-    const base = scope === "project" ? (dir ?? env.cwd()) : env.homedir();
-    out = join(base, out);
-  }
-  return out;
+  // base:project = 工程根(--dir,可能是相对值);global = 家目录。先把 base 自身 absolutize。
+  const rawBase = scope === "project" ? (dir ?? env.cwd()) : env.homedir();
+  const base = isAbsolute(rawBase) ? rawBase : join(env.cwd(), rawBase);
+
+  // {dir} 替换用函数 replacer,避免 base 中的 $$ / $& / $` / $' 被 String.replace 重新解释。
+  const out = template.includes("{dir}") ? template.replace(/\{dir\}/g, () => base) : template;
+
+  // 仍是相对(无占位符的相对模板)→ 相对 base 解析为绝对。
+  return isAbsolute(out) ? out : join(base, out);
 }
 
 function pickTemplate(t: PathTemplate | undefined, scope: Scope): string | undefined {

@@ -61,6 +61,23 @@ describe("adapters/builtin", () => {
         t.path("home", ".agents", "skills"),
       );
     });
+
+    it("project {dir} expands without double-joining (relative dir absolutized via cwd)", () => {
+      const w = makeTmpEnv({ cwd: "/abs/work" });
+      const cc = adapters["claude-code"]!;
+      // 绝对 dir:不重复拼接。
+      expect(cc.paths(w.env, "project", "/abs/work/proj").rules).toBe("/abs/work/proj/CLAUDE.md");
+      // 相对 dir:相对注入的 cwd absolutize,且不出现 proj/proj 双拼。
+      expect(cc.paths(w.env, "project", "proj").rules).toBe("/abs/work/proj/CLAUDE.md");
+      w.cleanup();
+    });
+
+    it("project dir containing $-metachars is not corrupted by String.replace", () => {
+      const cc = adapters["claude-code"]!;
+      // $$ / $& 等若用裸 String.replace 会被重新解释;函数 replacer 原样保留。
+      expect(cc.paths(t.env, "project", "/work/proj$$tmp").rules).toBe("/work/proj$$tmp/CLAUDE.md");
+      expect(cc.paths(t.env, "project", "/work/a$&b").rules).toBe("/work/a$&b/CLAUDE.md");
+    });
   });
 
   describe("capabilities", () => {

@@ -3,28 +3,26 @@ import { Command } from "commander";
 import { resolveContext } from "../context.js";
 
 interface ApplyOpts {
-  global?: boolean;
   agent?: string;
   dir?: string;
   channel?: string;
   rules?: boolean;
   copy?: boolean;
   dryRun?: boolean;
-  yes?: boolean;
 }
 
 // 下发(distribute):库房 → agent。M1 支持 rules。
+// 注:--global / --yes 等留待后续里程碑(分别需要「全局铺所有 agent」与交互确认),
+//    M1 不暴露空壳 flag,避免用户以为生效。作用域由有无 --dir 决定。
 export function applyCommand(): Command {
   return new Command("apply")
-    .description("下发库房制品到 agent")
-    .option("--global", "下发到各 agent 家目录")
+    .description("下发库房制品到 agent(默认全局;指定 --dir 则下发到该工程)")
     .option("--agent <ids>", "指定 agent(逗号分隔)")
-    .option("--dir <path>", "下发到指定工程目录")
+    .option("--dir <path>", "下发到指定工程目录(否则下发到 agent 家目录)")
     .option("--channel <channel>", "按通道过滤")
-    .option("--rules", "仅下发 rules")
+    .option("--rules", "仅下发 rules(M1 默认即 rules)")
     .option("--copy", "强制 copy(不软链)")
     .option("--dry-run", "仅预览,不落地")
-    .option("--yes", "非交互确认")
     .action(async (opts: ApplyOpts) => {
       const ctx = resolveContext(opts);
       if (ctx.agents.length === 0) {
@@ -33,7 +31,7 @@ export function applyCommand(): Command {
         return;
       }
       const method: LinkMethod | undefined = opts.copy ? "copy" : undefined;
-      // M1 仅 rules;--rules 显式或默认都按 rules 处理。
+      // M1 仅 rules 能力;--rules 是显式同义(为 M2 多能力选择预留)。
       const capabilities: Capability[] = ["rules"];
 
       const result = await apply(ctx.env, {

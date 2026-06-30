@@ -36,7 +36,10 @@ export async function plan(env: Env, opts: DistributeOptions): Promise<Distribut
   warnings.push(...registry.warnings);
 
   const channels = opts.channels ?? config.defaults.channels;
-  const method = opts.method ?? config.defaults.method;
+  // 优先级:CLI --method > 按 OS 覆盖([defaults.os.<platform>]) > 全局默认。
+  // (Windows 软链需特权,init 默认写 [defaults.os.win32].method=copy,此处必须实际生效。)
+  const osMethod = config.defaults.os?.[env.platform as "win32" | "darwin" | "linux"]?.method;
+  const method = opts.method ?? osMethod ?? config.defaults.method;
   const capabilities: Capability[] = opts.capabilities ?? ["rules"];
 
   // 选中(按字母序,渲染顺序确定 → 幂等)并一次性读取 fragment ——
@@ -71,6 +74,24 @@ export async function plan(env: Env, opts: DistributeOptions): Promise<Distribut
         if (action) actions.push(action);
       }
     }
+  }
+
+  // 目标去冲突:多 agent 可能映射到同一物理文件(如 codex 与 agents-md 的 project AGENTS.md)。
+  // 同一 target 的写入只保留首个,其余转 skip + 告警 —— 否则两条台账指向一个文件,
+  // 破坏 per-agent revert(先 revert 者删文件,后者变 missing)。
+  const claimed = new Map<string, string>(); // target → 首个占用的 agent
+  for (const a of actions) {
+    if (a.op === "skip" || a.target === "") continue;
+    const owner = claimed.get(a.target);
+    if (owner === undefined) {
+      claimed.set(a.target, a.agent);
+      continue;
+    }
+    warnings.push(
+      `agent "${a.agent}" ${a.capability} target collides with "${owner}" at ${a.target} — skipped`,
+    );
+    a.op = "skip";
+    a.reason = `target already claimed by "${owner}"`;
   }
 
   return { actions, warnings };

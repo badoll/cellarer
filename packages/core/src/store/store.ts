@@ -2,6 +2,7 @@
 import { join } from "node:path";
 import type { RuleFragment } from "../adapters/types.js";
 import type { Env } from "../env.js";
+import { readdirOrEmpty, readFileOrNull } from "../fs/probe.js";
 import type { Artifact } from "../model/index.js";
 
 // 库房根:CELLARER_HOME 覆盖,否则 ~/.cellarer。
@@ -11,6 +12,39 @@ export function resolveStoreRoot(env: Env): string {
   return join(env.homedir(), ".cellarer");
 }
 
+// 初始库房配置模板(注释 + 与 config.ts schema 默认一致的字段)。
+// 单一来源在 core,CLI init 不再内联,避免与 schema 默认漂移(不变量 1)。
+export const DEFAULT_CONFIG_TOML = `# cellarer 库房配置
+[defaults]
+method = "symlink"
+channels = ["common"]
+secret_mode = "env"
+
+[defaults.os.win32]
+method = "copy"
+
+[channels.common]
+description = "通用"
+`;
+
+export interface InitResult {
+  storeRoot: string;
+  createdConfig: boolean; // 是否新建了 cellarer.toml(已存在则不覆盖)
+}
+
+// 初始化库房骨架:建 store/rules + adapters 目录;cellarer.toml 不存在才写(幂等)。
+export async function initStore(env: Env, storeRoot: string): Promise<InitResult> {
+  await env.fs.mkdir(join(storeRoot, "store", "rules"), { recursive: true });
+  await env.fs.mkdir(join(storeRoot, "adapters"), { recursive: true });
+  const tomlPath = join(storeRoot, "cellarer.toml");
+  const existing = await readFileOrNull(env, tomlPath);
+  if (existing !== null) {
+    return { storeRoot, createdConfig: false };
+  }
+  await env.fs.writeFile(tomlPath, DEFAULT_CONFIG_TOML);
+  return { storeRoot, createdConfig: true };
+}
+
 function rulesDir(storeRoot: string): string {
   return join(storeRoot, "store", "rules");
 }
@@ -18,12 +52,7 @@ function rulesDir(storeRoot: string): string {
 // 列出 rules 制品(store/rules/*.md);按名字母序;非 .md 跳过。
 export async function listRuleArtifacts(env: Env, storeRoot: string): Promise<Artifact[]> {
   const dir = rulesDir(storeRoot);
-  let entries: string[];
-  try {
-    entries = await env.fs.readdir(dir);
-  } catch {
-    return [];
-  }
+  const entries = await readdirOrEmpty(env, dir);
   const names = entries
     .filter((f) => f.endsWith(".md"))
     .map((f) => f.slice(0, -".md".length))
