@@ -6,7 +6,6 @@ const ICON: Record<string, string> = {
   ok: "✓",
   drifted: "✗",
   missing: "∅",
-  outdated: "↑",
   "broken-link": "⚠",
 };
 

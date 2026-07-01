@@ -37,7 +37,7 @@ export interface RevertResult {
   reverted: LedgerEntry[];
 }
 
-export type DriftStatus = "ok" | "drifted" | "missing" | "outdated" | "broken-link";
+export type DriftStatus = "ok" | "drifted" | "missing" | "broken-link";
 
 export interface StatusItem {
   artifact: string;

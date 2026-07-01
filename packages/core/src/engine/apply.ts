@@ -8,6 +8,7 @@
 import type { Env } from "../env.js";
 import { atomicWrite } from "../fs/atomicWrite.js";
 import { backupIfNeeded } from "../fs/backup.js";
+import { hashDir } from "../fs/hashDir.js";
 import { linkOrCopy } from "../fs/linkOrCopy.js";
 import { lstatOrNull } from "../fs/probe.js";
 import { assertNotSymbolicLink } from "../fs/safety.js";
@@ -133,17 +134,32 @@ async function applyLink(
   if (!action.source) {
     throw new Error(`apply: skills action for "${action.agent}" missing source path`);
   }
+  const source = action.source;
 
-  // copy 幂等:linkOrCopy 对 copy 无短路、每次都 clearDest+重拷(churn appliedAt)。
-  // 故先看「同源同方式」的既有台账 + target 仍在,则跳过整次拷贝,保留原条目(台账字节不变)。
-  if (prior?.method === "copy" && action.method === "copy") {
-    const want = sha256(`${action.source}\0copy`);
-    if (prior.checksum === want && (await lstatOrNull(env, action.target))) {
+  // 内容指纹惰性化:symlink 幂等短路路径(下方 result.skipped && prior)不需要它,
+  // 避免每次 symlink re-apply 白读整个 skill 目录(横评复审 §5)。仅 copy 幂等判定与新建条目时求值,memoize。
+  let sourceHashCache: string | undefined;
+  const getSourceHash = async (): Promise<string> => {
+    if (sourceHashCache === undefined) sourceHashCache = await hashDir(env, source);
+    return sourceHashCache;
+  };
+
+  // copy 幂等 + 自愈:仅当「源未变且 target 内容仍等于源」才跳过重拷(避免 churn appliedAt);
+  // target 缺失或被手改 → 落到 linkOrCopy 重拷,顺带修复漂移。
+  if (
+    prior?.method === "copy" &&
+    action.method === "copy" &&
+    prior.checksum === (await getSourceHash())
+  ) {
+    if (
+      (await lstatOrNull(env, action.target)) &&
+      (await hashDir(env, action.target)) === (await getSourceHash())
+    ) {
       return prior;
     }
   }
 
-  const result = await linkOrCopy(env, action.source, action.target, {
+  const result = await linkOrCopy(env, source, action.target, {
     method: action.method,
     kind: "dir",
   });
@@ -158,8 +174,8 @@ async function applyLink(
     capability: action.capability,
     target: action.target,
     method: result.method,
-    // 目录无法廉价 checksum;以「源路径 + 落地方式」作稳定指纹(status 对目录只校验存在/断链)。
-    checksum: sha256(`${action.source}\0${result.method}`),
+    // 内容指纹:status 对 copy 落地的真实目录用它比对(检出手改);symlink/junction 则只校验链完好。
+    checksum: await getSourceHash(),
     backup: null, // skills 是新目录落地,不覆盖用户文件,无备份。
     generated: true, // 由 cellarer 落地的链接/拷贝,revert 可整体删除。
     appliedAt: env.now().toISOString(),

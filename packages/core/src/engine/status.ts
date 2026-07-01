@@ -1,7 +1,9 @@
 // status:库房台账 vs 实际落地的漂移检测(kickoff §8.4)。
 // 文件型(rules/mcp,op=write):缺失→missing;软链断裂→broken-link;checksum 不符→drifted。
-// 目录型(skills,link/copy):缺失→missing;软链断裂→broken-link;存在即 ok(目录不做内容 checksum)。
+// 目录型(skills):软链/junction 落地→只校验链完好(内容=库房真源,天然同步);
+//   copy 落地的真实目录→用 hashDir 内容指纹比对台账 checksum,手改→drifted(横评 §5.2)。
 import type { Env } from "../env.js";
+import { hashDir } from "../fs/hashDir.js";
 import { lstatOrNull, readFileOrNull } from "../fs/probe.js";
 import type { LedgerEntry } from "../model/index.js";
 import { sha256 } from "../store/checksum.js";
@@ -40,8 +42,15 @@ async function checkEntry(env: Env, entry: LedgerEntry): Promise<DriftStatus> {
     }
   }
 
-  // 目录型落地(skills copy):存在即 ok(不做目录内容 checksum)。
-  if (lstat.isDirectory()) return "ok";
+  // 目录型落地(skills copy/junction):
+  //   - junction(Windows 目录软链)对 lstat 可能报目录而非 symlink,但其内容 = 库房真源,
+  //     与 symlink 同理只需存在即 ok;仅当台账 method=copy(真实拷贝)才做内容漂移比对。
+  if (lstat.isDirectory()) {
+    if (entry.capability === "skills" && entry.method === "copy") {
+      return (await hashDir(env, entry.target)) === entry.checksum ? "ok" : "drifted";
+    }
+    return "ok"; // symlink/junction 落地:内容随真源,存在即 ok。
+  }
 
   // 文件型落地(rules/mcp write):比对内容 checksum。
   const content = await readFileOrNull(env, entry.target);

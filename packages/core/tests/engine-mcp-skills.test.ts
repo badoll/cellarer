@@ -437,6 +437,57 @@ describe("engine skills distribution", () => {
     const items = await status(t.env, { storeRoot });
     expect(items[0]?.status).toBe("ok");
   });
+
+  it("status reports drifted when a copy-landed skill dir is hand-modified", async () => {
+    const storeRoot = await seedStore(t, { skills: { s: { "a.txt": "A" } } });
+    await apply(t.env, {
+      storeRoot,
+      scope: "global",
+      agents: ["claude-code"],
+      capabilities: ["skills"],
+      method: "copy",
+    });
+    // 未改:内容指纹匹配 → ok。
+    expect((await status(t.env, { storeRoot }))[0]?.status).toBe("ok");
+    // 手改落地的 copy 目录内容 → 内容指纹不符 → drifted(横评 §5.2 补齐的缺口)。
+    await t.env.fs.writeFile(t.path("home", ".claude", "skills", "s", "a.txt"), "TAMPERED");
+    expect((await status(t.env, { storeRoot }))[0]?.status).toBe("drifted");
+  });
+
+  it("re-apply self-heals a hand-modified copy skill and stays idempotent afterwards", async () => {
+    const storeRoot = await seedStore(t, { skills: { s: { "a.txt": "A" } } });
+    const opts = {
+      storeRoot,
+      scope: "global" as const,
+      agents: ["claude-code"],
+      capabilities: ["skills" as const],
+      method: "copy" as const,
+    };
+    await apply(t.env, opts);
+    // 手改后 re-apply 应把内容改回库房真源(自愈)。
+    await t.env.fs.writeFile(t.path("home", ".claude", "skills", "s", "a.txt"), "TAMPERED");
+    await apply(t.env, opts);
+    expect(await t.env.fs.readFile(t.path("home", ".claude", "skills", "s", "a.txt"))).toBe("A");
+    // 自愈后未再改 → 再次 apply 台账字节不变(幂等)。
+    const led1 = JSON.stringify(await loadLedger(t.env, storeRoot));
+    await apply(t.env, opts);
+    expect(JSON.stringify(await loadLedger(t.env, storeRoot))).toBe(led1);
+  });
+
+  it("is idempotent for a copy-landed skill when unchanged", async () => {
+    const storeRoot = await seedStore(t, { skills: { s: { "a.txt": "A" } } });
+    const opts = {
+      storeRoot,
+      scope: "global" as const,
+      agents: ["claude-code"],
+      capabilities: ["skills" as const],
+      method: "copy" as const,
+    };
+    await apply(t.env, opts);
+    const led1 = JSON.stringify(await loadLedger(t.env, storeRoot));
+    await apply(t.env, opts);
+    expect(JSON.stringify(await loadLedger(t.env, storeRoot))).toBe(led1);
+  });
 });
 
 describe("channel filtering across capabilities", () => {
