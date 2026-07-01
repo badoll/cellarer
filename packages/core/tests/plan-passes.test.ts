@@ -1,0 +1,85 @@
+import { describe, expect, it } from "vitest";
+import { dedupeCollisions } from "../src/engine/plan/collision.js";
+import { applySecretScanGuard } from "../src/engine/plan/secret-guard.js";
+import type { PlanAction } from "../src/model/index.js";
+
+// 抽出的两个 plan pass 的单元测试(纯函数,不需 Env / 库房)。
+function writeAction(over: Partial<PlanAction>): PlanAction {
+  return {
+    artifact: "rules/*",
+    agent: "a",
+    scope: "global",
+    capability: "rules",
+    target: "/home/x/CLAUDE.md",
+    method: "symlink",
+    op: "write",
+    ...over,
+  };
+}
+
+describe("engine/plan collision dedupe", () => {
+  it("keeps the first writer to a target and skips the rest (same capability)", () => {
+    const actions = [
+      writeAction({ agent: "codex", target: "/proj/AGENTS.md" }),
+      writeAction({ agent: "agents-md", target: "/proj/AGENTS.md" }),
+    ];
+    const warnings: string[] = [];
+    dedupeCollisions(actions, warnings);
+    expect(actions[0]?.op).toBe("write");
+    expect(actions[1]?.op).toBe("skip");
+    expect(actions[1]?.reason).toMatch(/already claimed by "codex"/);
+    expect(warnings.some((w) => w.includes("collides"))).toBe(true);
+  });
+
+  it("does not dedupe across different capabilities", () => {
+    const actions = [
+      writeAction({ capability: "rules", target: "/proj/X" }),
+      writeAction({ capability: "mcp", target: "/proj/X", op: "merge" }),
+    ];
+    dedupeCollisions(actions, []);
+    expect(actions[0]?.op).toBe("write");
+    expect(actions[1]?.op).toBe("merge");
+  });
+
+  it("ignores skip actions and empty targets", () => {
+    const actions = [writeAction({ op: "skip", target: "" }), writeAction({ target: "/proj/Y" })];
+    dedupeCollisions(actions, []);
+    expect(actions[1]?.op).toBe("write");
+  });
+});
+
+describe("engine/plan secret-scan guard", () => {
+  it("blocks a plaintext secret in preview.after and clears it", () => {
+    const actions = [
+      writeAction({
+        preview: { before: "old", after: "token = ghp_0123456789abcdefghijklmnopqrstuvwx" },
+      }),
+    ];
+    applySecretScanGuard(actions, "global");
+    expect(actions[0]?.op).toBe("skip");
+    expect(actions[0]?.reason).toMatch(/secret-scan/);
+    // 真值预览被清空(不经返回的 plan 外泄)。
+    expect(actions[0]?.preview?.after).toBeUndefined();
+    expect(actions[0]?.preview?.before).toBe("old");
+  });
+
+  it("blocks accidentalPlaintext unconditionally (no escape hatch)", () => {
+    const actions = [writeAction({ accidentalPlaintext: true, preview: { after: "anything" } })];
+    applySecretScanGuard(actions, "global");
+    expect(actions[0]?.op).toBe("skip");
+    expect(actions[0]?.reason).toMatch(/store contains a plaintext secret/);
+  });
+
+  it("allows resolved plaintext only in global scope (escape hatch)", () => {
+    const secret = "token = ghp_0123456789abcdefghijklmnopqrstuvwx";
+    const global = [writeAction({ allowResolvedPlaintext: true, preview: { after: secret } })];
+    applySecretScanGuard(global, "global");
+    expect(global[0]?.op).toBe("write"); // 放行(global 非版本库)
+
+    const project = [
+      writeAction({ scope: "project", allowResolvedPlaintext: true, preview: { after: secret } }),
+    ];
+    applySecretScanGuard(project, "project");
+    expect(project[0]?.op).toBe("skip"); // project(git 跟踪)一律拦
+  });
+});
