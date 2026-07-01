@@ -144,15 +144,20 @@ async function applyLink(
     return sourceHashCache;
   };
 
-  // copy 幂等 + 自愈:仅当「源未变且 target 内容仍等于源」才跳过重拷(避免 churn appliedAt);
-  // target 缺失或被手改 → 落到 linkOrCopy 重拷,顺带修复漂移。
-  if (
-    prior?.method === "copy" &&
-    action.method === "copy" &&
-    prior.checksum === (await getSourceHash())
-  ) {
+  // copy 幂等 + 自愈:仅当「源未变且 target 仍是内容等于源的目录」才跳过重拷(避免 churn appliedAt);
+  // target 缺失/被换成文件/被手改 → 落到 linkOrCopy 重拷,顺带修复漂移。
+  // 注:hashDir 前必须确认 target 是目录 —— 否则被换成普通文件时 readdir 抛 ENOTDIR 会中断整个 apply。
+  //
+  // method 匹配:prior 落地为 copy 时,只要「本次请求也会产出 copy」就短路 —— 即 action.method==="copy",
+  // 或 win32 目录 symlink 请求(junction 失败会回退 copy,且大概率再次失败)。否则(POSIX 下从 --copy
+  // 切回 symlink)不短路,让 linkOrCopy 重新软链以兑现用户的 method 变更。
+  // 不加此 method 判据会导致 win32 回退 copy 的条目每次 re-apply 都 clearDest+重拷(破坏不变量 5 幂等)。
+  const copyWouldReproduce =
+    prior?.method === "copy" && (action.method === "copy" || env.platform === "win32");
+  if (copyWouldReproduce && prior.checksum === (await getSourceHash())) {
+    const targetStat = await lstatOrNull(env, action.target);
     if (
-      (await lstatOrNull(env, action.target)) &&
+      targetStat?.isDirectory() &&
       (await hashDir(env, action.target)) === (await getSourceHash())
     ) {
       return prior;

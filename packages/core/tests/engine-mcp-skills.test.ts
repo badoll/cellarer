@@ -379,6 +379,35 @@ describe("engine skills distribution", () => {
     }
   });
 
+  it("on win32, a symlink-request that falls back to copy stays idempotent on re-apply (no churn)", async () => {
+    const storeRoot = await seedStore(t, {
+      skills: { "fb-skill": { "SKILL.md": "# Fallback" } },
+    });
+    const w = makeTmpEnv({ platform: "win32", homedir: t.env.homedir() });
+    try {
+      // 注入:junction 抛错(跨卷/权限)→ linkOrCopy 回退 copy;ledger.method="copy" 而 action.method="symlink"。
+      const realSymlink = w.env.fs.symlink.bind(w.env.fs);
+      w.env.fs.symlink = async (target, path, type) => {
+        if (type === "junction") throw Object.assign(new Error("EPERM"), { code: "EPERM" });
+        return realSymlink(target, path, type);
+      };
+      const opts = {
+        storeRoot,
+        scope: "global" as const,
+        agents: ["claude-code"],
+        capabilities: ["skills" as const],
+      }; // 默认 method=symlink
+      const r1 = await apply(w.env, opts);
+      expect(r1.entries[0]?.method).toBe("copy"); // 回退落地为 copy
+      const led1 = JSON.stringify(await loadLedger(w.env, storeRoot));
+      // 再次 apply:必须幂等(不 clearDest+重拷、不 churn appliedAt),尽管 action.method 仍是 symlink。
+      await apply(w.env, opts);
+      expect(JSON.stringify(await loadLedger(w.env, storeRoot))).toBe(led1);
+    } finally {
+      await w.cleanup();
+    }
+  });
+
   it("copy method materializes a real directory", async () => {
     const storeRoot = await seedStore(t, { skills: { s: { "a.txt": "A" } } });
     await apply(t.env, {
@@ -487,6 +516,25 @@ describe("engine skills distribution", () => {
     const led1 = JSON.stringify(await loadLedger(t.env, storeRoot));
     await apply(t.env, opts);
     expect(JSON.stringify(await loadLedger(t.env, storeRoot))).toBe(led1);
+  });
+
+  it("re-apply self-heals when a copy-landed skill dir was replaced by a plain file (no ENOTDIR crash)", async () => {
+    const storeRoot = await seedStore(t, { skills: { s: { "a.txt": "A" } } });
+    const opts = {
+      storeRoot,
+      scope: "global" as const,
+      agents: ["claude-code"],
+      capabilities: ["skills" as const],
+      method: "copy" as const,
+    };
+    await apply(t.env, opts);
+    const target = t.path("home", ".claude", "skills", "s");
+    // 用户把落地目录换成普通文件:hashDir(target) 若不先判目录会 readdir→ENOTDIR 中断整个 apply。
+    await t.env.fs.rm(target, { recursive: true, force: true });
+    await t.env.fs.writeFile(target, "not a dir");
+    // 不应抛;应重拷修复为目录。
+    await apply(t.env, opts);
+    expect(await t.env.fs.readFile(t.path("home", ".claude", "skills", "s", "a.txt"))).toBe("A");
   });
 });
 

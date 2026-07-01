@@ -27,15 +27,18 @@ export function buildServerApp(opts: { token?: string; staticRoot: string }): Ho
   app.use("*", hostGuard);
   app.use("*", cspHeader);
 
-  // 页面级 token 门禁:仅对 SPA 的 HTML 入口/路由校验 —— 不含 /api(走 Bearer)与 /assets/*
-  // (Vite 产物的 JS/CSS,无密钥;且浏览器请求子资源不会带页面的 ?token=,若一并门禁会把
-  //  SPA 自身脚本挡成 401 导致白屏)。门禁目的是防匿名客户端拿到含内联 token 的 HTML。
+  // 页面级 token 门禁(纵深防御):对 SPA 的 HTML 入口/路由校验 ?token=。
+  // 放行 /api/(走 Bearer)与 /assets/(Vite 产物 JS/CSS,无密钥;子资源请求不带页面的 ?token=,
+  // 若一并门禁会把 SPA 自身脚本挡成 401 → 白屏)。用带尾斜杠的**段前缀**匹配,避免 /apiary、/assetsx
+  // 之类误放行。注:token 从不内联进 HTML(client/api.ts 运行期从 ?token= 读),故此门禁是纵深防御,
+  // 不是防「HTML 泄 token」——真正的访问控制是 /api 的 Bearer 校验。
   if (opts.token) {
     const token = opts.token;
     app.use("*", async (c, next) => {
       const path = c.req.path;
-      // /api 走 Bearer;/assets 静态子资源放行(不含敏感信息)。
-      if (path.startsWith("/api") || path.startsWith("/assets/")) return next();
+      if (path === "/api" || path.startsWith("/api/") || path.startsWith("/assets/")) {
+        return next();
+      }
       if (!safeEqual(c.req.query("token") ?? "", token)) {
         return c.text(
           "unauthorized: open the URL printed by `cellarer ui` (includes ?token=...)",

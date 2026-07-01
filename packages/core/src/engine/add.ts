@@ -100,26 +100,34 @@ async function findSymlink(env: Env, dir: string): Promise<string | null> {
 }
 
 // mcp 结构化密钥检测(名字启发 + 高熵,强于纯文本的 high-value 前缀扫描):
-// env/headers(map)+ args(数组)+ url(整值)逐字段 detectSecret;custom 无固定结构 → 值集扫描。
-// 命中返回命中的字段名列表(不含真值),供拒绝入库(add 语义是拒绝而非静默脱敏,促使用户改用占位符)。
+// 递归遍历 server 的所有字符串叶子(env/headers/url/args/extra/custom.config 全覆盖),
+// 用**裸字段名**喂 detectSecret(SECRET_NAME_RE 以 ^ _ - 为边界,前缀点号会破坏名字启发),
+// 命中返回**带路径的**标签(不含真值),供拒绝入库(add 语义是拒绝而非静默脱敏,促使用户改用占位符)。
 function mcpSecretFields(server: McpServer): string[] {
   const hits: string[] = [];
-  const check = (name: string, value: string) => {
-    if (detectSecret(value, name)) hits.push(name);
-  };
-  if (server.kind === "stdio") {
-    for (const [k, v] of Object.entries(server.env ?? {})) check(`env.${k}`, v);
-    (server.args ?? []).forEach((v, i) => {
-      check(`args[${i}]`, v);
-    });
-  } else if (server.kind === "remote") {
-    check("url", server.url);
-    for (const [k, v] of Object.entries(server.headers ?? {})) check(`headers.${k}`, v);
-  } else {
-    // custom:无固定结构,对所有字符串叶子值按字段名检测。
-    for (const [k, v] of Object.entries(server.config)) {
-      if (typeof v === "string") check(k, v);
+  // path 是给用户看的定位标签(如 env.API_KEY);leaf 是裸键名(如 API_KEY),用于名字启发。
+  const walk = (value: unknown, path: string, leaf: string): void => {
+    if (typeof value === "string") {
+      if (detectSecret(value, leaf)) hits.push(path);
+    } else if (Array.isArray(value)) {
+      value.forEach((v, i) => {
+        walk(v, `${path}[${i}]`, leaf);
+      });
+    } else if (value !== null && typeof value === "object") {
+      for (const [k, v] of Object.entries(value)) walk(v, path ? `${path}.${k}` : k, k);
     }
+  };
+
+  if (server.kind === "stdio") {
+    walk(server.env, "env", "env");
+    walk(server.args, "args", "args");
+    walk(server.extra, "", ""); // extra 顶层键即字段名
+  } else if (server.kind === "remote") {
+    if (detectSecret(server.url, "url")) hits.push("url");
+    walk(server.headers, "headers", "headers");
+    walk(server.extra, "", "");
+  } else {
+    walk(server.config, "", ""); // custom:递归全部字符串叶子
   }
   return hits;
 }

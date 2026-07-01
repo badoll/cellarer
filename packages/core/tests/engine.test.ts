@@ -101,6 +101,29 @@ channels = ["common"]
     expect(p.warnings.some((w) => w.includes("nope"))).toBe(true);
   });
 
+  it("skips (not aborts) an escaping declarative adapter, still planning other agents", async () => {
+    const storeRoot = await seedStore(t, { r: "R" });
+    // 声明式适配器 rules 模板越界(绝对路径逃逸);加载无错,但 paths() expand 会抛。
+    const adaptersDir = t.path("home", ".cellarer", "adapters");
+    await t.env.fs.mkdir(adaptersDir, { recursive: true });
+    await t.env.fs.writeFile(
+      t.path("home", ".cellarer", "adapters", "evil.toml"),
+      `id = "evil"
+[rules]
+global = "/etc/evil.md"
+capabilities = { rules = ["global"], mcp = [], skills = [] }
+`,
+    );
+    // 一个坏适配器不应炸掉整批:evil 转 skip + 告警,claude-code 正常产出 write。
+    const p = await plan(t.env, { storeRoot, scope: "global", agents: ["evil", "claude-code"] });
+    const evil = p.actions.find((a) => a.agent === "evil");
+    expect(evil?.op).toBe("skip");
+    expect(p.warnings.some((w) => w.includes("evil") && /escapes|planning failed/.test(w))).toBe(
+      true,
+    );
+    expect(p.actions.some((a) => a.agent === "claude-code" && a.op === "write")).toBe(true);
+  });
+
   it("honors the per-OS method override ([defaults.os.win32].method)", async () => {
     const storeRoot = await seedStore(
       t,
@@ -297,7 +320,7 @@ describe("engine/apply + revert", () => {
     await expect(t.env.fs.readFile(t.path("proj", ".gitignore"))).rejects.toThrow();
   });
 
-  it("refuses to delete a tampered ledger target outside the managed roots", async () => {
+  it("refuses to delete a tampered ledger target outside the managed roots (skip + warn, no throw)", async () => {
     const storeRoot = await seedStore(t, { r: "stuff" });
     await apply(t.env, { storeRoot, scope: "global", agents: ["claude-code"] });
     // 模拟被篡改的台账:target 改到 home/cwd 之外的盘外文件。
@@ -307,11 +330,13 @@ describe("engine/apply + revert", () => {
     const led = await loadLedger(t.env, storeRoot);
     const tampered = makeLedger(led.entries.map((e) => ({ ...e, target: outside })));
     await saveLedger(t.env, storeRoot, tampered);
-    await expect(revert(t.env, { storeRoot, agents: ["claude-code"] })).rejects.toThrow(
-      /outside managed root/,
-    );
-    // 盘外文件必须完好(护栏在 rm 之前拦下)。
+    // 不 throw:越界条目被跳过 + 告警,盘外文件完好。
+    const r = await revert(t.env, { storeRoot, agents: ["claude-code"] });
+    expect(r.reverted).toHaveLength(0);
+    expect(r.warnings.some((w) => /outside managed root/.test(w))).toBe(true);
     expect(await t.env.fs.readFile(outside)).toBe("DO NOT DELETE");
+    // 越界条目保留在台账(未丢失),供用户带 --dir 重试。
+    expect((await loadLedger(t.env, storeRoot)).entries).toHaveLength(1);
   });
 
   it("cannot be bypassed by relabeling a tampered entry as project scope (no --dir)", async () => {
@@ -326,11 +351,31 @@ describe("engine/apply + revert", () => {
       led.entries.map((e) => ({ ...e, scope: "project" as const, target: outside })),
     );
     await saveLedger(t.env, storeRoot, tampered);
-    // 无 --dir:护栏不按 entry.scope 分派根,仍以 home∪cwd 兜底拦下。
-    await expect(revert(t.env, { storeRoot, agents: ["claude-code"] })).rejects.toThrow(
-      /outside managed root/,
-    );
+    // 无 --dir:护栏不按 entry.scope 分派根,仍以 home∪cwd 兜底跳过 + 告警。
+    const r = await revert(t.env, { storeRoot, agents: ["claude-code"] });
+    expect(r.reverted).toHaveLength(0);
+    expect(r.warnings.some((w) => /outside managed root/.test(w))).toBe(true);
     expect(await t.env.fs.readFile(outside)).toBe("DO NOT DELETE");
+  });
+
+  it("reverts legitimate in-home entries even when a tampered out-of-root entry is also matched", async () => {
+    const storeRoot = await seedStore(t, { r: "stuff" });
+    await apply(t.env, { storeRoot, scope: "global", agents: ["claude-code"] });
+    const legitTarget = t.path("home", ".claude", "CLAUDE.md");
+    const outside = t.path("outside", "victim.txt");
+    await t.env.fs.mkdir(t.path("outside"), { recursive: true });
+    await t.env.fs.writeFile(outside, "DO NOT DELETE");
+    // 一条合法 in-home 条目 + 一条越界条目,同一 --agent 选择器命中。
+    const led = await loadLedger(t.env, storeRoot);
+    const legit = led.entries[0]!;
+    const bad = { ...legit, agent: "cursor" as string, target: outside };
+    await saveLedger(t.env, storeRoot, makeLedger([legit, bad]));
+    const r = await revert(t.env, { storeRoot }); // 无选择器:命中全部
+    // 合法条目被回滚;越界条目跳过 + 告警,盘外文件完好。
+    expect(r.reverted.some((e) => e.target === legitTarget)).toBe(true);
+    expect(r.warnings.some((w) => w.includes(outside))).toBe(true);
+    expect(await t.env.fs.readFile(outside)).toBe("DO NOT DELETE");
+    await expect(t.env.fs.lstat(legitTarget)).rejects.toThrow(); // 合法落地物已删
   });
 });
 

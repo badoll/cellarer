@@ -59,6 +59,13 @@ describe("web server app — page gate / CSP / host", () => {
     expect(withBearer.status).toBe(200);
   });
 
+  it("does not let a /apiary-style path bypass the page gate (segment prefix, not string prefix)", async () => {
+    const app = buildServerApp({ token: "s3cret", staticRoot });
+    // /apiary 以 "/api" 开头但不是 API 段;不得借 startsWith 绕过 ?token 门禁。
+    const res = await app.request("/apiary");
+    expect(res.status).toBe(401);
+  });
+
   it("forbids a non-loopback Host on the static page too", async () => {
     const app = buildServerApp({ staticRoot });
     const res = await app.request("/", { headers: { host: "evil.example.com" } });

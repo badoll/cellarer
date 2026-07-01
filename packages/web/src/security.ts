@@ -36,11 +36,12 @@ function stripPort(host: string): string {
 }
 
 // Host 白名单中间件:非本机 Host → 403。
-export async function hostGuard(c: Context, next: Next): Promise<Response | void> {
+export async function hostGuard(c: Context, next: Next): Promise<Response | undefined> {
   if (!isLoopbackHost(c.req.header("host") ?? "")) {
     return c.text("forbidden host", 403);
   }
   await next();
+  return undefined;
 }
 
 // CSP 响应头中间件(处理完再补头,覆盖静态页面与 API 响应)。

@@ -118,6 +118,30 @@ describe("engine/add — local source import", () => {
     ).rejects.toThrow();
   });
 
+  it("rejects an mcp env secret detectable only by NAME (low-entropy, no prefix)", async () => {
+    const src = t.path("named.json");
+    // 值低熵、无厂商前缀,唯一信号是字段名 PASSWORD —— 名字启发必须命中(裸键名,不能被 env. 前缀破坏)。
+    await t.env.fs.writeFile(
+      src,
+      JSON.stringify({ command: "npx", env: { PASSWORD: "hunter2pw" } }),
+    );
+    const r = await add(t.env, { storeRoot, source: src });
+    expect(r.imported).toHaveLength(0);
+    expect(r.rejected[0]?.reason).toMatch(/mcp field/);
+  });
+
+  it("rejects a name-only secret nested in a custom mcp config (recursive scan)", async () => {
+    const src = t.path("custom.json");
+    // 无顶层 command/url → serverFromRaw 归为 custom;密钥嵌在 mcpServers.<n>.env 下,须递归命中。
+    await t.env.fs.writeFile(
+      src,
+      JSON.stringify({ mcpServers: { c7: { env: { TOKEN: "hunter2pw" } } } }),
+    );
+    const r = await add(t.env, { storeRoot, source: src });
+    expect(r.imported).toHaveLength(0);
+    expect(r.rejected[0]?.reason).toMatch(/mcp field/);
+  });
+
   it("accepts an mcp source that uses placeholders (no plaintext)", async () => {
     const src = t.path("ok.json");
     await t.env.fs.writeFile(

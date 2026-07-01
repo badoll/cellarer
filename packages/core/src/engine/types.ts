@@ -35,6 +35,8 @@ export interface RevertOptions {
 
 export interface RevertResult {
   reverted: LedgerEntry[];
+  // 越界跳过等告警(如 target 在受管根之外,拒绝删除但保留台账)。
+  warnings: string[];
 }
 
 export type DriftStatus = "ok" | "drifted" | "missing" | "broken-link";

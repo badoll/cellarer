@@ -115,7 +115,8 @@ describe("web app — secret safety (red line)", () => {
 });
 
 describe("web app — access token", () => {
-  it("rejects /api without the configured bearer token", async () => {
+  // 带 token 的临时 app;用后 cleanup。try/finally 保证断言失败也不泄漏 tmpdir。
+  function makeTokenApp(token: string) {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "cellarer-web-tok-")));
     const real = createRealEnv();
     const env: Env = {
@@ -126,34 +127,31 @@ describe("web app — access token", () => {
       now: () => new Date(),
       env: {},
     };
-    const app = createApp({ env, storeRoot: join(root, "home", ".cellarer"), token: "s3cret" });
-    const unauth = await app.request("/api/agents");
-    expect(unauth.status).toBe(401);
-    const ok = await app.request("/api/agents", {
-      headers: { Authorization: "Bearer s3cret" },
-    });
-    expect(ok.status).toBe(200);
-    await fs.rm(root, { recursive: true, force: true });
+    const app = createApp({ env, storeRoot: join(root, "home", ".cellarer"), token });
+    return { app, cleanup: () => fs.rm(root, { recursive: true, force: true }) };
+  }
+
+  it("rejects /api without the configured bearer token", async () => {
+    const { app, cleanup } = makeTokenApp("s3cret");
+    try {
+      const unauth = await app.request("/api/agents");
+      expect(unauth.status).toBe(401);
+      const ok = await app.request("/api/agents", { headers: { Authorization: "Bearer s3cret" } });
+      expect(ok.status).toBe(200);
+    } finally {
+      await cleanup();
+    }
   });
 
   it("rejects a bearer token of the wrong length without throwing (timing-safe)", async () => {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "cellarer-web-tok2-")));
-    const real = createRealEnv();
-    const env: Env = {
-      fs: real.fs,
-      homedir: () => join(root, "home"),
-      cwd: () => root,
-      platform: "darwin",
-      now: () => new Date(),
-      env: {},
-    };
-    const app = createApp({ env, storeRoot: join(root, "home", ".cellarer"), token: "s3cret" });
-    // 长度不等的 token:safeEqual 应先判长度返回 false,不得让 timingSafeEqual 抛 RangeError。
-    const res = await app.request("/api/agents", {
-      headers: { Authorization: "Bearer short" },
-    });
-    expect(res.status).toBe(401);
-    await fs.rm(root, { recursive: true, force: true });
+    const { app, cleanup } = makeTokenApp("s3cret");
+    try {
+      // 长度不等的 token:safeEqual 应先判长度返回 false,不得让 timingSafeEqual 抛 RangeError。
+      const res = await app.request("/api/agents", { headers: { Authorization: "Bearer short" } });
+      expect(res.status).toBe(401);
+    } finally {
+      await cleanup();
+    }
   });
 });
 
@@ -193,6 +191,17 @@ describe("web app — input validation", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ agents: ["claude-code"], scope: "project", capabilities: ["rules"] }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("project");
+  });
+
+  it("rejects project-scope scan without a dir (would read server cwd)", async () => {
+    const res = await c.app.request("/api/scan", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent: "claude-code", scope: "project" }),
     });
     expect(res.status).toBe(400);
     const body = await res.json();

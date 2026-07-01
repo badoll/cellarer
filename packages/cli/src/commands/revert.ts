@@ -37,6 +37,7 @@ export function revertCommand(): Command {
         keepBackups: opts.keepBackups,
         dryRun: opts.dryRun,
       });
+      for (const w of result.warnings) console.warn(`⚠ ${w}`);
       if (result.reverted.length === 0) {
         console.log("台账中无匹配条目可回滚。");
         return;

@@ -150,7 +150,17 @@ export async function plan(env: Env, opts: DistributeOptions): Promise<Distribut
         actions.push(skipAction(agentId, cap, opts.scope, method));
         continue;
       }
-      actions.push(...(await PLANNERS[cap](ctx, adapter)));
+      // planner 内 adapter.paths() 可能抛(如声明式模板越界 expand,§6.6 分享场景)。
+      // 隔离到 agent+capability 粒度:转 skip + 告警,不让一个坏适配器炸掉整批下发。
+      try {
+        actions.push(...(await PLANNERS[cap](ctx, adapter)));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        warnings.push(`agent "${agentId}" ${cap} planning failed — skipped: ${msg}`);
+        const skip = skipAction(agentId, cap, opts.scope, method);
+        skip.reason = msg;
+        actions.push(skip);
+      }
     }
   }
 

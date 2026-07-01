@@ -44,12 +44,16 @@ interface DistributeBody {
   mcpStrategy?: "merge" | "overwrite";
 }
 
-function distributeOpts(deps: AppDeps, b: DistributeBody) {
-  // project scope 必须带 dir,否则 core 会以 server cwd 为工程根,把文件写进进程启动目录(且无 .gitignore 守护)。
-  // web 不接受不带 dir 的 project 下发 —— 拦在路由层。
-  if ((b.scope ?? "global") === "project" && !b.dir) {
+// project scope 必须带 dir,否则 core 会以 server cwd 为工程根,把文件写进进程启动目录(且无 .gitignore 守护)。
+// plan/apply/scan 三个 project 路由共用此守卫(拦在路由层)。
+function requireDirForProject(scope: Scope | undefined, dir: string | undefined): void {
+  if ((scope ?? "global") === "project" && !dir) {
     throw new HTTPException(400, { message: 'scope "project" requires "dir"' });
   }
+}
+
+function distributeOpts(deps: AppDeps, b: DistributeBody) {
+  requireDirForProject(b.scope, b.dir);
   return {
     storeRoot: deps.storeRoot,
     scope: (b.scope ?? "global") as Scope,
@@ -136,6 +140,8 @@ export function createApp(deps: AppDeps) {
         dir?: string;
         capabilities?: ("rules" | "mcp" | "skills")[];
       }>();
+      // project scope 同样必须带 dir(否则以 server cwd 为工程根扫描,误读进程启动目录)。
+      requireDirForProject(body.scope, body.dir);
       const sp = await scanPlan(deps.env, {
         storeRoot: deps.storeRoot,
         agent: body.agent,
