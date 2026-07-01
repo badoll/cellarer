@@ -13,8 +13,9 @@ export type {
   RulesCodec,
   SkillsCodec,
 } from "./adapters/types.js";
-export { apply } from "./engine/apply.js";
 // engine
+export { type AddOptions, type AddResult, add } from "./engine/add.js";
+export { apply } from "./engine/apply.js";
 export { inChannels, plan } from "./engine/plan.js";
 export { revert } from "./engine/revert.js";
 export {

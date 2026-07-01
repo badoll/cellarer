@@ -28,6 +28,16 @@ export async function lstatOrNull(env: Env, path: string): Promise<FileStat | nu
   }
 }
 
+// stat(跟随软链)版本;不存在 → null,其余错误上抛(与 lstatOrNull 同口径)。
+export async function statOrNull(env: Env, path: string): Promise<FileStat | null> {
+  try {
+    return await env.fs.stat(path);
+  } catch (err) {
+    if (isNotFound(err)) return null;
+    throw err;
+  }
+}
+
 // readdir 版本(store/rules 与 adapters 目录探测共用);不存在 → 空数组。
 export async function readdirOrEmpty(env: Env, path: string): Promise<string[]> {
   try {

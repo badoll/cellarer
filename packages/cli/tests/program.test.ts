@@ -2,12 +2,19 @@ import { describe, expect, it } from "vitest";
 import { buildProgram } from "../src/program.js";
 
 describe("cli program wiring", () => {
-  it("registers all M4 commands", () => {
+  it("registers all commands (M4 + add)", () => {
     const program = buildProgram();
     const names = program.commands.map((c) => c.name()).sort();
     expect(names).toEqual(
-      ["apply", "init", "ls", "revert", "scan", "secret", "status", "ui"].sort(),
+      ["add", "apply", "init", "ls", "revert", "scan", "secret", "status", "ui"].sort(),
     );
+  });
+
+  it("add exposes source arg and --force flag", () => {
+    const program = buildProgram();
+    const addCmd = program.commands.find((c) => c.name() === "add");
+    expect(addCmd).toBeDefined();
+    expect(addCmd?.options.map((o) => o.long)).toContain("--force");
   });
 
   it("scan exposes conflict/select/dry-run/json flags", () => {

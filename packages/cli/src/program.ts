@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { addCommand } from "./commands/add.js";
 import { applyCommand } from "./commands/apply.js";
 import { initCommand } from "./commands/init.js";
 import { lsCommand } from "./commands/ls.js";
@@ -19,6 +20,7 @@ export function buildProgram(): Command {
     .version("0.0.0");
 
   program.addCommand(initCommand());
+  program.addCommand(addCommand());
   program.addCommand(lsCommand());
   program.addCommand(applyCommand());
   program.addCommand(scanCommand());
