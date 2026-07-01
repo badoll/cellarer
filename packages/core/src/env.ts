@@ -36,8 +36,12 @@ export interface FsLike {
 }
 
 // keychain 抽象(可选);M2 接 @napi-rs/keyring,经此注入,core 不直接 import。
+// get 返回判别式结果:区分「找到真值」/「无此条目」/「keychain 错误(锁定/瞬态故障)」——
+// 三态不能塌缩成 string|null,否则调用方无法区分「无条目」与「取不到」,诊断信息丢失(横评 §5.1)。
+export type SecretGet = { found: true; value: string } | { found: false } | { error: string };
+
 export interface SecretStore {
-  get(service: string, account: string): Promise<string | null>;
+  get(service: string, account: string): Promise<SecretGet>;
   set(service: string, account: string, secret: string): Promise<void>;
   delete(service: string, account: string): Promise<boolean>;
 }

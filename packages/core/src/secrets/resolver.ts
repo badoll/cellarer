@@ -62,10 +62,15 @@ async function resolveVaultRef(
       return { resolved: false, reason: "keychain unavailable (no SecretStore injected)" };
     }
     const service = sources.keychainService ?? "cellarer";
-    const real = await env.secretStore.get(service, ref.name);
-    if (real === null)
+    const got = await env.secretStore.get(service, ref.name);
+    // 判别式三态:错误(锁定/瞬态故障)与「无此条目」给出不同 reason,便于诊断(reason 不含真值)。
+    if ("error" in got) {
+      return { resolved: false, reason: `keychain error for "${ref.name}": ${got.error}` };
+    }
+    if (!got.found) {
       return { resolved: false, reason: `keychain has no entry for "${ref.name}"` };
-    return { resolved: true, value: real };
+    }
+    return { resolved: true, value: got.value };
   }
 
   // 默认走 vault(mode env 也允许显式 vault 引用解密)。

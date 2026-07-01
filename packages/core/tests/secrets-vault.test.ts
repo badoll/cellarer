@@ -100,7 +100,8 @@ describe("secrets/resolver", () => {
 
   it("resolves via injected keychain SecretStore", async () => {
     const fakeStore: SecretStore = {
-      get: async (_s, account) => (account === "KC_KEY" ? REAL : null),
+      get: async (_s, account) =>
+        account === "KC_KEY" ? { found: true, value: REAL } : { found: false },
       set: async () => {},
       delete: async () => true,
     };
@@ -114,6 +115,39 @@ describe("secrets/resolver", () => {
       { mode: "keychain" },
     );
     expect(out.value).toBe(REAL);
+  });
+
+  it("keychain no-entry vs error surface distinct reasons (never leaking values)", async () => {
+    t = makeTmpEnv();
+    await ensureBaseDirs(t);
+    const storeRoot = t.path("home", ".cellarer");
+
+    // 无此条目:{found:false} → reason 提「no entry」。
+    t.env.secretStore = {
+      get: async () => ({ found: false }),
+      set: async () => {},
+      delete: async () => true,
+    };
+    const noEntry = await resolveSecretValue(t.env, storeRoot, "${CELLARER_SECRET:X}", {
+      mode: "keychain",
+    });
+    expect(noEntry.resolved).toBe(false);
+    expect(noEntry.reason).toMatch(/no entry/);
+    expect(noEntry.value).toBeUndefined();
+
+    // keychain 错误(锁定/瞬态):{error} → reason 提「keychain error」,与 no-entry 区分。
+    t.env.secretStore = {
+      get: async () => ({ error: "keyring is locked" }),
+      set: async () => {},
+      delete: async () => true,
+    };
+    const errored = await resolveSecretValue(t.env, storeRoot, "${CELLARER_SECRET:X}", {
+      mode: "keychain",
+    });
+    expect(errored.resolved).toBe(false);
+    expect(errored.reason).toMatch(/keychain error/);
+    expect(errored.reason).toContain("keyring is locked");
+    expect(errored.value).toBeUndefined();
   });
 
   it("resolveFields collects unresolved without leaking, keeps placeholders", async () => {

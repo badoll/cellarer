@@ -9,24 +9,27 @@ import { createRequire } from "node:module";
 import type { SecretStore } from "@cellarer/core";
 
 // @napi-rs/keyring 的 Entry 类型(只取用到的同步方法,避免给 core 引入类型依赖)。
-interface KeyringEntry {
+export interface KeyringEntry {
   getPassword(): string | null;
   setPassword(secret: string): void;
   deleteCredential(): boolean;
 }
-type EntryCtor = new (service: string, account: string) => KeyringEntry;
+export type EntryCtor = new (service: string, account: string) => KeyringEntry;
 
 const require = createRequire(import.meta.url);
 
-// getPassword 在「无此条目」时返回 null;真错误(keychain 锁定/瞬时故障)会抛 —— 此处吞为 null,
-// 调用方据 null 视为「未解析」保留占位符(不泄明文)。诊断信息有限是已知取舍(见 M3 待办)。
-function createKeychainStore(Entry: EntryCtor): SecretStore {
+// getPassword 在「无此条目」时返回 null;真错误(keychain 锁定/瞬时故障)会抛。
+// 判别式映射(横评 §5.1):null → {found:false};字符串 → {found:true,value};抛错 → {error} ——
+// 三态不再塌缩成 null,调用方(resolver)据此区分「无条目」与「取不到」并给出不同诊断。
+// 导出以便注入 fake Entry 做映射测试(不依赖真实系统 keychain)。
+export function createKeychainStore(Entry: EntryCtor): SecretStore {
   return {
     async get(service, account) {
       try {
-        return new Entry(service, account).getPassword();
-      } catch {
-        return null;
+        const pw = new Entry(service, account).getPassword();
+        return pw === null ? { found: false } : { found: true, value: pw };
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : String(e) };
       }
     },
     async set(service, account, secret) {

@@ -41,6 +41,7 @@ export type {
   FileStat,
   FsLike,
   Platform,
+  SecretGet,
   SecretStore,
   SymlinkType,
 } from "./env.js";
