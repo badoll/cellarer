@@ -3,6 +3,8 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "description": "多 AI agent 的 skills / mcp / rules 全局统一管理核心库(全部业务逻辑)",
+  "license": "MIT",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

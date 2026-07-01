@@ -3,6 +3,8 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "description": "多 AI agent 的 skills / mcp / rules 全局统一管理工具(monorepo 根)",
+  "license": "MIT",
   "packageManager": "pnpm@10.12.1",
   "engines": {
     "node": ">=20.19"

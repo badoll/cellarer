@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "多 AI agent 的 skills / mcp / rules 全局统一管理 CLI",
+  "license": "MIT",
   "bin": {
     "cellarer": "./dist/bin.js"
   },
