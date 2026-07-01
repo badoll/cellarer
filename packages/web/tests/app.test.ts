@@ -135,6 +135,49 @@ describe("web app — access token", () => {
     expect(ok.status).toBe(200);
     await fs.rm(root, { recursive: true, force: true });
   });
+
+  it("rejects a bearer token of the wrong length without throwing (timing-safe)", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "cellarer-web-tok2-")));
+    const real = createRealEnv();
+    const env: Env = {
+      fs: real.fs,
+      homedir: () => join(root, "home"),
+      cwd: () => root,
+      platform: "darwin",
+      now: () => new Date(),
+      env: {},
+    };
+    const app = createApp({ env, storeRoot: join(root, "home", ".cellarer"), token: "s3cret" });
+    // 长度不等的 token:safeEqual 应先判长度返回 false,不得让 timingSafeEqual 抛 RangeError。
+    const res = await app.request("/api/agents", {
+      headers: { Authorization: "Bearer short" },
+    });
+    expect(res.status).toBe(401);
+    await fs.rm(root, { recursive: true, force: true });
+  });
+});
+
+describe("web app — DNS-rebinding Host allowlist", () => {
+  let c: Ctx;
+  beforeEach(async () => {
+    c = makeCtx();
+    await seedStore(c);
+  });
+  afterEach(() => c.cleanup());
+
+  it("forbids a non-loopback Host header", async () => {
+    const res = await c.app.request("/api/agents", {
+      headers: { host: "evil.example.com" },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("allows a loopback Host header (with port)", async () => {
+    const res = await c.app.request("/api/agents", {
+      headers: { host: "127.0.0.1:4317" },
+    });
+    expect(res.status).toBe(200);
+  });
 });
 
 describe("web app — input validation", () => {

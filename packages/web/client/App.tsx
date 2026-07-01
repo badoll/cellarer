@@ -3,6 +3,48 @@ import { useEffect, useState } from "react";
 import { client } from "./api.js";
 
 type Page = "dashboard" | "artifacts" | "distribute" | "scan" | "secrets";
+type Scope = "global" | "project";
+
+// scope 选择控件:global/project 单选 + project 时的 dir 输入框(必填)。
+// 下发页与扫描页共用,避免两处各写一份(与后端 app.ts「project 必须带 dir 否则 400」对齐)。
+function ScopePicker(props: {
+  scope: Scope;
+  dir: string;
+  onScope: (s: Scope) => void;
+  onDir: (d: string) => void;
+}) {
+  return (
+    <div className="scope-picker">
+      <label>
+        <input
+          type="radio"
+          name="scope"
+          checked={props.scope === "global"}
+          onChange={() => props.onScope("global")}
+        />
+        global
+      </label>
+      <label>
+        <input
+          type="radio"
+          name="scope"
+          checked={props.scope === "project"}
+          onChange={() => props.onScope("project")}
+        />
+        project
+      </label>
+      {props.scope === "project" && (
+        <input
+          type="text"
+          className="dir-input"
+          placeholder="工程根绝对路径(必填)"
+          value={props.dir}
+          onChange={(e) => props.onDir(e.target.value)}
+        />
+      )}
+    </div>
+  );
+}
 
 interface ArtifactRow {
   id: string;
@@ -159,14 +201,24 @@ function DistributePage() {
     mcp: true,
     skills: true,
   });
+  const [scope, setScope] = useState<Scope>("global");
+  const [dir, setDir] = useState("");
   const [result, setResult] = useState<{ actions: PlanAction[]; warnings: string[] } | null>(null);
   const [applied, setApplied] = useState<string | null>(null);
 
   const chosenAgents = Object.keys(selected).filter((a) => selected[a]);
   const chosenCaps = Object.keys(caps).filter((c) => caps[c]) as Capability[];
+  // project 作用域必须提供 dir(与后端一致);否则禁用动作按钮。
+  const dirMissing = scope === "project" && dir.trim() === "";
+  const disabled = chosenAgents.length === 0 || dirMissing;
 
   function body() {
-    return { agents: chosenAgents, scope: "global" as const, capabilities: chosenCaps };
+    return {
+      agents: chosenAgents,
+      scope,
+      dir: scope === "project" ? dir.trim() : undefined,
+      capabilities: chosenCaps,
+    };
   }
   async function doPlan() {
     setApplied(null);
@@ -182,8 +234,10 @@ function DistributePage() {
 
   return (
     <>
-      <h2>下发(global)</h2>
+      <h2>下发</h2>
       <div className="card">
+        <p>作用域:</p>
+        <ScopePicker scope={scope} dir={dir} onScope={setScope} onDir={setDir} />
         <p>选择 agent:</p>
         {agents?.agents.map((a) => (
           <label key={a.id}>
@@ -207,23 +261,14 @@ function DistributePage() {
           </label>
         ))}
         <p>
-          <button
-            type="button"
-            className="action secondary"
-            disabled={chosenAgents.length === 0}
-            onClick={doPlan}
-          >
+          <button type="button" className="action secondary" disabled={disabled} onClick={doPlan}>
             预览(dry-run)
           </button>{" "}
-          <button
-            type="button"
-            className="action"
-            disabled={chosenAgents.length === 0}
-            onClick={doApply}
-          >
+          <button type="button" className="action" disabled={disabled} onClick={doApply}>
             下发
           </button>
         </p>
+        {dirMissing && <p className="warn">project 作用域需填写工程根路径。</p>}
         {applied && <p className="ok">{applied}</p>}
       </div>
       {result && (
@@ -274,16 +319,25 @@ interface ScanItem {
 function ScanPage() {
   const agents = useApi<{ agents: AgentInfo[] }>(() => client.api.agents.$get());
   const [agent, setAgent] = useState("");
+  const [scope, setScope] = useState<Scope>("global");
+  const [dir, setDir] = useState("");
   const [plan, setPlan] = useState<{ items: ScanItem[]; warnings: string[] } | null>(null);
 
+  const dirMissing = scope === "project" && dir.trim() === "";
+  const disabled = !agent || dirMissing;
+
   async function doScan() {
-    const r = await client.api.scan.$post({ json: { agent, scope: "global" } });
+    const r = await client.api.scan.$post({
+      json: { agent, scope, dir: scope === "project" ? dir.trim() : undefined },
+    });
     setPlan(await r.json());
   }
   return (
     <>
       <h2>扫描回写(dry-run)</h2>
       <div className="card">
+        <p>作用域:</p>
+        <ScopePicker scope={scope} dir={dir} onScope={setScope} onDir={setDir} />
         <label>
           agent:
           <select value={agent} onChange={(e) => setAgent(e.target.value)}>
@@ -295,9 +349,10 @@ function ScanPage() {
             ))}
           </select>
         </label>{" "}
-        <button type="button" className="action" disabled={!agent} onClick={doScan}>
+        <button type="button" className="action" disabled={disabled} onClick={doScan}>
           扫描
         </button>
+        {dirMissing && <p className="warn">project 作用域需填写工程根路径。</p>}
       </div>
       {plan && (
         <div className="card">

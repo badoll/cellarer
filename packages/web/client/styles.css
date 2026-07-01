@@ -160,3 +160,14 @@ pre {
   font-size: 12px;
   max-height: 360px;
 }
+
+.scope-picker {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.scope-picker .dir-input {
+  flex: 1;
+  min-width: 240px;
+}

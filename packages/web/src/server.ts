@@ -4,6 +4,7 @@ import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { createDefaultApp } from "./app.js";
+import { cspHeader, hostGuard, safeEqual } from "./security.js";
 
 export interface ServeOptions {
   port?: number;
@@ -13,9 +14,37 @@ export interface ServeOptions {
   staticRoot: string;
 }
 
-export function startServer(opts: ServeOptions): { port: number; close: () => void } {
-  const port = opts.port ?? 4317;
+// 组装完整 server app(API + SPA 静态 + 安全加固),不启动监听 —— 便于测试页面门禁/CSP/Host。
+// 安全加固(横评 §5.2,移植自参照实现 A):
+//   - Host 白名单(DNS-rebinding 防护)覆盖全路由;
+//   - CSP 响应头覆盖静态页面;
+//   - 页面级 token 门禁:设了 token 时,SPA 入口需 ?token= 校验(常量时间),
+//     否则匿名 loopback 客户端能拿到内联 token 的 HTML 再打 API。
+export function buildServerApp(opts: { token?: string; staticRoot: string }): Hono {
   const app = new Hono();
+
+  // Host 白名单 + CSP 覆盖全路由(API app 内部亦有 hostGuard,重复无害且守住静态路由)。
+  app.use("*", hostGuard);
+  app.use("*", cspHeader);
+
+  // 页面级 token 门禁:仅对 SPA 的 HTML 入口/路由校验 —— 不含 /api(走 Bearer)与 /assets/*
+  // (Vite 产物的 JS/CSS,无密钥;且浏览器请求子资源不会带页面的 ?token=,若一并门禁会把
+  //  SPA 自身脚本挡成 401 导致白屏)。门禁目的是防匿名客户端拿到含内联 token 的 HTML。
+  if (opts.token) {
+    const token = opts.token;
+    app.use("*", async (c, next) => {
+      const path = c.req.path;
+      // /api 走 Bearer;/assets 静态子资源放行(不含敏感信息)。
+      if (path.startsWith("/api") || path.startsWith("/assets/")) return next();
+      if (!safeEqual(c.req.query("token") ?? "", token)) {
+        return c.text(
+          "unauthorized: open the URL printed by `cellarer ui` (includes ?token=...)",
+          401,
+        );
+      }
+      await next();
+    });
+  }
 
   // /api 路由(core 能力)。
   app.route("/", createDefaultApp(opts.token));
@@ -24,6 +53,13 @@ export function startServer(opts: ServeOptions): { port: number; close: () => vo
   const root = opts.staticRoot;
   app.use("/*", serveStatic({ root }));
   app.get("*", serveStatic({ path: `${root}/index.html` }));
+
+  return app;
+}
+
+export function startServer(opts: ServeOptions): { port: number; close: () => void } {
+  const port = opts.port ?? 4317;
+  const app = buildServerApp({ token: opts.token, staticRoot: opts.staticRoot });
 
   const server = serve({
     fetch: app.fetch,

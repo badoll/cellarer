@@ -24,6 +24,7 @@ import {
 } from "@cellarer/core";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { hostGuard, safeEqual } from "./security.js";
 
 export interface AppDeps {
   env: Env;
@@ -72,11 +73,14 @@ export function createApp(deps: AppDeps) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
   });
 
-  // 访问 token 中间件(设置了才校验);仅保护 /api。
+  // Host 白名单(纵深防御:阻止 DNS rebinding —— 攻击者域名解析到 127.0.0.1 借浏览器打本地 API)。
+  app.use("*", hostGuard);
+
+  // 访问 token 中间件(设置了才校验);仅保护 /api。用常量时间比较消除时序侧信道。
   app.use("/api/*", async (c, next) => {
     if (deps.token) {
       const auth = c.req.header("Authorization");
-      if (auth !== `Bearer ${deps.token}`) {
+      if (!safeEqual(auth ?? "", `Bearer ${deps.token}`)) {
         return c.json({ error: "unauthorized" }, 401);
       }
     }
