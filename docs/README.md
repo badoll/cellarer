@@ -7,6 +7,7 @@ TypeScript monorepo:`@cellarer/core`(全部能力)+ `@cellarer/cli` + `@cellarer
 
 - [kickoff.md](kickoff.md) — 立项设计与背景(目标 / 架构 / 数据模型 / 下发 / 扫描 / 密钥 / 里程碑)。
 - [v1-completion.md](v1-completion.md) — v1 完成情况(里程碑 / 安全红线 / 未做项 / 待手动执行)。
+- [cross-eval-vs-cellarer.md](cross-eval-vs-cellarer.md) — 与另一份独立实现(cellarer)的横评报告 + **后续优化 Backlog**(§5 为落点)。
 - 设计文档(按里程碑):
   - [design/m2-mcp-skills-secrets.md](design/m2-mcp-skills-secrets.md) — mcp/skills 下发 + 密钥分层。
   - [design/m3-scan-import.md](design/m3-scan-import.md) — 扫描回写(scan / import)。
