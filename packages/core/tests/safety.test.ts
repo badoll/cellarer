@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { assertNotSymbolicLink, assertPathInside, isPathInside } from "../src/fs/safety.js";
+import {
+  assertNotSymbolicLink,
+  assertPathInside,
+  isPathInside,
+  isWithinRoot,
+} from "../src/fs/safety.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
 describe("fs/safety", () => {
@@ -34,6 +39,23 @@ describe("fs/safety", () => {
     });
     it("throws for an outside path", () => {
       expect(() => assertPathInside(t.path("evil"), t.path("root"), "target")).toThrow(/target/);
+    });
+  });
+
+  describe("isWithinRoot (inclusive)", () => {
+    it("returns true for a child path", () => {
+      expect(isWithinRoot(t.path("root"), t.path("root", "a", "b.txt"))).toBe(true);
+    });
+    it("returns true for the root itself (unlike isPathInside)", () => {
+      expect(isWithinRoot(t.path("root"), t.path("root"))).toBe(true);
+      expect(isPathInside(t.path("root"), t.path("root"))).toBe(false);
+    });
+    it("returns false for a sibling / traversal", () => {
+      expect(isWithinRoot(t.path("root"), t.path("other", "x"))).toBe(false);
+      expect(isWithinRoot(t.path("root"), t.path("root", "..", "evil"))).toBe(false);
+    });
+    it("returns true for a child whose first segment merely starts with '..'", () => {
+      expect(isWithinRoot(t.path("root"), t.path("root", "..config", "r.md"))).toBe(true);
     });
   });
 

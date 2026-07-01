@@ -4,7 +4,7 @@ import { plan } from "../src/engine/plan.js";
 import { revert } from "../src/engine/revert.js";
 import { status } from "../src/engine/status.js";
 import { GENERATED_HEADER } from "../src/markers.js";
-import { loadLedger } from "../src/store/ledger.js";
+import { loadLedger, makeLedger, saveLedger } from "../src/store/ledger.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
 // 在临时库房里放一个 rule 制品(可选 channel 标签),返回库房根。
@@ -295,6 +295,42 @@ describe("engine/apply + revert", () => {
     await revert(t.env, { storeRoot, scope: "project", dir: proj, agents: ["claude-code"] });
     // .gitignore 只含 block → 被删除
     await expect(t.env.fs.readFile(t.path("proj", ".gitignore"))).rejects.toThrow();
+  });
+
+  it("refuses to delete a tampered ledger target outside the managed roots", async () => {
+    const storeRoot = await seedStore(t, { r: "stuff" });
+    await apply(t.env, { storeRoot, scope: "global", agents: ["claude-code"] });
+    // 模拟被篡改的台账:target 改到 home/cwd 之外的盘外文件。
+    const outside = t.path("outside", "victim.txt");
+    await t.env.fs.mkdir(t.path("outside"), { recursive: true });
+    await t.env.fs.writeFile(outside, "DO NOT DELETE");
+    const led = await loadLedger(t.env, storeRoot);
+    const tampered = makeLedger(led.entries.map((e) => ({ ...e, target: outside })));
+    await saveLedger(t.env, storeRoot, tampered);
+    await expect(revert(t.env, { storeRoot, agents: ["claude-code"] })).rejects.toThrow(
+      /outside managed root/,
+    );
+    // 盘外文件必须完好(护栏在 rm 之前拦下)。
+    expect(await t.env.fs.readFile(outside)).toBe("DO NOT DELETE");
+  });
+
+  it("cannot be bypassed by relabeling a tampered entry as project scope (no --dir)", async () => {
+    const storeRoot = await seedStore(t, { r: "stuff" });
+    await apply(t.env, { storeRoot, scope: "global", agents: ["claude-code"] });
+    const outside = t.path("outside", "victim.txt");
+    await t.env.fs.mkdir(t.path("outside"), { recursive: true });
+    await t.env.fs.writeFile(outside, "DO NOT DELETE");
+    const led = await loadLedger(t.env, storeRoot);
+    // 攻击者把恶意条目标成 project(scope 与 target 同存于可篡改台账),企图绕过按 scope 选根的校验。
+    const tampered = makeLedger(
+      led.entries.map((e) => ({ ...e, scope: "project" as const, target: outside })),
+    );
+    await saveLedger(t.env, storeRoot, tampered);
+    // 无 --dir:护栏不按 entry.scope 分派根,仍以 home∪cwd 兜底拦下。
+    await expect(revert(t.env, { storeRoot, agents: ["claude-code"] })).rejects.toThrow(
+      /outside managed root/,
+    );
+    expect(await t.env.fs.readFile(outside)).toBe("DO NOT DELETE");
   });
 });
 

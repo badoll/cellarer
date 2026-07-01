@@ -121,5 +121,28 @@ describe("fs/linkOrCopy", () => {
         await w.cleanup();
       }
     });
+
+    it("falls back to copy when a win32 directory junction fails (cross-volume/permission)", async () => {
+      const w = makeTmpEnv({ platform: "win32" });
+      await ensureBaseDirs(w);
+      try {
+        const src = w.path("srcdir");
+        const dest = w.path("destdir");
+        await w.env.fs.mkdir(src, { recursive: true });
+        await w.env.fs.writeFile(w.path("srcdir", "a.txt"), "inside");
+        // 注入:junction 抛错(模拟跨卷/权限),应回退 copy 而非抛错(§11 硬约束)。
+        const realSymlink = w.env.fs.symlink.bind(w.env.fs);
+        w.env.fs.symlink = async (target, path, type) => {
+          if (type === "junction") throw Object.assign(new Error("EPERM"), { code: "EPERM" });
+          return realSymlink(target, path, type);
+        };
+        const r = await linkOrCopy(w.env, src, dest, { method: "symlink", kind: "dir" });
+        expect(r.method).toBe("copy");
+        expect((await w.env.fs.lstat(dest)).isSymbolicLink()).toBe(false);
+        expect(await w.env.fs.readFile(w.path("destdir", "a.txt"))).toBe("inside");
+      } finally {
+        await w.cleanup();
+      }
+    });
   });
 });

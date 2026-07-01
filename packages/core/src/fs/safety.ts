@@ -23,6 +23,14 @@ export function isPathInside(child: string, root: string): boolean {
   return relativeInside(root, child) !== null;
 }
 
+// child 位于 root 之内或就是 root 自身(inclusive)。
+// 用途:适配器路径模板的越界校验 —— 模板可能合法地解析为根本身(如 detect 到工程根),
+// 故需比 isPathInside(严格)更宽一档,与参照实现 A 的 isWithin 语义一致。
+export function isWithinRoot(root: string, child: string): boolean {
+  const rel = relative(resolve(root), resolve(child));
+  return rel.length === 0 || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsoluteLike(rel));
+}
+
 function isAbsoluteLike(p: string): boolean {
   // Windows 跨盘 relative 会返回带盘符的绝对路径。
   return /^([a-zA-Z]:)?[\\/]/.test(p);

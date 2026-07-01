@@ -4,6 +4,7 @@
 import { dirname } from "node:path";
 import type { Env } from "../env.js";
 import { readFileOrNull } from "../fs/probe.js";
+import { isPathInside } from "../fs/safety.js";
 import type { Ledger, LedgerEntry } from "../model/index.js";
 import { loadLedger, makeLedger, matchesFilter, saveLedger } from "../store/ledger.js";
 import { syncGitignore } from "./gitignore-sync.js";
@@ -17,6 +18,12 @@ export async function revert(env: Env, opts: RevertOptions): Promise<RevertResul
     return { reverted };
   }
 
+  // 越界护栏先于任何破坏性删除:全部校验通过才开始 rm(prepare-before-destroy),
+  // 否则一个被篡改的越界条目可能在前序合法条目已删后才被拦,破坏原子性直觉。
+  const roots = allowedRevertRoots(env, opts);
+  for (const entry of reverted) {
+    assertRevertTargetInRoot(entry, roots);
+  }
   for (const entry of reverted) {
     await revertOne(env, entry, opts.keepBackups ?? false);
   }
@@ -47,6 +54,25 @@ async function resyncAffectedGitignores(
   for (const dir of dirs) {
     await syncGitignore(env, dir, remaining);
   }
+}
+
+// 删前越界护栏:防止篡改的 state.json 把 revert 的 rm 引向管理根之外(§5.1 assertPathInside 接入点)。
+// 关键:不按 entry.scope 分派根 —— scope 与 target 同存于可被篡改的台账,攻击者只需把恶意条目
+// 标成任一 scope 即可绕过按 scope 选根的校验。故对**所有**条目统一校验:target 必须落在
+// 「可信可知的受管根」并集内 —— 家目录(global 落点)∪ cwd ∪ 显式 --dir(project 工程根)。
+// 越界即拒绝并提示(而非静默删除):project 工程根在 home/cwd 之外时,用 --dir 指明即可放行。
+function allowedRevertRoots(env: Env, opts: RevertOptions): string[] {
+  const roots = [env.homedir(), env.cwd()];
+  if (opts.dir) roots.push(opts.dir);
+  return roots;
+}
+
+function assertRevertTargetInRoot(entry: LedgerEntry, roots: string[]): void {
+  if (entry.target === "") return;
+  if (roots.some((root) => isPathInside(entry.target, root))) return;
+  throw new Error(
+    `safety: refusing to revert "${entry.agent}" target "${entry.target}" — outside managed roots [${roots.join(", ")}]. Pass --dir to revert a project outside your home directory.`,
+  );
 }
 
 async function revertOne(env: Env, entry: LedgerEntry, keepBackups: boolean): Promise<void> {

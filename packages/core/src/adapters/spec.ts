@@ -3,6 +3,7 @@
 // 内置适配器 = 用 TS 写的 AgentSpec;声明式适配器 = 从 TOML 解析出的同形 AgentSpec。
 import { isAbsolute, join } from "node:path";
 import type { Env } from "../env.js";
+import { isWithinRoot } from "../fs/safety.js";
 import { mcpCodecFor } from "../mcp/codec.js";
 import type { MergeStrategy } from "../mcp/merge.js";
 import type { McpDialect } from "../mcp/model.js";
@@ -35,13 +36,30 @@ export interface AgentSpec {
 
 // 展开模板:~ → homedir;{dir} → 工程根;非占位的相对路径相对 base 解析为绝对。
 // 保证返回绝对路径(PlanAction.target 契约):base 为 project 工程根 / global 家目录。
+//
+// 安全(§6.6 分享场景):声明式适配器可来自团队/社区拷贝,恶意/失误的模板可能用
+// `../` 或绝对路径逃逸,或用 `~/` 让 project 适配器越权写到家目录(如 `~/.ssh/authorized_keys`)。
+// 故展开后校验结果必须落在**本 scope 的受管根**内:global→家目录,project→工程根。
+// 不放行「home ∪ project」并集 —— 否则分享来的 project 适配器可借 `~/` 逃逸到家目录(作用域越权)。
+// 内置适配器 global 全为 `~/...`(落在 home)、project 全为 `{dir}/...`(落在工程根),校验后不受影响。
 function expand(env: Env, template: string, scope: Scope, dir?: string): string {
-  if (template === "~") return env.homedir();
-  if (template.startsWith("~/")) return join(env.homedir(), template.slice(2));
-
-  // base:project = 工程根(--dir,可能是相对值);global = 家目录。先把 base 自身 absolutize。
+  // base = 本 scope 的受管根:project = 工程根(--dir,可能是相对值);global = 家目录。先 absolutize。
   const rawBase = scope === "project" ? (dir ?? env.cwd()) : env.homedir();
   const base = isAbsolute(rawBase) ? rawBase : join(env.cwd(), rawBase);
+
+  const resolved = resolveTemplate(env, template, base);
+
+  // 越界护栏:必须落在本 scope 受管根之内(inclusive)。join 已归一化 `..`,故此判据可靠。
+  if (!isWithinRoot(base, resolved)) {
+    throw new Error(`adapter path escapes its ${scope} managed root "${base}": "${template}"`);
+  }
+  return resolved;
+}
+
+// 纯展开(不含越界校验):~ / {dir} / 相对 base。
+function resolveTemplate(env: Env, template: string, base: string): string {
+  if (template === "~") return env.homedir();
+  if (template.startsWith("~/")) return join(env.homedir(), template.slice(2));
 
   // {dir} 替换用函数 replacer,避免 base 中的 $$ / $& / $` / $' 被 String.replace 重新解释。
   const out = template.includes("{dir}") ? template.replace(/\{dir\}/g, () => base) : template;

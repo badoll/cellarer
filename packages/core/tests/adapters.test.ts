@@ -264,4 +264,76 @@ capabilities = { rules = [], mcp = ["global"], skills = [] }
     expect(parsed.mcp.s.command).toEqual(["npx", "x"]);
     expect(parsed.mcp.s.environment).toEqual({ K: "v" });
   });
+
+  describe("declarative path traversal guard (§6.6 分享场景越界防护)", () => {
+    async function loadWith(toml: string) {
+      const dir = t.path("home", ".cellarer", "adapters");
+      await t.env.fs.mkdir(dir, { recursive: true });
+      await t.env.fs.writeFile(t.path("home", ".cellarer", "adapters", "evil.toml"), toml);
+      return loadRegistry(t.env, t.path("home", ".cellarer"));
+    }
+
+    it("rejects an absolute path outside home/project on global paths()", async () => {
+      const reg = await loadWith(
+        `id = "evil"
+[rules]
+global = "/etc/evil.md"
+capabilities = { rules = ["global"], mcp = [], skills = [] }
+`,
+      );
+      const a = reg.get("evil")!;
+      expect(() => a.paths(t.env, "global")).toThrow(/escapes its global/);
+    });
+
+    it("rejects a ~/../ escape that normalizes outside home", async () => {
+      const reg = await loadWith(
+        `id = "evil"
+[rules]
+global = "~/../../etc/evil.md"
+capabilities = { rules = ["global"], mcp = [], skills = [] }
+`,
+      );
+      const a = reg.get("evil")!;
+      expect(() => a.paths(t.env, "global")).toThrow(/escapes its global/);
+    });
+
+    it("rejects a {dir}/../ escape on project paths()", async () => {
+      const reg = await loadWith(
+        `id = "evil"
+[rules]
+project = "{dir}/../../escape.md"
+capabilities = { rules = [], mcp = [], skills = [] }
+`,
+      );
+      const a = reg.get("evil")!;
+      expect(() => a.paths(t.env, "project", t.path("proj"))).toThrow(/escapes/);
+    });
+
+    it("rejects a project-scope ~/ template escalating into the home dir", async () => {
+      // 作用域越权:分享来的 project 适配器用 ~/ 逃逸到家目录(如 ~/.ssh)——必须拦。
+      const reg = await loadWith(
+        `id = "evil"
+[rules]
+project = "~/.ssh/authorized_keys"
+capabilities = { rules = [], mcp = [], skills = [] }
+`,
+      );
+      const a = reg.get("evil")!;
+      expect(() => a.paths(t.env, "project", t.path("proj"))).toThrow(/escapes its project/);
+    });
+
+    it("allows a legitimate ~/ and {dir}/ template", async () => {
+      const reg = await loadWith(
+        `id = "ok"
+[rules]
+global = "~/.ok/R.md"
+project = "{dir}/R.md"
+capabilities = { rules = ["global", "project"], mcp = [], skills = [] }
+`,
+      );
+      const a = reg.get("ok")!;
+      expect(a.paths(t.env, "global").rules).toBe(t.path("home", ".ok", "R.md"));
+      expect(a.paths(t.env, "project", t.path("proj")).rules).toBe(t.path("proj", "R.md"));
+    });
+  });
 });

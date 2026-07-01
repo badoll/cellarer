@@ -63,9 +63,15 @@ export async function linkOrCopy(
 
   if (env.platform === "win32") {
     if (opts.kind === "dir") {
-      // 目录:junction(免特权),绝对 target。
-      await env.fs.symlink(absSrc, dest, "junction");
-      return { method: "junction", skipped: false };
+      // 目录:优先 junction(免特权),绝对 target;失败(跨卷/权限)回退 copy。
+      // §11 硬约束:任何软链失败都回退 copy,不得抛错。
+      try {
+        await env.fs.symlink(absSrc, dest, "junction");
+        return { method: "junction", skipped: false };
+      } catch {
+        await doCopy(env, absSrc, dest, "dir");
+        return { method: "copy", skipped: false };
+      }
     }
     // 文件:尝试软链,失败回退 copy。
     try {
