@@ -50,6 +50,16 @@ node packages/cli/dist/bin.js ls
 node packages/cli/dist/bin.js ls --channel common
 ```
 
+## 检查 Agent
+
+```bash
+node packages/cli/dist/bin.js agents
+node packages/cli/dist/bin.js doctor
+```
+
+用 `agents --dir <path>` 或 `doctor --dir <path>` 查看 project scope 目标。
+两个命令都支持 `-a, --agent <ids>` 和 `--json`。
+
 ## 预览与下发
 
 先预览:

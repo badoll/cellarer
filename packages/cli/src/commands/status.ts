@@ -13,7 +13,7 @@ const ICON: Record<string, string> = {
 export function statusCommand(): Command {
   return new Command("status")
     .description("漂移检测(库房 vs 落地)")
-    .option("--agent <ids>", "指定 agent")
+    .option("-a, --agent <ids>", "指定 agent")
     .option("--dir <path>", "指定工程目录")
     .option("--json", "JSON 输出(CI 漂移检查用)")
     .action(async (opts: { agent?: string; dir?: string; json?: boolean }) => {

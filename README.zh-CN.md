@@ -39,6 +39,8 @@ node packages/cli/dist/bin.js add ./my-skill/
 预览、下发、检查与回滚:
 
 ```bash
+node packages/cli/dist/bin.js agents
+node packages/cli/dist/bin.js doctor
 node packages/cli/dist/bin.js apply --dry-run --agent claude-code,codex --rules --mcp --skills
 node packages/cli/dist/bin.js apply --agent claude-code,codex --rules --mcp --skills
 node packages/cli/dist/bin.js status
@@ -58,6 +60,8 @@ node packages/cli/dist/bin.js ui
 | `init` | 初始化 `~/.cellarer` 或 `CELLARER_HOME` 指向的库房。 |
 | `add <source>` | 将本地 `.md`、`.json` 或目录制品导入库房。Git 和 URL 源尚未实现。 |
 | `ls` | 列出库房中的 rules、MCP、skills 与 channel 标签。 |
+| `agents` | 展示已注册 agent adapter、探测结果、能力与目标路径。 |
+| `doctor` | 检查库房初始化、adapter 加载、agent 探测和目标路径写权限。 |
 | `apply` | 生成计划并下发制品到选中的 agent。写入前建议先用 `--dry-run`。 |
 | `scan` | 读取 agent 原生配置,规范化后导入库房。 |
 | `status` | 检查台账中的漂移、缺失目标和断链。 |

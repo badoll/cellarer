@@ -14,7 +14,7 @@ interface RevertOpts {
 export function revertCommand(): Command {
   return new Command("revert")
     .description("依据台账回滚下发")
-    .option("--agent <ids>", "指定 agent")
+    .option("-a, --agent <ids>", "指定 agent")
     .option("--dir <path>", "指定工程目录")
     .option("--all", "回滚台账中的全部条目(无 --agent/--dir 时必须显式确认)")
     .option("--keep-backups", "保留 .bak 备份")

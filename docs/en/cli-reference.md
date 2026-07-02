@@ -63,6 +63,42 @@ Options:
 | --- | --- |
 | `--channel <channel>` | Show artifacts visible for a channel. |
 
+## `agents`
+
+Shows registered agent adapters, detect results, capabilities for the current
+scope, and target paths.
+
+```bash
+node packages/cli/dist/bin.js agents
+node packages/cli/dist/bin.js agents -a codex,claude-code --dir /path/to/project --json
+```
+
+Options:
+
+| Option | Description |
+| --- | --- |
+| `-a, --agent <ids>` | Show only these comma-separated agent ids. |
+| `--dir <path>` | Project scope root. Omit for global scope. |
+| `--json` | Print machine-readable output. |
+
+## `doctor`
+
+Checks store initialization, `config.json`, store directories, adapter loading,
+agent detection, and target path write access without writing files.
+
+```bash
+node packages/cli/dist/bin.js doctor
+node packages/cli/dist/bin.js doctor -a codex --json
+```
+
+Options:
+
+| Option | Description |
+| --- | --- |
+| `-a, --agent <ids>` | Check only these comma-separated agent ids. |
+| `--dir <path>` | Project scope root. Omit for global scope. |
+| `--json` | Print machine-readable output. |
+
 ## `apply`
 
 Plans or writes artifacts to selected agents.
@@ -76,7 +112,7 @@ Options:
 
 | Option | Description |
 | --- | --- |
-| `--agent <ids>` | Required. Comma-separated agent ids. |
+| `-a, --agent <ids>` | Required. Comma-separated agent ids. |
 | `--dir <path>` | Project scope root. Omit for global scope. |
 | `--channel <channel>` | Filter artifacts by channel. |
 | `--rules` | Include rules. If no capability flag is set, all capabilities are included. |
@@ -102,7 +138,7 @@ Options:
 
 | Option | Description |
 | --- | --- |
-| `--agent <id>` | Required. Exactly one agent id. |
+| `-a, --agent <id>` | Required. Exactly one agent id. |
 | `--dir <path>` | Project scope root. Omit for global scope. |
 | `--rules` | Scan only rules. |
 | `--mcp` | Scan only MCP servers. |
@@ -126,7 +162,7 @@ Options:
 
 | Option | Description |
 | --- | --- |
-| `--agent <ids>` | Filter by comma-separated agent ids. |
+| `-a, --agent <ids>` | Filter by comma-separated agent ids. |
 | `--dir <path>` | Filter by project root. |
 | `--json` | Print machine-readable output. |
 
@@ -143,7 +179,7 @@ Options:
 
 | Option | Description |
 | --- | --- |
-| `--agent <ids>` | Filter by comma-separated agent ids. |
+| `-a, --agent <ids>` | Filter by comma-separated agent ids. |
 | `--dir <path>` | Filter by project root. |
 | `--all` | Required when reverting all entries without another selector. |
 | `--keep-backups` | Leave `.bak` files in place. |

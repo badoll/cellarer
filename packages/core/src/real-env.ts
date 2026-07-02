@@ -1,6 +1,6 @@
 // createRealEnv:Env 的真实实现 —— 全 core 内唯一允许 import node:fs/os/process 的地方。
 // 其余 core 模块只依赖 env.ts 的接口类型,保证可测性与跨平台。
-import { promises as nodeFs } from "node:fs";
+import { constants as fsConstants, promises as nodeFs } from "node:fs";
 import * as os from "node:os";
 import * as nodeProcess from "node:process";
 import type { Env, FileStat, FsLike, Platform, SymlinkType } from "./env.js";
@@ -9,6 +9,8 @@ function toFsLike(): FsLike {
   return {
     readFile: (path) => nodeFs.readFile(path, "utf8"),
     writeFile: (path, data) => nodeFs.writeFile(path, data, "utf8"),
+    access: (path, mode) =>
+      nodeFs.access(path, mode === "read" ? fsConstants.R_OK : fsConstants.W_OK),
     mkdir: async (path, opts) => {
       await nodeFs.mkdir(path, { recursive: opts?.recursive ?? false });
     },

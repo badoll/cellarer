@@ -63,6 +63,41 @@ node packages/cli/dist/bin.js ls --channel internal
 | --- | --- |
 | `--channel <channel>` | 只显示某个 channel 可见的制品。 |
 
+## `agents`
+
+展示已注册 agent adapter、探测结果、当前 scope 支持的能力和目标路径。
+
+```bash
+node packages/cli/dist/bin.js agents
+node packages/cli/dist/bin.js agents -a codex,claude-code --dir /path/to/project --json
+```
+
+选项:
+
+| 选项 | 说明 |
+| --- | --- |
+| `-a, --agent <ids>` | 只展示这些逗号分隔的 agent id。 |
+| `--dir <path>` | project scope 根目录。不传时为 global scope。 |
+| `--json` | 输出机器可读结果。 |
+
+## `doctor`
+
+检查库房初始化、`config.json`、store 目录、adapter 加载、agent 探测和目标路径写权限,
+且不会写入文件。
+
+```bash
+node packages/cli/dist/bin.js doctor
+node packages/cli/dist/bin.js doctor -a codex --json
+```
+
+选项:
+
+| 选项 | 说明 |
+| --- | --- |
+| `-a, --agent <ids>` | 只检查这些逗号分隔的 agent id。 |
+| `--dir <path>` | project scope 根目录。不传时为 global scope。 |
+| `--json` | 输出机器可读结果。 |
+
 ## `apply`
 
 生成计划或写入制品到选中的 agent。
@@ -76,7 +111,7 @@ node packages/cli/dist/bin.js apply --agent claude-code,codex --dir /path/to/pro
 
 | 选项 | 说明 |
 | --- | --- |
-| `--agent <ids>` | 必填。逗号分隔的 agent id。 |
+| `-a, --agent <ids>` | 必填。逗号分隔的 agent id。 |
 | `--dir <path>` | project scope 根目录。不传时为 global scope。 |
 | `--channel <channel>` | 按 channel 过滤制品。 |
 | `--rules` | 包含 rules。不传任何能力 flag 时默认包含全部能力。 |
@@ -101,7 +136,7 @@ node packages/cli/dist/bin.js scan --agent codex --into-channel common --conflic
 
 | 选项 | 说明 |
 | --- | --- |
-| `--agent <id>` | 必填。只能传一个 agent id。 |
+| `-a, --agent <id>` | 必填。只能传一个 agent id。 |
 | `--dir <path>` | project scope 根目录。不传时为 global scope。 |
 | `--rules` | 只扫描 rules。 |
 | `--mcp` | 只扫描 MCP servers。 |
@@ -125,7 +160,7 @@ node packages/cli/dist/bin.js status --agent codex --json
 
 | 选项 | 说明 |
 | --- | --- |
-| `--agent <ids>` | 按逗号分隔的 agent id 过滤。 |
+| `-a, --agent <ids>` | 按逗号分隔的 agent id 过滤。 |
 | `--dir <path>` | 按 project 根目录过滤。 |
 | `--json` | 输出机器可读结果。 |
 
@@ -142,7 +177,7 @@ node packages/cli/dist/bin.js revert --all --dry-run
 
 | 选项 | 说明 |
 | --- | --- |
-| `--agent <ids>` | 按逗号分隔的 agent id 过滤。 |
+| `-a, --agent <ids>` | 按逗号分隔的 agent id 过滤。 |
 | `--dir <path>` | 按 project 根目录过滤。 |
 | `--all` | 不传其他选择器时,回滚全部必须显式使用。 |
 | `--keep-backups` | 保留 `.bak` 备份。 |

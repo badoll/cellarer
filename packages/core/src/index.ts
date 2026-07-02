@@ -13,6 +13,17 @@ export type {
   SkillsCodec,
 } from "./adapters/types.js";
 // engine
+export {
+  type AgentDoctorReport,
+  type AgentInspection,
+  type AgentInspectionReport,
+  type DiagnosticCheck,
+  type DiagnosticStatus,
+  type DoctorReport,
+  doctor,
+  type InspectAgentsOptions,
+  inspectAgents,
+} from "./diagnostics.js";
 export { type AddOptions, type AddResult, add } from "./engine/add.js";
 export { apply } from "./engine/apply.js";
 export { inChannels, plan } from "./engine/plan.js";

@@ -30,7 +30,7 @@ function resolveCaps(opts: ScanOpts): ("rules" | "mcp" | "skills")[] | undefined
 export function scanCommand(): Command {
   return new Command("scan")
     .description("扫描 agent 现有 rules/mcp/skills 回写库房(密钥自动脱敏为占位符)")
-    .option("--agent <id>", "扫描指定 agent")
+    .option("-a, --agent <id>", "扫描指定 agent")
     .option("--dir <path>", "扫描指定工程目录(project scope)")
     .option("--rules", "仅扫 rules")
     .option("--mcp", "仅扫 mcp")

@@ -6,7 +6,19 @@ describe("cli program wiring", () => {
     const program = buildProgram();
     const names = program.commands.map((c) => c.name()).sort();
     expect(names).toEqual(
-      ["add", "apply", "init", "ls", "revert", "scan", "secret", "status", "ui"].sort(),
+      [
+        "add",
+        "agents",
+        "apply",
+        "doctor",
+        "init",
+        "ls",
+        "revert",
+        "scan",
+        "secret",
+        "status",
+        "ui",
+      ].sort(),
     );
   });
 
@@ -21,6 +33,9 @@ describe("cli program wiring", () => {
     const program = buildProgram();
     const scan = program.commands.find((c) => c.name() === "scan");
     const flags = scan?.options.map((o) => o.long) ?? [];
+    const shortFlags = scan?.options.map((o) => o.short) ?? [];
+    expect(flags).toContain("--agent");
+    expect(shortFlags).toContain("-a");
     expect(flags).toContain("--conflict");
     expect(flags).toContain("--select");
     expect(flags).toContain("--dry-run");
@@ -31,10 +46,37 @@ describe("cli program wiring", () => {
     const program = buildProgram();
     const apply = program.commands.find((c) => c.name() === "apply");
     const flags = apply?.options.map((o) => o.long) ?? [];
+    const shortFlags = apply?.options.map((o) => o.short) ?? [];
+    expect(flags).toContain("--agent");
+    expect(shortFlags).toContain("-a");
     expect(flags).toContain("--mcp");
     expect(flags).toContain("--skills");
     expect(flags).toContain("--mcp-overwrite");
     expect(flags).toContain("--secret-mode");
+  });
+
+  it("status/revert expose -a agent aliases", () => {
+    const program = buildProgram();
+    for (const name of ["status", "revert"]) {
+      const command = program.commands.find((c) => c.name() === name);
+      const flags = command?.options.map((o) => o.long) ?? [];
+      const shortFlags = command?.options.map((o) => o.short) ?? [];
+      expect(flags).toContain("--agent");
+      expect(shortFlags).toContain("-a");
+    }
+  });
+
+  it("agents and doctor expose agent/dir/json flags", () => {
+    const program = buildProgram();
+    for (const name of ["agents", "doctor"]) {
+      const command = program.commands.find((c) => c.name() === name);
+      const flags = command?.options.map((o) => o.long) ?? [];
+      const shortFlags = command?.options.map((o) => o.short) ?? [];
+      expect(flags).toContain("--agent");
+      expect(flags).toContain("--dir");
+      expect(flags).toContain("--json");
+      expect(shortFlags).toContain("-a");
+    }
   });
 
   it("secret subcommand has add/ls/rm", () => {

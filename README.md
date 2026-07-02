@@ -42,6 +42,8 @@ node packages/cli/dist/bin.js add ./my-skill/
 Preview, apply, inspect, and revert a distribution:
 
 ```bash
+node packages/cli/dist/bin.js agents
+node packages/cli/dist/bin.js doctor
 node packages/cli/dist/bin.js apply --dry-run --agent claude-code,codex --rules --mcp --skills
 node packages/cli/dist/bin.js apply --agent claude-code,codex --rules --mcp --skills
 node packages/cli/dist/bin.js status
@@ -61,6 +63,8 @@ node packages/cli/dist/bin.js ui
 | `init` | Initialize the store at `~/.cellarer` or `CELLARER_HOME`. |
 | `add <source>` | Import a local `.md`, `.json`, or directory artifact into the store. Git and URL sources are not implemented yet. |
 | `ls` | List stored rules, MCP servers, skills, and channel tags. |
+| `agents` | Show registered agent adapters, detect results, capabilities, and target paths. |
+| `doctor` | Check store initialization, adapter loading, agent detection, and target path write access. |
 | `apply` | Plan and distribute artifacts to selected agents. Use `--dry-run` before writing. |
 | `scan` | Read native agent configuration and import normalized artifacts into the store. |
 | `status` | Check ledger entries for drift, missing targets, and broken links. |

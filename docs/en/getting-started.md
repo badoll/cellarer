@@ -52,6 +52,16 @@ node packages/cli/dist/bin.js ls
 node packages/cli/dist/bin.js ls --channel common
 ```
 
+## Inspect Agents
+
+```bash
+node packages/cli/dist/bin.js agents
+node packages/cli/dist/bin.js doctor
+```
+
+Use `agents --dir <path>` or `doctor --dir <path>` to inspect project-scope
+targets. Both commands support `-a, --agent <ids>` and `--json`.
+
 ## Preview and Apply
 
 Always preview first:

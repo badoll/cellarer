@@ -29,7 +29,7 @@ function resolveCapabilities(opts: ApplyOpts): Capability[] {
 export function applyCommand(): Command {
   return new Command("apply")
     .description("下发库房制品到 agent(默认全局;指定 --dir 则下发到该工程)")
-    .option("--agent <ids>", "指定 agent(逗号分隔)")
+    .option("-a, --agent <ids>", "指定 agent(逗号分隔)")
     .option("--dir <path>", "下发到指定工程目录(否则下发到 agent 家目录)")
     .option("--channel <channel>", "按通道过滤")
     .option("--rules", "下发 rules")
