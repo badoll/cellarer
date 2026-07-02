@@ -7,6 +7,7 @@ import { linkOrCopy } from "../fs/linkOrCopy.js";
 import { lstatOrNull, readdirOrEmpty, readFileOrNull } from "../fs/probe.js";
 import { type McpServer, serverFromRaw, serverToRaw } from "../mcp/model.js";
 import type { Artifact } from "../model/index.js";
+import { CONFIG_FILENAME, initialConfigText } from "./config.js";
 
 // 库房根:CELLARER_HOME 覆盖,否则 ~/.cellarer。
 export function resolveStoreRoot(env: Env): string {
@@ -15,38 +16,24 @@ export function resolveStoreRoot(env: Env): string {
   return join(env.homedir(), ".cellarer");
 }
 
-// 初始库房配置模板(注释 + 与 config.ts schema 默认一致的字段)。
-// 单一来源在 core,CLI init 不再内联,避免与 schema 默认漂移(不变量 1)。
-export const DEFAULT_CONFIG_TOML = `# cellarer 库房配置
-[defaults]
-method = "symlink"
-channels = ["common"]
-secret_mode = "env"
-
-[defaults.os.win32]
-method = "copy"
-
-[channels.common]
-description = "通用"
-`;
-
 export interface InitResult {
   storeRoot: string;
-  createdConfig: boolean; // 是否新建了 cellarer.toml(已存在则不覆盖)
+  createdConfig: boolean; // 是否新建了 config.json(已存在则不覆盖)
 }
 
-// 初始化库房骨架:建 store/{rules,mcp,skills} + adapters 目录;cellarer.toml 不存在才写(幂等)。
+// 初始化库房骨架:建 store/{rules,mcp,skills};config.json 不存在才写(幂等)。
 export async function initStore(env: Env, storeRoot: string): Promise<InitResult> {
   await env.fs.mkdir(join(storeRoot, "store", "rules"), { recursive: true });
   await env.fs.mkdir(join(storeRoot, "store", "mcp"), { recursive: true });
   await env.fs.mkdir(join(storeRoot, "store", "skills"), { recursive: true });
-  await env.fs.mkdir(join(storeRoot, "adapters"), { recursive: true });
-  const tomlPath = join(storeRoot, "cellarer.toml");
-  const existing = await readFileOrNull(env, tomlPath);
+
+  const jsonPath = join(storeRoot, CONFIG_FILENAME);
+  const existing = await readFileOrNull(env, jsonPath);
   if (existing !== null) {
     return { storeRoot, createdConfig: false };
   }
-  await env.fs.writeFile(tomlPath, DEFAULT_CONFIG_TOML);
+
+  await env.fs.writeFile(jsonPath, await initialConfigText(env));
   return { storeRoot, createdConfig: true };
 }
 

@@ -37,7 +37,7 @@ export interface RulesCodec {
 export interface AdapterMcp {
   codec: McpCodec;
   serversKey: string; // 例:mcpServers / mcp_servers
-  defaultStrategy: MergeStrategy; // 默认 merge;可被 cellarer.toml / CLI 覆盖
+  defaultStrategy: MergeStrategy; // 默认 merge;可被 config.json / CLI 覆盖
 }
 
 // skills 下发:目录级 link/copy(无格式转换,落地方式由 plan 的 method 决定)。

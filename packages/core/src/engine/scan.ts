@@ -35,7 +35,7 @@ export interface ScanOptions {
   agent: string;
   scope: Scope;
   dir?: string;
-  // 入库目标通道(写 cellarer.toml 的 [artifacts] 标签;M3 仅在计划里带出,标签写入留 CLI/后续)。
+  // 入库目标通道(写 config.json 的 artifacts 标签)。
   intoChannel?: string;
   conflict?: ConflictStrategy;
   // 仅扫描这些能力(缺省三类全扫)。
@@ -92,7 +92,7 @@ async function scanCandidates(
   opts: ScanOptions,
 ): Promise<{ candidates: ScanCandidate[]; warnings: string[] }> {
   const warnings: string[] = [];
-  const registry = await loadRegistry(env, opts.storeRoot, opts.dir);
+  const registry = await loadRegistry(env, opts.storeRoot);
   warnings.push(...registry.warnings);
   const adapter = registry.get(opts.agent);
   if (!adapter) {
@@ -353,7 +353,7 @@ export async function applyScan(env: Env, opts: ScanOptions): Promise<ScanResult
     imported.push(c.item);
   }
 
-  // --into-channel:给本次导入的制品打通道标签(追加式,保留既有注释)。
+  // --into-channel:给本次导入的制品打通道标签。
   if (opts.intoChannel && imported.length > 0) {
     const ids = imported.map((i) => `${i.kind}/${i.name}`);
     await tagArtifactChannels(env, opts.storeRoot, ids, opts.intoChannel);

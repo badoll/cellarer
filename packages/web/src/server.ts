@@ -20,7 +20,7 @@ export interface ServeOptions {
 //   - CSP 响应头覆盖静态页面;
 //   - 页面级 token 门禁:设了 token 时,SPA 入口需 ?token= 校验(常量时间),
 //     否则匿名 loopback 客户端能拿到内联 token 的 HTML 再打 API。
-export function buildServerApp(opts: { token?: string; staticRoot: string }): Hono {
+export function buildServerApp(opts: { token?: string; staticRoot: string; apiApp?: Hono }): Hono {
   const app = new Hono();
 
   // Host 白名单 + CSP 覆盖全路由(API app 内部亦有 hostGuard,重复无害且守住静态路由)。
@@ -50,7 +50,7 @@ export function buildServerApp(opts: { token?: string; staticRoot: string }): Ho
   }
 
   // /api 路由(core 能力)。
-  app.route("/", createDefaultApp(opts.token));
+  app.route("/", opts.apiApp ?? createDefaultApp(opts.token));
 
   // SPA 静态资源 + 回退到 index.html(client-side routing)。
   const root = opts.staticRoot;

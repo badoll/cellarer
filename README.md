@@ -1,144 +1,111 @@
 # cellarer
 
-> One central store for your AI agents' **skills / MCP / rules** — maintain once, distribute to any agent, scan back, with channel separation and secret safety.
+`English` | [简体中文](README.zh-CN.md)
 
-`English` · [简体中文](#简体中文)
+> One local store for AI agent skills, MCP servers, and rules. Maintain once,
+> distribute to multiple agents, scan existing configuration back, and keep
+> secrets out of generated files.
 
-A local-first tool to centrally manage `skills`, MCP servers, and rules
-(`AGENTS.md` / `CLAUDE.md`) across multiple AI coding agents (Claude Code,
-Codex, Cursor, Gemini, opencode, windsurf, …). Bidirectional sync
-(distribute + scan), channel-based separation (common / internal / custom),
-layered secret handling (env ref → age vault → OS keychain), and a local web
-console.
+cellarer is a local-first configuration manager for people who use several AI
+coding agents on the same machine. It manages three artifact types:
 
-## Quick start
+- rules, such as `AGENTS.md`, `CLAUDE.md`, or agent-specific rule files
+- MCP server definitions in each agent's native JSON or TOML shape
+- skills directories
+
+The repository is currently pre-release. The workspace packages are still
+`private: true` with version `0.0.0`, so use the source build until the npm
+release checklist is completed.
+
+## Quick Start
 
 ```bash
-# initialize the global store at ~/.cellarer
-npx cellarer init
+pnpm install
+pnpm build
+node packages/cli/dist/bin.js --help
+```
 
-# import artifacts from a local path into the store
-npx cellarer add ./my-rules.md          # → store/rules
-npx cellarer add ./context7.json        # → store/mcp
-npx cellarer add ./my-skill/            # → store/skills
+Initialize the local cellarer store:
 
-# preview then distribute rules + skills + mcp to agents
-npx cellarer apply --dry-run -a claude-code,codex --rules --skills --mcp
-npx cellarer apply -a claude-code,codex --rules --skills --mcp
+```bash
+node packages/cli/dist/bin.js init
+```
 
-# check drift, then roll back
-npx cellarer status
-npx cellarer revert -a claude-code,codex
+Import local artifacts into the store:
 
-# launch the local web console (127.0.0.1 only)
-npx cellarer ui
+```bash
+node packages/cli/dist/bin.js add ./my-rules.md
+node packages/cli/dist/bin.js add ./context7.json
+node packages/cli/dist/bin.js add ./my-skill/
+```
+
+Preview, apply, inspect, and revert a distribution:
+
+```bash
+node packages/cli/dist/bin.js apply --dry-run --agent claude-code,codex --rules --mcp --skills
+node packages/cli/dist/bin.js apply --agent claude-code,codex --rules --mcp --skills
+node packages/cli/dist/bin.js status
+node packages/cli/dist/bin.js revert --agent claude-code,codex
+```
+
+Start the local Web console:
+
+```bash
+node packages/cli/dist/bin.js ui
 ```
 
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
-| `cellarer init` | Initialize the global store (`~/.cellarer`). |
-| `cellarer add <source>` | Import artifacts into the store (local path; `owner/repo` / URL are stubbed). |
-| `cellarer ls` | List store artifacts (rules / mcp / skills) and channel tags. |
-| `cellarer apply` | Distribute artifacts to agents (`--dir`, `--rules`, `--mcp`, `--skills`, `--copy`, `--dry-run`). |
-| `cellarer scan` | Scan an agent's config back into the store (import). |
-| `cellarer status` | Drift detection (store ledger vs on-disk). |
-| `cellarer revert` | Roll back a distribution using the ledger. |
-| `cellarer secret` | Secret management (`add` / `ls` / `rm`). |
-| `cellarer ui` | Launch the local web console (127.0.0.1 only). |
+| `init` | Initialize the store at `~/.cellarer` or `CELLARER_HOME`. |
+| `add <source>` | Import a local `.md`, `.json`, or directory artifact into the store. Git and URL sources are not implemented yet. |
+| `ls` | List stored rules, MCP servers, skills, and channel tags. |
+| `apply` | Plan and distribute artifacts to selected agents. Use `--dry-run` before writing. |
+| `scan` | Read native agent configuration and import normalized artifacts into the store. |
+| `status` | Check ledger entries for drift, missing targets, and broken links. |
+| `revert` | Roll back previously applied ledger entries. |
+| `secret` | Manage encrypted vault entries by reference name. |
+| `ui` | Run the local Web console on `127.0.0.1`. |
+
+See the full [CLI reference](docs/en/cli-reference.md).
 
 ## Architecture
 
-TypeScript monorepo: `@cellarer/core` (all business logic) + `@cellarer/cli` +
-`@cellarer/web`. Design invariants: **core-first** (cli/web are thin shells);
-**side effects via an injected `Env`** (core never imports `node:fs` directly);
-**plan / apply separation**; **new agents via declarative adapters** (no engine
-branching); **idempotent + revertible** via a `state.json` ledger; and a
-**zero-plaintext-secrets** red line — the store and distributed output never
-contain plaintext secrets (env `${VAR}` references, an age vault, or the OS
-keychain hold real values).
+cellarer is a TypeScript monorepo:
 
-Design and background: [docs/kickoff.md](docs/kickoff.md). Docs index:
-[docs/README.md](docs/README.md).
+- `@cellarer/core` owns all business logic.
+- `@cellarer/cli` parses command-line options and calls core.
+- `@cellarer/web` exposes core through a local Hono API and React UI.
+
+Core code receives file system, home directory, current directory, platform, and
+time through an injected `Env`. Distribution is split into plan and apply
+phases, and each applied change is recorded in a ledger so status and revert can
+work deterministically.
+
+Read more in the [architecture](docs/en/architecture.md) and
+[security](docs/en/security.md) docs.
+
+## Documentation
+
+- [Documentation index](docs/README.md)
+- [Getting started](docs/en/getting-started.md)
+- [Concepts](docs/en/concepts.md)
+- [Custom adapters](docs/en/adapters.md)
+- [Web UI](docs/en/web-ui.md)
+- [Release checklist](docs/en/maintainers/release.md)
 
 ## Development
 
 ```bash
-pnpm build      # tsc -b across packages + Vite SPA
-pnpm test       # vitest (core / cli / web)
-pnpm lint       # Biome
-pnpm typecheck  # tsc -b
+pnpm build
+pnpm test
+pnpm lint
+pnpm typecheck
 ```
 
-CI runs the four gates on Ubuntu / macOS / Windows.
+CI is expected to run these checks on Ubuntu, macOS, and Windows.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
-
----
-
-## 简体中文
-
-> 面向「一台机器上多个 AI agent」的 **skills / MCP / rules 全局统一管理工具** —— 在中央「库房」维护一份真源,按需下发到任意 agent,并能反向扫描回收,内置通用/内网场景分治与密钥安全防护。
-
-本地优先(local-first),跨多个 AI 编码 agent(Claude Code、Codex、Cursor、Gemini、opencode、windsurf……)统一管理 `skills`、MCP server、规则(`AGENTS.md` / `CLAUDE.md`)。双向同步(下发 + 扫描回写)、通道分治(common / internal / custom)、密钥分层(env 引用 → age vault → 系统 keychain)、本地 Web 控制台。
-
-### 快速上手
-
-```bash
-# 初始化全局库房(~/.cellarer)
-npx cellarer init
-
-# 从本地路径导入制品到库房
-npx cellarer add ./my-rules.md          # → store/rules
-npx cellarer add ./context7.json        # → store/mcp
-npx cellarer add ./my-skill/            # → store/skills
-
-# 先预览再下发 rules + skills + mcp
-npx cellarer apply --dry-run -a claude-code,codex --rules --skills --mcp
-npx cellarer apply -a claude-code,codex --rules --skills --mcp
-
-# 漂移检测,再回滚
-npx cellarer status
-npx cellarer revert -a claude-code,codex
-
-# 启动本地 Web 控制台(仅 127.0.0.1)
-npx cellarer ui
-```
-
-### 命令面
-
-| 命令 | 说明 |
-| --- | --- |
-| `cellarer init` | 初始化全局库房(`~/.cellarer`)。 |
-| `cellarer add <source>` | 导入制品到库房(本地路径;`owner/repo` / URL 暂为友好桩)。 |
-| `cellarer ls` | 列出库房制品(rules / mcp / skills)及通道标签。 |
-| `cellarer apply` | 下发制品到 agent(`--dir` / `--rules` / `--mcp` / `--skills` / `--copy` / `--dry-run`)。 |
-| `cellarer scan` | 扫描 agent 配置回写库房(import)。 |
-| `cellarer status` | 漂移检测(库房台账 vs 落地)。 |
-| `cellarer revert` | 依据台账回滚下发。 |
-| `cellarer secret` | 密钥管理(`add` / `ls` / `rm`)。 |
-| `cellarer ui` | 启动本地 Web 控制台(仅 127.0.0.1)。 |
-
-### 架构
-
-TypeScript monorepo:`@cellarer/core`(全部业务逻辑)+ `@cellarer/cli` + `@cellarer/web`。架构不变量:**core-first**(cli/web 薄壳);**副作用经 `Env` 注入**(core 不直接 import `node:fs`);**plan / apply 分离**;**新增 agent 走声明式适配器**(引擎无分支);**幂等可回滚**(`state.json` 台账);**密钥零明文红线** —— 库房与下发产物绝不含明文密钥(用 env `${VAR}` 引用 / age vault / 系统 keychain 承载真值)。
-
-设计与背景见 [docs/kickoff.md](docs/kickoff.md);文档索引见 [docs/README.md](docs/README.md)。
-
-### 开发
-
-```bash
-pnpm build      # 各包 tsc -b + Vite SPA
-pnpm test       # vitest(core / cli / web)
-pnpm lint       # Biome
-pnpm typecheck  # tsc -b
-```
-
-CI 在 Ubuntu / macOS / Windows 三平台执行四关。
-
-### 许可
-
-MIT —— 见 [LICENSE](LICENSE)。
+MIT, see [LICENSE](LICENSE).

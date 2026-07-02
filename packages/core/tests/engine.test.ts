@@ -4,18 +4,28 @@ import { plan } from "../src/engine/plan.js";
 import { revert } from "../src/engine/revert.js";
 import { status } from "../src/engine/status.js";
 import { GENERATED_HEADER } from "../src/markers.js";
+import { type CellarerConfig, initialConfigText, parseConfig } from "../src/store/config.js";
 import { loadLedger, makeLedger, saveLedger } from "../src/store/ledger.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
 // 在临时库房里放一个 rule 制品(可选 channel 标签),返回库房根。
-async function seedStore(t: TmpEnv, rules: Record<string, string>, toml = ""): Promise<string> {
+async function seedStore(
+  t: TmpEnv,
+  rules: Record<string, string>,
+  configure?: (config: CellarerConfig) => void,
+): Promise<string> {
   const storeRoot = t.path("home", ".cellarer");
   await t.env.fs.mkdir(t.path("home", ".cellarer", "store", "rules"), { recursive: true });
   for (const [name, content] of Object.entries(rules)) {
     await t.env.fs.writeFile(t.path("home", ".cellarer", "store", "rules", `${name}.md`), content);
   }
-  if (toml.length > 0) {
-    await t.env.fs.writeFile(t.path("home", ".cellarer", "cellarer.toml"), toml);
+  if (configure) {
+    const config = parseConfig(await initialConfigText(t.env));
+    configure(config);
+    await t.env.fs.writeFile(
+      t.path("home", ".cellarer", "config.json"),
+      `${JSON.stringify(config, null, 2)}\n`,
+    );
   }
   return storeRoot;
 }
@@ -49,15 +59,10 @@ describe("engine/plan", () => {
   });
 
   it("filters rules by channel", async () => {
-    const storeRoot = await seedStore(
-      t,
-      { common1: "C", secret1: "S" },
-      `[artifacts."rules/secret1"]
-channels = ["internal"]
-[artifacts."rules/common1"]
-channels = ["common"]
-`,
-    );
+    const storeRoot = await seedStore(t, { common1: "C", secret1: "S" }, (config) => {
+      config.artifacts["rules/secret1"] = { channels: ["internal"] };
+      config.artifacts["rules/common1"] = { channels: ["common"] };
+    });
     const p = await plan(t.env, {
       storeRoot,
       scope: "global",
@@ -101,19 +106,13 @@ channels = ["common"]
     expect(p.warnings.some((w) => w.includes("nope"))).toBe(true);
   });
 
-  it("skips (not aborts) an escaping declarative adapter, still planning other agents", async () => {
-    const storeRoot = await seedStore(t, { r: "R" });
-    // 声明式适配器 rules 模板越界(绝对路径逃逸);加载无错,但 paths() expand 会抛。
-    const adaptersDir = t.path("home", ".cellarer", "adapters");
-    await t.env.fs.mkdir(adaptersDir, { recursive: true });
-    await t.env.fs.writeFile(
-      t.path("home", ".cellarer", "adapters", "evil.toml"),
-      `id = "evil"
-[rules]
-global = "/etc/evil.md"
-capabilities = { rules = ["global"], mcp = [], skills = [] }
-`,
-    );
+  it("skips (not aborts) an escaping config adapter, still planning other agents", async () => {
+    const storeRoot = await seedStore(t, { r: "R" }, (config) => {
+      config.adapters.evil = {
+        rules: { global: "/etc/evil.md" },
+      };
+    });
+    // config.json 中的 custom adapter rules 模板越界(绝对路径逃逸);加载无错,但 paths() expand 会抛。
     // 一个坏适配器不应炸掉整批:evil 转 skip + 告警,claude-code 正常产出 write。
     const p = await plan(t.env, { storeRoot, scope: "global", agents: ["evil", "claude-code"] });
     const evil = p.actions.find((a) => a.agent === "evil");
@@ -124,16 +123,11 @@ capabilities = { rules = ["global"], mcp = [], skills = [] }
     expect(p.actions.some((a) => a.agent === "claude-code" && a.op === "write")).toBe(true);
   });
 
-  it("honors the per-OS method override ([defaults.os.win32].method)", async () => {
-    const storeRoot = await seedStore(
-      t,
-      { r: "R" },
-      `[defaults]
-method = "symlink"
-[defaults.os.win32]
-method = "copy"
-`,
-    );
+  it("honors the per-OS method override (defaults.os.win32.method)", async () => {
+    const storeRoot = await seedStore(t, { r: "R" }, (config) => {
+      config.defaults.method = "symlink";
+      config.defaults.os = { ...config.defaults.os, win32: { method: "copy" } };
+    });
     const win = makeTmpEnv({ platform: "win32", homedir: t.env.homedir() });
     const p = await plan(win.env, { storeRoot, scope: "global", agents: ["claude-code"] });
     expect(p.actions[0]?.method).toBe("copy");

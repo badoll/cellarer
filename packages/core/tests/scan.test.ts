@@ -163,7 +163,7 @@ describe("engine/scan — mcp secret redaction (red line)", () => {
     expect(mcp.map((a) => a.name)).not.toContain("weird");
   });
 
-  it("--into-channel tags imported artifacts (comment-safe append)", async () => {
+  it("--into-channel tags imported artifacts in config.json", async () => {
     const storeRoot = await emptyStore(t);
     await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
     await t.env.fs.writeFile(

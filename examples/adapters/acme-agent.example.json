@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "adapters": {
+    "acme-agent": {
+      "displayName": "ACME Agent",
+      "detect": {
+        "global": ["~/.acme"],
+        "project": [".acme"]
+      },
+      "rules": {
+        "global": "~/.acme/AGENTS.md",
+        "project": "{dir}/.acme/rules.md",
+        "format": "markdown"
+      },
+      "mcp": {
+        "global": "~/.acme/mcp.json",
+        "project": "{dir}/.acme/mcp.json",
+        "format": "json",
+        "serversKey": "mcpServers",
+        "mergeStrategy": "merge"
+      },
+      "skills": {
+        "global": "~/.acme/skills",
+        "project": "{dir}/.acme/skills",
+        "format": "dir"
+      },
+      "capabilities": {
+        "rules": ["global", "project"],
+        "mcp": ["global", "project"],
+        "skills": ["global", "project"]
+      }
+    }
+  }
+}

@@ -1,6 +1,9 @@
 node_modules/
 dist/
 coverage/
+docs/dev/
+.pnpm-store/
 *.tsbuildinfo
 .turbo/
+.claude/
 .DS_Store

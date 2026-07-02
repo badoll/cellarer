@@ -1,6 +1,6 @@
-// AgentSpec → AgentAdapter 工厂(不变量 4 的落地:内置与声明式共用同一构造路径,
+// AgentSpec → AgentAdapter 工厂(不变量 4 的落地:built-in / override / custom 共用同一构造路径,
 // 引擎绝不散写 if (agent.id === ...))。
-// 内置适配器 = 用 TS 写的 AgentSpec;声明式适配器 = 从 TOML 解析出的同形 AgentSpec。
+// 默认/自定义适配器最终都归一为同形 AgentSpec。
 import { isAbsolute, join } from "node:path";
 import type { Env } from "../env.js";
 import { isWithinRoot } from "../fs/safety.js";
@@ -37,11 +37,12 @@ export interface AgentSpec {
 // 展开模板:~ → homedir;{dir} → 工程根;非占位的相对路径相对 base 解析为绝对。
 // 保证返回绝对路径(PlanAction.target 契约):base 为 project 工程根 / global 家目录。
 //
-// 安全(§6.6 分享场景):声明式适配器可来自团队/社区拷贝,恶意/失误的模板可能用
+// 安全(§6.6 分享场景):配置适配器可来自团队/社区拷贝,恶意/失误的模板可能用
 // `../` 或绝对路径逃逸,或用 `~/` 让 project 适配器越权写到家目录(如 `~/.ssh/authorized_keys`)。
 // 故展开后校验结果必须落在**本 scope 的受管根**内:global→家目录,project→工程根。
 // 不放行「home ∪ project」并集 —— 否则分享来的 project 适配器可借 `~/` 逃逸到家目录(作用域越权)。
-// 内置适配器 global 全为 `~/...`(落在 home)、project 全为 `{dir}/...`(落在工程根),校验后不受影响。
+// 默认适配器 global 全为 `~/...`(落在 home)、project 全为 `{dir}/...`(落在工程根),
+// 校验后不受影响。
 function expand(env: Env, template: string, scope: Scope, dir?: string): string {
   // base = 本 scope 的受管根:project = 工程根(--dir,可能是相对值);global = 家目录。先 absolutize。
   const rawBase = scope === "project" ? (dir ?? env.cwd()) : env.homedir();

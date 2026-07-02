@@ -9,7 +9,7 @@ export function initCommand(): Command {
     .action(async () => {
       const env = createRealEnv();
       const result = await initStore(env, resolveStoreRoot(env));
-      const note = result.createdConfig ? "" : "(cellarer.toml 已存在,保留)";
-      console.log(`库房已初始化:${result.storeRoot} ${note}`.trimEnd());
+      const note = result.createdConfig ? "" : " (config.json 已存在,保留)";
+      console.log(`库房已初始化:${result.storeRoot}${note}`);
     });
 }

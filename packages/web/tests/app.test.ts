@@ -64,10 +64,31 @@ describe("web app — artifacts/agents", () => {
     expect(body.mcp.map((a: { name: string }) => a.name)).toContain("ctx");
   });
 
-  it("lists builtin agents with capabilities", async () => {
+  it("lists configured default agents with capabilities", async () => {
     const res = await c.app.request("/api/agents");
     const body = await res.json();
     expect(body.agents.map((a: { id: string }) => a.id)).toContain("claude-code");
+  });
+
+  it("includes global detect results for each registered agent", async () => {
+    await c.env.fs.mkdir(join(c.root, "home", ".codex"), { recursive: true });
+
+    const res = await c.app.request("/api/agents");
+    const body = await res.json();
+    const agents = body.agents as {
+      id: string;
+      detected: boolean;
+      root: string;
+    }[];
+
+    expect(agents.find((a) => a.id === "codex")).toMatchObject({
+      detected: true,
+      root: join(c.root, "home", ".codex"),
+    });
+    expect(agents.find((a) => a.id === "claude-code")).toMatchObject({
+      detected: false,
+      root: join(c.root, "home", ".claude"),
+    });
   });
 });
 

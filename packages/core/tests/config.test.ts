@@ -1,61 +1,87 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { loadConfig, parseConfig } from "../src/store/config.js";
+import { loadAdapterSpecs, loadConfig, parseConfig } from "../src/store/config.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
-const SAMPLE = `
-[defaults]
-method = "symlink"
-channels = ["common"]
-secret_mode = "env"
-
-[defaults.os.win32]
-method = "copy"
-
-[channels.common]
-description = "通用"
-[channels.internal]
-description = "内网专用"
-
-[artifacts."rules/coding-style"]
-channels = ["common"]
-[artifacts."mcp/company-gateway"]
-channels = ["internal"]
-
-[agents.cursor]
-enabled = true
-[agents.codex.mcp]
-merge_strategy = "merge"
-`;
+const SAMPLE = JSON.stringify({
+  version: 1,
+  defaults: {
+    method: "symlink",
+    channels: ["common"],
+    secretMode: "env",
+    os: { win32: { method: "copy" } },
+  },
+  channels: {
+    common: { description: "通用" },
+    internal: { description: "内网专用" },
+  },
+  artifacts: {
+    "rules/coding-style": { channels: ["common"] },
+    "mcp/company-gateway": { channels: ["internal"] },
+  },
+  agents: {
+    cursor: { enabled: true },
+    codex: { mcp: { mergeStrategy: "merge" } },
+  },
+  adapters: {
+    "claude-code": {
+      rules: { global: "~/custom-claude/CLAUDE.md" },
+    },
+    "my-agent": {
+      displayName: "My Agent",
+      rules: { global: "~/.myagent/RULES.md" },
+    },
+  },
+});
 
 describe("store/config", () => {
-  it("parses a full cellarer.toml with defaults", () => {
+  it("parses a full config.json with defaults", () => {
     const cfg = parseConfig(SAMPLE);
     expect(cfg.defaults.method).toBe("symlink");
     expect(cfg.defaults.channels).toEqual(["common"]);
-    expect(cfg.defaults.secret_mode).toBe("env");
+    expect(cfg.defaults.secretMode).toBe("env");
     expect(cfg.defaults.os?.win32?.method).toBe("copy");
     expect(cfg.channels.common?.description).toBe("通用");
     expect(cfg.artifacts["rules/coding-style"]?.channels).toEqual(["common"]);
     expect(cfg.agents.cursor?.enabled).toBe(true);
-    expect(cfg.agents.codex?.mcp?.merge_strategy).toBe("merge");
+    expect(cfg.agents.codex?.mcp?.mergeStrategy).toBe("merge");
+    expect(cfg.adapters["claude-code"]?.rules?.global).toBe("~/custom-claude/CLAUDE.md");
+    expect(cfg.adapters["my-agent"]?.displayName).toBe("My Agent");
   });
 
   it("applies defaults for a minimal config", () => {
     const cfg = parseConfig("");
+    expect(cfg.version).toBe(1);
     expect(cfg.defaults.method).toBe("symlink");
     expect(cfg.defaults.channels).toEqual(["common"]);
-    expect(cfg.defaults.secret_mode).toBe("env");
+    expect(cfg.defaults.secretMode).toBe("env");
     expect(cfg.channels).toEqual({});
     expect(cfg.artifacts).toEqual({});
     expect(cfg.agents).toEqual({});
+    expect(cfg.adapters).toEqual({});
   });
 
   it("rejects an invalid method (strict schema)", () => {
-    expect(() => parseConfig(`[defaults]\nmethod = "hardlink"\n`)).toThrow();
+    expect(() => parseConfig(JSON.stringify({ defaults: { method: "hardlink" } }))).toThrow();
   });
 
   it("rejects unknown top-level keys (strict)", () => {
-    expect(() => parseConfig(`[bogus]\nx = 1\n`)).toThrow();
+    expect(() => parseConfig(JSON.stringify({ bogus: true }))).toThrow();
+  });
+
+  it("rejects adapter arrays in user config", () => {
+    expect(() =>
+      parseConfig(
+        JSON.stringify({
+          adapter: [{ id: "claude-code", rules: { global: "~/.claude/CLAUDE.md" } }],
+        }),
+      ),
+    ).toThrow();
+  });
+
+  it("rejects removed adapter override/custom fields", () => {
+    expect(() => parseConfig(JSON.stringify({ adapterOverrides: {} }))).toThrow();
+    expect(() => parseConfig(JSON.stringify({ customAdapters: [] }))).toThrow();
+    expect(() => parseConfig(JSON.stringify({ builtinAdapters: {} }))).toThrow();
   });
 
   describe("loadConfig from disk", () => {
@@ -66,15 +92,18 @@ describe("store/config", () => {
     });
     afterEach(() => t.cleanup());
 
-    it("returns defaults when cellarer.toml is absent", async () => {
+    it("returns packaged defaults when config.json is absent", async () => {
       const cfg = await loadConfig(t.env, t.path("store"));
       expect(cfg.defaults.method).toBe("symlink");
+      expect(cfg.adapters).toEqual({});
+      const adapters = await loadAdapterSpecs(t.env, t.path("store"));
+      expect(adapters.specs.map((a) => a.id)).toContain("codex");
     });
 
-    it("reads and parses cellarer.toml from the store root", async () => {
+    it("reads and parses config.json from the store root", async () => {
       const storeRoot = t.path("store");
       await t.env.fs.mkdir(storeRoot, { recursive: true });
-      await t.env.fs.writeFile(t.path("store", "cellarer.toml"), SAMPLE);
+      await t.env.fs.writeFile(t.path("store", "config.json"), SAMPLE);
       const cfg = await loadConfig(t.env, storeRoot);
       expect(cfg.defaults.os?.win32?.method).toBe("copy");
     });

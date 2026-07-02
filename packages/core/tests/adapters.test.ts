@@ -1,9 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { builtinAdapters } from "../src/adapters/builtin.js";
 import { markdownRulesCodec } from "../src/adapters/codec.js";
 import { loadRegistry } from "../src/adapters/registry.js";
+import { specToAdapter } from "../src/adapters/spec.js";
+import type { AgentAdapter } from "../src/adapters/types.js";
 import { GENERATED_HEADER } from "../src/markers.js";
+import { loadAdapterSpecs } from "../src/store/config.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
+
+async function defaultAdapters(t: TmpEnv): Promise<Record<string, AgentAdapter>> {
+  const specs = (await loadAdapterSpecs(t.env, t.path("home", ".cellarer"))).specs;
+  return Object.fromEntries(specs.map((spec) => [spec.id, specToAdapter(spec)]));
+}
+
+async function writeConfig(t: TmpEnv, config: unknown): Promise<string> {
+  const storeRoot = t.path("home", ".cellarer");
+  await t.env.fs.mkdir(storeRoot, { recursive: true });
+  await t.env.fs.writeFile(t.path("home", ".cellarer", "config.json"), JSON.stringify(config));
+  return storeRoot;
+}
 
 describe("adapters/codec markdownRulesCodec", () => {
   it("renders via the shared markers format", () => {
@@ -14,22 +28,23 @@ describe("adapters/codec markdownRulesCodec", () => {
   });
 });
 
-describe("adapters/builtin", () => {
-  const adapters = Object.fromEntries(builtinAdapters().map((a) => [a.id, a]));
+describe("adapters/config defaults", () => {
+  let t: TmpEnv;
+  let adapters: Record<string, AgentAdapter>;
 
-  it("registers the builtin agents (M1 four + M5 gemini/opencode/windsurf)", () => {
+  beforeEach(async () => {
+    t = makeTmpEnv();
+    adapters = await defaultAdapters(t);
+  });
+  afterEach(() => t.cleanup());
+
+  it("registers the default agents (M1 four + M5 gemini/opencode/windsurf)", async () => {
     expect(Object.keys(adapters).sort()).toEqual(
       ["agents-md", "claude-code", "codex", "cursor", "gemini-cli", "opencode", "windsurf"].sort(),
     );
   });
 
   describe("path calibration (matches §4 machine facts)", () => {
-    let t: TmpEnv;
-    beforeEach(() => {
-      t = makeTmpEnv();
-    });
-    afterEach(() => t.cleanup());
-
     it("claude-code: global ~/.claude/CLAUDE.md, project ./CLAUDE.md", () => {
       const cc = adapters["claude-code"]!;
       expect(cc.paths(t.env, "global").rules).toBe(t.path("home", ".claude", "CLAUDE.md"));
@@ -50,7 +65,6 @@ describe("adapters/builtin", () => {
       expect(cursor.paths(t.env, "project", t.path("proj")).rules).toBe(
         t.path("proj", ".cursor", "rules", "cellarer.mdc"),
       );
-      // skills 目录名是 skills-cursor(非 skills)
       expect(cursor.paths(t.env, "global").skillsDir).toBe(
         t.path("home", ".cursor", "skills-cursor"),
       );
@@ -65,16 +79,13 @@ describe("adapters/builtin", () => {
     it("project {dir} expands without double-joining (relative dir absolutized via cwd)", () => {
       const w = makeTmpEnv({ cwd: "/abs/work" });
       const cc = adapters["claude-code"]!;
-      // 绝对 dir:不重复拼接。
       expect(cc.paths(w.env, "project", "/abs/work/proj").rules).toBe("/abs/work/proj/CLAUDE.md");
-      // 相对 dir:相对注入的 cwd absolutize,且不出现 proj/proj 双拼。
       expect(cc.paths(w.env, "project", "proj").rules).toBe("/abs/work/proj/CLAUDE.md");
       w.cleanup();
     });
 
     it("project dir containing $-metachars is not corrupted by String.replace", () => {
       const cc = adapters["claude-code"]!;
-      // $$ / $& 等若用裸 String.replace 会被重新解释;函数 replacer 原样保留。
       expect(cc.paths(t.env, "project", "/work/proj$$tmp").rules).toBe("/work/proj$$tmp/CLAUDE.md");
       expect(cc.paths(t.env, "project", "/work/a$&b").rules).toBe("/work/a$&b/CLAUDE.md");
     });
@@ -88,12 +99,9 @@ describe("adapters/builtin", () => {
   });
 
   describe("detect", () => {
-    let t: TmpEnv;
     beforeEach(async () => {
-      t = makeTmpEnv();
       await ensureBaseDirs(t);
     });
-    afterEach(() => t.cleanup());
 
     it("reports installed when the global root dir exists", async () => {
       await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
@@ -117,145 +125,122 @@ describe("adapters/builtin", () => {
   });
 });
 
-describe("adapters/registry (builtin + declarative override)", () => {
+describe("adapters/registry (built-ins + key-based config)", () => {
   let t: TmpEnv;
   beforeEach(async () => {
     t = makeTmpEnv();
     await ensureBaseDirs(t);
-    await t.env.fs.mkdir(t.path("home", ".cellarer"), { recursive: true });
   });
   afterEach(() => t.cleanup());
 
-  it("loads builtins when no declarative adapters exist", async () => {
+  it("loads configured defaults when config.json is absent", async () => {
     const reg = await loadRegistry(t.env, t.path("home", ".cellarer"));
     expect(reg.get("claude-code")).toBeDefined();
     expect(reg.list().length).toBe(7);
   });
 
-  it("loads a valid declarative adapter from ~/.cellarer/adapters/*.toml", async () => {
-    const dir = t.path("home", ".cellarer", "adapters");
-    await t.env.fs.mkdir(dir, { recursive: true });
-    await t.env.fs.writeFile(
-      t.path("home", ".cellarer", "adapters", "my-agent.toml"),
-      `id = "my-agent"
-displayName = "My Agent"
-[detect]
-global = ["~/.myagent"]
-[rules]
-global = "~/.myagent/RULES.md"
-project = "{dir}/RULES.md"
-capabilities = { rules = ["global", "project"], mcp = [], skills = [] }
-`,
-    );
-    const reg = await loadRegistry(t.env, t.path("home", ".cellarer"));
+  it("loads a custom adapter from config.json", async () => {
+    const storeRoot = await writeConfig(t, {
+      version: 1,
+      adapters: {
+        "my-agent": {
+          displayName: "My Agent",
+          detect: { global: ["~/.myagent"] },
+          rules: { global: "~/.myagent/RULES.md", project: "{dir}/RULES.md" },
+        },
+      },
+    });
+    const reg = await loadRegistry(t.env, storeRoot);
     const a = reg.get("my-agent");
     expect(a).toBeDefined();
     expect(a!.displayName).toBe("My Agent");
     expect(a!.paths(t.env, "global").rules).toBe(t.path("home", ".myagent", "RULES.md"));
   });
 
-  it("skips an invalid declarative adapter and records a warning", async () => {
-    const dir = t.path("home", ".cellarer", "adapters");
-    await t.env.fs.mkdir(dir, { recursive: true });
-    await t.env.fs.writeFile(
-      t.path("home", ".cellarer", "adapters", "broken.toml"),
-      `displayName = "No id"\n`,
+  it("patches a built-in adapter through adapters keyed by id", async () => {
+    const storeRoot = await writeConfig(t, {
+      version: 1,
+      adapters: {
+        "claude-code": {
+          detect: { global: ["~/Library/Application Support/Claude"] },
+          rules: { global: "~/Library/Application Support/Claude/CLAUDE.md" },
+        },
+      },
+    });
+    const reg = await loadRegistry(t.env, storeRoot);
+    const claude = reg.get("claude-code")!;
+    expect(claude.displayName).toBe("Claude Code");
+    expect(claude.paths(t.env, "global").rules).toBe(
+      t.path("home", "Library", "Application Support", "Claude", "CLAUDE.md"),
     );
-    const reg = await loadRegistry(t.env, t.path("home", ".cellarer"));
-    expect(reg.get("broken")).toBeUndefined();
-    expect(reg.warnings.some((w) => w.includes("broken.toml"))).toBe(true);
-    // 其余内置适配器不受影响
-    expect(reg.get("claude-code")).toBeDefined();
+    expect(claude.paths(t.env, "project", t.path("proj")).rules).toBe(t.path("proj", "CLAUDE.md"));
+    expect(claude.mcp?.serversKey).toBe("mcpServers");
   });
 
-  it("a declarative adapter with a builtin id overrides the builtin (patch paths)", async () => {
-    const dir = t.path("home", ".cellarer", "adapters");
-    await t.env.fs.mkdir(dir, { recursive: true });
-    await t.env.fs.writeFile(
-      t.path("home", ".cellarer", "adapters", "cursor.toml"),
-      `id = "cursor"
-displayName = "Cursor (patched)"
-[detect]
-global = ["~/.cursor"]
-[rules]
-global = "~/.cursor/custom.mdc"
-capabilities = { rules = ["global"], mcp = [], skills = [] }
-`,
-    );
-    const reg = await loadRegistry(t.env, t.path("home", ".cellarer"));
-    const cursor = reg.get("cursor")!;
-    expect(cursor.displayName).toBe("Cursor (patched)");
-    expect(cursor.paths(t.env, "global").rules).toBe(t.path("home", ".cursor", "custom.mdc"));
+  it("treats a built-in adapter key as a built-in patch", async () => {
+    const storeRoot = await writeConfig(t, {
+      version: 1,
+      adapters: {
+        "claude-code": {
+          displayName: "Claude Somewhere Else",
+          rules: { global: "~/.fake/CLAUDE.md" },
+        },
+      },
+    });
+    const reg = await loadRegistry(t.env, storeRoot);
+    const claude = reg.get("claude-code")!;
+    expect(claude.displayName).toBe("Claude Somewhere Else");
+    expect(claude.paths(t.env, "global").rules).toBe(t.path("home", ".fake", "CLAUDE.md"));
+    expect(reg.list().filter((a) => a.id === "claude-code")).toHaveLength(1);
+    expect(reg.warnings).toEqual([]);
   });
 
-  it("project adapters override global adapters", async () => {
-    const gdir = t.path("home", ".cellarer", "adapters");
-    await t.env.fs.mkdir(gdir, { recursive: true });
-    await t.env.fs.writeFile(
-      t.path("home", ".cellarer", "adapters", "shared.toml"),
-      `id = "shared"
-displayName = "Global"
-[rules]
-global = "~/.shared/R.md"
-capabilities = { rules = ["global"], mcp = [], skills = [] }
-`,
-    );
-    const projAdapters = t.path("proj", ".cellarer", "adapters");
-    await t.env.fs.mkdir(projAdapters, { recursive: true });
-    await t.env.fs.writeFile(
-      t.path("proj", ".cellarer", "adapters", "shared.toml"),
-      `id = "shared"
-displayName = "Project"
-[rules]
-global = "~/.shared/R.md"
-capabilities = { rules = ["global"], mcp = [], skills = [] }
-`,
-    );
-    const reg = await loadRegistry(t.env, t.path("home", ".cellarer"), t.path("proj"));
-    expect(reg.get("shared")!.displayName).toBe("Project");
+  it("rejects a custom adapter entry without rules, mcp, or skills", async () => {
+    const storeRoot = await writeConfig(t, {
+      version: 1,
+      adapters: {
+        empty: {
+          displayName: "Empty",
+        },
+      },
+    });
+    await expect(loadRegistry(t.env, storeRoot)).rejects.toThrow(/invalid custom adapter "empty"/);
   });
 
-  it("infers capabilities from declared path templates (TOML inline-key pitfall safe)", async () => {
-    const dir = t.path("home", ".cellarer", "adapters");
-    await t.env.fs.mkdir(dir, { recursive: true });
-    // inline capabilities 写在 [rules] 表之后 → TOML 归入 rules.capabilities(常见坑);
-    // 期望仍能从路径模板推断 rules: [global, project],mcp/skills 为空。
-    await t.env.fs.writeFile(
-      t.path("home", ".cellarer", "adapters", "inferred.toml"),
-      `id = "inferred"
-displayName = "Inferred Caps"
-[rules]
-global = "~/.inferred/RULES.md"
-project = "{dir}/RULES.md"
-capabilities = { rules = ["global", "project"], mcp = [], skills = [] }
-`,
-    );
-    const reg = await loadRegistry(t.env, t.path("home", ".cellarer"));
+  it("infers capabilities from declared path templates", async () => {
+    const storeRoot = await writeConfig(t, {
+      version: 1,
+      adapters: {
+        inferred: {
+          displayName: "Inferred Caps",
+          rules: { global: "~/.inferred/RULES.md", project: "{dir}/RULES.md" },
+        },
+      },
+    });
+    const reg = await loadRegistry(t.env, storeRoot);
     const a = reg.get("inferred")!;
     expect(a.capabilities.rules).toEqual(["global", "project"]);
     expect(a.capabilities.mcp).toEqual([]);
     expect(a.capabilities.skills).toEqual([]);
   });
 
-  it("declarative adapter honors mcp field dialect (command_style/env_key/url_key)", async () => {
-    const dir = t.path("home", ".cellarer", "adapters");
-    await t.env.fs.mkdir(dir, { recursive: true });
-    await t.env.fs.writeFile(
-      t.path("home", ".cellarer", "adapters", "quirky.toml"),
-      `id = "quirky"
-[mcp]
-global = "~/.quirky/mcp.json"
-format = "json"
-servers_key = "mcp"
-command_style = "array"
-env_key = "environment"
-capabilities = { rules = [], mcp = ["global"], skills = [] }
-`,
-    );
-    const reg = await loadRegistry(t.env, t.path("home", ".cellarer"));
+  it("config adapter honors mcp field dialect", async () => {
+    const storeRoot = await writeConfig(t, {
+      version: 1,
+      adapters: {
+        quirky: {
+          mcp: {
+            global: "~/.quirky/mcp.json",
+            format: "json",
+            serversKey: "mcp",
+            dialect: { commandStyle: "array", envKey: "environment" },
+          },
+        },
+      },
+    });
+    const reg = await loadRegistry(t.env, storeRoot);
     const codec = reg.get("quirky")?.mcp?.codec;
     expect(codec).toBeDefined();
-    // 渲染应产出 command[] + environment(方言生效)。
     const content = codec!.encode(
       { servers: {}, doc: {}, serversKey: "mcp" },
       { s: { kind: "stdio", command: "npx", args: ["x"], env: { K: "v" } } },
@@ -265,72 +250,48 @@ capabilities = { rules = [], mcp = ["global"], skills = [] }
     expect(parsed.mcp.s.environment).toEqual({ K: "v" });
   });
 
-  describe("declarative path traversal guard (§6.6 分享场景越界防护)", () => {
-    async function loadWith(toml: string) {
-      const dir = t.path("home", ".cellarer", "adapters");
-      await t.env.fs.mkdir(dir, { recursive: true });
-      await t.env.fs.writeFile(t.path("home", ".cellarer", "adapters", "evil.toml"), toml);
-      return loadRegistry(t.env, t.path("home", ".cellarer"));
+  describe("path traversal guard (§6.6 分享场景越界防护)", () => {
+    async function loadWith(id: string, adapter: unknown) {
+      const storeRoot = await writeConfig(t, { version: 1, adapters: { [id]: adapter } });
+      return loadRegistry(t.env, storeRoot);
     }
 
     it("rejects an absolute path outside home/project on global paths()", async () => {
-      const reg = await loadWith(
-        `id = "evil"
-[rules]
-global = "/etc/evil.md"
-capabilities = { rules = ["global"], mcp = [], skills = [] }
-`,
-      );
+      const reg = await loadWith("evil", {
+        rules: { global: "/etc/evil.md" },
+      });
       const a = reg.get("evil")!;
       expect(() => a.paths(t.env, "global")).toThrow(/escapes its global/);
     });
 
     it("rejects a ~/../ escape that normalizes outside home", async () => {
-      const reg = await loadWith(
-        `id = "evil"
-[rules]
-global = "~/../../etc/evil.md"
-capabilities = { rules = ["global"], mcp = [], skills = [] }
-`,
-      );
+      const reg = await loadWith("evil", {
+        rules: { global: "~/../../etc/evil.md" },
+      });
       const a = reg.get("evil")!;
       expect(() => a.paths(t.env, "global")).toThrow(/escapes its global/);
     });
 
     it("rejects a {dir}/../ escape on project paths()", async () => {
-      const reg = await loadWith(
-        `id = "evil"
-[rules]
-project = "{dir}/../../escape.md"
-capabilities = { rules = [], mcp = [], skills = [] }
-`,
-      );
+      const reg = await loadWith("evil", {
+        rules: { project: "{dir}/../../escape.md" },
+      });
       const a = reg.get("evil")!;
       expect(() => a.paths(t.env, "project", t.path("proj"))).toThrow(/escapes/);
     });
 
     it("rejects a project-scope ~/ template escalating into the home dir", async () => {
-      // 作用域越权:分享来的 project 适配器用 ~/ 逃逸到家目录(如 ~/.ssh)——必须拦。
-      const reg = await loadWith(
-        `id = "evil"
-[rules]
-project = "~/.ssh/authorized_keys"
-capabilities = { rules = [], mcp = [], skills = [] }
-`,
-      );
+      const reg = await loadWith("evil", {
+        rules: { project: "~/.ssh/authorized_keys" },
+      });
       const a = reg.get("evil")!;
       expect(() => a.paths(t.env, "project", t.path("proj"))).toThrow(/escapes its project/);
     });
 
     it("allows a legitimate ~/ and {dir}/ template", async () => {
-      const reg = await loadWith(
-        `id = "ok"
-[rules]
-global = "~/.ok/R.md"
-project = "{dir}/R.md"
-capabilities = { rules = ["global", "project"], mcp = [], skills = [] }
-`,
-      );
+      const reg = await loadWith("ok", {
+        rules: { global: "~/.ok/R.md", project: "{dir}/R.md" },
+      });
       const a = reg.get("ok")!;
       expect(a.paths(t.env, "global").rules).toBe(t.path("home", ".ok", "R.md"));
       expect(a.paths(t.env, "project", t.path("proj")).rules).toBe(t.path("proj", "R.md"));

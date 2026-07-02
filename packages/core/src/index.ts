@@ -1,7 +1,6 @@
 // @cellarer/core 对外 API barrel。
 
 // adapters
-export { builtinAdapters } from "./adapters/builtin.js";
 export type { Registry } from "./adapters/registry.js";
 export { loadRegistry } from "./adapters/registry.js";
 export type {
@@ -98,7 +97,15 @@ export {
 export { sha256 } from "./store/checksum.js";
 // store
 export type { CellarerConfig } from "./store/config.js";
-export { loadConfig, parseConfig } from "./store/config.js";
+export {
+  CONFIG_FILENAME,
+  initialConfigText,
+  loadAdapterSpecs,
+  loadConfig,
+  PACKAGED_CONFIG_PATH,
+  packagedConfigText,
+  parseConfig,
+} from "./store/config.js";
 export {
   addEntries,
   collectLedgerSecretRefs,
@@ -108,7 +115,6 @@ export {
 } from "./store/ledger.js";
 export type { InitResult } from "./store/store.js";
 export {
-  DEFAULT_CONFIG_TOML,
   importSkillArtifact,
   initStore,
   listMcpArtifacts,

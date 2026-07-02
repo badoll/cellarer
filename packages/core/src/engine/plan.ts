@@ -70,10 +70,10 @@ export async function plan(env: Env, opts: DistributeOptions): Promise<Distribut
   const warnings: string[] = [];
   const actions: PlanAction[] = [];
 
-  // 库房四处独立读取并行(cellarer.toml / adapters / rules / mcp / skills)。
+  // 库房配置与制品独立读取并行(config.json / rules / mcp / skills)。
   const [config, registry, ruleArtifacts, mcpArtifacts, skillArtifacts] = await Promise.all([
     loadConfig(env, opts.storeRoot),
-    loadRegistry(env, opts.storeRoot, opts.dir),
+    loadRegistry(env, opts.storeRoot),
     listRuleArtifacts(env, opts.storeRoot),
     listMcpArtifacts(env, opts.storeRoot),
     listSkillArtifacts(env, opts.storeRoot),
@@ -100,7 +100,7 @@ export async function plan(env: Env, opts: DistributeOptions): Promise<Distribut
   ]);
 
   // vault 单次解密(仅 vault 模式且需要时):传给 mcp 渲染,避免每字段/每 agent 重复 scrypt 解密。
-  const secretMode = opts.secretMode ?? config.defaults.secret_mode;
+  const secretMode = opts.secretMode ?? config.defaults.secretMode;
   const vaultData =
     secretMode === "vault" && opts.vaultPassphrase && selectedMcp.length > 0
       ? await loadVault(env, opts.storeRoot, opts.vaultPassphrase)
@@ -135,9 +135,9 @@ export async function plan(env: Env, opts: DistributeOptions): Promise<Distribut
       warnings.push(`unknown agent "${agentId}" — skipped`);
       continue;
     }
-    // [agents.<id>].enabled = false → 显式禁用,跳过该 agent 的全部能力。
+    // agents.<id>.enabled = false → 显式禁用,跳过该 agent 的全部能力。
     if (config.agents[agentId]?.enabled === false) {
-      warnings.push(`agent "${agentId}" is disabled in cellarer.toml — skipped`);
+      warnings.push(`agent "${agentId}" is disabled in config.json — skipped`);
       continue;
     }
 
@@ -150,7 +150,7 @@ export async function plan(env: Env, opts: DistributeOptions): Promise<Distribut
         actions.push(skipAction(agentId, cap, opts.scope, method));
         continue;
       }
-      // planner 内 adapter.paths() 可能抛(如声明式模板越界 expand,§6.6 分享场景)。
+      // planner 内 adapter.paths() 可能抛(如配置模板越界 expand,§6.6 分享场景)。
       // 隔离到 agent+capability 粒度:转 skip + 告警,不让一个坏适配器炸掉整批下发。
       try {
         actions.push(...(await PLANNERS[cap](ctx, adapter)));
@@ -205,9 +205,9 @@ async function planRulesCapability(ctx: PlanContext, adapter: AgentAdapter): Pro
 }
 
 // mcp planner:委托 engine/mcp-plan(密钥已在顶层渲染好;此处只做 per-agent merge)。
-// 合并策略优先级(kickoff §8.5):CLI --mcp-overwrite > [agents.<id>.mcp].merge_strategy > adapter 默认。
+// 合并策略优先级:CLI --mcp-overwrite > agents.<id>.mcp.mergeStrategy > adapter 默认。
 function planMcpCapability(ctx: PlanContext, adapter: AgentAdapter): Promise<PlanAction[]> {
-  const perAgent = ctx.config.agents[adapter.id]?.mcp?.merge_strategy;
+  const perAgent = ctx.config.agents[adapter.id]?.mcp?.mergeStrategy;
   return planMcp(
     {
       env: ctx.env,

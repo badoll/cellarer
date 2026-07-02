@@ -3,16 +3,17 @@ import { apply } from "../src/engine/apply.js";
 import { plan } from "../src/engine/plan.js";
 import { revert } from "../src/engine/revert.js";
 import { status } from "../src/engine/status.js";
+import { type CellarerConfig, initialConfigText, parseConfig } from "../src/store/config.js";
 import { loadLedger } from "../src/store/ledger.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
-// 在临时库房里放 mcp / skills 制品 + 可选 cellarer.toml。
+// 在临时库房里放 mcp / skills 制品 + 可选 config.json 调整。
 async function seedStore(
   t: TmpEnv,
   opts: {
     mcp?: Record<string, unknown>; // name → server json
     skills?: Record<string, Record<string, string>>; // name → {file: content}
-    toml?: string;
+    configure?: (config: CellarerConfig) => void;
   },
 ): Promise<string> {
   const storeRoot = t.path("home", ".cellarer");
@@ -30,7 +31,14 @@ async function seedStore(
       await t.env.fs.writeFile(t.path("home", ".cellarer", "store", "skills", name, file), content);
     }
   }
-  if (opts.toml) await t.env.fs.writeFile(t.path("home", ".cellarer", "cellarer.toml"), opts.toml);
+  if (opts.configure) {
+    const config = parseConfig(await initialConfigText(t.env));
+    opts.configure(config);
+    await t.env.fs.writeFile(
+      t.path("home", ".cellarer", "config.json"),
+      `${JSON.stringify(config, null, 2)}\n`,
+    );
+  }
   return storeRoot;
 }
 
@@ -358,7 +366,7 @@ describe("engine skills distribution", () => {
     expect(r.entries[0]?.method).toBe("symlink");
   });
 
-  it("on win32, a skill dir lands as a junction (recorded in the ledger)", async () => {
+  it("on win32, an explicit symlink skill dir lands as a junction (recorded in the ledger)", async () => {
     const storeRoot = await seedStore(t, {
       skills: { "win-skill": { "SKILL.md": "# Win" } },
     });
@@ -370,6 +378,7 @@ describe("engine skills distribution", () => {
         scope: "global",
         agents: ["claude-code"],
         capabilities: ["skills"],
+        method: "symlink",
       });
       expect(r.entries[0]?.method).toBe("junction");
       const led = await loadLedger(w.env, storeRoot);
@@ -396,7 +405,8 @@ describe("engine skills distribution", () => {
         scope: "global" as const,
         agents: ["claude-code"],
         capabilities: ["skills" as const],
-      }; // 默认 method=symlink
+        method: "symlink" as const,
+      };
       const r1 = await apply(w.env, opts);
       expect(r1.entries[0]?.method).toBe("copy"); // 回退落地为 copy
       const led1 = JSON.stringify(await loadLedger(w.env, storeRoot));
@@ -550,11 +560,10 @@ describe("channel filtering across capabilities", () => {
     const storeRoot = await seedStore(t, {
       mcp: { common1: { command: "a" }, internal1: { command: "b" } },
       skills: { commonSkill: { "x.md": "x" }, internalSkill: { "y.md": "y" } },
-      toml: `[artifacts."mcp/internal1"]
-channels = ["internal"]
-[artifacts."skills/internalSkill"]
-channels = ["internal"]
-`,
+      configure: (config) => {
+        config.artifacts["mcp/internal1"] = { channels: ["internal"] };
+        config.artifacts["skills/internalSkill"] = { channels: ["internal"] };
+      },
     });
     const p = await plan(t.env, {
       storeRoot,
@@ -574,7 +583,7 @@ channels = ["internal"]
   });
 });
 
-describe("per-agent config ([agents.<id>])", () => {
+describe("per-agent config (agents.<id>)", () => {
   let t: TmpEnv;
   beforeEach(async () => {
     t = makeTmpEnv();
@@ -582,12 +591,12 @@ describe("per-agent config ([agents.<id>])", () => {
   });
   afterEach(() => t.cleanup());
 
-  it("[agents.<id>].enabled = false skips that agent entirely", async () => {
+  it("agents.<id>.enabled = false skips that agent entirely", async () => {
     const storeRoot = await seedStore(t, {
       mcp: { x: { command: "npx" } },
-      toml: `[agents.claude-code]
-enabled = false
-`,
+      configure: (config) => {
+        config.agents["claude-code"] = { enabled: false };
+      },
     });
     const p = await plan(t.env, {
       storeRoot,
@@ -600,12 +609,12 @@ enabled = false
     expect(p.warnings.some((w) => w.includes("disabled"))).toBe(true);
   });
 
-  it("[agents.<id>.mcp].merge_strategy = overwrite is honored (no CLI flag)", async () => {
+  it("agents.<id>.mcp.mergeStrategy = overwrite is honored (no CLI flag)", async () => {
     const storeRoot = await seedStore(t, {
       mcp: { only: { command: "y" } },
-      toml: `[agents.claude-code.mcp]
-merge_strategy = "overwrite"
-`,
+      configure: (config) => {
+        config.agents["claude-code"] = { mcp: { mergeStrategy: "overwrite" } };
+      },
     });
     const target = t.path("home", ".claude", "mcp.json");
     await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });

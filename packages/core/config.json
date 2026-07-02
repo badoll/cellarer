@@ -1,0 +1,209 @@
+{
+  "version": 1,
+  "defaults": {
+    "method": "symlink",
+    "channels": ["common"],
+    "secretMode": "env",
+    "os": {
+      "win32": {
+        "method": "copy"
+      }
+    }
+  },
+  "channels": {
+    "common": {
+      "description": "通用"
+    }
+  },
+  "artifacts": {},
+  "agents": {},
+  "builtinAdapters": {
+    "agents-md": {
+      "displayName": "AGENTS.md (generic)",
+      "detect": {
+        "global": ["~/.agents"]
+      },
+      "rules": {
+        "global": "~/.agents/AGENTS.md",
+        "project": "{dir}/AGENTS.md",
+        "format": "markdown"
+      },
+      "skills": {
+        "global": "~/.agents/skills",
+        "project": "{dir}/.agents/skills",
+        "format": "dir"
+      },
+      "capabilities": {
+        "rules": ["global", "project"],
+        "mcp": [],
+        "skills": ["global", "project"]
+      }
+    },
+    "claude-code": {
+      "displayName": "Claude Code",
+      "detect": {
+        "global": ["~/.claude"]
+      },
+      "rules": {
+        "global": "~/.claude/CLAUDE.md",
+        "project": "{dir}/CLAUDE.md",
+        "format": "markdown"
+      },
+      "mcp": {
+        "global": "~/.claude/mcp.json",
+        "project": "{dir}/.mcp.json",
+        "format": "json",
+        "serversKey": "mcpServers"
+      },
+      "skills": {
+        "global": "~/.claude/skills",
+        "project": "{dir}/.claude/skills",
+        "format": "dir"
+      },
+      "capabilities": {
+        "rules": ["global", "project"],
+        "mcp": ["global", "project"],
+        "skills": ["global", "project"]
+      }
+    },
+    "codex": {
+      "displayName": "Codex",
+      "detect": {
+        "global": ["~/.codex"]
+      },
+      "rules": {
+        "global": "~/.codex/AGENTS.md",
+        "project": "{dir}/AGENTS.md",
+        "format": "markdown"
+      },
+      "mcp": {
+        "global": "~/.codex/config.toml",
+        "project": "{dir}/.codex/config.toml",
+        "format": "toml",
+        "serversKey": "mcp_servers"
+      },
+      "skills": {
+        "global": "~/.codex/skills",
+        "project": "{dir}/.agents/skills",
+        "format": "dir"
+      },
+      "capabilities": {
+        "rules": ["global", "project"],
+        "mcp": ["global", "project"],
+        "skills": ["global", "project"]
+      }
+    },
+    "cursor": {
+      "displayName": "Cursor",
+      "detect": {
+        "global": ["~/.cursor"]
+      },
+      "rules": {
+        "global": "~/.cursor/rules/cellarer.mdc",
+        "project": "{dir}/.cursor/rules/cellarer.mdc",
+        "format": "markdown"
+      },
+      "mcp": {
+        "global": "~/.cursor/mcp.json",
+        "project": "{dir}/.cursor/mcp.json",
+        "format": "json",
+        "serversKey": "mcpServers"
+      },
+      "skills": {
+        "global": "~/.cursor/skills-cursor",
+        "project": "{dir}/.agents/skills",
+        "format": "dir"
+      },
+      "capabilities": {
+        "rules": ["global", "project"],
+        "mcp": ["global", "project"],
+        "skills": ["global", "project"]
+      }
+    },
+    "gemini-cli": {
+      "displayName": "Gemini CLI",
+      "detect": {
+        "global": ["~/.gemini"]
+      },
+      "rules": {
+        "global": "~/.gemini/GEMINI.md",
+        "project": "{dir}/AGENTS.md",
+        "format": "markdown"
+      },
+      "mcp": {
+        "global": "~/.gemini/settings.json",
+        "project": "{dir}/.gemini/settings.json",
+        "format": "json",
+        "serversKey": "mcpServers"
+      },
+      "capabilities": {
+        "rules": ["global", "project"],
+        "mcp": ["global", "project"],
+        "skills": []
+      }
+    },
+    "opencode": {
+      "displayName": "opencode",
+      "detect": {
+        "global": ["~/.config/opencode"]
+      },
+      "rules": {
+        "global": "~/.config/opencode/AGENTS.md",
+        "project": "{dir}/AGENTS.md",
+        "format": "markdown"
+      },
+      "mcp": {
+        "global": "~/.config/opencode/opencode.json",
+        "project": "{dir}/opencode.json",
+        "format": "json",
+        "serversKey": "mcp",
+        "dialect": {
+          "commandStyle": "array",
+          "envKey": "environment",
+          "typeField": "type",
+          "stdioType": "local",
+          "remoteType": "remote"
+        }
+      },
+      "skills": {
+        "global": "~/.config/opencode/skills",
+        "project": "{dir}/.agents/skills",
+        "format": "dir"
+      },
+      "capabilities": {
+        "rules": ["global", "project"],
+        "mcp": ["global", "project"],
+        "skills": ["global", "project"]
+      }
+    },
+    "windsurf": {
+      "displayName": "Windsurf",
+      "detect": {
+        "global": ["~/.codeium/windsurf"]
+      },
+      "rules": {
+        "project": "{dir}/AGENTS.md",
+        "format": "markdown"
+      },
+      "mcp": {
+        "global": "~/.codeium/windsurf/mcp_config.json",
+        "project": "{dir}/.codeium/windsurf/mcp_config.json",
+        "format": "json",
+        "serversKey": "mcpServers",
+        "dialect": {
+          "urlKey": "serverUrl"
+        }
+      },
+      "skills": {
+        "global": "~/.codeium/windsurf/skills",
+        "project": "{dir}/.agents/skills",
+        "format": "dir"
+      },
+      "capabilities": {
+        "rules": ["project"],
+        "mcp": ["global", "project"],
+        "skills": ["global", "project"]
+      }
+    }
+  }
+}

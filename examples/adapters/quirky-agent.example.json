@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "adapters": {
+    "quirky-agent": {
+      "displayName": "Quirky Agent",
+      "detect": {
+        "global": ["~/.quirky"]
+      },
+      "rules": {
+        "global": "~/.quirky/AGENTS.md",
+        "project": "{dir}/AGENTS.md",
+        "format": "markdown"
+      },
+      "mcp": {
+        "global": "~/.quirky/mcp.json",
+        "project": "{dir}/.quirky/mcp.json",
+        "format": "json",
+        "serversKey": "mcp",
+        "dialect": {
+          "commandStyle": "array",
+          "envKey": "environment",
+          "urlKey": "serverUrl"
+        }
+      },
+      "capabilities": {
+        "rules": ["global", "project"],
+        "mcp": ["global", "project"],
+        "skills": []
+      }
+    }
+  }
+}
