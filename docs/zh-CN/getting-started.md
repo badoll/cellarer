@@ -28,20 +28,26 @@ node packages/cli/dist/bin.js init
 
 默认创建或复用 `~/.cellarer`。测试隔离环境可以设置 `CELLARER_HOME`。
 
-## 导入本地制品
+## 导入制品
 
 ```bash
 node packages/cli/dist/bin.js add ./my-rules.md
 node packages/cli/dist/bin.js add ./context7.json
 node packages/cli/dist/bin.js add ./my-skill/
+node packages/cli/dist/bin.js add vercel-labs/skills --list
+node packages/cli/dist/bin.js add vercel-labs/skills --skill nextjs
 ```
 
-当前源码版本只支持本地来源:
+当前源码版本支持:
 
 - `.md` 文件导入为 rules。
 - `.json` 文件导入为 MCP server。
-- 目录导入为 skill。
-- URL 和 `owner/repo` 来源会返回清晰的未实现提示。
+- 本地 skill 目录和父目录导入为 skills。
+- GitHub `owner/repo`、repository URL 和 `/tree/<ref>/<subpath>` URL 可导入
+  skills。
+
+远程 skill 导入会在 `store/metadata/skills/<name>.json` 写入 provenance。
+GitLab 与 arbitrary git URLs 不属于本里程碑支持范围。
 
 ## 列出库房制品
 

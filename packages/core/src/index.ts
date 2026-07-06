@@ -24,7 +24,17 @@ export {
   type InspectAgentsOptions,
   inspectAgents,
 } from "./diagnostics.js";
-export { type AddOptions, type AddResult, add } from "./engine/add.js";
+export {
+  type AddOptions,
+  type AddResult,
+  add,
+  type GitClient,
+  type GitHubSource,
+  type GitStageResult,
+  type SkillCandidate,
+  type SkillFrontmatter,
+  type SkillProvenance,
+} from "./engine/add.js";
 export { apply } from "./engine/apply.js";
 export { inChannels, plan } from "./engine/plan.js";
 export { revert } from "./engine/revert.js";
@@ -35,6 +45,7 @@ export {
   type ScanOptions,
   type ScanPlan,
   type ScanResult,
+  type ScanSelection,
   scanPlan,
 } from "./engine/scan.js";
 export { status } from "./engine/status.js";
@@ -128,12 +139,15 @@ export type { InitResult } from "./store/store.js";
 export {
   importSkillArtifact,
   initStore,
+  isSafeArtifactName,
   listMcpArtifacts,
   listRuleArtifacts,
   listSkillArtifacts,
   readMcpArtifact,
   readRuleArtifact,
   resolveStoreRoot,
+  skillProvenancePath,
   writeMcpArtifact,
   writeRuleArtifact,
+  writeSkillProvenance,
 } from "./store/store.js";

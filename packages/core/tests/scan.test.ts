@@ -300,4 +300,34 @@ describe("engine/scan — conflict strategy + non-interactive", () => {
     const { server } = await readMcpArtifact(t.env, storeRoot, "mcp/dup");
     if (server.kind === "stdio") expect(server.command).toBe("old-cmd");
   });
+
+  it("selectItems imports only the exact row when scanned names collide", async () => {
+    const storeRoot = await emptyStore(t);
+    await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
+    await t.env.fs.writeFile(t.path("home", ".claude", "CLAUDE.md"), "# Team rules");
+    await t.env.fs.writeFile(
+      t.path("home", ".claude", "mcp.json"),
+      JSON.stringify({ mcpServers: { "claude-code": { command: "npx" } } }),
+    );
+
+    const r = await applyScan(t.env, {
+      storeRoot,
+      agent: "claude-code",
+      scope: "global",
+      capabilities: ["rules", "mcp"],
+      selectItems: [
+        {
+          kind: "rules",
+          name: "claude-code",
+          source: t.path("home", ".claude", "CLAUDE.md"),
+        },
+      ],
+    });
+
+    expect(r.imported).toEqual([expect.objectContaining({ kind: "rules", name: "claude-code" })]);
+    expect((await listRuleArtifacts(t.env, storeRoot)).map((a) => a.name)).toContain("claude-code");
+    expect((await listMcpArtifacts(t.env, storeRoot)).map((a) => a.name)).not.toContain(
+      "claude-code",
+    );
+  });
 });

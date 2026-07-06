@@ -6,10 +6,14 @@
 //   - core-first(不变量 1):路由只解析参数 + 调 core,不写业务逻辑。
 import {
   apply,
+  applyScan,
   type Capability,
+  type ConflictStrategy,
   collectLedgerSecretRefs,
   createRealEnv,
+  doctor,
   type Env,
+  inspectAgents,
   listMcpArtifacts,
   listRuleArtifacts,
   listSkillArtifacts,
@@ -18,6 +22,8 @@ import {
   loadRegistry,
   plan,
   resolveStoreRoot,
+  revert,
+  type ScanSelection,
   type Scope,
   scanPlan,
   status,
@@ -44,6 +50,31 @@ interface DistributeBody {
   mcpStrategy?: "merge" | "overwrite";
 }
 
+interface ScanBody {
+  agent: string;
+  scope?: Scope;
+  dir?: string;
+  capabilities?: Capability[];
+  conflict?: ConflictStrategy;
+  select?: string[];
+  selectItems?: ScanSelection[];
+  intoChannel?: string;
+}
+
+interface InspectBody {
+  scope?: Scope;
+  dir?: string;
+  agents?: string[];
+}
+
+interface RevertBody {
+  scope?: Scope;
+  dir?: string;
+  agents?: string[];
+  keepBackups?: boolean;
+  dryRun?: boolean;
+}
+
 // project scope 必须带 dir,否则 core 会以 server cwd 为工程根,把文件写进进程启动目录(且无 .gitignore 守护)。
 // plan/apply/scan 三个 project 路由共用此守卫(拦在路由层)。
 function requireDirForProject(scope: Scope | undefined, dir: string | undefined): void {
@@ -65,6 +96,31 @@ function distributeOpts(deps: AppDeps, b: DistributeBody) {
     mcpStrategy: b.mcpStrategy,
     // 安全红线:web 永远 env 模式,绝不在 HTTP 路径解出真值。
     secretMode: "env" as const,
+  };
+}
+
+function inspectOpts(deps: AppDeps, b: InspectBody) {
+  requireDirForProject(b.scope, b.dir);
+  return {
+    storeRoot: deps.storeRoot,
+    scope: (b.scope ?? "global") as Scope,
+    dir: b.dir,
+    agents: b.agents,
+  };
+}
+
+function scanOpts(deps: AppDeps, b: ScanBody) {
+  requireDirForProject(b.scope, b.dir);
+  return {
+    storeRoot: deps.storeRoot,
+    agent: b.agent,
+    scope: (b.scope ?? "global") as Scope,
+    dir: b.dir,
+    capabilities: b.capabilities,
+    conflict: b.conflict,
+    select: b.select,
+    selectItems: b.selectItems,
+    intoChannel: b.intoChannel,
   };
 }
 
@@ -128,6 +184,16 @@ export function createApp(deps: AppDeps) {
         warnings: reg.warnings,
       });
     })
+    // scope-aware agent diagnostics(比 /api/agents 丰富,供 dashboard/diagnostics 使用)。
+    .post("/api/agents/inspect", async (c) => {
+      const body = await c.req.json<InspectBody>();
+      return c.json(await inspectAgents(deps.env, inspectOpts(deps, body)));
+    })
+    // 深度 doctor 检查:store/config/adapter/目标路径写权限。不含密钥真值。
+    .post("/api/doctor", async (c) => {
+      const body = await c.req.json<InspectBody>();
+      return c.json(await doctor(deps.env, inspectOpts(deps, body)));
+    })
     // 下发预览(dry-run plan)。preview 已是 env 模式渲染(无真值);护栏命中项 op=skip。
     .post("/api/plan", async (c) => {
       const body = await c.req.json<DistributeBody>();
@@ -142,22 +208,28 @@ export function createApp(deps: AppDeps) {
     })
     // 扫描预览(只读;ScanItem 不含真值,secretRefs 只列名)。
     .post("/api/scan", async (c) => {
-      const body = await c.req.json<{
-        agent: string;
-        scope?: Scope;
-        dir?: string;
-        capabilities?: ("rules" | "mcp" | "skills")[];
-      }>();
-      // project scope 同样必须带 dir(否则以 server cwd 为工程根扫描,误读进程启动目录)。
+      const body = await c.req.json<ScanBody>();
+      return c.json(await scanPlan(deps.env, scanOpts(deps, body)));
+    })
+    // 扫描导入:仍由 core 负责脱敏、冲突裁决、写前护栏与通道打标。
+    .post("/api/scan/apply", async (c) => {
+      const body = await c.req.json<ScanBody>();
+      return c.json(await applyScan(deps.env, scanOpts(deps, body)));
+    })
+    // 台账回滚:前端要求 dry-run-first;core 负责受管根安全检查。
+    .post("/api/revert", async (c) => {
+      const body = await c.req.json<RevertBody>();
       requireDirForProject(body.scope, body.dir);
-      const sp = await scanPlan(deps.env, {
-        storeRoot: deps.storeRoot,
-        agent: body.agent,
-        scope: (body.scope ?? "global") as Scope,
-        dir: body.dir,
-        capabilities: body.capabilities,
-      });
-      return c.json(sp);
+      return c.json(
+        await revert(deps.env, {
+          storeRoot: deps.storeRoot,
+          scope: body.scope,
+          dir: body.dir,
+          agents: body.agents,
+          keepBackups: body.keepBackups,
+          dryRun: body.dryRun,
+        }),
+      );
     })
     // 漂移检测。
     .get("/api/status", async (c) => {

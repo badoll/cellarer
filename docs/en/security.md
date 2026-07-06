@@ -44,7 +44,7 @@ agent cannot use.
 
 ## Import and Scan Guards
 
-- `add` rejects local sources that contain high-confidence plaintext secrets.
+- `add` rejects import sources that contain high-confidence plaintext secrets.
 - `scan` redacts structured MCP secret fields before store writes.
 - Store writes run a final plaintext guard.
 - Skill directories containing symlinks are rejected during `add` because the

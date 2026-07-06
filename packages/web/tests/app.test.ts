@@ -95,6 +95,8 @@ describe("web app — artifacts/agents", () => {
 describe("web app — secret safety (red line)", () => {
   let c: Ctx;
   const REAL = "ghp_0123456789abcdefghijklmnopqrstuvwx";
+  const CELLARER_SECRET_REF = "${" + "CELLARER_SECRET:C7_KEY}";
+  const ENV_SECRET_REF = "${" + "C7_KEY}";
   beforeEach(async () => {
     // 即便环境变量里有真值,web 也只写 ${ENV} 引用,响应里不得出现真值。
     c = makeCtx({ C7_KEY: REAL });
@@ -105,7 +107,7 @@ describe("web app — secret safety (red line)", () => {
   it("plan response never contains a real secret value (env mode forced)", async () => {
     await c.env.fs.writeFile(
       join(c.storeRoot, "store", "mcp", "ctx.json"),
-      JSON.stringify({ command: "npx", env: { API_KEY: "${CELLARER_SECRET:C7_KEY}" } }),
+      JSON.stringify({ command: "npx", env: { API_KEY: CELLARER_SECRET_REF } }),
     );
     const res = await c.app.request("/api/plan", {
       method: "POST",
@@ -114,14 +116,14 @@ describe("web app — secret safety (red line)", () => {
     });
     const text = await res.text();
     expect(text).not.toContain(REAL); // 真值绝不出现在响应
-    expect(text).toContain("${C7_KEY}"); // env 引用形态
+    expect(text).toContain(ENV_SECRET_REF); // env 引用形态
   });
 
   it("secrets endpoint lists only reference names, never values", async () => {
     // 先 apply 一个带 secretRef 的 mcp,使台账记录引用名。
     await c.env.fs.writeFile(
       join(c.storeRoot, "store", "mcp", "ctx.json"),
-      JSON.stringify({ command: "npx", env: { API_KEY: "${CELLARER_SECRET:C7_KEY}" } }),
+      JSON.stringify({ command: "npx", env: { API_KEY: CELLARER_SECRET_REF } }),
     );
     await c.app.request("/api/apply", {
       method: "POST",
@@ -132,6 +134,169 @@ describe("web app — secret safety (red line)", () => {
     const body = await res.json();
     expect(body.names).toContain("C7_KEY");
     expect(JSON.stringify(body)).not.toContain(REAL);
+  });
+});
+
+describe("web app — scan import", () => {
+  let c: Ctx;
+  const REAL = "ghp_0123456789abcdefghijklmnopqrstuvwx";
+
+  beforeEach(async () => {
+    c = makeCtx({ WEB_SCAN_KEY: REAL });
+    await seedStore(c);
+  });
+  afterEach(() => c.cleanup());
+
+  it("imports scan candidates and refreshes the artifact inventory", async () => {
+    await c.env.fs.mkdir(join(c.root, "home", ".claude"), { recursive: true });
+    await c.env.fs.writeFile(join(c.root, "home", ".claude", "CLAUDE.md"), "# Team rules");
+
+    const res = await c.app.request("/api/scan/apply", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "claude-code",
+        scope: "global",
+        capabilities: ["rules"],
+        intoChannel: "common",
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.imported).toContainEqual(
+      expect.objectContaining({ kind: "rules", name: "claude-code", action: "import" }),
+    );
+
+    const artifacts = await (await c.app.request("/api/artifacts")).json();
+    expect(artifacts.rules).toContainEqual(
+      expect.objectContaining({ name: "claude-code", channels: ["common"] }),
+    );
+  });
+
+  it("imports only selected scan rows when different kinds share a name", async () => {
+    await c.env.fs.mkdir(join(c.root, "home", ".claude"), { recursive: true });
+    await c.env.fs.writeFile(join(c.root, "home", ".claude", "CLAUDE.md"), "# Team rules");
+    await c.env.fs.writeFile(
+      join(c.root, "home", ".claude", "mcp.json"),
+      JSON.stringify({ mcpServers: { "claude-code": { command: "npx" } } }),
+    );
+
+    const res = await c.app.request("/api/scan/apply", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "claude-code",
+        scope: "global",
+        capabilities: ["rules", "mcp"],
+        selectItems: [
+          {
+            kind: "rules",
+            name: "claude-code",
+            source: join(c.root, "home", ".claude", "CLAUDE.md"),
+          },
+        ],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.imported).toEqual([
+      expect.objectContaining({ kind: "rules", name: "claude-code" }),
+    ]);
+
+    const artifacts = await (await c.app.request("/api/artifacts")).json();
+    expect(artifacts.rules.map((a: { name: string }) => a.name)).toContain("claude-code");
+    expect(artifacts.mcp.map((a: { name: string }) => a.name)).not.toContain("claude-code");
+  });
+
+  it("does not expose plaintext secrets while importing scanned MCP config", async () => {
+    await c.env.fs.mkdir(join(c.root, "home", ".claude"), { recursive: true });
+    await c.env.fs.writeFile(
+      join(c.root, "home", ".claude", "mcp.json"),
+      JSON.stringify({ mcpServers: { ctx: { command: "npx", env: { API_KEY: REAL } } } }),
+    );
+
+    const res = await c.app.request("/api/scan/apply", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent: "claude-code", scope: "global", capabilities: ["mcp"] }),
+    });
+    const text = await res.text();
+    expect(res.status).toBe(200);
+    expect(text).not.toContain(REAL);
+    expect(text).toContain("MCP_CTX_API_KEY");
+  });
+});
+
+describe("web app — diagnostics and revert", () => {
+  let c: Ctx;
+
+  beforeEach(async () => {
+    c = makeCtx();
+    await seedStore(c);
+  });
+  afterEach(() => c.cleanup());
+
+  it("inspects agents for project scope", async () => {
+    const project = join(c.root, "project");
+    await c.env.fs.mkdir(project, { recursive: true });
+
+    const res = await c.app.request("/api/agents/inspect", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ scope: "project", dir: project, agents: ["codex"] }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({ scope: "project", dir: project });
+    expect(body.agents[0]).toMatchObject({
+      id: "codex",
+      scope: "project",
+      detected: true,
+      paths: {
+        rules: join(project, "AGENTS.md"),
+        mcp: join(project, ".codex", "config.toml"),
+        skillsDir: join(project, ".agents", "skills"),
+      },
+    });
+  });
+
+  it("runs doctor without exposing stack traces", async () => {
+    const res = await c.app.request("/api/doctor", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ scope: "global", agents: ["codex"] }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.checks.map((check: { id: string }) => check.id)).toContain("store-root");
+    expect(JSON.stringify(body)).not.toContain("Error:");
+  });
+
+  it("requires a dry-run preview before the UI can safely call revert", async () => {
+    await c.env.fs.writeFile(join(c.storeRoot, "store", "rules", "style.md"), "# style");
+    await c.app.request("/api/apply", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agents: ["claude-code"], scope: "global", capabilities: ["rules"] }),
+    });
+
+    const preview = await c.app.request("/api/revert", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agents: ["claude-code"], dryRun: true }),
+    });
+    expect(preview.status).toBe(200);
+    expect((await preview.json()).reverted).toHaveLength(1);
+    expect((await (await c.app.request("/api/status")).json()).items).toHaveLength(1);
+
+    const apply = await c.app.request("/api/revert", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agents: ["claude-code"], dryRun: false }),
+    });
+    expect(apply.status).toBe(200);
+    expect((await apply.json()).reverted).toHaveLength(1);
+    expect((await (await c.app.request("/api/status")).json()).items).toHaveLength(0);
   });
 });
 
@@ -227,6 +392,19 @@ describe("web app — input validation", () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toContain("project");
+  });
+
+  it("rejects project-scope inspect, doctor, and revert without a dir", async () => {
+    for (const path of ["/api/agents/inspect", "/api/doctor", "/api/revert"]) {
+      const res = await c.app.request(path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ scope: "project" }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain("project");
+    }
   });
 
   it("returns 400 (not 500) on a malformed JSON body", async () => {

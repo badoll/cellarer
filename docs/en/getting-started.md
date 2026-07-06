@@ -30,20 +30,26 @@ node packages/cli/dist/bin.js init
 By default this creates or reuses the store under `~/.cellarer`. Set
 `CELLARER_HOME` when you want an isolated store for testing.
 
-## Add Local Artifacts
+## Add Artifacts
 
 ```bash
 node packages/cli/dist/bin.js add ./my-rules.md
 node packages/cli/dist/bin.js add ./context7.json
 node packages/cli/dist/bin.js add ./my-skill/
+node packages/cli/dist/bin.js add vercel-labs/skills --list
+node packages/cli/dist/bin.js add vercel-labs/skills --skill nextjs
 ```
 
-Current source support is intentionally local:
+Current source support:
 
 - `.md` files are imported as rules.
 - `.json` files are imported as MCP server artifacts.
-- directories are imported as skills.
-- URL and `owner/repo` sources return a clear not-implemented message.
+- local skill directories and parent directories are imported as skills.
+- GitHub `owner/repo`, repository URLs, and `/tree/<ref>/<subpath>` URLs are
+  supported for skills.
+
+Remote skill imports write provenance under `store/metadata/skills/<name>.json`.
+GitLab and arbitrary git URLs are not supported in this milestone.
 
 ## List Stored Artifacts
 

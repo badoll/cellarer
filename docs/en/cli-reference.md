@@ -24,12 +24,15 @@ Options:
 
 ## `add <source>`
 
-Imports a local source into the store.
+Imports local rules/MCP files or local/GitHub skill sources into the store.
 
 ```bash
 node packages/cli/dist/bin.js add ./my-rules.md
 node packages/cli/dist/bin.js add ./server.json --force
 node packages/cli/dist/bin.js add ./my-skill/
+node packages/cli/dist/bin.js add vercel-labs/skills --list
+node packages/cli/dist/bin.js add vercel-labs/skills --skill nextjs --channel public
+node packages/cli/dist/bin.js add https://github.com/vercel-labs/skills/tree/main/skills/web-design-guidelines --json
 ```
 
 Options:
@@ -37,16 +40,28 @@ Options:
 | Option | Description |
 | --- | --- |
 | `--force` | Overwrite an existing artifact with the same name. |
+| `--list` | List skill candidates without writing to the store. |
+| `--skill <name>` | Import a named skill. May be repeated. |
+| `--all` | Import all eligible skills from a multi-skill source. |
+| `--channel <name>` | Tag imported artifacts with a channel. `internal` also includes internal skills. |
+| `--yes` | Skip confirmations. `add` is currently non-interactive. |
+| `--json` | Print a JSON candidate list or import report. |
 
-Supported local sources:
+Supported sources:
 
 | Source | Artifact kind |
 | --- | --- |
 | `.md` file | rules |
 | `.json` file | MCP server |
-| directory | skill |
+| local skill directory or parent directory | skills |
+| GitHub `owner/repo` | skills |
+| GitHub repository URL | skills |
+| GitHub `/tree/<ref>/<subpath>` URL | skills under that subpath |
 
-Git and URL sources are not implemented yet.
+Skill imports require `SKILL.md` frontmatter with `name` and `description`.
+Candidates with `metadata.internal: true` are hidden from normal `--list` and
+skipped by `--all` unless `--channel internal` is provided. GitLab and arbitrary
+git URLs are not part of the M2 import surface.
 
 ## `ls`
 

@@ -30,6 +30,12 @@ import {
 //   copy:新建副本(带来源后缀)。
 export type ConflictStrategy = "keep-theirs" | "keep-mine" | "copy";
 
+export interface ScanSelection {
+  kind: "rules" | "mcp" | "skills";
+  name: string;
+  source?: string;
+}
+
 export interface ScanOptions {
   storeRoot: string;
   agent: string;
@@ -42,6 +48,8 @@ export interface ScanOptions {
   capabilities?: ("rules" | "mcp" | "skills")[];
   // 仅导入这些制品名(按扫描发现的原始 name 匹配;缺省导入全部发现项)。非交互选择入口。
   select?: string[];
+  // Web/GUI 使用的精确选择:避免不同 kind/source 下同名制品被 name-only 选择一起导入。
+  selectItems?: ScanSelection[];
 }
 
 // 扫描发现的单个候选制品(尚未写库房)。
@@ -79,8 +87,20 @@ function wantCap(opts: ScanOptions, cap: "rules" | "mcp" | "skills"): boolean {
   return !opts.capabilities || opts.capabilities.includes(cap);
 }
 
-// --select 过滤:仅保留发现名在 select 内的候选(缺省全留)。在冲突裁决前按原始名过滤。
-function applySelect(candidates: ScanCandidate[], select: string[] | undefined): ScanCandidate[] {
+function selectionKey(item: ScanSelection): string {
+  return `${item.kind}\0${item.name}\0${item.source ?? ""}`;
+}
+
+// 过滤:selectItems 精确匹配行;旧 select 保持按 name 匹配,兼容 CLI 非交互入口。
+function applySelect(
+  candidates: ScanCandidate[],
+  select: string[] | undefined,
+  selectItems: ScanSelection[] | undefined,
+): ScanCandidate[] {
+  if (selectItems && selectItems.length > 0) {
+    const want = new Set(selectItems.map(selectionKey));
+    return candidates.filter((c) => want.has(selectionKey(c.item)));
+  }
   if (!select || select.length === 0) return candidates;
   const want = new Set(select);
   return candidates.filter((c) => want.has(c.item.name));
@@ -311,7 +331,7 @@ function guardPlaintext(resolved: ScanCandidate[], warnings: string[]): ScanCand
 // 扫描计划(只读):读目标 → 脱敏 → 冲突裁决 → 写前护栏 → 候选清单。不写库房。
 export async function scanPlan(env: Env, opts: ScanOptions): Promise<ScanPlan> {
   const { candidates, warnings } = await scanCandidates(env, opts);
-  const selected = applySelect(candidates, opts.select);
+  const selected = applySelect(candidates, opts.select, opts.selectItems);
   const existing = await existingNames(env, opts.storeRoot);
   const resolved = guardPlaintext(
     resolveConflicts(selected, existing, opts.conflict ?? "keep-theirs", opts.agent),
@@ -333,7 +353,7 @@ export interface ScanResult {
 // applyScan:执行扫描计划,把 action==="import" 的候选写库房(已脱敏 + 过写前护栏)。
 export async function applyScan(env: Env, opts: ScanOptions): Promise<ScanResult> {
   const { candidates, warnings } = await scanCandidates(env, opts);
-  const selected = applySelect(candidates, opts.select);
+  const selected = applySelect(candidates, opts.select, opts.selectItems);
   const existing = await existingNames(env, opts.storeRoot);
   const resolved = guardPlaintext(
     resolveConflicts(selected, existing, opts.conflict ?? "keep-theirs", opts.agent),

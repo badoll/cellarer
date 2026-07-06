@@ -24,12 +24,15 @@ node packages/cli/dist/bin.js init
 
 ## `add <source>`
 
-把本地来源导入库房。
+将本地 rules/MCP 文件或本地/GitHub skill 来源导入库房。
 
 ```bash
 node packages/cli/dist/bin.js add ./my-rules.md
 node packages/cli/dist/bin.js add ./server.json --force
 node packages/cli/dist/bin.js add ./my-skill/
+node packages/cli/dist/bin.js add vercel-labs/skills --list
+node packages/cli/dist/bin.js add vercel-labs/skills --skill nextjs --channel public
+node packages/cli/dist/bin.js add https://github.com/vercel-labs/skills/tree/main/skills/web-design-guidelines --json
 ```
 
 选项:
@@ -37,16 +40,28 @@ node packages/cli/dist/bin.js add ./my-skill/
 | 选项 | 说明 |
 | --- | --- |
 | `--force` | 覆盖同名制品。 |
+| `--list` | 只列出 skill candidates,不写库房。 |
+| `--skill <name>` | 导入指定 skill,可重复传入。 |
+| `--all` | 从 multi-skill source 导入所有 eligible skills。 |
+| `--channel <name>` | 给导入制品打 channel 标签。`internal` 也会包含 internal skills。 |
+| `--yes` | 跳过确认提示。当前 `add` 为非交互。 |
+| `--json` | 输出 JSON candidate list 或 import report。 |
 
-支持的本地来源:
+支持的来源:
 
 | 来源 | 制品类型 |
 | --- | --- |
 | `.md` 文件 | rules |
 | `.json` 文件 | MCP server |
-| 目录 | skill |
+| 本地 skill 目录或父目录 | skills |
+| GitHub `owner/repo` | skills |
+| GitHub repository URL | skills |
+| GitHub `/tree/<ref>/<subpath>` URL | 该 subpath 下的 skills |
 
-Git 与 URL 来源尚未实现。
+Skill 导入要求 `SKILL.md` frontmatter 包含 `name` 与 `description`。
+`metadata.internal: true` 的 candidates 默认不会出现在普通 `--list`,也会被
+`--all` 跳过;传入 `--channel internal` 才会包含它们。GitLab 与 arbitrary git
+URLs 不属于 M2 导入面。
 
 ## `ls`
 

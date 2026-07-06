@@ -1,28 +1,102 @@
-import { add, createRealEnv, resolveStoreRoot } from "@cellarer/core";
+import {
+  type AddResult,
+  add,
+  createRealEnv,
+  resolveStoreRoot,
+  type SkillCandidate,
+} from "@cellarer/core";
 import { Command } from "commander";
+import { createCliGitClient } from "../git-client.js";
 
-// 从源导入制品到库房(kickoff §13)。本迭代:本地路径导入;owner/repo 与 URL 给友好桩。
-// CLI 是薄壳(不变量 1):只解析参数 + 调 core add,展示结果。
+interface AddCliOpts {
+  force?: boolean;
+  list?: boolean;
+  skill?: string[];
+  all?: boolean;
+  channel?: string;
+  yes?: boolean;
+  json?: boolean;
+}
+
+function collect(value: string, previous: string[]): string[] {
+  previous.push(value);
+  return previous;
+}
+
+// 从源导入制品到库房。CLI 是薄壳:解析参数 + 注入 GitClient effect + 展示 core report。
 export function addCommand(): Command {
   return new Command("add")
-    .description("从源导入制品到库房(本地路径;owner/repo 与 URL 暂未实现)")
-    .argument("<source>", "源:本地路径(.md→rules / .json→mcp / 目录→skills)")
+    .description("从本地路径或 GitHub source 导入制品到库房")
+    .argument("<source>", "源:本地 .md/.json/skill 目录、GitHub owner/repo 或 GitHub URL")
     .option("--force", "同名制品已存在时覆盖(默认跳过)")
-    .action(async (source: string, opts: { force?: boolean }) => {
+    .option("--list", "只列出可导入的 skill candidates,不写库房")
+    .option("--skill <name>", "导入指定 skill;可重复传入", collect, [])
+    .option("--all", "导入所有 eligible skills")
+    .option("--channel <name>", "给导入制品打 channel 标签;internal 会包含 internal skills")
+    .option("--yes", "跳过确认提示(当前 add 为非交互,保留命令面兼容)")
+    .option("--json", "输出 JSON report")
+    .action(async (source: string, opts: AddCliOpts) => {
       const env = createRealEnv();
       const storeRoot = resolveStoreRoot(env);
+      const json = opts.json || process.env.CELLARER_JSON === "1";
       try {
-        const r = await add(env, { storeRoot, source, force: opts.force });
-        for (const i of r.imported) console.log(`✓ 已导入 ${i.kind}/${i.name} → ${i.path}`);
-        for (const s of r.skipped) console.log(`- 跳过 ${s.kind}/${s.name}(${s.reason})`);
-        for (const j of r.rejected) console.error(`✗ 拒绝 ${j.kind}/${j.name}(${j.reason})`);
-        if (r.rejected.length > 0) process.exitCode = 1;
-        if (r.imported.length === 0 && r.skipped.length === 0 && r.rejected.length === 0) {
-          console.log("未导入任何制品。");
+        const r = await add(env, {
+          storeRoot,
+          source,
+          force: opts.force,
+          list: opts.list,
+          skills: opts.skill,
+          all: opts.all,
+          channel: opts.channel,
+          yes: opts.yes,
+          gitClient: createCliGitClient(),
+        });
+        if (json) {
+          console.log(JSON.stringify(r, null, 2));
+          if (r.rejected.length > 0) process.exitCode = 1;
+          return;
         }
+        printResult(r, opts);
       } catch (err) {
-        console.error(err instanceof Error ? err.message : String(err));
+        if (json) {
+          console.log(
+            JSON.stringify({ error: err instanceof Error ? err.message : String(err) }, null, 2),
+          );
+        } else {
+          console.error(err instanceof Error ? err.message : String(err));
+        }
         process.exitCode = 1;
       }
     });
+}
+
+function printResult(r: AddResult, opts: AddCliOpts): void {
+  if (opts.list) {
+    printCandidates(r.candidates);
+    return;
+  }
+  for (const i of r.imported) console.log(`✓ 已导入 ${i.kind}/${i.name} → ${i.path}`);
+  for (const s of r.skipped) console.log(`- 跳过 ${s.kind}/${s.name}(${s.reason})`);
+  for (const j of r.rejected) console.error(`✗ 拒绝 ${j.kind}/${j.name}(${j.reason})`);
+  for (const w of r.warnings) console.warn(`⚠ ${w}`);
+  if (r.rejected.length > 0) process.exitCode = 1;
+  if (r.imported.length === 0 && r.skipped.length === 0 && r.rejected.length === 0) {
+    console.log("未导入任何制品。");
+  }
+}
+
+function printCandidates(candidates: SkillCandidate[]): void {
+  if (candidates.length === 0) {
+    console.log("未发现可导入的 skills。");
+    return;
+  }
+  console.log("可导入 skills:");
+  for (const c of candidates) {
+    const flags = [c.internal ? "internal" : "", c.rejected ? "rejected" : ""]
+      .filter(Boolean)
+      .join(", ");
+    const tag = flags ? ` [${flags}]` : "";
+    const reason = c.rejectionReason ? ` — ${c.rejectionReason}` : "";
+    console.log(`  ${c.name}${tag} — ${c.description || "(no description)"}${reason}`);
+  }
 }

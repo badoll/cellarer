@@ -21,11 +21,12 @@ export interface InitResult {
   createdConfig: boolean; // 是否新建了 config.json(已存在则不覆盖)
 }
 
-// 初始化库房骨架:建 store/{rules,mcp,skills};config.json 不存在才写(幂等)。
+// 初始化库房骨架:建 store/{rules,mcp,skills} 与 metadata;config.json 不存在才写(幂等)。
 export async function initStore(env: Env, storeRoot: string): Promise<InitResult> {
   await env.fs.mkdir(join(storeRoot, "store", "rules"), { recursive: true });
   await env.fs.mkdir(join(storeRoot, "store", "mcp"), { recursive: true });
   await env.fs.mkdir(join(storeRoot, "store", "skills"), { recursive: true });
+  await env.fs.mkdir(skillMetadataDir(storeRoot), { recursive: true });
 
   const jsonPath = join(storeRoot, CONFIG_FILENAME);
   const existing = await readFileOrNull(env, jsonPath);
@@ -45,6 +46,9 @@ function mcpDir(storeRoot: string): string {
 }
 function skillsDir(storeRoot: string): string {
   return join(storeRoot, "store", "skills");
+}
+function skillMetadataDir(storeRoot: string): string {
+  return join(storeRoot, "store", "metadata", "skills");
 }
 
 // 列出 rules 制品(store/rules/*.md);按名字母序;非 .md 跳过。
@@ -142,6 +146,15 @@ function assertSafeName(name: string): void {
   }
 }
 
+export function isSafeArtifactName(name: string): boolean {
+  try {
+    assertSafeName(name);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // 写入 rule 制品(store/rules/<name>.md)。原子写。
 export async function writeRuleArtifact(
   env: Env,
@@ -179,5 +192,22 @@ export async function importSkillArtifact(
   assertSafeName(name);
   const abs = join(skillsDir(storeRoot), name);
   await linkOrCopy(env, srcDir, abs, { method: "copy", kind: "dir" });
+  return abs;
+}
+
+export function skillProvenancePath(storeRoot: string, name: string): string {
+  assertSafeName(name);
+  return join(skillMetadataDir(storeRoot), `${name}.json`);
+}
+
+export async function writeSkillProvenance(
+  env: Env,
+  storeRoot: string,
+  name: string,
+  provenance: unknown,
+): Promise<string> {
+  const abs = skillProvenancePath(storeRoot, name);
+  await env.fs.mkdir(skillMetadataDir(storeRoot), { recursive: true });
+  await atomicWrite(env, abs, `${JSON.stringify(provenance, null, 2)}\n`);
   return abs;
 }

@@ -64,14 +64,6 @@ Public documentation:
 - `docs/zh-CN/**`
 - `examples/adapters/*.example.toml`
 
-Local development notes:
-
-- `docs/dev/**`
-
-Use `docs/dev/**` for drafts, implementation journals, review material,
-migration backups, and other local process records. It is ignored by Git and
-must not be linked from public documentation.
-
 When migrating or rewriting docs, first classify the content:
 
 - user guide
@@ -92,4 +84,4 @@ as product, architecture, security, or maintainer documentation instead.
   metadata before documenting commands, package names, release state, or flags.
 - If a command is future-facing or release-dependent, label it as such instead
   of presenting it as currently available.
-- Public docs should not link to `docs/dev/**` or to deleted legacy paths.
+- Public docs should not link to deleted legacy paths.
