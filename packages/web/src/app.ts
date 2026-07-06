@@ -5,15 +5,21 @@
 //     plan 的 preview 在 env 模式下只含 ${ENV} 占位,secret-scan 护栏命中还会清空 preview。
 //   - core-first(不变量 1):路由只解析参数 + 调 core,不写业务逻辑。
 import {
+  type ActivityAction,
   apply,
   applyScan,
   type Capability,
   type ConflictStrategy,
+  collectLedgerSecretRefStats,
   collectLedgerSecretRefs,
   createRealEnv,
+  type DiffIdentity,
+  dashboardSummary,
+  diffTarget,
   doctor,
   type Env,
   inspectAgents,
+  listActivity,
   listMcpArtifacts,
   listRuleArtifacts,
   listSkillArtifacts,
@@ -75,6 +81,12 @@ interface RevertBody {
   dryRun?: boolean;
 }
 
+interface DiffBody {
+  identity: DiffIdentity;
+  dir?: string;
+  channels?: string[];
+}
+
 // project scope 必须带 dir,否则 core 会以 server cwd 为工程根,把文件写进进程启动目录(且无 .gitignore 守护)。
 // plan/apply/scan 三个 project 路由共用此守卫(拦在路由层)。
 function requireDirForProject(scope: Scope | undefined, dir: string | undefined): void {
@@ -121,6 +133,79 @@ function scanOpts(deps: AppDeps, b: ScanBody) {
     select: b.select,
     selectItems: b.selectItems,
     intoChannel: b.intoChannel,
+  };
+}
+
+function parseScope(raw: string | undefined): Scope | undefined {
+  if (raw === undefined || raw === "") return undefined;
+  if (raw === "global" || raw === "project") return raw;
+  throw new HTTPException(400, { message: `invalid scope "${raw}"` });
+}
+
+function parseCapabilities(raw: string | undefined): Capability[] | undefined {
+  const values = parseCsv(raw);
+  if (!values) return undefined;
+  for (const value of values) {
+    if (value !== "rules" && value !== "mcp" && value !== "skills") {
+      throw new HTTPException(400, { message: `invalid capability "${value}"` });
+    }
+  }
+  return values as Capability[];
+}
+
+function parseActivityActions(raw: string | undefined): ActivityAction[] | undefined {
+  const values = parseCsv(raw);
+  if (!values) return undefined;
+  for (const value of values) {
+    if (value !== "apply" && value !== "scan-import" && value !== "revert") {
+      throw new HTTPException(400, { message: `invalid activity action "${value}"` });
+    }
+  }
+  return values as ActivityAction[];
+}
+
+function parseCsv(raw: string | undefined): string[] | undefined {
+  if (!raw) return undefined;
+  const values = raw
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return values.length > 0 ? values : undefined;
+}
+
+function parseLimit(raw: string | undefined): number | undefined {
+  if (!raw) return undefined;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new HTTPException(400, { message: `invalid limit "${raw}"` });
+  }
+  return value;
+}
+
+function summaryOpts(deps: AppDeps, query: (name: string) => string | undefined) {
+  const scope = parseScope(query("scope"));
+  const dir = query("dir");
+  requireDirForProject(scope, dir);
+  return {
+    storeRoot: deps.storeRoot,
+    scope,
+    dir,
+    agents: parseCsv(query("agents")),
+    channels: parseCsv(query("channels")),
+    capabilities: parseCapabilities(query("capabilities")),
+    activityLimit: parseLimit(query("limit")),
+  };
+}
+
+function activityFilter(query: (name: string) => string | undefined) {
+  const scope = parseScope(query("scope"));
+  const dir = query("dir");
+  requireDirForProject(scope, dir);
+  return {
+    limit: parseLimit(query("limit")),
+    actions: parseActivityActions(query("actions")),
+    scope,
+    agents: parseCsv(query("agents")),
   };
 }
 
@@ -184,6 +269,16 @@ export function createApp(deps: AppDeps) {
         warnings: reg.warnings,
       });
     })
+    // Dashboard first-screen state. Core owns counts, coverage, readiness, and activity semantics.
+    .get("/api/summary", async (c) => {
+      return c.json(await dashboardSummary(deps.env, summaryOpts(deps, c.req.query.bind(c.req))));
+    })
+    // Append-only local operation history. Mutating core operations write events.
+    .get("/api/activity", async (c) => {
+      return c.json(
+        await listActivity(deps.env, deps.storeRoot, activityFilter(c.req.query.bind(c.req))),
+      );
+    })
     // scope-aware agent diagnostics(比 /api/agents 丰富,供 dashboard/diagnostics 使用)。
     .post("/api/agents/inspect", async (c) => {
       const body = await c.req.json<InspectBody>();
@@ -231,6 +326,19 @@ export function createApp(deps: AppDeps) {
         }),
       );
     })
+    // Drift diff. Only returns file content when core can reconstruct expected output safely.
+    .post("/api/diff", async (c) => {
+      const body = await c.req.json<DiffBody>();
+      requireDirForProject(body.identity.scope, body.dir);
+      return c.json(
+        await diffTarget(deps.env, {
+          storeRoot: deps.storeRoot,
+          identity: body.identity,
+          dir: body.dir,
+          channels: body.channels,
+        }),
+      );
+    })
     // 漂移检测。
     .get("/api/status", async (c) => {
       const items = await status(deps.env, { storeRoot: deps.storeRoot });
@@ -239,7 +347,8 @@ export function createApp(deps: AppDeps) {
     // 密钥引用名(只列名,绝不回显真值)——聚合口径走 core helper(不变量 1)。
     .get("/api/secrets", async (c) => {
       const led = await loadLedger(deps.env, deps.storeRoot);
-      return c.json({ names: collectLedgerSecretRefs(led) });
+      const refs = collectLedgerSecretRefStats(led);
+      return c.json({ names: collectLedgerSecretRefs(led), refs });
     });
 
   return api;

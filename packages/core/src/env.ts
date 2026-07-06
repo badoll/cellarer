@@ -17,6 +17,7 @@ export interface FileStat {
 export interface FsLike {
   readFile(path: string): Promise<string>;
   writeFile(path: string, data: string): Promise<void>;
+  appendFile(path: string, data: string): Promise<void>;
   access(path: string, mode: "read" | "write"): Promise<void>;
   mkdir(path: string, opts?: { recursive?: boolean }): Promise<void>;
   rm(path: string, opts?: { recursive?: boolean; force?: boolean }): Promise<void>;

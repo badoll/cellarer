@@ -2,11 +2,12 @@
 // 对每条目:有 .bak → 恢复(--keep-backups 则保留 .bak 副本);
 // 生成文件(write/copy)→ 删除;软链 → 只删链不删真源;最后按剩余台账重建 project .gitignore。
 import { dirname } from "node:path";
+import { appendActivity } from "../activity.js";
 import type { Env } from "../env.js";
 import { readFileOrNull } from "../fs/probe.js";
 import { isPathInside } from "../fs/safety.js";
 import type { Ledger, LedgerEntry } from "../model/index.js";
-import { loadLedger, makeLedger, matchesFilter, saveLedger } from "../store/ledger.js";
+import { entryKey, loadLedger, makeLedger, matchesFilter, saveLedger } from "../store/ledger.js";
 import { syncGitignore } from "./gitignore-sync.js";
 import type { RevertOptions, RevertResult } from "./types.js";
 
@@ -46,6 +47,26 @@ export async function revert(env: Env, opts: RevertOptions): Promise<RevertResul
 
   // 受影响 project 目录的 .gitignore 按剩余台账重建(可能仍有其它 agent 的条目)。
   await resyncAffectedGitignores(env, reverted, remaining, opts.dir);
+
+  try {
+    await appendActivity(env, opts.storeRoot, {
+      action: "revert",
+      scope: opts.scope,
+      projectDir: opts.dir,
+      agents: opts.agents ?? [...new Set(reverted.map((entry) => entry.agent))],
+      capabilities: [...new Set(reverted.map((entry) => entry.capability))],
+      affectedCount: reverted.length,
+      warningsCount: warnings.length,
+      summary: `Reverted ${reverted.length} ${reverted.length === 1 ? "target" : "targets"}`,
+      references: {
+        ledgerEntryKeys: reverted.map(entryKey),
+        artifactIds: reverted.map((entry) => entry.artifact),
+      },
+      secretRefs: reverted.flatMap((entry) => entry.secretRefs ?? []),
+    });
+  } catch (err) {
+    warnings.push(`activity log failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   return { reverted, warnings };
 }

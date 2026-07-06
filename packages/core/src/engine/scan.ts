@@ -6,6 +6,8 @@
 //   - 不吸收自身下发物:靠台账 target + 产物指纹(rules 首行 marker / mcp server 名匹配库房制品)双保险,
 //     避免把 cellarer 自己写的内容当用户新增重复收编。
 //   - plan/apply 分离:scanPlan 只读 + 产出计划;applyScan 才写库房。
+
+import { appendActivity } from "../activity.js";
 import { loadRegistry } from "../adapters/registry.js";
 import type { Env } from "../env.js";
 import { lstatOrNull, readdirOrEmpty, readFileOrNull } from "../fs/probe.js";
@@ -377,6 +379,25 @@ export async function applyScan(env: Env, opts: ScanOptions): Promise<ScanResult
   if (opts.intoChannel && imported.length > 0) {
     const ids = imported.map((i) => `${i.kind}/${i.name}`);
     await tagArtifactChannels(env, opts.storeRoot, ids, opts.intoChannel);
+  }
+
+  try {
+    await appendActivity(env, opts.storeRoot, {
+      action: "scan-import",
+      scope: opts.scope,
+      projectDir: opts.dir,
+      agents: [opts.agent],
+      capabilities: [...new Set(imported.map((item) => item.kind))],
+      affectedCount: imported.length,
+      warningsCount: warnings.length,
+      summary: `Imported ${imported.length} scanned ${imported.length === 1 ? "item" : "items"}`,
+      references: {
+        artifactIds: imported.map((item) => `${item.kind}/${item.name}`),
+      },
+      secretRefs: imported.flatMap((item) => item.secretRefs ?? []),
+    });
+  } catch (err) {
+    warnings.push(`activity log failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   return {

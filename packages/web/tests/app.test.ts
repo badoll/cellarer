@@ -92,6 +92,135 @@ describe("web app — artifacts/agents", () => {
   });
 });
 
+describe("web app — dashboard M3 routes", () => {
+  let c: Ctx;
+  const REAL = "ghp_0123456789abcdefghijklmnopqrstuvwx";
+
+  beforeEach(async () => {
+    c = makeCtx({ M3_SECRET: REAL });
+    await seedStore(c);
+  });
+  afterEach(() => c.cleanup());
+
+  it("serves summary and activity from core-owned contracts", async () => {
+    await c.env.fs.mkdir(join(c.root, "home", ".codex"), { recursive: true });
+    await c.env.fs.writeFile(join(c.storeRoot, "store", "rules", "style.md"), "# style");
+
+    const summary = await c.app.request("/api/summary?agents=codex&capabilities=rules&limit=3");
+    expect(summary.status).toBe(200);
+    const body = await summary.json();
+    expect(body.artifactCounts).toMatchObject({ rules: 1, total: 1 });
+    expect(body.agentCounts.detected).toBe(1);
+    expect(body.distributionCoverage[0]).toMatchObject({
+      channel: "common",
+      scope: "global",
+      desiredCount: 1,
+      percentage: 0,
+    });
+
+    const activity = await c.app.request("/api/activity");
+    expect(activity.status).toBe(200);
+    expect(await activity.json()).toMatchObject({ events: [], warnings: [] });
+  });
+
+  it("records mutating operations as activity but not previews or dry-runs", async () => {
+    await c.env.fs.mkdir(join(c.root, "home", ".claude"), { recursive: true });
+    await c.env.fs.writeFile(join(c.root, "home", ".claude", "CLAUDE.md"), "# Team rules");
+
+    await c.app.request("/api/scan", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent: "claude-code", scope: "global", capabilities: ["rules"] }),
+    });
+    expect((await (await c.app.request("/api/activity")).json()).events).toHaveLength(0);
+
+    await c.app.request("/api/scan/apply", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent: "claude-code", scope: "global", capabilities: ["rules"] }),
+    });
+    await c.app.request("/api/apply", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agents: ["claude-code"], scope: "global", capabilities: ["rules"] }),
+    });
+    await c.app.request("/api/revert", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agents: ["claude-code"], dryRun: true }),
+    });
+    await c.app.request("/api/revert", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agents: ["claude-code"], dryRun: false }),
+    });
+
+    const activity = await (await c.app.request("/api/activity")).json();
+    expect(activity.events.map((event: { action: string }) => event.action)).toEqual([
+      "revert",
+      "apply",
+      "scan-import",
+    ]);
+  });
+
+  it("serves available and unavailable drift diffs without plaintext secrets", async () => {
+    await c.env.fs.writeFile(join(c.storeRoot, "store", "rules", "style.md"), "# style");
+    await c.app.request("/api/apply", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agents: ["claude-code"], scope: "global", capabilities: ["rules"] }),
+    });
+    const [item] = (await (await c.app.request("/api/status")).json()).items;
+    await c.env.fs.writeFile(item.target, `token=${REAL}`);
+
+    const diff = await c.app.request("/api/diff", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ identity: item }),
+    });
+    const text = await diff.text();
+    expect(diff.status).toBe(200);
+    expect(text).not.toContain(REAL);
+    expect(JSON.parse(text)).toMatchObject({
+      available: true,
+      before: "[redacted secret content]",
+    });
+
+    await c.env.fs.rm(item.target, { force: true });
+    const missing = await c.app.request("/api/diff", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ identity: item }),
+    });
+    expect(await missing.json()).toMatchObject({
+      available: false,
+      warning: "target is missing",
+    });
+  });
+
+  it("rejects project-scope summary, activity, and diff without a dir", async () => {
+    const summary = await c.app.request("/api/summary?scope=project");
+    const activity = await c.app.request("/api/activity?scope=project");
+    const diff = await c.app.request("/api/diff", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        identity: {
+          artifact: "rules/*",
+          agent: "codex",
+          scope: "project",
+          capability: "rules",
+          target: join(c.root, "project", "AGENTS.md"),
+        },
+      }),
+    });
+
+    expect(summary.status).toBe(400);
+    expect(activity.status).toBe(400);
+    expect(diff.status).toBe(400);
+  });
+});
+
 describe("web app — secret safety (red line)", () => {
   let c: Ctx;
   const REAL = "ghp_0123456789abcdefghijklmnopqrstuvwx";
@@ -133,6 +262,7 @@ describe("web app — secret safety (red line)", () => {
     const res = await c.app.request("/api/secrets");
     const body = await res.json();
     expect(body.names).toContain("C7_KEY");
+    expect(body.refs).toContainEqual({ name: "C7_KEY", ledgerEntryCount: 1 });
     expect(JSON.stringify(body)).not.toContain(REAL);
   });
 });
@@ -320,9 +450,11 @@ describe("web app — access token", () => {
   it("rejects /api without the configured bearer token", async () => {
     const { app, cleanup } = makeTokenApp("s3cret");
     try {
-      const unauth = await app.request("/api/agents");
+      const unauth = await app.request("/api/summary");
       expect(unauth.status).toBe(401);
-      const ok = await app.request("/api/agents", { headers: { Authorization: "Bearer s3cret" } });
+      const ok = await app.request("/api/summary", {
+        headers: { Authorization: "Bearer s3cret" },
+      });
       expect(ok.status).toBe(200);
     } finally {
       await cleanup();

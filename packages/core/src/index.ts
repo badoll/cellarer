@@ -1,5 +1,16 @@
 // @cellarer/core 对外 API barrel。
 
+// engine
+export {
+  type ActivityAction,
+  type ActivityActor,
+  type ActivityEvent,
+  type ActivityFilter,
+  activityPath,
+  appendActivity,
+  listActivity,
+  summarizeActivity,
+} from "./activity.js";
 // adapters
 export type { Registry } from "./adapters/registry.js";
 export { loadRegistry } from "./adapters/registry.js";
@@ -12,7 +23,20 @@ export type {
   RulesCodec,
   SkillsCodec,
 } from "./adapters/types.js";
-// engine
+export {
+  type AgentReadinessState,
+  type DashboardAgentCounts,
+  type DashboardAgentReadiness,
+  type DashboardArtifactCounts,
+  type DashboardCapabilityReadiness,
+  type DashboardCoverageGroup,
+  type DashboardDriftCounts,
+  type DashboardSecretRefStat,
+  type DashboardSummaryOptions,
+  type DashboardSummaryResult,
+  dashboardSummary,
+  statusIdentityKey,
+} from "./dashboard.js";
 export {
   type AgentDoctorReport,
   type AgentInspection,
@@ -24,6 +48,12 @@ export {
   type InspectAgentsOptions,
   inspectAgents,
 } from "./diagnostics.js";
+export {
+  type DiffIdentity,
+  type DiffTargetOptions,
+  type DiffTargetResult,
+  diffTarget,
+} from "./diff.js";
 export {
   type AddOptions,
   type AddResult,
@@ -130,8 +160,11 @@ export {
 } from "./store/config.js";
 export {
   addEntries,
+  collectLedgerSecretRefStats,
   collectLedgerSecretRefs,
   emptyLedger,
+  entryKey,
+  type LedgerSecretRefStat,
   loadLedger,
   saveLedger,
 } from "./store/ledger.js";

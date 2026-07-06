@@ -9,6 +9,7 @@ function toFsLike(): FsLike {
   return {
     readFile: (path) => nodeFs.readFile(path, "utf8"),
     writeFile: (path, data) => nodeFs.writeFile(path, data, "utf8"),
+    appendFile: (path, data) => nodeFs.appendFile(path, data, "utf8"),
     access: (path, mode) =>
       nodeFs.access(path, mode === "read" ? fsConstants.R_OK : fsConstants.W_OK),
     mkdir: async (path, opts) => {

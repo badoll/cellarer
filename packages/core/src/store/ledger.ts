@@ -74,6 +74,23 @@ export function collectLedgerSecretRefs(ledger: Ledger): string[] {
   return [...names].sort();
 }
 
+export interface LedgerSecretRefStat {
+  name: string;
+  ledgerEntryCount: number;
+}
+
+export function collectLedgerSecretRefStats(ledger: Ledger): LedgerSecretRefStat[] {
+  const counts = new Map<string, number>();
+  for (const entry of ledger.entries) {
+    for (const ref of new Set(entry.secretRefs ?? [])) {
+      counts.set(ref, (counts.get(ref) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, ledgerEntryCount]) => ({ name, ledgerEntryCount }));
+}
+
 export async function loadLedger(env: Env, storeRoot: string): Promise<Ledger> {
   const path = join(storeRoot, "state.json");
   const text = await readFileOrNull(env, path);

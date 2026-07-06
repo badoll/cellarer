@@ -1,7 +1,11 @@
 import type {
+  ActivityEvent,
   AgentInspection,
   Capability,
   ConflictStrategy,
+  DashboardAgentReadiness,
+  DashboardCoverageGroup,
+  DashboardSummaryResult,
   DiagnosticCheck,
   DoctorReport,
   LedgerEntry,
@@ -16,7 +20,6 @@ import {
   type AgentInfo,
   type ArtifactRow,
   type ArtifactsResponse as Artifacts,
-  buildDashboardSummary,
   buildDistributionMatrix,
   DASHBOARD_CAPABILITIES,
   type DriftStatus,
@@ -117,6 +120,14 @@ interface ApiState<T> {
   loading: boolean;
 }
 
+interface SessionScanPreview {
+  plan: ScanPlanResponse;
+  capturedAt: string;
+  requestKey: string;
+}
+
+type DashboardDriftItem = DashboardSummaryResult["driftItems"][number];
+
 // scope 选择控件:global/project 单选 + project 时的 dir 输入框(必填)。
 // 下发页与扫描页共用,避免两处各写一份(与后端 app.ts「project 必须带 dir 否则 400」对齐)。
 function ScopePicker(props: {
@@ -163,6 +174,7 @@ function ScopePicker(props: {
 
 export function App() {
   const [page, setPage] = useState<Page>("dashboard");
+  const [scanPreview, setScanPreview] = useState<SessionScanPreview | null>(null);
   return (
     <div className="app">
       <aside className="sidebar">
@@ -199,10 +211,10 @@ export function App() {
       <main className="main">
         <AppHeader page={page} onNavigate={setPage} />
         <div className="content">
-          {page === "dashboard" && <Dashboard onNavigate={setPage} />}
+          {page === "dashboard" && <Dashboard onNavigate={setPage} scanPreview={scanPreview} />}
           {page === "artifacts" && <ArtifactsPage />}
           {page === "distribute" && <DistributePage />}
-          {page === "scan" && <ScanPage />}
+          {page === "scan" && <ScanPage onSessionPreview={setScanPreview} />}
           {page === "diagnostics" && <DiagnosticsPage />}
           {page === "revert" && <RevertPage />}
           {page === "secrets" && <SecretsPage />}
@@ -276,60 +288,34 @@ function useApi<T>(fetcher: () => Promise<Response>, deps: unknown[] = []): ApiS
   return state;
 }
 
-function Dashboard(props: { onNavigate: (page: Page) => void }) {
-  const artifactsState = useApi<Artifacts>(() => client.api.artifacts.$get());
-  const agentsState = useApi<{ agents: AgentInfo[] }>(() => client.api.agents.$get());
-  const statusState = useApi<{ items: StatusItem[] }>(() => client.api.status.$get());
-  const secretsState = useApi<{ names: string[] }>(() => client.api.secrets.$get());
-  const arts = artifactsState.data;
-  const agents = agentsState.data;
-  const st = statusState.data;
-  const secrets = secretsState.data;
-  const errors = [
-    artifactsState.error,
-    agentsState.error,
-    statusState.error,
-    secretsState.error,
-  ].filter((error): error is string => error !== null);
-
-  const driftItems = st?.items.filter((i) => i.status !== "ok") ?? [];
-  const summary =
-    arts && agents && st && secrets
-      ? buildDashboardSummary({
-          artifacts: arts,
-          agents: agents.agents,
-          statusItems: st.items,
-          secretNames: secrets.names,
-        })
-      : null;
-  const matrix =
-    agents && st
-      ? buildDistributionMatrix({
-          agents: agents.agents,
-          statusItems: st.items,
-        })
-      : null;
+function Dashboard(props: {
+  onNavigate: (page: Page) => void;
+  scanPreview: SessionScanPreview | null;
+}) {
+  const summaryState = useApi<DashboardSummaryResult>(() => client.api.summary.$get());
+  const summary = summaryState.data;
+  const driftItems = summary?.driftItems ?? [];
 
   return (
     <div className="page-stack">
-      {errors.length > 0 && <ApiErrorPanel errors={errors} />}
+      {summaryState.error && <ApiErrorPanel errors={[summaryState.error]} />}
       <section className="stat-grid" aria-label="Dashboard summary">
         <StatCard
           label="Detected Agents"
-          value={summary?.detectedAgentCount ?? "..."}
+          value={summary?.agentCounts.detected ?? "..."}
           detail={
             summary
-              ? `${summary.detectedAgentCount} detected · ${summary.registeredAgentCount} registered`
+              ? `${summary.agentCounts.ready} ready · ${summary.agentCounts.registered} registered`
               : "Detecting global agent roots"
           }
           tone="green"
         />
         <StatCard
           label="Artifacts"
-          value={summary?.artifactTotal ?? "..."}
+          value={summary?.artifactCounts.total ?? "..."}
           detail={
             summary
-              ? summary.artifactTotal === 0
+              ? summary.artifactCounts.total === 0
                 ? "No store artifacts yet"
                 : `Rules ${summary.artifactCounts.rules} · MCP ${summary.artifactCounts.mcp} · Skills ${summary.artifactCounts.skills}`
               : "Loading store inventory"
@@ -338,23 +324,19 @@ function Dashboard(props: { onNavigate: (page: Page) => void }) {
         />
         <StatCard
           label="Drift Alerts"
-          value={summary?.driftItemCount ?? "..."}
+          value={driftItems.length}
           detail={
             summary
-              ? summary.ledgerEntryCount === 0
-                ? "No apply ledger yet"
-                : `${summary.ledgerEntryCount} tracked ledger ${
-                    summary.ledgerEntryCount === 1 ? "entry" : "entries"
-                  }`
+              ? `${summary.driftCounts.ok} ok · ${summary.driftCounts.drifted} drifted · ${summary.driftCounts.missing} missing`
               : "Loading ledger status"
           }
           tone={driftItems.length > 0 ? "red" : "green"}
         />
         <StatCard
           label="Secret References"
-          value={summary?.secretRefCount ?? "..."}
+          value={summary?.secretRefs.length ?? "..."}
           detail={
-            summary?.secretRefCount === 0 ? "No ledger secret refs yet" : "Reference names only"
+            summary?.secretRefs.length === 0 ? "No ledger secret refs yet" : "Reference names only"
           }
           tone="amber"
         />
@@ -375,50 +357,17 @@ function Dashboard(props: { onNavigate: (page: Page) => void }) {
             </button>
           }
         >
-          {!agents ? (
+          {!summary ? (
             <p className="empty-state">Loading registered adapters...</p>
-          ) : agents.agents.length === 0 ? (
+          ) : summary.agents.length === 0 ? (
             <p className="empty-state">No adapters registered.</p>
           ) : (
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Agent</th>
-                    <th>Status</th>
-                    <th>Root</th>
-                    <th>Rules</th>
-                    <th>MCP</th>
-                    <th>Skills</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {agents.agents.map((agent) => (
-                    <tr key={agent.id}>
-                      <td>
-                        <strong>{agent.displayName}</strong>
-                        <span className="muted-row">{agent.id}</span>
-                      </td>
-                      <td>
-                        <AgentDetectBadge detected={agent.detected} />
-                      </td>
-                      <td className="path-cell mono">{agent.root}</td>
-                      {CAPABILITIES.map((capability) => (
-                        <td key={capability}>
-                          <CapabilityScopes scopes={agent.capabilities[capability] ?? []} />
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <AgentReadinessList agents={summary.agents} />
           )}
         </Panel>
 
         <Panel
-          title="Distribution Matrix"
-          className="panel-wide"
+          title="Distribution Overview"
           action={
             <button
               type="button"
@@ -429,48 +378,25 @@ function Dashboard(props: { onNavigate: (page: Page) => void }) {
             </button>
           }
         >
-          <DistributionMatrixView matrix={matrix} />
+          <DistributionOverview groups={summary?.distributionCoverage ?? null} />
         </Panel>
 
         <Panel
-          title="Store Inventory"
+          title="Recent Scan Preview"
           action={
-            <button
-              type="button"
-              className="link-button"
-              onClick={() => props.onNavigate("artifacts")}
-            >
-              View artifacts
+            <button type="button" className="link-button" onClick={() => props.onNavigate("scan")}>
+              Preview scan
             </button>
           }
         >
-          {!arts ? (
-            <p className="empty-state">Loading artifacts...</p>
-          ) : (
-            <div className="inventory-list">
-              <InventoryRow label="Rules" count={arts.rules.length} />
-              <InventoryRow label="MCP" count={arts.mcp.length} />
-              <InventoryRow label="Skills" count={arts.skills.length} />
-              <div className="channel-row">
-                <span>Channels</span>
-                <div>
-                  {arts.channels.length === 0 ? (
-                    <span className="muted">none</span>
-                  ) : (
-                    arts.channels.map((channel) => (
-                      <span className="tag blue" key={channel}>
-                        {channel}
-                      </span>
-                    ))
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
+          <RecentScanPreview
+            preview={props.scanPreview}
+            latestImport={summary?.latestScanSummary}
+          />
         </Panel>
 
         <Panel
-          title="Ledger Status"
+          title="Drift Alerts"
           action={
             <button
               type="button"
@@ -481,41 +407,32 @@ function Dashboard(props: { onNavigate: (page: Page) => void }) {
             </button>
           }
         >
-          {!st ? (
-            <p className="empty-state">Loading ledger status...</p>
-          ) : st.items.length === 0 ? (
-            <p className="empty-state">No ledger entries yet.</p>
+          {!summary ? (
+            <p className="empty-state">Loading drift status...</p>
           ) : driftItems.length === 0 ? (
-            <p className="ok-state">All tracked ledger entries are ok.</p>
+            <p className={summary.driftCounts.ok > 0 ? "ok-state" : "empty-state"}>
+              {summary.driftCounts.ok > 0
+                ? "All tracked ledger entries are ok."
+                : "No ledger entries yet."}
+            </p>
           ) : (
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Agent</th>
-                    <th>Artifact</th>
-                    <th>Scope</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {driftItems.map((item) => (
-                    <tr key={`${item.agent}-${item.capability}-${item.target}`}>
-                      <td>{item.agent}</td>
-                      <td>
-                        <span className="mono">{item.artifact}</span>
-                        <span className="muted-row">{item.capability}</span>
-                      </td>
-                      <td>{item.scope}</td>
-                      <td>
-                        <StatusBadge status={item.status} />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <DriftAlerts items={driftItems} />
           )}
+        </Panel>
+
+        <Panel
+          title="Ledger Activity"
+          action={
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => props.onNavigate("revert")}
+            >
+              Open ledger
+            </button>
+          }
+        >
+          <LedgerActivity events={summary?.latestActivity ?? null} />
         </Panel>
 
         <Panel
@@ -530,26 +447,327 @@ function Dashboard(props: { onNavigate: (page: Page) => void }) {
             </button>
           }
         >
-          {!secrets ? (
-            <p className="empty-state">Loading secret references...</p>
-          ) : secrets.names.length === 0 ? (
-            <p className="empty-state">No secret references recorded.</p>
-          ) : (
-            <div className="secret-list">
-              {secrets.names.slice(0, 8).map((name) => (
-                <span className="tag amber mono" key={name}>
-                  {name}
-                </span>
-              ))}
-              {secrets.names.length > 8 && (
-                <span className="muted">+{secrets.names.length - 8} more</span>
-              )}
-            </div>
-          )}
+          <SecretReferences refs={summary?.secretRefs ?? null} />
         </Panel>
       </section>
     </div>
   );
+}
+
+function AgentReadinessList(props: { agents: DashboardAgentReadiness[] }) {
+  return (
+    <div className="agent-readiness-list">
+      {props.agents.map((agent) => (
+        <article className="agent-readiness-row" key={agent.id}>
+          <div>
+            <strong>{agent.displayName}</strong>
+            <span className="muted-row mono">{agent.root ?? agent.id}</span>
+          </div>
+          <ReadinessBadge status={agent.status} />
+          <div className="capability-strip">
+            {agent.capabilities.map((capability) => (
+              <span
+                className={`tag ${readinessTone(capability.status)}`}
+                key={capability.capability}
+              >
+                {CAPABILITY_LABELS[capability.capability]} {capability.status}
+              </span>
+            ))}
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function ReadinessBadge(props: { status: DashboardAgentReadiness["status"] }) {
+  return <span className={`tag ${readinessTone(props.status)}`}>{props.status}</span>;
+}
+
+function readinessTone(status: string): "green" | "amber" | "red" | "neutral" {
+  if (status === "ready") return "green";
+  if (status === "warning" || status === "detected") return "amber";
+  if (status === "not-found") return "red";
+  return "neutral";
+}
+
+function DistributionOverview(props: { groups: DashboardCoverageGroup[] | null }) {
+  if (!props.groups) return <p className="empty-state">Loading distribution coverage...</p>;
+  if (props.groups.length === 0) return <p className="empty-state">No coverage groups yet.</p>;
+  const byChannel = new Map<string, DashboardCoverageGroup[]>();
+  for (const group of props.groups) {
+    byChannel.set(group.channel, [...(byChannel.get(group.channel) ?? []), group]);
+  }
+  return (
+    <div className="coverage-list">
+      {[...byChannel.entries()].map(([channel, groups]) => (
+        <section className="coverage-channel" key={channel}>
+          <div className="coverage-channel-header">
+            <span className="tag blue">{channel}</span>
+            <span className="muted">
+              {groups.reduce((sum, group) => sum + group.artifactsCount, 0)} artifacts
+            </span>
+          </div>
+          {groups.map((group) => (
+            <div className="coverage-row" key={`${group.channel}:${group.scope}`}>
+              <div>
+                <strong>{group.scope}</strong>
+                <span className="muted-row">
+                  {group.desiredCount === 0
+                    ? group.emptyReason
+                    : `${group.appliedCount}/${group.desiredCount} applied · ${group.targetsCount} targets`}
+                </span>
+              </div>
+              <div className="coverage-meter">
+                <div className="progress-track" aria-hidden="true">
+                  <span className="progress-fill" style={{ width: `${group.percentage ?? 0}%` }} />
+                </div>
+                <strong>{group.percentage === null ? "n/a" : `${group.percentage}%`}</strong>
+              </div>
+              <div className="coverage-counts">
+                {group.driftedCount > 0 && (
+                  <span className="tag amber">{group.driftedCount} drifted</span>
+                )}
+                {group.missingCount > 0 && (
+                  <span className="tag red">{group.missingCount} missing</span>
+                )}
+                {group.brokenLinkCount > 0 && (
+                  <span className="tag red">{group.brokenLinkCount} broken</span>
+                )}
+                {group.blockedCount > 0 && (
+                  <span className="tag amber">{group.blockedCount} blocked</span>
+                )}
+                {group.lastAppliedAt && (
+                  <span className="muted">Last applied {formatTime(group.lastAppliedAt)}</span>
+                )}
+              </div>
+            </div>
+          ))}
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function DriftAlerts(props: { items: DashboardDriftItem[] }) {
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Level</th>
+            <th>Agent</th>
+            <th>Item</th>
+            <th>Scope</th>
+            <th>Target</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {props.items.slice(0, 6).map((item) => (
+            <tr key={`${item.agent}-${item.capability}-${item.target}`}>
+              <td>
+                <StatusBadge status={item.status} />
+              </td>
+              <td>{item.agent}</td>
+              <td>
+                <span className="mono">{item.artifact}</span>
+                <span className="muted-row">{item.capability}</span>
+              </td>
+              <td>{item.scope}</td>
+              <td className="path-cell mono">{item.target}</td>
+              <td>
+                <DiffPreviewButton item={item} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+interface DiffResponse {
+  available: boolean;
+  before?: string;
+  after?: string;
+  warning?: string;
+  redactionNotices: string[];
+}
+
+function DiffPreviewButton(props: { item: DashboardDriftItem }) {
+  const [result, setResult] = useState<DiffResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function checkDiff() {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await client.api.diff.$post({ json: { identity: props.item } });
+      setResult(await readApiJson<DiffResponse>(response));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  if (result?.available) {
+    return (
+      <details className="diff-preview">
+        <summary>View diff</summary>
+        <div className="diff-columns">
+          <pre>{result.before ?? ""}</pre>
+          <pre>{result.after ?? ""}</pre>
+        </div>
+        {result.redactionNotices.map((notice) => (
+          <p className="warn" key={notice}>
+            {notice}
+          </p>
+        ))}
+      </details>
+    );
+  }
+  return (
+    <div className="diff-action">
+      <button type="button" className="link-button" disabled={loading} onClick={checkDiff}>
+        {loading ? "Checking..." : "Check diff"}
+      </button>
+      {result && !result.available && <span className="muted-row">{result.warning}</span>}
+      {error && <span className="danger muted-row">{error}</span>}
+    </div>
+  );
+}
+
+function RecentScanPreview(props: {
+  preview: SessionScanPreview | null;
+  latestImport?: ActivityEvent;
+}) {
+  if (!props.preview && !props.latestImport) {
+    return <p className="empty-state">No session scan preview yet.</p>;
+  }
+  const items = props.preview?.plan.items ?? [];
+  const importable = items.filter((item) => item.action === "import").length;
+  const skipped = items.filter((item) => item.action === "skip").length;
+  const secretRefs = unique(items.flatMap((item) => item.secretRefs ?? []));
+  return (
+    <div className="scan-preview-panel">
+      {props.preview && (
+        <div className="scan-preview-summary">
+          <span className="tag amber">session only</span>
+          <strong>{props.preview.plan.agent}</strong>
+          <span className="muted">{formatTime(props.preview.capturedAt)}</span>
+          <span>{importable} importable</span>
+          <span>{skipped} skipped</span>
+        </div>
+      )}
+      {items.length > 0 && (
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Type</th>
+                <th>Name</th>
+                <th>Source</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.slice(0, 4).map((item) => (
+                <tr key={scanItemKey(item)}>
+                  <td>{item.kind}</td>
+                  <td className="mono">{item.name}</td>
+                  <td className="path-cell mono">{item.source}</td>
+                  <td className={item.action === "skip" ? "danger" : "ok"}>{item.action}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {secretRefs.length > 0 && (
+        <div className="secret-list">
+          {secretRefs.map((ref) => (
+            <span className="tag amber mono" key={ref}>
+              {ref}
+            </span>
+          ))}
+        </div>
+      )}
+      {props.latestImport && (
+        <p className="ok-state">
+          Latest imported scan: {props.latestImport.summary} · {formatTime(props.latestImport.time)}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function LedgerActivity(props: { events: ActivityEvent[] | null }) {
+  if (!props.events) return <p className="empty-state">Loading activity...</p>;
+  if (props.events.length === 0) return <p className="empty-state">No activity recorded yet.</p>;
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Actor</th>
+            <th>Action</th>
+            <th>Scope</th>
+            <th>Targets</th>
+            <th>Summary</th>
+          </tr>
+        </thead>
+        <tbody>
+          {props.events.slice(0, 6).map((event) => (
+            <tr key={event.id}>
+              <td>{formatTime(event.time)}</td>
+              <td>{event.actor}</td>
+              <td>
+                <span className="tag blue">{event.action}</span>
+              </td>
+              <td>{event.scope ?? "global"}</td>
+              <td>{event.affectedCount}</td>
+              <td>{event.summary}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function SecretReferences(props: { refs: DashboardSummaryResult["secretRefs"] | null }) {
+  if (!props.refs) return <p className="empty-state">Loading secret references...</p>;
+  if (props.refs.length === 0) return <p className="empty-state">No secret references recorded.</p>;
+  return (
+    <div className="secret-ref-grid">
+      {props.refs.slice(0, 8).map((ref) => (
+        <div className="secret-ref" key={ref.name}>
+          <span className="tag amber mono">{ref.name}</span>
+          <strong>{ref.ledgerEntryCount}</strong>
+        </div>
+      ))}
+      {props.refs.length > 8 && <span className="muted">+{props.refs.length - 8} more</span>}
+    </div>
+  );
+}
+
+function formatTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString(undefined, {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function unique<T>(values: T[]): T[] {
+  return [...new Set(values)];
 }
 
 function EmptyStorePanel(props: { onNavigate: (page: Page) => void }) {
@@ -642,19 +860,6 @@ function AgentDetectBadge(props: { detected: boolean }) {
     <span className="tag green">detected</span>
   ) : (
     <span className="tag amber">not found</span>
-  );
-}
-
-function CapabilityScopes(props: { scopes: string[] }) {
-  if (props.scopes.length === 0) return <span className="muted">not supported</span>;
-  return (
-    <div className="capability-scopes">
-      {props.scopes.map((scope) => (
-        <span className="tag green" key={scope}>
-          {scope}
-        </span>
-      ))}
-    </div>
   );
 }
 
@@ -1076,7 +1281,7 @@ function scanItemKey(item: ScanItem): string {
   return `${item.kind}:${item.name}:${item.source}`;
 }
 
-function ScanPage() {
+function ScanPage(props: { onSessionPreview: (preview: SessionScanPreview) => void }) {
   const agentsState = useApi<{ agents: AgentInfo[] }>(() => client.api.agents.$get());
   const [artifactVersion, setArtifactVersion] = useState(0);
   const artifactsState = useApi<Artifacts>(() => client.api.artifacts.$get(), [artifactVersion]);
@@ -1129,6 +1334,11 @@ function ScanPage() {
       const nextPlan = await readApiJson<ScanPlanResponse>(r);
       setPlan(nextPlan);
       setPlanKey(JSON.stringify(request));
+      props.onSessionPreview({
+        plan: nextPlan,
+        capturedAt: new Date().toISOString(),
+        requestKey: JSON.stringify(request),
+      });
       setSelectedItems(
         Object.fromEntries(
           nextPlan.items

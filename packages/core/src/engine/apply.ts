@@ -5,6 +5,8 @@
 //
 // 幂等关键:重复 apply 必须产出与磁盘一致的台账,且不丢失首次备份指针 ——
 //   故复用既有台账条目的 backup;内容未变时保留 appliedAt 并跳过重写(避免 mtime 抖动)。
+
+import { appendActivity } from "../activity.js";
 import type { Env } from "../env.js";
 import { atomicWrite } from "../fs/atomicWrite.js";
 import { backupIfNeeded } from "../fs/backup.js";
@@ -59,6 +61,28 @@ export async function apply(env: Env, opts: DistributeOptions): Promise<ApplyRes
   // 否则换一组 --agent 再 apply 会丢掉先前 agent 的条目。
   if (opts.scope === "project" && opts.dir) {
     await syncGitignore(env, opts.dir, nextLedger);
+  }
+
+  try {
+    await appendActivity(env, opts.storeRoot, {
+      action: "apply",
+      scope: opts.scope,
+      projectDir: opts.dir,
+      agents: opts.agents,
+      capabilities: opts.capabilities ?? [...new Set(entries.map((entry) => entry.capability))],
+      affectedCount: entries.length,
+      warningsCount: distributePlan.warnings.length,
+      summary: `Applied ${entries.length} ${entries.length === 1 ? "target" : "targets"}`,
+      references: {
+        ledgerEntryKeys: entries.map(entryKey),
+        artifactIds: entries.map((entry) => entry.artifact),
+      },
+      secretRefs: entries.flatMap((entry) => entry.secretRefs ?? []),
+    });
+  } catch (err) {
+    distributePlan.warnings.push(
+      `activity log failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 
   return { plan: distributePlan, entries };
