@@ -20,7 +20,6 @@ import {
   RESOURCE_KINDS,
   type ResourceState,
   resourceKindLabel,
-  summarizeResourceCounts,
 } from "./product-model.js";
 import { ResourcePage } from "./resource-pages.js";
 import { SettingsPage } from "./settings-page.js";
@@ -267,9 +266,7 @@ function DashboardShell(props: { onNavigate: (page: Page) => void }) {
     [reloadKey],
   );
   const summary = summaryState.data;
-  const resourceCounts = resourcesState.data
-    ? summarizeResourceCounts(resourcesState.data.resources)
-    : null;
+  const resourceCounts = resourcesState.data?.counts ?? null;
   const resourceCountsByKind = resourcesState.data
     ? countResourcesByKind(resourcesState.data.resources)
     : null;
@@ -286,10 +283,12 @@ function DashboardShell(props: { onNavigate: (page: Page) => void }) {
       <ApiErrorList errors={[summaryState.error, resourcesState.error, discoveryState.error]} />
       <section className="stat-grid" aria-label="Dashboard summary">
         <StatCard
-          label="Library Resources"
-          value={summary?.artifactCounts.total ?? resourceCounts?.managed ?? "..."}
+          label="Managed Resources"
+          value={resourceCounts?.managed ?? summary?.artifactCounts.total ?? "..."}
           detail={
-            summary ? resourceCountDetail(summary.artifactCounts) : "Loading resource catalog"
+            resourceCounts
+              ? `${resourceCounts.discovered} discovered · ${resourceCounts.synced} synced`
+              : "Loading resource catalog"
           }
           tone="blue"
           icon="artifacts"
@@ -389,26 +388,30 @@ function DashboardShell(props: { onNavigate: (page: Page) => void }) {
         ))}
       </section>
 
-      <section className="dashboard-grid">
-        <Panel title="Agent Readiness" icon="agent">
-          {!summary ? (
-            <p className="empty-state">Loading registered agents...</p>
-          ) : summary.agents.length === 0 ? (
-            <p className="empty-state">No registered agents.</p>
-          ) : (
-            <AgentReadinessList agents={summary.agents} />
-          )}
-        </Panel>
+      <section className="dashboard-main-layout">
+        <div className="dashboard-primary-stack">
+          <Panel title="Agent Readiness" icon="agent">
+            {!summary ? (
+              <p className="empty-state">Loading registered agents...</p>
+            ) : summary.agents.length === 0 ? (
+              <p className="empty-state">No registered agents.</p>
+            ) : (
+              <AgentReadinessList agents={summary.agents} />
+            )}
+          </Panel>
+        </div>
 
-        <Panel title="Collection Coverage" icon="settings">
-          <CoverageList groups={summary?.distributionCoverage ?? null} />
-        </Panel>
+        <div className="dashboard-side-stack">
+          <Panel title="Collection Coverage" icon="settings">
+            <CoverageList groups={summary?.distributionCoverage ?? null} />
+          </Panel>
 
-        <Panel title="Resource State" icon="artifacts">
-          <ResourceCountGrid counts={resourcesState.data?.counts ?? resourceCounts} />
-        </Panel>
+          <Panel title="Resource State" icon="artifacts">
+            <ResourceCountGrid counts={resourcesState.data?.counts ?? resourceCounts} />
+          </Panel>
+        </div>
 
-        <Panel title="Discovery Summary" icon="rules">
+        <Panel title="Discovery Summary" icon="rules" className="span-all">
           <DiscoveryPanel discovery={discovery} />
         </Panel>
 
@@ -741,10 +744,6 @@ function adapterTone(id: string): string {
   if (id === "codex") return "ink";
   if (id === "cursor") return "steel";
   return "default";
-}
-
-function resourceCountDetail(counts: DashboardSummaryResult["artifactCounts"]): string {
-  return `Skills ${counts.skills} · MCP ${counts.mcp} · Rules ${counts.rules}`;
 }
 
 function countResourcesByKind(resources: ResourceCatalogItem[]): Record<Capability, number> {

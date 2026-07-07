@@ -104,6 +104,58 @@ describe("resource catalog", () => {
     expect(catalog.counts).toMatchObject({ managed: 1, missing: 1 });
   });
 
+  it("lists discovered agent-native resources before they are imported", async () => {
+    await t.env.fs.mkdir(t.path("home", ".codex", "skills", "study"), { recursive: true });
+    await t.env.fs.writeFile(t.path("home", ".codex", "AGENTS.md"), "# user rules");
+    await t.env.fs.writeFile(
+      t.path("home", ".codex", "config.toml"),
+      `[mcp_servers.ctx]\ncommand = "npx"\n`,
+    );
+
+    const catalog = await resourceCatalog(t.env, {
+      storeRoot,
+      agents: ["codex"],
+      destination: "user",
+    });
+
+    expect(catalog.counts).toMatchObject({
+      managed: 0,
+      discovered: 3,
+    });
+    expect(catalog.resources).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "rules",
+          name: "codex",
+          state: "discovered",
+          discovered: expect.objectContaining({
+            agent: "codex",
+            destination: "user",
+            source: t.path("home", ".codex", "AGENTS.md"),
+          }),
+        }),
+        expect.objectContaining({
+          kind: "mcp",
+          name: "ctx",
+          state: "discovered",
+          discovered: expect.objectContaining({
+            agent: "codex",
+            source: `${t.path("home", ".codex", "config.toml")} → ctx`,
+          }),
+        }),
+        expect.objectContaining({
+          kind: "skills",
+          name: "study",
+          state: "discovered",
+          discovered: expect.objectContaining({
+            agent: "codex",
+            source: t.path("home", ".codex", "skills", "study"),
+          }),
+        }),
+      ]),
+    );
+  });
+
   it("does not attach wildcard rule sync targets to individual managed rules", async () => {
     await writeRuleArtifact(t.env, storeRoot, "style", "# style");
     await writeRuleArtifact(t.env, storeRoot, "safety", "# safety");

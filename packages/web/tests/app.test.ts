@@ -43,6 +43,19 @@ async function seedStore(c: Ctx): Promise<void> {
   }
 }
 
+function namesWithState(body: unknown, state: string): string[] {
+  const resources = (body as { resources: { name: string; state: string }[] }).resources;
+  return resources.filter((resource) => resource.state === state).map((resource) => resource.name);
+}
+
+function managedNames(body: unknown): string[] {
+  return namesWithState(body, "managed");
+}
+
+function discoveredNames(body: unknown): string[] {
+  return namesWithState(body, "discovered");
+}
+
 describe("web app — resources/agents", () => {
   let c: Ctx;
   beforeEach(async () => {
@@ -63,6 +76,29 @@ describe("web app — resources/agents", () => {
         name: "style",
         collections: [],
         state: "managed",
+      }),
+    );
+  });
+
+  it("includes discovered agent-native resources in resource routes", async () => {
+    await c.env.fs.mkdir(join(c.root, "home", ".codex", "skills", "study"), {
+      recursive: true,
+    });
+
+    const res = await c.app.request("/api/resources/skills?agents=codex");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(body.counts).toMatchObject({ managed: 0, discovered: 1 });
+    expect(body.resources).toContainEqual(
+      expect.objectContaining({
+        kind: "skills",
+        name: "study",
+        state: "discovered",
+        discovered: expect.objectContaining({
+          agent: "codex",
+          source: join(c.root, "home", ".codex", "skills", "study"),
+        }),
       }),
     );
   });
@@ -351,10 +387,9 @@ describe("web app — scan import", () => {
 
     const rules = await (await c.app.request("/api/resources/rules")).json();
     const mcp = await (await c.app.request("/api/resources/mcp")).json();
-    expect(rules.resources.map((resource: { name: string }) => resource.name)).toContain(
-      "claude-code",
-    );
-    expect(mcp.resources.map((resource: { name: string }) => resource.name)).not.toContain("ctx");
+    expect(managedNames(rules)).toContain("claude-code");
+    expect(managedNames(mcp)).not.toContain("ctx");
+    expect(discoveredNames(mcp)).toContain("ctx");
   });
 
   it("imports scan candidates and refreshes the artifact inventory", async () => {
@@ -419,8 +454,9 @@ describe("web app — scan import", () => {
 
     const rules = await (await c.app.request("/api/resources/rules")).json();
     const mcp = await (await c.app.request("/api/resources/mcp")).json();
-    expect(rules.resources.map((a: { name: string }) => a.name)).toContain("claude-code");
-    expect(mcp.resources.map((a: { name: string }) => a.name)).not.toContain("claude-code");
+    expect(managedNames(rules)).toContain("claude-code");
+    expect(managedNames(mcp)).not.toContain("claude-code");
+    expect(discoveredNames(mcp)).toContain("claude-code");
   });
 
   it("does not expose plaintext secrets while importing scanned MCP config", async () => {

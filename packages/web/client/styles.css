@@ -423,13 +423,21 @@ select {
   font-size: 12px;
 }
 
-.dashboard-grid {
+.dashboard-main-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(360px, 0.95fr);
+  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
   gap: 14px;
   align-items: start;
 }
 
+.dashboard-primary-stack,
+.dashboard-side-stack {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.dashboard-main-layout .span-all,
 .panel-wide {
   grid-column: 1 / -1;
 }
@@ -1095,14 +1103,27 @@ tr:last-child td {
 
 .resource-toolbar {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) minmax(380px, 0.9fr);
-  gap: 16px;
-  align-items: center;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  align-items: start;
   padding: 16px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
   box-shadow: var(--shadow-subtle);
+}
+
+.resource-toolbar-main {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: end;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.resource-title-block {
+  min-width: 220px;
 }
 
 .resource-toolbar h3 {
@@ -1113,12 +1134,6 @@ tr:last-child td {
 .resource-toolbar p {
   margin: 5px 0 0;
   color: var(--muted-strong);
-}
-
-.resource-toolbar-controls {
-  display: grid;
-  gap: 12px;
-  min-width: 0;
 }
 
 .resource-actions {
@@ -1145,7 +1160,7 @@ tr:last-child td {
 }
 
 .resource-count-grid.compact {
-  grid-template-columns: repeat(3, minmax(78px, 1fr));
+  grid-template-columns: repeat(6, minmax(78px, 1fr));
 }
 
 .resource-count {
@@ -1858,11 +1873,9 @@ pre {
 }
 
 @media (max-width: 1080px) {
-  .dashboard-grid,
   .dashboard-actions,
   .empty-store-panel,
   .mini-metrics,
-  .resource-toolbar,
   .settings-grid,
   .coverage-row,
   .control-grid,
@@ -1874,8 +1887,12 @@ pre {
     grid-template-columns: 1fr 1fr;
   }
 
-  .dashboard-grid {
+  .dashboard-main-layout {
     grid-template-columns: 1fr;
+  }
+
+  .resource-count-grid.compact {
+    grid-template-columns: repeat(3, minmax(78px, 1fr));
   }
 
   .agents-grid {
@@ -1974,17 +1991,19 @@ pre {
     width: 100%;
   }
 
-  .dashboard-grid,
   .dashboard-actions,
   .empty-store-panel,
   .mini-metrics,
-  .resource-toolbar,
   .resource-meta,
   .settings-grid,
   .coverage-row,
   .diff-columns,
   .control-grid,
   .control-grid.two {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-main-layout {
     grid-template-columns: 1fr;
   }
 
@@ -1997,6 +2016,10 @@ pre {
 
   .resource-actions {
     justify-content: flex-start;
+  }
+
+  .resource-toolbar-main {
+    display: grid;
   }
 
   .modal-backdrop {

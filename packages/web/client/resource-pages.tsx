@@ -86,17 +86,16 @@ export function ResourcePage(props: { kind: Capability }) {
   return (
     <div className="page-stack">
       <section className="resource-toolbar">
-        <div>
-          <p className="eyebrow">Library resources</p>
-          <h3>{title}</h3>
-          <p>
-            {state.data
-              ? `${state.data.resources.length} resources generated at ${formatTime(state.data.generatedAt)}`
-              : `Loading ${title.toLowerCase()} resources`}
-          </p>
-        </div>
-        <div className="resource-toolbar-controls">
-          <ResourceCountGrid counts={counts} compact />
+        <div className="resource-toolbar-main">
+          <div className="resource-title-block">
+            <p className="eyebrow">Library resources</p>
+            <h3>{title}</h3>
+            <p>
+              {state.data
+                ? `${state.data.resources.length} resources generated at ${formatTime(state.data.generatedAt)}`
+                : `Loading ${title.toLowerCase()} resources`}
+            </p>
+          </div>
           <div className="resource-actions">
             <label className="field-row stacked resource-filter">
               <span>Collection</span>
@@ -123,6 +122,7 @@ export function ResourcePage(props: { kind: Capability }) {
             </button>
           </div>
         </div>
+        <ResourceCountGrid counts={counts} compact />
       </section>
 
       {state.error && (
@@ -194,13 +194,19 @@ function ResourceRow(props: { resource: ResourceCatalogItem }) {
     <tr>
       <td>
         <strong>{props.resource.name}</strong>
-        <span className="muted-row mono">{props.resource.id}</span>
+        <span className="muted-row mono">
+          {props.resource.discovered
+            ? `${props.resource.discovered.agent} · not imported`
+            : props.resource.id}
+        </span>
       </td>
       <td>
         <ResourceStateBadge state={props.resource.state} />
       </td>
       <td>
-        {props.resource.collections.length === 0 ? (
+        {props.resource.discovered ? (
+          <span className="tag neutral">not imported</span>
+        ) : props.resource.collections.length === 0 ? (
           <span className="muted">default</span>
         ) : (
           props.resource.collections.map((item) => (
@@ -213,7 +219,7 @@ function ResourceRow(props: { resource: ResourceCatalogItem }) {
       <td className="path-cell mono">{resourceSource(props.resource)}</td>
       <td>
         {props.resource.syncTargets.length === 0 ? (
-          <span className="muted">none</span>
+          <span className="muted">{props.resource.discovered ? "import first" : "none"}</span>
         ) : (
           <div className="table-chip-list">
             {props.resource.syncTargets.map((target) => (
@@ -240,7 +246,13 @@ function ResourceRow(props: { resource: ResourceCatalogItem }) {
           ))
         )}
       </td>
-      <td>{props.resource.lastActivityAt ? formatTime(props.resource.lastActivityAt) : "none"}</td>
+      <td>
+        {props.resource.lastActivityAt
+          ? formatTime(props.resource.lastActivityAt)
+          : props.resource.discovered
+            ? "not imported"
+            : "none"}
+      </td>
     </tr>
   );
 }

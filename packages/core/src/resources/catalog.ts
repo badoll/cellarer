@@ -1,5 +1,7 @@
 import { listActivity } from "../activity.js";
+import { loadRegistry } from "../adapters/registry.js";
 import { inCollections } from "../engine/plan.js";
+import { type ScanItem, scanPlan } from "../engine/scan.js";
 import { status } from "../engine/status.js";
 import type { DriftStatus, StatusItem } from "../engine/types.js";
 import type { Env } from "../env.js";
@@ -152,12 +154,100 @@ export async function resourceCatalog(
     });
   }
 
+  if (shouldIncludeDiscovered(opts)) {
+    const discovered = await discoveredResources(env, opts, config);
+    resources.push(...discovered.resources);
+    warnings.push(...discovered.warnings);
+    addCounts(counts, discovered.counts);
+  }
+
   return {
     generatedAt: env.now().toISOString(),
     resources,
     counts,
     warnings,
   };
+}
+
+function shouldIncludeDiscovered(opts: ResourceCatalogOptions): boolean {
+  if (opts.includeDiscovered === false) return false;
+  return !opts.collections || opts.collections.length === 0;
+}
+
+async function discoveredResources(
+  env: Env,
+  opts: ResourceCatalogOptions,
+  config: Awaited<ReturnType<typeof loadConfig>>,
+): Promise<{
+  resources: ResourceCatalogItem[];
+  counts: ResourceCatalogCounts;
+  warnings: string[];
+}> {
+  const destination = opts.destination ?? "user";
+  const scope: Scope = destination === "project" ? "project" : "global";
+  const registry = await loadRegistry(env, opts.storeRoot);
+  const agentIds =
+    opts.agents && opts.agents.length > 0
+      ? opts.agents
+      : registry
+          .list()
+          .filter((agent) => config.agents[agent.id]?.enabled !== false)
+          .map((agent) => agent.id);
+  const resources: ResourceCatalogItem[] = [];
+  const counts = emptyCounts();
+  const warnings = [...registry.warnings];
+
+  for (const agent of agentIds) {
+    const plan = await scanPlan(env, {
+      storeRoot: opts.storeRoot,
+      agent,
+      scope,
+      dir: opts.dir,
+      capabilities: opts.kind ? [opts.kind] : undefined,
+      conflict: "keep-mine",
+    });
+    warnings.push(...plan.warnings);
+
+    for (const item of plan.items) {
+      if (item.status === "conflict" && item.action === "skip") continue;
+      const state: ResourceState = item.action === "skip" ? "blocked" : "discovered";
+      counts[state] += 1;
+      resources.push(discoveredResourceItem(item, agent, destination, state));
+    }
+  }
+
+  return { resources, counts, warnings };
+}
+
+function discoveredResourceItem(
+  item: ScanItem,
+  agent: string,
+  destination: Destination,
+  state: ResourceState,
+): ResourceCatalogItem {
+  return {
+    id: `discovered:${agent}:${item.kind}:${item.name}:${item.source}`,
+    kind: item.kind,
+    name: item.name,
+    state,
+    collections: [],
+    discovered: {
+      agent,
+      destination,
+      source: item.source,
+    },
+    syncTargets: [],
+    secretRefs: item.secretRefs ?? [],
+  };
+}
+
+function addCounts(target: ResourceCatalogCounts, source: ResourceCatalogCounts): void {
+  target.managed += source.managed;
+  target.discovered += source.discovered;
+  target.synced += source.synced;
+  target.drifted += source.drifted;
+  target.missing += source.missing;
+  target.blocked += source.blocked;
 }
 
 function collectArtifactSecretRefs(
