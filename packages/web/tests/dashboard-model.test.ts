@@ -7,6 +7,11 @@ import {
   type PlanAction,
   type StatusItem,
 } from "../client/dashboard-model.js";
+import {
+  destinationLabel,
+  resourceKindLabel,
+  summarizeResourceCounts,
+} from "../client/product-model.js";
 
 const emptyArtifacts: ArtifactsResponse = {
   rules: [],
@@ -56,6 +61,36 @@ describe("dashboard model summary", () => {
       ledgerEntryCount: 0,
       secretRefCount: 0,
       isEmptyStore: true,
+    });
+  });
+});
+
+describe("product model helpers", () => {
+  it("labels destinations with user-facing language", () => {
+    expect(destinationLabel("user")).toBe("User-level");
+    expect(destinationLabel("project")).toBe("Project-level");
+  });
+
+  it("labels resource kinds", () => {
+    expect(resourceKindLabel("skills")).toBe("Skills");
+    expect(resourceKindLabel("mcp")).toBe("MCP");
+    expect(resourceKindLabel("rules")).toBe("Rules");
+  });
+
+  it("summarizes resource state counts", () => {
+    expect(
+      summarizeResourceCounts([
+        { state: "managed" },
+        { state: "managed" },
+        { state: "drifted" },
+      ]),
+    ).toEqual({
+      managed: 2,
+      discovered: 0,
+      synced: 0,
+      drifted: 1,
+      missing: 0,
+      blocked: 0,
     });
   });
 });
