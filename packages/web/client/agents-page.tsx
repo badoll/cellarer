@@ -26,6 +26,8 @@ interface AdapterFormState {
   skillsGlobal: string;
 }
 
+const BUILTIN_ADAPTER_IDS = new Set(["claude-code", "codex", "cursor"]);
+
 const EMPTY_ADAPTER_FORM: AdapterFormState = {
   adapterId: "",
   displayName: "",
@@ -96,7 +98,7 @@ export function AgentsPage() {
         await apiFetch(`/api/agents/${encodeURIComponent(adapterId)}/adapter`, {
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ adapter: adapterPatch(adapterForm) }),
+          body: JSON.stringify({ adapter: adapterPatch(adapterForm, isBuiltinAdapter(adapterId)) }),
         }),
       );
       setAdapterForm(EMPTY_ADAPTER_FORM);
@@ -291,7 +293,11 @@ function capabilityTags(agent: AgentInfo) {
   ));
 }
 
-function adapterPatch(form: AdapterFormState) {
+function isBuiltinAdapter(adapterId: string): boolean {
+  return BUILTIN_ADAPTER_IDS.has(adapterId);
+}
+
+export function adapterPatch(form: AdapterFormState, builtin = isBuiltinAdapter(form.adapterId.trim())) {
   const displayName = form.displayName.trim();
   const rulesGlobal = form.rulesGlobal.trim();
   const mcpGlobal = form.mcpGlobal.trim();
@@ -299,9 +305,12 @@ function adapterPatch(form: AdapterFormState) {
   return {
     displayName: displayName || undefined,
     rules: rulesGlobal ? { global: rulesGlobal, format: "markdown" as const } : undefined,
-    mcp: mcpGlobal
-      ? { global: mcpGlobal, format: "json" as const, serversKey: "mcpServers" }
-      : undefined,
+    mcp: mcpGlobal ? mcpPatch(mcpGlobal, builtin) : undefined,
     skills: skillsGlobal ? { global: skillsGlobal, format: "dir" as const } : undefined,
   };
+}
+
+function mcpPatch(path: string, builtin: boolean) {
+  if (builtin) return { global: path };
+  return { global: path, format: "json" as const, serversKey: "mcpServers" };
 }
