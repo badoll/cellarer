@@ -7,7 +7,7 @@ hard boundary.
 
 ## Plaintext Secret Boundary
 
-Store artifacts and generated files must not contain plaintext secrets. Use
+Stored resources and generated files must not contain plaintext secrets. Use
 references instead:
 
 ```json

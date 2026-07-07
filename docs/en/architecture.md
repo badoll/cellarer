@@ -33,7 +33,7 @@ This keeps core behavior testable and avoids reading `process`, `os`, or
 ## Distribution Flow
 
 ```text
-store artifacts
+library resources
   -> select agents, scope, collections, capabilities
   -> load adapters and config
   -> render rules, MCP, and skills actions
@@ -49,7 +49,7 @@ Rules and MCP are rendered as content writes. Skills are linked or copied.
 ```text
 agent files
   -> adapter paths and codecs
-  -> canonical artifacts
+  -> canonical resources
   -> secret redaction
   -> conflict policy
   -> store writes

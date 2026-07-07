@@ -26,11 +26,15 @@ React SPA -> Hono API -> @cellarer/web -> @cellarer/core -> Env -> local files
 
 | 路由 | 用途 |
 | --- | --- |
-| `GET /api/artifacts` | 库房制品与 collection 标签。 |
-| `GET /api/agents` | 已注册适配器、能力矩阵与 global 探测状态。 |
-| `POST /api/plan` | 下发预览。 |
-| `POST /api/apply` | 执行下发。 |
-| `POST /api/scan` | 只做扫描预览。 |
+| `GET /api/resources` | 资源目录、状态计数、collections 与同步目标。 |
+| `GET /api/resources/:kind` | 按 `skills`、`mcp` 或 `rules` 过滤的资源目录。 |
+| `GET /api/discovery` | 可导入的既有 agent 文件。 |
+| `POST /api/import/plan` | 导入预览。 |
+| `POST /api/import/apply` | 导入已预览并选择的资源。 |
+| `POST /api/sync/plan` | 同步预览。 |
+| `POST /api/sync/apply` | 将已预览的资源同步到 agents。 |
+| `GET /api/agents` | 已注册适配器、启用状态、能力矩阵与 global 探测状态。 |
+| `GET /api/settings` | 库房默认值、collections、adapter ids 与密钥引用。 |
 | `GET /api/status` | 台账漂移状态。 |
 | `GET /api/secrets` | 只返回密钥引用名。 |
 
@@ -45,6 +49,6 @@ project scope 请求必须包含 `dir`。
 
 ## 当前边界
 
-- Web 扫描只是预览;写入扫描结果仍走 CLI。
-- status 暴露漂移状态,没有独立 diff API。
-- 当前没有独立于 apply 台账之外的活动历史。
+- UI 中导入和同步都要求先预览。
+- Project-level 同步必须显式填写项目路径。
+- 密钥真值永不展示,只显示引用名。

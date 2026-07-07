@@ -79,11 +79,7 @@ describe("product model helpers", () => {
 
   it("summarizes resource state counts", () => {
     expect(
-      summarizeResourceCounts([
-        { state: "managed" },
-        { state: "managed" },
-        { state: "drifted" },
-      ]),
+      summarizeResourceCounts([{ state: "managed" }, { state: "managed" }, { state: "drifted" }]),
     ).toEqual({
       managed: 2,
       discovered: 0,

@@ -9,18 +9,18 @@ import type {
 } from "@cellarer/core";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
+import { AgentsPage } from "./agents-page.js";
 import { client } from "./api.js";
 import { readApiJson } from "./api-state.js";
-import { AgentsPage } from "./agents-page.js";
 import { DashboardIcon, type DashboardIconName } from "./dashboard-icons.js";
 import { ImportDialog } from "./import-dialog.js";
 import {
+  destinationLabel,
   type Page,
   RESOURCE_KINDS,
-  destinationLabel,
+  type ResourceState,
   resourceKindLabel,
   summarizeResourceCounts,
-  type ResourceState,
 } from "./product-model.js";
 import { ResourcePage } from "./resource-pages.js";
 import { SettingsPage } from "./settings-page.js";
@@ -258,8 +258,14 @@ function DashboardShell(props: { onNavigate: (page: Page) => void }) {
   const [importOpen, setImportOpen] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const summaryState = useApi<DashboardSummaryResult>(() => client.api.summary.$get(), [reloadKey]);
-  const resourcesState = useApi<ResourceCatalogResult>(() => client.api.resources.$get(), [reloadKey]);
-  const discoveryState = useApi<DiscoverySummaryResult>(() => client.api.discovery.$get(), [reloadKey]);
+  const resourcesState = useApi<ResourceCatalogResult>(
+    () => client.api.resources.$get(),
+    [reloadKey],
+  );
+  const discoveryState = useApi<DiscoverySummaryResult>(
+    () => client.api.discovery.$get(),
+    [reloadKey],
+  );
   const summary = summaryState.data;
   const resourceCounts = resourcesState.data
     ? summarizeResourceCounts(resourcesState.data.resources)
@@ -277,21 +283,25 @@ function DashboardShell(props: { onNavigate: (page: Page) => void }) {
 
   return (
     <div className="page-stack">
-      <ApiErrorList
-        errors={[summaryState.error, resourcesState.error, discoveryState.error]}
-      />
+      <ApiErrorList errors={[summaryState.error, resourcesState.error, discoveryState.error]} />
       <section className="stat-grid" aria-label="Dashboard summary">
         <StatCard
           label="Library Resources"
           value={summary?.artifactCounts.total ?? resourceCounts?.managed ?? "..."}
-          detail={summary ? resourceCountDetail(summary.artifactCounts) : "Loading resource catalog"}
+          detail={
+            summary ? resourceCountDetail(summary.artifactCounts) : "Loading resource catalog"
+          }
           tone="blue"
           icon="artifacts"
         />
         <StatCard
           label="Discovery"
           value={discoveryTotal}
-          detail={discovery ? `${destinationLabel(discovery.destination)} sources` : "Scanning readable files"}
+          detail={
+            discovery
+              ? `${destinationLabel(discovery.destination)} sources`
+              : "Scanning readable files"
+          }
           tone="amber"
           icon="scan"
         />
@@ -327,21 +337,33 @@ function DashboardShell(props: { onNavigate: (page: Page) => void }) {
             <span>Preview before adding resources</span>
           </span>
         </button>
-        <button type="button" className="resource-shortcut" onClick={() => props.onNavigate("skills")}>
+        <button
+          type="button"
+          className="resource-shortcut"
+          onClick={() => props.onNavigate("skills")}
+        >
           <DashboardIcon name="apply" />
           <span>
             <strong>Sync library</strong>
             <span>{resourceCounts?.managed ?? 0} managed resources</span>
           </span>
         </button>
-        <button type="button" className="resource-shortcut" onClick={() => props.onNavigate("rules")}>
+        <button
+          type="button"
+          className="resource-shortcut"
+          onClick={() => props.onNavigate("rules")}
+        >
           <DashboardIcon name="warning" />
           <span>
             <strong>Fix drift</strong>
             <span>{blockedSyncCount ?? 0} targets need review</span>
           </span>
         </button>
-        <button type="button" className="resource-shortcut" onClick={() => props.onNavigate("agents")}>
+        <button
+          type="button"
+          className="resource-shortcut"
+          onClick={() => props.onNavigate("agents")}
+        >
           <DashboardIcon name="agent" />
           <span>
             <strong>Review agents</strong>
@@ -463,13 +485,13 @@ function CoverageList(props: { groups: DashboardCoverageGroup[] | null }) {
   return (
     <div className="coverage-list">
       {props.groups.map((group) => (
-        <section className="coverage-channel" key={`${group.collection}:${group.scope}`}>
-          <div className="coverage-channel-header">
+        <section className="coverage-collection" key={`${group.collection}:${group.scope}`}>
+          <div className="coverage-collection-header">
             <div>
               <span className="tag blue">{group.collection}</span>
               <span className="muted">{group.scope}</span>
             </div>
-            <div className="coverage-channel-meta">
+            <div className="coverage-collection-meta">
               <span>{group.artifactsCount} resources</span>
               <span>{group.targetsCount} targets</span>
             </div>
@@ -489,9 +511,15 @@ function CoverageList(props: { groups: DashboardCoverageGroup[] | null }) {
               </div>
             </div>
             <div className="coverage-counts">
-              {group.driftedCount > 0 && <span className="tag amber">{group.driftedCount} drifted</span>}
-              {group.missingCount > 0 && <span className="tag red">{group.missingCount} missing</span>}
-              {group.blockedCount > 0 && <span className="tag amber">{group.blockedCount} blocked</span>}
+              {group.driftedCount > 0 && (
+                <span className="tag amber">{group.driftedCount} drifted</span>
+              )}
+              {group.missingCount > 0 && (
+                <span className="tag red">{group.missingCount} missing</span>
+              )}
+              {group.blockedCount > 0 && (
+                <span className="tag amber">{group.blockedCount} blocked</span>
+              )}
             </div>
           </div>
         </section>
@@ -541,7 +569,9 @@ function DiscoveryPanel(props: { discovery: DiscoverySummaryResult | null }) {
           </tbody>
         </table>
       </div>
-      {props.discovery.warnings.length > 0 && <WarningList warnings={props.discovery.warnings} compact />}
+      {props.discovery.warnings.length > 0 && (
+        <WarningList warnings={props.discovery.warnings} compact />
+      )}
     </div>
   );
 }

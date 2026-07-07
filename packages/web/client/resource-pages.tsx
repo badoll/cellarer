@@ -3,13 +3,13 @@ import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "./api.js";
 import { readApiJson } from "./api-state.js";
 import { DashboardIcon } from "./dashboard-icons.js";
+import { ImportDialog } from "./import-dialog.js";
 import {
   destinationLabel,
+  type ResourceState,
   resourceKindLabel,
   summarizeResourceCounts,
-  type ResourceState,
 } from "./product-model.js";
-import { ImportDialog } from "./import-dialog.js";
 import { SyncDialog } from "./sync-dialog.js";
 
 interface ApiState<T> {
@@ -73,7 +73,8 @@ export function ResourcePage(props: { kind: Capability }) {
     };
   }, [props.kind, collection, reloadKey]);
 
-  const counts = state.data?.counts ?? (state.data ? summarizeResourceCounts(state.data.resources) : null);
+  const counts =
+    state.data?.counts ?? (state.data ? summarizeResourceCounts(state.data.resources) : null);
   const collections = useMemo(() => {
     const names = new Set<string>();
     for (const resource of state.data?.resources ?? []) {
@@ -137,7 +138,9 @@ export function ResourcePage(props: { kind: Capability }) {
       ) : state.data ? (
         <ResourceTable resources={state.data.resources} />
       ) : null}
-      {state.data && state.data.warnings.length > 0 && <WarningList warnings={state.data.warnings} />}
+      {state.data && state.data.warnings.length > 0 && (
+        <WarningList warnings={state.data.warnings} />
+      )}
 
       <ImportDialog
         open={importOpen}
@@ -219,7 +222,8 @@ function ResourceRow(props: { resource: ResourceCatalogItem }) {
                 title={target.target}
                 key={`${target.agent}:${target.destination}:${target.target}`}
               >
-                {target.agent} {destinationLabel(target.destination)} {RESOURCE_STATE_LABELS[target.state]}
+                {target.agent} {destinationLabel(target.destination)}{" "}
+                {RESOURCE_STATE_LABELS[target.state]}
               </span>
             ))}
           </div>

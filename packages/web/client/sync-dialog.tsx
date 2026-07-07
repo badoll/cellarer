@@ -2,7 +2,7 @@ import type { Capability, DistributePlan } from "@cellarer/core";
 import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "./api.js";
 import { readApiJson } from "./api-state.js";
-import { destinationLabel, resourceKindLabel, type Destination } from "./product-model.js";
+import { type Destination, destinationLabel, resourceKindLabel } from "./product-model.js";
 
 interface SyncRequest {
   agents: string[];
@@ -97,7 +97,9 @@ export function SyncDialog(props: {
   const dirMissing = isProjectDirMissing(destination, dir);
   const hasAgents = request.agents.length > 0;
   const hasCurrentPreview =
-    plan !== null && plannedRequest !== null && syncRequestKey(plannedRequest) === currentRequestKey;
+    plan !== null &&
+    plannedRequest !== null &&
+    syncRequestKey(plannedRequest) === currentRequestKey;
   const canPreview = hasAgents && !dirMissing && !previewing && !applying;
   const canApply = canPreview && hasCurrentPreview;
 
@@ -151,7 +153,12 @@ export function SyncDialog(props: {
 
   return (
     <div className="modal-backdrop" role="presentation">
-      <section className="modal sync-modal" role="dialog" aria-modal="true" aria-label="Sync to Agents">
+      <section
+        className="modal sync-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Sync to Agents"
+      >
         <div className="panel-header modal-header">
           <div>
             <h3>Sync to Agents</h3>
@@ -215,7 +222,12 @@ export function SyncDialog(props: {
         )}
 
         <div className="button-row">
-          <button type="button" className="action secondary" disabled={!canPreview} onClick={preview}>
+          <button
+            type="button"
+            className="action secondary"
+            disabled={!canPreview}
+            onClick={preview}
+          >
             {previewing ? "Previewing..." : "Preview"}
           </button>
           <button type="button" className="action" disabled={!canApply} onClick={applySync}>
@@ -265,7 +277,9 @@ function SyncPlanTable(props: { plan: DistributePlan }) {
             </thead>
             <tbody>
               {props.plan.actions.map((action) => (
-                <tr key={`${action.agent}:${action.capability}:${action.artifact}:${action.target}`}>
+                <tr
+                  key={`${action.agent}:${action.capability}:${action.artifact}:${action.target}`}
+                >
                   <td className="mono">{action.agent}</td>
                   <td>
                     <strong>{resourceKindLabel(action.capability)}</strong>

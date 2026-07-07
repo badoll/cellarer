@@ -5,9 +5,9 @@ import {
   resourceCatalog,
   saveLedger,
   sha256,
-  writeRuleArtifact,
-  writeMcpArtifact,
   tagArtifactCollections,
+  writeMcpArtifact,
+  writeRuleArtifact,
 } from "../src/index.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 

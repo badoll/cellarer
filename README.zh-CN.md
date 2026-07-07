@@ -5,7 +5,7 @@
 > 面向多 AI coding agent 的本地 skills / MCP / rules 统一管理工具。一处维护,
 > 按需下发到多个 agent,也可以扫描已有配置回写库房,并避免生成文件落入明文密钥。
 
-cellarer 适合同时使用多个 AI coding agent 的本机开发环境。它统一管理三类制品:
+cellarer 适合同时使用多个 AI coding agent 的本机开发环境。它统一管理三类资源:
 
 - rules,例如 `AGENTS.md`、`CLAUDE.md` 或 agent 专属规则文件
 - MCP server 定义,并按各 agent 原生 JSON / TOML 格式写回
@@ -28,7 +28,7 @@ node packages/cli/dist/bin.js --help
 node packages/cli/dist/bin.js init
 ```
 
-导入本地制品:
+导入本地资源:
 
 ```bash
 node packages/cli/dist/bin.js add ./my-rules.md
@@ -62,7 +62,7 @@ node packages/cli/dist/bin.js ui
 | `ls` | 列出库房中的 rules、MCP、skills 与 collection 标签。 |
 | `agents` | 展示已注册 agent adapter、探测结果、能力与目标路径。 |
 | `doctor` | 检查库房初始化、adapter 加载、agent 探测和目标路径写权限。 |
-| `apply` | 生成计划并下发制品到选中的 agent。写入前建议先用 `--dry-run`。 |
+| `apply` | 生成计划并同步资源到选中的 agent。写入前建议先用 `--dry-run`。 |
 | `scan` | 读取 agent 原生配置,规范化后导入库房。 |
 | `status` | 检查台账中的漂移、缺失目标和断链。 |
 | `revert` | 根据台账回滚已下发内容。 |

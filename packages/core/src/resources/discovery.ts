@@ -1,5 +1,5 @@
 import { loadRegistry } from "../adapters/registry.js";
-import type { AgentAdapter } from "../adapters/types.js";
+import type { AgentAdapter, AgentPaths } from "../adapters/types.js";
 import type { Env } from "../env.js";
 import { lstatOrNull, readdirOrEmpty, readFileOrNull } from "../fs/probe.js";
 import type { Capability, Scope } from "../model/index.js";
@@ -92,7 +92,7 @@ async function summarizeAgent(
     warnings.push(`detect failed: ${errorMessage(err)}`);
   }
 
-  let paths;
+  let paths: AgentPaths;
   try {
     paths = adapter.paths(env, scope, dir);
   } catch (err) {

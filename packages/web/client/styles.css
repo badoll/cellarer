@@ -566,16 +566,16 @@ select {
   align-items: center;
 }
 
-.coverage-channel {
+.coverage-collection {
   padding: 9px 0;
   border-bottom: 1px solid var(--border);
 }
 
-.coverage-channel:last-child {
+.coverage-collection:last-child {
   border-bottom: 0;
 }
 
-.coverage-channel-header,
+.coverage-collection-header,
 .coverage-row,
 .secret-ref {
   display: grid;
@@ -583,19 +583,19 @@ select {
   align-items: center;
 }
 
-.coverage-channel-header {
+.coverage-collection-header {
   grid-template-columns: minmax(0, 1fr) auto;
   margin-bottom: 8px;
 }
 
-.coverage-channel-header > div:first-child {
+.coverage-collection-header > div:first-child {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
 }
 
-.coverage-channel-meta {
+.coverage-collection-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -795,6 +795,11 @@ select {
   margin-bottom: 10px;
 }
 
+.panel-header > div,
+.section-header > div {
+  min-width: 0;
+}
+
 .panel h3,
 .card h3 {
   margin: 0;
@@ -807,6 +812,8 @@ select {
   display: inline-flex;
   gap: 7px;
   align-items: center;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .panel-header h3 .icon {
@@ -986,8 +993,7 @@ tr:last-child td {
   gap: 14px;
 }
 
-.inventory-row,
-.channel-row {
+.inventory-row {
   display: flex;
   gap: 12px;
   align-items: center;
@@ -996,17 +1002,11 @@ tr:last-child td {
   border-bottom: 1px solid var(--border);
 }
 
-.channel-row {
-  align-items: flex-start;
-}
-
-.inventory-row:last-child,
-.channel-row:last-child {
+.inventory-row:last-child {
   border-bottom: 0;
 }
 
-.inventory-row span,
-.channel-row > span {
+.inventory-row span {
   color: var(--muted);
   font-weight: 700;
 }
@@ -2007,6 +2007,15 @@ pre {
     max-height: calc(100vh - 28px);
   }
 
+  .modal-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .modal-header .link-button {
+    align-self: flex-start;
+  }
+
   .agents-grid,
   .adapter-form-grid,
   .sync-target {
@@ -2113,11 +2122,11 @@ pre {
 
 @media (max-width: 360px) {
   .stat-grid,
-    .resource-count-grid,
-    .resource-count-grid.compact,
-    .dashboard-actions.next-actions,
-    .status-row,
-    .top-actions {
+  .resource-count-grid,
+  .resource-count-grid.compact,
+  .dashboard-actions.next-actions,
+  .status-row,
+  .top-actions {
     grid-template-columns: 1fr;
   }
 }

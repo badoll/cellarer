@@ -7,7 +7,7 @@
 > secrets out of generated files.
 
 cellarer is a local-first configuration manager for people who use several AI
-coding agents on the same machine. It manages three artifact types:
+coding agents on the same machine. It manages three resource types:
 
 - rules, such as `AGENTS.md`, `CLAUDE.md`, or agent-specific rule files
 - MCP server definitions in each agent's native JSON or TOML shape
@@ -31,7 +31,7 @@ Initialize the local cellarer store:
 node packages/cli/dist/bin.js init
 ```
 
-Import local artifacts into the store:
+Import local resources into the store:
 
 ```bash
 node packages/cli/dist/bin.js add ./my-rules.md
@@ -65,8 +65,8 @@ node packages/cli/dist/bin.js ui
 | `ls` | List stored rules, MCP servers, skills, and collection tags. |
 | `agents` | Show registered agent adapters, detect results, capabilities, and target paths. |
 | `doctor` | Check store initialization, adapter loading, agent detection, and target path write access. |
-| `apply` | Plan and distribute artifacts to selected agents. Use `--dry-run` before writing. |
-| `scan` | Read native agent configuration and import normalized artifacts into the store. |
+| `apply` | Plan and sync resources to selected agents. Use `--dry-run` before writing. |
+| `scan` | Read native agent configuration and import normalized resources into the store. |
 | `status` | Check ledger entries for drift, missing targets, and broken links. |
 | `revert` | Roll back previously applied ledger entries. |
 | `secret` | Manage encrypted vault entries by reference name. |

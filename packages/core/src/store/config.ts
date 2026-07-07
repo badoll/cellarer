@@ -297,7 +297,11 @@ export async function loadAdapterSpecs(env: Env, storeRoot: string): Promise<Ada
   return { specs, warnings };
 }
 
-export async function saveConfig(env: Env, storeRoot: string, config: CellarerConfig): Promise<void> {
+export async function saveConfig(
+  env: Env,
+  storeRoot: string,
+  config: CellarerConfig,
+): Promise<void> {
   const path = join(storeRoot, CONFIG_FILENAME);
   await atomicWrite(env, path, `${JSON.stringify(config, null, 2)}\n`);
 }

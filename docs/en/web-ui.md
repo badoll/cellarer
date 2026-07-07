@@ -27,11 +27,15 @@ The browser does not write files directly. All file operations go through core.
 
 | Route | Purpose |
 | --- | --- |
-| `GET /api/artifacts` | Store inventory and collection tags. |
-| `GET /api/agents` | Registered adapters, capabilities, and global detection status. |
-| `POST /api/plan` | Distribution preview. |
-| `POST /api/apply` | Execute distribution. |
-| `POST /api/scan` | Scan preview only. |
+| `GET /api/resources` | Resource catalog, state counts, collections, and sync targets. |
+| `GET /api/resources/:kind` | Resource catalog filtered to `skills`, `mcp`, or `rules`. |
+| `GET /api/discovery` | Existing agent files that can be imported. |
+| `POST /api/import/plan` | Import preview. |
+| `POST /api/import/apply` | Import selected previewed resources. |
+| `POST /api/sync/plan` | Sync preview. |
+| `POST /api/sync/apply` | Sync previewed resources to agents. |
+| `GET /api/agents` | Registered adapters, enabled state, capabilities, and global detection status. |
+| `GET /api/settings` | Store defaults, collections, adapter ids, and secret references. |
 | `GET /api/status` | Ledger drift status. |
 | `GET /api/secrets` | Secret reference names only. |
 
@@ -46,6 +50,6 @@ Project scope requests must include `dir`.
 
 ## Current Limits
 
-- Web scan is preview-only; writing scan results still belongs to the CLI path.
-- Status exposes drift status, not a detailed diff endpoint.
-- Activity history is not persisted separately from the current apply ledger.
+- Import and sync flows are preview-first in the UI.
+- Project-level sync requires an explicit project path.
+- Secret values are never shown; only reference names are displayed.

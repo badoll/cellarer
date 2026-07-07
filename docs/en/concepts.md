@@ -20,9 +20,9 @@ Typical layout:
 └── secrets/
 ```
 
-## Artifact
+## Resource
 
-An artifact is one distributable unit:
+A resource is one reusable unit in the cellarer library:
 
 - a rule file or rule fragment
 - one canonical MCP server definition
@@ -42,7 +42,7 @@ built-ins and custom adapters for new agents.
 
 ## Scope
 
-Scope decides where artifacts land:
+Scope decides where resources land:
 
 - `global`: the agent's home-directory configuration
 - `project`: a specific project directory passed with `--dir`
@@ -63,8 +63,8 @@ references. `status` and `revert` use this ledger.
 
 ## Secrets
 
-Store artifacts and generated files should not contain plaintext secrets.
-Artifacts should use environment references such as `${OPENAI_API_KEY}` or
+Stored resources and generated files should not contain plaintext secrets.
+Resources should use environment references such as `${OPENAI_API_KEY}` or
 cellarer secret references such as `${CELLARER_SECRET:OPENAI_API_KEY}`.
 
 ## Non-goals

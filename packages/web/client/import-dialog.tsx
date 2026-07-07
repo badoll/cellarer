@@ -2,17 +2,47 @@ import type { Capability, ScanItem, ScanPlan, ScanSelection } from "@cellarer/co
 import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "./api.js";
 import { readApiJson } from "./api-state.js";
-import { resourceKindLabel } from "./product-model.js";
+import { type Destination, destinationLabel, resourceKindLabel } from "./product-model.js";
 
 interface ImportPayload {
   agent: string;
-  destination: "user";
+  destination: Destination;
+  dir?: string;
   capabilities?: Capability[];
   selectItems?: ScanSelection[];
 }
 
+interface ImportRequestInput {
+  agent: string;
+  destination: Destination;
+  dir: string;
+  capabilities?: Capability[];
+}
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+export function isImportProjectDirMissing(destination: Destination, dir: string): boolean {
+  return destination === "project" && dir.trim() === "";
+}
+
+export function buildImportRequest(input: ImportRequestInput): ImportPayload {
+  return {
+    agent: input.agent.trim(),
+    destination: input.destination,
+    dir: input.destination === "project" ? input.dir.trim() : undefined,
+    capabilities: input.capabilities,
+  };
+}
+
+export function importRequestKey(request: ImportPayload): string {
+  return JSON.stringify({
+    agent: request.agent,
+    destination: request.destination,
+    dir: request.dir ?? "",
+    capabilities: request.capabilities ?? [],
+  });
 }
 
 export function ImportDialog(props: {
@@ -22,6 +52,8 @@ export function ImportDialog(props: {
   onImported(): void;
 }) {
   const [agent, setAgent] = useState("codex");
+  const [destination, setDestination] = useState<Destination>("user");
+  const [dir, setDir] = useState("");
   const [plan, setPlan] = useState<ScanPlan | null>(null);
   const [plannedPayload, setPlannedPayload] = useState<ImportPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -39,24 +71,32 @@ export function ImportDialog(props: {
   if (!props.open) return null;
 
   const currentKind = props.kind ? resourceKindLabel(props.kind) : "All resources";
-  const canPreview = agent.trim().length > 0 && !previewing && !applying;
-  const canApply = canPreview && plan !== null && plannedPayload !== null;
+  const request = buildImportRequest({
+    agent,
+    destination,
+    dir,
+    capabilities: props.kind ? [props.kind] : undefined,
+  });
+  const currentRequestKey = importRequestKey(request);
+  latestPayloadKey.current = currentRequestKey;
+  const dirMissing = isImportProjectDirMissing(destination, dir);
+  const hasAgent = request.agent.length > 0;
+  const hasCurrentPreview =
+    plan !== null &&
+    plannedPayload !== null &&
+    importRequestKey(plannedPayload) === currentRequestKey;
+  const canPreview = hasAgent && !dirMissing && !previewing && !applying;
+  const canApply = canPreview && hasCurrentPreview;
 
-  function payload(): ImportPayload {
-    return {
-      agent: agent.trim(),
-      destination: "user",
-      capabilities: props.kind ? [props.kind] : undefined,
-    };
+  function resetPlan() {
+    setPlan(null);
+    setPlannedPayload(null);
   }
 
-  latestPayloadKey.current = JSON.stringify(payload());
-
   async function preview() {
+    if (!canPreview) return;
     setError(null);
     setPreviewing(true);
-    const request = payload();
-    const requestKey = JSON.stringify(request);
     try {
       const response = await apiFetch("/api/import/plan", {
         method: "POST",
@@ -64,12 +104,11 @@ export function ImportDialog(props: {
         body: JSON.stringify(request),
       });
       const nextPlan = await readApiJson<ScanPlan>(response);
-      if (requestKey !== latestPayloadKey.current) return;
+      if (currentRequestKey !== latestPayloadKey.current) return;
       setPlan(nextPlan);
       setPlannedPayload(request);
     } catch (err) {
-      setPlan(null);
-      setPlannedPayload(null);
+      resetPlan();
       setError(errorMessage(err));
     } finally {
       setPreviewing(false);
@@ -106,7 +145,7 @@ export function ImportDialog(props: {
             <h3>Import existing setup</h3>
             <p>
               Preview {currentKind.toLowerCase()} from an existing agent setup before adding it to
-              the user library.
+              the selected library.
             </p>
           </div>
           <button type="button" className="link-button" onClick={props.onClose}>
@@ -122,20 +161,57 @@ export function ImportDialog(props: {
               value={agent}
               onChange={(event) => {
                 setAgent(event.target.value);
-                setPlan(null);
-                setPlannedPayload(null);
+                resetPlan();
               }}
             />
           </label>
           <div className="destination-summary">
             <span>Destination</span>
-            <strong>User-level library</strong>
+            <strong>{destinationLabel(destination)} library</strong>
             <p>{currentKind}</p>
           </div>
         </div>
 
+        <fieldset className="segmented import-destination">
+          <legend className="visually-hidden">Destination</legend>
+          {(["user", "project"] as Destination[]).map((item) => (
+            <label className={destination === item ? "selected" : ""} key={item}>
+              <input
+                type="radio"
+                checked={destination === item}
+                onChange={() => {
+                  setDestination(item);
+                  resetPlan();
+                }}
+              />
+              {destinationLabel(item)}
+            </label>
+          ))}
+        </fieldset>
+
+        {destination === "project" && (
+          <label className="field-row stacked project-dir-row">
+            <span>Project root</span>
+            <input
+              className="dir-input"
+              type="text"
+              placeholder="Project root absolute path"
+              value={dir}
+              onChange={(event) => {
+                setDir(event.target.value);
+                resetPlan();
+              }}
+            />
+          </label>
+        )}
+
         <div className="button-row">
-          <button type="button" className="action secondary" disabled={!canPreview} onClick={preview}>
+          <button
+            type="button"
+            className="action secondary"
+            disabled={!canPreview}
+            onClick={preview}
+          >
             {previewing ? "Previewing..." : "Preview"}
           </button>
           <button type="button" className="action" disabled={!canApply} onClick={applyImport}>
@@ -143,6 +219,8 @@ export function ImportDialog(props: {
           </button>
         </div>
 
+        {dirMissing && <p className="warn">Project-level import requires a project root path.</p>}
+        {!hasAgent && <p className="warn">Enter an agent to import from.</p>}
         {error && (
           <section className="api-error compact">
             <strong>Local API error</strong>

@@ -39,17 +39,17 @@ Options:
 
 | Option | Description |
 | --- | --- |
-| `--force` | Overwrite an existing artifact with the same name. |
+| `--force` | Overwrite an existing resource with the same name. |
 | `--list` | List skill candidates without writing to the store. |
 | `--skill <name>` | Import a named skill. May be repeated. |
 | `--all` | Import all eligible skills from a multi-skill source. |
-| `--collection <name>` | Tag imported artifacts with a collection. `internal` also includes internal skills. |
+| `--collection <name>` | Tag imported resources with a collection. `internal` also includes internal skills. |
 | `--yes` | Skip confirmations. `add` is currently non-interactive. |
 | `--json` | Print a JSON candidate list or import report. |
 
 Supported sources:
 
-| Source | Artifact kind |
+| Source | Resource kind |
 | --- | --- |
 | `.md` file | rules |
 | `.json` file | MCP server |
@@ -65,7 +65,7 @@ git URLs are not part of the M2 import surface.
 
 ## `ls`
 
-Lists stored artifacts and collection tags.
+Lists stored resources and collection tags.
 
 ```bash
 node packages/cli/dist/bin.js ls
@@ -76,7 +76,7 @@ Options:
 
 | Option | Description |
 | --- | --- |
-| `--collection <collection>` | Show artifacts visible for a collection. |
+| `--collection <collection>` | Show resources visible for a collection. |
 
 ## `agents`
 
@@ -116,7 +116,7 @@ Options:
 
 ## `apply`
 
-Plans or writes artifacts to selected agents.
+Plans or writes resources to selected agents.
 
 ```bash
 node packages/cli/dist/bin.js apply --dry-run --agent claude-code,codex
@@ -129,7 +129,7 @@ Options:
 | --- | --- |
 | `-a, --agent <ids>` | Required. Comma-separated agent ids. |
 | `--dir <path>` | Project scope root. Omit for global scope. |
-| `--collection <collection>` | Filter artifacts by collection. |
+| `--collection <collection>` | Filter resources by collection. |
 | `--rules` | Include rules. If no capability flag is set, all capabilities are included. |
 | `--mcp` | Include MCP servers. |
 | `--skills` | Include skills. |
@@ -141,7 +141,7 @@ Options:
 
 ## `scan`
 
-Reads native agent configuration and imports normalized artifacts into the
+Reads native agent configuration and imports normalized resources into the
 store.
 
 ```bash
@@ -158,9 +158,9 @@ Options:
 | `--rules` | Scan only rules. |
 | `--mcp` | Scan only MCP servers. |
 | `--skills` | Scan only skills. |
-| `--into-collection <collection>` | Tag imported artifacts with this collection. |
+| `--into-collection <collection>` | Tag imported resources with this collection. |
 | `--conflict <strategy>` | `keep-theirs`, `keep-mine`, or `copy`. |
-| `--select <names>` | Comma-separated artifact names to import. |
+| `--select <names>` | Comma-separated resource names to import. |
 | `--dry-run` | Show candidates without writing. |
 | `--json` | Print JSON output. |
 

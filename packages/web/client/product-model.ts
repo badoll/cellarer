@@ -2,13 +2,7 @@ import type { Capability } from "@cellarer/core";
 
 export type Page = "dashboard" | "skills" | "mcp" | "rules" | "agents" | "settings";
 export type Destination = "user" | "project";
-export type ResourceState =
-  | "managed"
-  | "discovered"
-  | "synced"
-  | "drifted"
-  | "missing"
-  | "blocked";
+export type ResourceState = "managed" | "discovered" | "synced" | "drifted" | "missing" | "blocked";
 
 export interface ResourceCountLike {
   state: ResourceState;

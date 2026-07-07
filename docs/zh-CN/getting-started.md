@@ -28,7 +28,7 @@ node packages/cli/dist/bin.js init
 
 默认创建或复用 `~/.cellarer`。测试隔离环境可以设置 `CELLARER_HOME`。
 
-## 导入制品
+## 导入资源
 
 ```bash
 node packages/cli/dist/bin.js add ./my-rules.md
@@ -49,7 +49,7 @@ node packages/cli/dist/bin.js add vercel-labs/skills --skill nextjs --collection
 远程 skill 导入会在 `store/metadata/skills/<name>.json` 写入 provenance。
 GitLab 与 arbitrary git URLs 不属于本里程碑支持范围。
 
-## 列出库房制品
+## 列出库房资源
 
 ```bash
 node packages/cli/dist/bin.js ls

@@ -88,8 +88,7 @@ export async function plan(env: Env, opts: DistributeOptions): Promise<Distribut
   const capabilities: Capability[] = opts.capabilities ?? ["rules"];
 
   // collection 过滤(三类制品共用 inCollections;制品无标签视为命中)。
-  const inSel = (id: string) =>
-    inCollections(config.artifacts[id]?.collections ?? [], collections);
+  const inSel = (id: string) => inCollections(config.artifacts[id]?.collections ?? [], collections);
   const selectedRules = ruleArtifacts.filter((a) => inSel(a.id));
   const selectedMcp = mcpArtifacts.filter((a) => inSel(a.id));
   const selectedSkills = skillArtifacts.filter((a) => inSel(a.id));

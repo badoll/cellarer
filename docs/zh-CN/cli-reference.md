@@ -39,17 +39,17 @@ node packages/cli/dist/bin.js add https://github.com/vercel-labs/skills/tree/mai
 
 | 选项 | 说明 |
 | --- | --- |
-| `--force` | 覆盖同名制品。 |
+| `--force` | 覆盖同名资源。 |
 | `--list` | 只列出 skill candidates,不写库房。 |
 | `--skill <name>` | 导入指定 skill,可重复传入。 |
 | `--all` | 从 multi-skill source 导入所有 eligible skills。 |
-| `--collection <name>` | 给导入制品打 collection 标签。`internal` 也会包含 internal skills。 |
+| `--collection <name>` | 给导入资源打 collection 标签。`internal` 也会包含 internal skills。 |
 | `--yes` | 跳过确认提示。当前 `add` 为非交互。 |
 | `--json` | 输出 JSON candidate list 或 import report。 |
 
 支持的来源:
 
-| 来源 | 制品类型 |
+| 来源 | 资源类型 |
 | --- | --- |
 | `.md` 文件 | rules |
 | `.json` 文件 | MCP server |
@@ -65,7 +65,7 @@ URLs 不属于 M2 导入面。
 
 ## `ls`
 
-列出库房制品与 collection 标签。
+列出库房资源与 collection 标签。
 
 ```bash
 node packages/cli/dist/bin.js ls
@@ -76,7 +76,7 @@ node packages/cli/dist/bin.js ls --collection default
 
 | 选项 | 说明 |
 | --- | --- |
-| `--collection <collection>` | 只显示某个 collection 可见的制品。 |
+| `--collection <collection>` | 只显示某个 collection 可见的资源。 |
 
 ## `agents`
 
@@ -115,7 +115,7 @@ node packages/cli/dist/bin.js doctor -a codex --json
 
 ## `apply`
 
-生成计划或写入制品到选中的 agent。
+生成计划或写入资源到选中的 agent。
 
 ```bash
 node packages/cli/dist/bin.js apply --dry-run --agent claude-code,codex
@@ -128,7 +128,7 @@ node packages/cli/dist/bin.js apply --agent claude-code,codex --collection defau
 | --- | --- |
 | `-a, --agent <ids>` | 必填。逗号分隔的 agent id。 |
 | `--dir <path>` | project scope 根目录。不传时为 global scope。 |
-| `--collection <collection>` | 按 collection 过滤制品。 |
+| `--collection <collection>` | 按 collection 过滤资源。 |
 | `--rules` | 包含 rules。不传任何能力 flag 时默认包含全部能力。 |
 | `--mcp` | 包含 MCP servers。 |
 | `--skills` | 包含 skills。 |
@@ -156,9 +156,9 @@ node packages/cli/dist/bin.js scan --agent codex --into-collection default
 | `--rules` | 只扫描 rules。 |
 | `--mcp` | 只扫描 MCP servers。 |
 | `--skills` | 只扫描 skills。 |
-| `--into-collection <collection>` | 给导入制品打上该 collection。 |
+| `--into-collection <collection>` | 给导入资源打上该 collection。 |
 | `--conflict <strategy>` | `keep-theirs`、`keep-mine` 或 `copy`。 |
-| `--select <names>` | 逗号分隔的制品名白名单。 |
+| `--select <names>` | 逗号分隔的资源名白名单。 |
 | `--dry-run` | 只展示候选项,不写入。 |
 | `--json` | 输出 JSON。 |
 

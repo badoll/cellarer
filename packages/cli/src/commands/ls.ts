@@ -9,10 +9,10 @@ import {
 import { Command } from "commander";
 import { resolveContext } from "../context.js";
 
-// 列出库房制品(rules / mcp / skills)及其 collection 标签。
+// 列出库房资源(rules / mcp / skills)及其 collection 标签。
 export function lsCommand(): Command {
   return new Command("ls")
-    .description("列出库房制品(rules / mcp / skills)及其 collection 标签")
+    .description("列出库房资源(rules / mcp / skills)及其 collection 标签")
     .option("--collection <collection>", "按 collection 过滤")
     .action(async (opts: { collection?: string }) => {
       const ctx = resolveContext(opts);
@@ -24,7 +24,7 @@ export function lsCommand(): Command {
       ]);
       const all = [...rules, ...mcp, ...skills];
       if (all.length === 0) {
-        console.log("库房暂无制品(先 cellarer init 并在 store/{rules,mcp,skills} 放置内容)。");
+        console.log("库房暂无资源(先 cellarer init 并在 store/{rules,mcp,skills} 放置内容)。");
         return;
       }
       printGroup("rules", rules, config, opts.collection);
@@ -45,7 +45,7 @@ function printGroup(
     return !collection || inCollections(collections, [collection]);
   });
   if (visible.length === 0) return;
-  console.log(`${label} 制品:`);
+  console.log(`${label} 资源:`);
   for (const a of visible) {
     const collections = config.artifacts[a.id]?.collections ?? [];
     const tag = collections.length > 0 ? ` [${collections.join(", ")}]` : "";

@@ -786,7 +786,12 @@ async function importSkillCandidate(
   const path = await importSkillArtifact(env, opts.storeRoot, candidate.name, candidate.path);
   result.imported.push({ kind: "skills", name: candidate.name, path });
   if (opts.collection) {
-    await tagArtifactCollections(env, opts.storeRoot, [`skills/${candidate.name}`], opts.collection);
+    await tagArtifactCollections(
+      env,
+      opts.storeRoot,
+      [`skills/${candidate.name}`],
+      opts.collection,
+    );
   }
   const provenance: SkillProvenance = {
     kind: "skills",

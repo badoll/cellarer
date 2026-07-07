@@ -25,10 +25,10 @@ function resolveCapabilities(opts: ApplyOpts): Capability[] {
   return caps.length > 0 ? caps : ["rules", "mcp", "skills"];
 }
 
-// 下发(distribute):库房 → agent。支持 rules / mcp / skills。
+// 下发(distribute):库房资源 → agent。支持 rules / mcp / skills。
 export function applyCommand(): Command {
   return new Command("apply")
-    .description("下发库房制品到 agent(默认全局;指定 --dir 则下发到该工程)")
+    .description("下发库房资源到 agent(默认全局;指定 --dir 则下发到该工程)")
     .option("-a, --agent <ids>", "指定 agent(逗号分隔)")
     .option("--dir <path>", "下发到指定工程目录(否则下发到 agent 家目录)")
     .option("--collection <collection>", "按 collection 过滤")
@@ -101,7 +101,7 @@ export function applyCommand(): Command {
         }
       }
       if (result.entries.length === 0) {
-        console.log("无可下发的制品(检查 collection 过滤与 agent 能力)。");
+        console.log("无可下发的资源(检查 collection 过滤与 agent 能力)。");
       }
     });
 }

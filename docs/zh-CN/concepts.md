@@ -20,9 +20,9 @@
 └── secrets/
 ```
 
-## 制品
+## 资源
 
-制品是一个可分发单元:
+资源是 cellarer 库房里的一个可复用单元:
 
 - rule 文件或 rule 片段
 - 一个 canonical MCP server 定义
@@ -41,7 +41,7 @@ target agents。
 
 ## Scope
 
-Scope 决定制品落点:
+Scope 决定资源落点:
 
 - `global`: agent 的家目录配置
 - `project`: 通过 `--dir` 指定的项目目录
@@ -62,7 +62,7 @@ Scope 决定制品落点:
 
 ## 密钥
 
-库房制品与生成文件不应包含明文密钥。制品应使用环境变量引用,例如
+库房资源与生成文件不应包含明文密钥。资源应使用环境变量引用,例如
 `${OPENAI_API_KEY}`,或 cellarer 密钥引用,例如
 `${CELLARER_SECRET:OPENAI_API_KEY}`。
 

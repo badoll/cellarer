@@ -351,7 +351,9 @@ describe("web app — scan import", () => {
 
     const rules = await (await c.app.request("/api/resources/rules")).json();
     const mcp = await (await c.app.request("/api/resources/mcp")).json();
-    expect(rules.resources.map((resource: { name: string }) => resource.name)).toContain("claude-code");
+    expect(rules.resources.map((resource: { name: string }) => resource.name)).toContain(
+      "claude-code",
+    );
     expect(mcp.resources.map((resource: { name: string }) => resource.name)).not.toContain("ctx");
   });
 

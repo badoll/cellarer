@@ -2,13 +2,13 @@ import type { Env } from "./env.js";
 import type { LinkMethod } from "./model/index.js";
 import type { SecretMode } from "./secrets/resolver.js";
 import {
-  type AdapterPatchConfig,
   type AdapterBodyConfig,
+  type AdapterPatchConfig,
   type CellarerConfig,
   loadConfig,
+  packagedConfigText,
   parseAdapterBodyConfig,
   parseAdapterPatchConfig,
-  packagedConfigText,
   parsePackagedConfigForSettings,
   saveConfig,
 } from "./store/config.js";
@@ -44,7 +44,7 @@ function validateCollectionsConfig(config: CellarerConfig): void {
   const errors: string[] = [];
 
   if (!config.collections.default) {
-    errors.push('collections.default must exist');
+    errors.push("collections.default must exist");
   }
 
   if (config.defaults.collections.length === 0) {
@@ -68,7 +68,10 @@ async function loadBuiltinAdapterIds(env: Env): Promise<Set<string>> {
   return new Set(Object.keys(packaged.builtinAdapters));
 }
 
-function validateCustomAdapterConfig(adapterId: string, adapter: AdapterPatchConfig): AdapterBodyConfig {
+function validateCustomAdapterConfig(
+  adapterId: string,
+  adapter: AdapterPatchConfig,
+): AdapterBodyConfig {
   try {
     return parseAdapterBodyConfig(adapter);
   } catch (error) {
@@ -87,7 +90,9 @@ export async function settingsSummary(
     loadLedger(env, opts.storeRoot),
   ]);
   const builtinAdapterIds = Object.keys(packaged.builtinAdapters);
-  const customAdapterIds = Object.keys(config.adapters).filter((id) => !builtinAdapterIds.includes(id));
+  const customAdapterIds = Object.keys(config.adapters).filter(
+    (id) => !builtinAdapterIds.includes(id),
+  );
   return {
     storeRoot: opts.storeRoot,
     cellarerHomeActive: resolveStoreRoot(env) === opts.storeRoot && !!env.env.CELLARER_HOME,

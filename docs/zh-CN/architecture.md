@@ -31,7 +31,7 @@ core 通过 `Env` 接收副作用:
 ## 下发流程
 
 ```text
-store artifacts
+library resources
   -> select agents, scope, collections, capabilities
   -> load adapters and config
   -> render rules, MCP, and skills actions
@@ -47,7 +47,7 @@ rules 与 MCP 渲染为内容写入。skills 使用 link 或 copy。
 ```text
 agent files
   -> adapter paths and codecs
-  -> canonical artifacts
+  -> canonical resources
   -> secret redaction
   -> conflict policy
   -> store writes

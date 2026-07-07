@@ -1,8 +1,8 @@
 import { listActivity } from "../activity.js";
-import type { Env } from "../env.js";
 import { inCollections } from "../engine/plan.js";
 import { status } from "../engine/status.js";
 import type { DriftStatus, StatusItem } from "../engine/types.js";
+import type { Env } from "../env.js";
 import type { Capability, Collection, Scope } from "../model/index.js";
 import { scanTextForSecrets } from "../secrets/detector.js";
 import { loadConfig } from "../store/config.js";
@@ -14,13 +14,7 @@ import {
   skillProvenancePath,
 } from "../store/store.js";
 
-export type ResourceState =
-  | "managed"
-  | "discovered"
-  | "synced"
-  | "drifted"
-  | "missing"
-  | "blocked";
+export type ResourceState = "managed" | "discovered" | "synced" | "drifted" | "missing" | "blocked";
 
 export type Destination = "user" | "project";
 
@@ -109,7 +103,8 @@ export async function resourceCatalog(
   for (const event of activity.events) {
     for (const artifactIdentity of event.references?.artifactIds ?? []) {
       for (const artifactId of expandConcreteArtifactIdentities(artifactIdentity)) {
-        if (!lastActivityByArtifact.has(artifactId)) lastActivityByArtifact.set(artifactId, event.time);
+        if (!lastActivityByArtifact.has(artifactId))
+          lastActivityByArtifact.set(artifactId, event.time);
       }
     }
   }
@@ -148,7 +143,9 @@ export async function resourceCatalog(
       collections,
       sourcePath: artifact.sourcePath,
       provenance:
-        artifact.kind === "skills" ? await readSkillProvenance(env, opts.storeRoot, artifact.name) : undefined,
+        artifact.kind === "skills"
+          ? await readSkillProvenance(env, opts.storeRoot, artifact.name)
+          : undefined,
       syncTargets,
       secretRefs: collectArtifactSecretRefs(ledger.entries, artifact.id),
       lastActivityAt: lastActivityByArtifact.get(artifact.id),
@@ -209,7 +206,9 @@ function scopeToDestination(scope: Scope): Destination {
   return scope === "project" ? "project" : "user";
 }
 
-function statusToResourceState(status: DriftStatus): Exclude<ResourceState, "managed" | "discovered"> {
+function statusToResourceState(
+  status: DriftStatus,
+): Exclude<ResourceState, "managed" | "discovered"> {
   if (status === "ok") return "synced";
   if (status === "broken-link") return "missing";
   return status;

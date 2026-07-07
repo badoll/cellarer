@@ -35,9 +35,9 @@ export function scanCommand(): Command {
     .option("--rules", "仅扫 rules")
     .option("--mcp", "仅扫 mcp")
     .option("--skills", "仅扫 skills")
-    .option("--into-collection <collection>", "给导入制品归入 collection")
+    .option("--into-collection <collection>", "给导入资源归入 collection")
     .option("--conflict <strategy>", "冲突策略:keep-theirs(默认)| keep-mine | copy")
-    .option("--select <names>", "仅导入这些制品名(逗号分隔)")
+    .option("--select <names>", "仅导入这些资源名(逗号分隔)")
     .option("--dry-run", "仅预览发现项,不写库房")
     .option("--json", "JSON 输出(等价 CELLARER_JSON=1)")
     .action(async (opts: ScanOpts) => {
@@ -77,7 +77,7 @@ export function scanCommand(): Command {
         }
         for (const w of plan.warnings) console.warn(`⚠ ${w}`);
         if (plan.items.length === 0) {
-          console.log("未发现可回写的制品。");
+          console.log("未发现可回写的资源。");
           return;
         }
         console.log("dry-run 发现项:");
@@ -92,11 +92,11 @@ export function scanCommand(): Command {
       }
       for (const w of result.plan.warnings) console.warn(`⚠ ${w}`);
       if (result.imported.length === 0) {
-        console.log("无新制品入库(检查冲突策略与 --select)。");
+        console.log("无新资源入库(检查冲突策略与 --select)。");
         return;
       }
       for (const it of result.imported) printItem(it, "已");
-      // 提示:涉密制品需把真值存入 vault。
+      // 提示:涉密资源需把真值存入 vault。
       const refs = result.imported.flatMap((i) => i.secretRefs ?? []);
       if (refs.length > 0) {
         console.log(`\n🔑 检测到密钥引用(真值未入库):${[...new Set(refs)].join(", ")}`);

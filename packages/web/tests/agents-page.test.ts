@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BUILTIN_ADAPTER_IDS, adapterPatch } from "../client/agents-page.js";
+import { adapterPatch, BUILTIN_ADAPTER_IDS } from "../client/agents-page.js";
 
 describe("AgentsPage adapter helpers", () => {
   it("does not override built-in MCP dialect when patching paths", () => {

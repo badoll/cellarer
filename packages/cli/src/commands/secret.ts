@@ -2,7 +2,7 @@ import { createRealEnv, loadVault, resolveStoreRoot, saveVault } from "@cellarer
 import { Command } from "commander";
 
 // 密钥管理子命令(密钥分层第 3 层 age vault;见计划 §10)。
-// 安全红线:ls 只列名不列值;真值只进 vault(加密落盘),绝不打印/绝不入库房制品。
+// 安全红线:ls 只列名不列值;真值只进 vault(加密落盘),绝不打印/绝不入库房资源。
 // 注:口令经 --passphrase 传入(或环境变量 CELLARER_VAULT_PASSPHRASE);v1 不做交互式 TTY 读取。
 interface SecretOpts {
   passphrase?: string;

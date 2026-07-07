@@ -14,12 +14,12 @@ import {
   collectLedgerSecretRefStats,
   collectLedgerSecretRefs,
   createRealEnv,
-  deleteCustomAdapterConfig,
-  discoverySummary,
   type Destination,
   type DiffIdentity,
   dashboardSummary,
+  deleteCustomAdapterConfig,
   diffTarget,
+  discoverySummary,
   doctor,
   type Env,
   inspectAgents,
@@ -31,13 +31,13 @@ import {
   loadLedger,
   loadRegistry,
   plan,
-  resourceCatalog,
   resolveStoreRoot,
+  resourceCatalog,
   revert,
-  saveCollections,
-  saveDefaults,
   type ScanSelection,
   type Scope,
+  saveCollections,
+  saveDefaults,
   scanPlan,
   setAgentEnabled,
   settingsSummary,
@@ -367,7 +367,7 @@ export function createApp(deps: AppDeps) {
         }),
       );
     })
-    // 库房制品总览(三类 + collection 标签)。
+    // 库房资源总览(三类 + collection 标签)。
     .get("/api/artifacts", async (c) => {
       const [config, rules, mcp, skills] = await Promise.all([
         loadConfig(deps.env, deps.storeRoot),
@@ -517,11 +517,15 @@ export function createApp(deps: AppDeps) {
     })
     .put("/api/agents/:id/enabled", async (c) => {
       const body = await c.req.json<{ enabled: boolean }>();
-      return c.json(await setAgentEnabled(deps.env, deps.storeRoot, c.req.param("id"), body.enabled));
+      return c.json(
+        await setAgentEnabled(deps.env, deps.storeRoot, c.req.param("id"), body.enabled),
+      );
     })
     .put("/api/agents/:id/adapter", async (c) => {
       const body = await c.req.json<{ adapter: AdapterPatchConfig }>();
-      return c.json(await upsertAdapterConfig(deps.env, deps.storeRoot, c.req.param("id"), body.adapter));
+      return c.json(
+        await upsertAdapterConfig(deps.env, deps.storeRoot, c.req.param("id"), body.adapter),
+      );
     })
     .delete("/api/agents/:id/adapter", async (c) => {
       return c.json(await deleteCustomAdapterConfig(deps.env, deps.storeRoot, c.req.param("id")));

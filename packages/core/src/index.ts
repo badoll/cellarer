@@ -11,22 +11,6 @@ export {
   listActivity,
   summarizeActivity,
 } from "./activity.js";
-export type {
-  Destination,
-  ResourceCatalogCounts,
-  ResourceCatalogItem,
-  ResourceCatalogOptions,
-  ResourceCatalogResult,
-  ResourceState,
-  ResourceSyncTarget,
-} from "./resources/catalog.js";
-export { resourceCatalog } from "./resources/catalog.js";
-export type {
-  AgentDiscoverySummary,
-  DiscoverySummaryOptions,
-  DiscoverySummaryResult,
-} from "./resources/discovery.js";
-export { discoverySummary } from "./resources/discovery.js";
 // adapters
 export type { Registry } from "./adapters/registry.js";
 export { loadRegistry } from "./adapters/registry.js";
@@ -135,19 +119,21 @@ export type {
 } from "./model/index.js";
 export { createRealEnv } from "./real-env.js";
 export type {
-  DefaultsPatch,
-  SettingsCollection,
-  SettingsSummary,
-  SettingsSummaryOptions,
-} from "./settings.js";
-export {
-  deleteCustomAdapterConfig,
-  saveCollections,
-  saveDefaults,
-  setAgentEnabled,
-  settingsSummary,
-  upsertAdapterConfig,
-} from "./settings.js";
+  Destination,
+  ResourceCatalogCounts,
+  ResourceCatalogItem,
+  ResourceCatalogOptions,
+  ResourceCatalogResult,
+  ResourceState,
+  ResourceSyncTarget,
+} from "./resources/catalog.js";
+export { resourceCatalog } from "./resources/catalog.js";
+export type {
+  AgentDiscoverySummary,
+  DiscoverySummaryOptions,
+  DiscoverySummaryResult,
+} from "./resources/discovery.js";
+export { discoverySummary } from "./resources/discovery.js";
 // secrets
 export {
   detectSecret,
@@ -176,6 +162,20 @@ export {
   saveVault,
   vaultPath,
 } from "./secrets/vault.js";
+export type {
+  DefaultsPatch,
+  SettingsCollection,
+  SettingsSummary,
+  SettingsSummaryOptions,
+} from "./settings.js";
+export {
+  deleteCustomAdapterConfig,
+  saveCollections,
+  saveDefaults,
+  setAgentEnabled,
+  settingsSummary,
+  upsertAdapterConfig,
+} from "./settings.js";
 export { sha256 } from "./store/checksum.js";
 // store
 export type { AdapterBodyConfig, AdapterPatchConfig, CellarerConfig } from "./store/config.js";
@@ -186,8 +186,8 @@ export {
   loadConfig,
   PACKAGED_CONFIG_PATH,
   packagedConfigText,
-  parsePackagedConfigForSettings,
   parseConfig,
+  parsePackagedConfigForSettings,
   saveConfig,
   tagArtifactCollections,
 } from "./store/config.js";
