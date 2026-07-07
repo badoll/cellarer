@@ -28,7 +28,7 @@ const osDefaultsSchema = z
 const defaultsSchema = z
   .object({
     method: methodSchema.default("symlink"),
-    channels: z.array(z.string()).default(["common"]),
+    collections: z.array(z.string()).default(["default"]),
     secretMode: secretModeSchema.default("env"),
     os: z
       .object({
@@ -41,8 +41,8 @@ const defaultsSchema = z
   })
   .strict();
 
-const channelSchema = z.object({ description: z.string().optional() }).strict();
-const artifactSchema = z.object({ channels: z.array(z.string()).default([]) }).strict();
+const collectionSchema = z.object({ description: z.string().optional() }).strict();
+const artifactSchema = z.object({ collections: z.array(z.string()).default([]) }).strict();
 const agentMcpSchema = z.object({ mergeStrategy: mergeStrategySchema.optional() }).strict();
 const agentSchema = z
   .object({
@@ -108,7 +108,7 @@ const adapterBodySchema = adapterPatchSchema.refine((d) => d.rules || d.mcp || d
 const baseConfigShape = {
   version: z.literal(1).default(1),
   defaults: defaultsSchema.prefault({}),
-  channels: z.record(z.string(), channelSchema).default({}),
+  collections: z.record(z.string(), collectionSchema).default({}),
   artifacts: z.record(z.string(), artifactSchema).default({}),
   agents: z.record(z.string(), agentSchema).default({}),
 };
@@ -200,7 +200,7 @@ function userConfigTemplate(packaged: PackagedConfig): CellarerConfig {
   return {
     version: packaged.version,
     defaults: packaged.defaults,
-    channels: packaged.channels,
+    collections: packaged.collections,
     artifacts: packaged.artifacts,
     agents: packaged.agents,
     adapters: {},
@@ -287,18 +287,18 @@ async function saveConfig(env: Env, storeRoot: string, config: CellarerConfig): 
   await atomicWrite(env, path, `${JSON.stringify(config, null, 2)}\n`);
 }
 
-export async function tagArtifactChannels(
+export async function tagArtifactCollections(
   env: Env,
   storeRoot: string,
   artifactIds: string[],
-  channel: string,
+  collection: string,
 ): Promise<string[]> {
   const config = await loadConfig(env, storeRoot);
   const tagged: string[] = [];
   for (const id of artifactIds) {
-    const existing = config.artifacts[id]?.channels ?? [];
-    if (existing.includes(channel)) continue;
-    config.artifacts[id] = { channels: [...existing, channel] };
+    const existing = config.artifacts[id]?.collections ?? [];
+    if (existing.includes(collection)) continue;
+    config.artifacts[id] = { collections: [...existing, collection] };
     tagged.push(id);
   }
   if (tagged.length > 0) await saveConfig(env, storeRoot, config);

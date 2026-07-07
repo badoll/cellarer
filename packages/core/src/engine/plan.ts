@@ -35,11 +35,11 @@ import { applySecretScanGuard } from "./plan/secret-guard.js";
 import { planSkills } from "./skills-plan.js";
 import type { DistributeOptions } from "./types.js";
 
-// 制品是否命中选中通道:制品无标签 → 视为属于默认通道(宽松),命中任一选中通道即可。
-// 导出供 CLI(ls)复用,避免通道匹配规则在 core/CLI 各写一份(不变量 1)。
-export function inChannels(artifactChannels: string[], selected: string[]): boolean {
-  if (artifactChannels.length === 0) return true;
-  return artifactChannels.some((c) => selected.includes(c));
+// 制品是否命中选中 collection:制品无标签 → 视为属于默认 collection(宽松),命中任一选中 collection 即可。
+// 导出供 CLI(ls)复用,避免匹配规则在 core/CLI 各写一份(不变量 1)。
+export function inCollections(artifactCollections: string[], selected: string[]): boolean {
+  if (artifactCollections.length === 0) return true;
+  return artifactCollections.some((collection) => selected.includes(collection));
 }
 
 // planner 的共享上下文:在 plan() 顶层一次性准备好(各 agent 共享),避免 N×M 重复读。
@@ -80,15 +80,16 @@ export async function plan(env: Env, opts: DistributeOptions): Promise<Distribut
   ]);
   warnings.push(...registry.warnings);
 
-  const channels = opts.channels ?? config.defaults.channels;
+  const collections = opts.collections ?? config.defaults.collections;
   // 优先级:CLI --method > 按 OS 覆盖([defaults.os.<platform>]) > 全局默认。
   // (Windows 软链需特权,init 默认写 [defaults.os.win32].method=copy,此处必须实际生效。)
   const osMethod = config.defaults.os?.[env.platform as "win32" | "darwin" | "linux"]?.method;
   const method = opts.method ?? osMethod ?? config.defaults.method;
   const capabilities: Capability[] = opts.capabilities ?? ["rules"];
 
-  // 通道过滤(三类制品共用 inChannels;制品无标签视为命中)。
-  const inSel = (id: string) => inChannels(config.artifacts[id]?.channels ?? [], channels);
+  // collection 过滤(三类制品共用 inCollections;制品无标签视为命中)。
+  const inSel = (id: string) =>
+    inCollections(config.artifacts[id]?.collections ?? [], collections);
   const selectedRules = ruleArtifacts.filter((a) => inSel(a.id));
   const selectedMcp = mcpArtifacts.filter((a) => inSel(a.id));
   const selectedSkills = skillArtifacts.filter((a) => inSel(a.id));

@@ -16,7 +16,7 @@ export interface DiffTargetOptions {
   storeRoot: string;
   identity: DiffIdentity;
   dir?: string;
-  channels?: string[];
+  collections?: string[];
 }
 
 export interface DiffTargetResult {
@@ -36,7 +36,7 @@ export async function diffTarget(env: Env, opts: DiffTargetOptions): Promise<Dif
     scope: identity.scope,
     dir: identity.scope === "project" ? opts.dir : undefined,
     agents: [identity.agent],
-    channels: opts.channels,
+    collections: opts.collections,
     capabilities: [identity.capability],
     secretMode: "env",
     dryRun: true,

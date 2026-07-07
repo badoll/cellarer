@@ -1,11 +1,11 @@
 import { type ActivityEvent, listActivity } from "./activity.js";
 import { loadRegistry } from "./adapters/registry.js";
 import { type AgentDoctorReport, doctor } from "./diagnostics.js";
-import { inChannels, plan } from "./engine/plan.js";
+import { inCollections, plan } from "./engine/plan.js";
 import { status } from "./engine/status.js";
 import type { DistributeOptions, DriftStatus, StatusItem } from "./engine/types.js";
 import type { Env } from "./env.js";
-import type { Capability, Channel, Scope } from "./model/index.js";
+import type { Capability, Collection, Scope } from "./model/index.js";
 import { loadConfig } from "./store/config.js";
 import { collectLedgerSecretRefStats, entryKey, loadLedger } from "./store/ledger.js";
 import { listMcpArtifacts, listRuleArtifacts, listSkillArtifacts } from "./store/store.js";
@@ -26,7 +26,7 @@ export interface DashboardSummaryOptions {
   scope?: Scope;
   dir?: string;
   agents?: string[];
-  channels?: string[];
+  collections?: string[];
   capabilities?: Capability[];
   activityLimit?: number;
   includePlanCoverage?: boolean;
@@ -70,7 +70,7 @@ export interface DashboardAgentReadiness {
 }
 
 export interface DashboardCoverageGroup {
-  channel: Channel;
+  collection: Collection;
   scope: Scope;
   percentage: number | null;
   appliedCount: number;
@@ -100,7 +100,7 @@ export interface DashboardSummaryResult {
   };
   scope: Scope;
   dir?: string;
-  channels: string[];
+  collections: string[];
   capabilities: Capability[];
   artifactCounts: DashboardArtifactCounts;
   agentCounts: DashboardAgentCounts;
@@ -118,7 +118,7 @@ export interface DashboardSummaryResult {
 interface ArtifactLike {
   id: string;
   kind: Capability;
-  channels: string[];
+  collections: string[];
 }
 
 export async function dashboardSummary(
@@ -138,22 +138,22 @@ export async function dashboardSummary(
       status(env, { storeRoot: opts.storeRoot }),
     ]);
 
-  const tag = (id: string): string[] => config.artifacts[id]?.channels ?? [];
+  const tag = (id: string): string[] => config.artifacts[id]?.collections ?? [];
   const artifacts: ArtifactLike[] = [
     ...ruleArtifacts.map((artifact) => ({
       ...artifact,
       kind: "rules" as const,
-      channels: tag(artifact.id),
+      collections: tag(artifact.id),
     })),
     ...mcpArtifacts.map((artifact) => ({
       ...artifact,
       kind: "mcp" as const,
-      channels: tag(artifact.id),
+      collections: tag(artifact.id),
     })),
     ...skillArtifacts.map((artifact) => ({
       ...artifact,
       kind: "skills" as const,
-      channels: tag(artifact.id),
+      collections: tag(artifact.id),
     })),
   ];
   const enabledAgentIds = registry
@@ -161,11 +161,11 @@ export async function dashboardSummary(
     .filter((agent) => config.agents[agent.id]?.enabled !== false)
     .map((agent) => agent.id);
   const selectedAgents = opts.agents && opts.agents.length > 0 ? opts.agents : enabledAgentIds;
-  const channels = dashboardChannels(
-    config.defaults.channels,
-    Object.keys(config.channels),
+  const collections = dashboardCollections(
+    config.defaults.collections,
+    Object.keys(config.collections),
     artifacts,
-    opts.channels,
+    opts.collections,
   );
 
   const doctorReport = await doctor(env, {
@@ -183,7 +183,7 @@ export async function dashboardSummary(
           env,
           opts,
           selectedAgents,
-          channels,
+          collections,
           capabilities,
           artifacts,
           statusItems,
@@ -209,7 +209,7 @@ export async function dashboardSummary(
     },
     scope,
     dir: opts.dir,
-    channels,
+    collections,
     capabilities,
     artifactCounts,
     agentCounts: {
@@ -231,16 +231,16 @@ export async function dashboardSummary(
   };
 }
 
-function dashboardChannels(
+function dashboardCollections(
   defaults: string[],
   configured: string[],
   artifacts: ArtifactLike[],
   explicit: string[] | undefined,
 ): string[] {
   if (explicit && explicit.length > 0) return [...new Set(explicit)];
-  const used = artifacts.flatMap((artifact) => artifact.channels);
-  const channels = [...new Set([...configured, ...used])];
-  return channels.length > 0 ? channels : defaults;
+  const used = artifacts.flatMap((artifact) => artifact.collections);
+  const collections = [...new Set([...configured, ...used])];
+  return collections.length > 0 ? collections : defaults;
 }
 
 function agentReadiness(agent: AgentDoctorReport): DashboardAgentReadiness {
@@ -295,7 +295,7 @@ async function coverageGroups(
   env: Env,
   opts: DashboardSummaryOptions,
   agents: string[],
-  channels: string[],
+  collections: string[],
   capabilities: Capability[],
   artifacts: ArtifactLike[],
   statusItems: StatusItem[],
@@ -309,14 +309,14 @@ async function coverageGroups(
 ): Promise<DashboardCoverageGroup[]> {
   const scopes: Scope[] = opts.dir ? ["global", "project"] : ["global"];
   const groups: DashboardCoverageGroup[] = [];
-  for (const channel of channels) {
+  for (const collection of collections) {
     for (const scope of scopes) {
       const p = await plan(env, {
         storeRoot: opts.storeRoot,
         scope,
         dir: scope === "project" ? opts.dir : undefined,
         agents,
-        channels: [channel],
+        collections: [collection],
         capabilities,
         secretMode: "env",
         dryRun: true,
@@ -351,12 +351,13 @@ async function coverageGroups(
       const artifactIds = artifacts
         .filter(
           (artifact) =>
-            capabilities.includes(artifact.kind) && inChannels(artifact.channels, [channel]),
+            capabilities.includes(artifact.kind) &&
+            inCollections(artifact.collections, [collection]),
         )
         .map((artifact) => artifact.id);
-      const lastAppliedAt = latestAppliedAt(ledgerEntries, channel, scope, artifacts);
+      const lastAppliedAt = latestAppliedAt(ledgerEntries, collection, scope, artifacts);
       groups.push({
-        channel,
+        collection,
         scope,
         percentage,
         appliedCount,
@@ -369,7 +370,9 @@ async function coverageGroups(
         artifactsCount: artifactIds.length,
         lastAppliedAt,
         emptyReason:
-          desiredCount === 0 ? "No supported desired units for this channel and scope." : undefined,
+          desiredCount === 0
+            ? "No supported desired units for this collection and scope."
+            : undefined,
       });
     }
   }
@@ -378,7 +381,7 @@ async function coverageGroups(
 
 function latestAppliedAt(
   entries: { artifact: string; scope: Scope; appliedAt: string }[],
-  channel: string,
+  collection: string,
   scope: Scope,
   artifacts: ArtifactLike[],
 ): string | undefined {
@@ -388,10 +391,11 @@ function latestAppliedAt(
     .filter((entry) => {
       if (entry.artifact === "rules/*")
         return artifacts.some(
-          (artifact) => artifact.kind === "rules" && inChannels(artifact.channels, [channel]),
+          (artifact) =>
+            artifact.kind === "rules" && inCollections(artifact.collections, [collection]),
         );
       const artifact = byId.get(entry.artifact);
-      return artifact ? inChannels(artifact.channels, [channel]) : true;
+      return artifact ? inCollections(artifact.collections, [collection]) : true;
     })
     .map((entry) => entry.appliedAt)
     .sort();

@@ -64,7 +64,7 @@ export async function listRuleArtifacts(env: Env, storeRoot: string): Promise<Ar
     kind: "rules",
     name,
     sourcePath: join(dir, `${name}.md`),
-    channels: [],
+    collections: [],
   }));
 }
 
@@ -93,7 +93,7 @@ export async function listMcpArtifacts(env: Env, storeRoot: string): Promise<Art
     kind: "mcp",
     name,
     sourcePath: join(dir, `${name}.json`),
-    channels: [],
+    collections: [],
   }));
 }
 
@@ -132,7 +132,7 @@ export async function listSkillArtifacts(env: Env, storeRoot: string): Promise<A
     kind: "skills",
     name,
     sourcePath: join(dir, name),
-    channels: [],
+    collections: [],
   }));
 }
 

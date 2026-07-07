@@ -6,17 +6,17 @@ const SAMPLE = JSON.stringify({
   version: 1,
   defaults: {
     method: "symlink",
-    channels: ["common"],
+    collections: ["default"],
     secretMode: "env",
     os: { win32: { method: "copy" } },
   },
-  channels: {
-    common: { description: "通用" },
-    internal: { description: "内网专用" },
+  collections: {
+    default: { description: "Default" },
+    internal: { description: "Internal" },
   },
   artifacts: {
-    "rules/coding-style": { channels: ["common"] },
-    "mcp/company-gateway": { channels: ["internal"] },
+    "rules/coding-style": { collections: ["default"] },
+    "mcp/company-gateway": { collections: ["internal"] },
   },
   agents: {
     cursor: { enabled: true },
@@ -37,11 +37,11 @@ describe("store/config", () => {
   it("parses a full config.json with defaults", () => {
     const cfg = parseConfig(SAMPLE);
     expect(cfg.defaults.method).toBe("symlink");
-    expect(cfg.defaults.channels).toEqual(["common"]);
+    expect(cfg.defaults.collections).toEqual(["default"]);
     expect(cfg.defaults.secretMode).toBe("env");
     expect(cfg.defaults.os?.win32?.method).toBe("copy");
-    expect(cfg.channels.common?.description).toBe("通用");
-    expect(cfg.artifacts["rules/coding-style"]?.channels).toEqual(["common"]);
+    expect(cfg.collections.default?.description).toBe("Default");
+    expect(cfg.artifacts["rules/coding-style"]?.collections).toEqual(["default"]);
     expect(cfg.agents.cursor?.enabled).toBe(true);
     expect(cfg.agents.codex?.mcp?.mergeStrategy).toBe("merge");
     expect(cfg.adapters["claude-code"]?.rules?.global).toBe("~/custom-claude/CLAUDE.md");
@@ -52,9 +52,9 @@ describe("store/config", () => {
     const cfg = parseConfig("");
     expect(cfg.version).toBe(1);
     expect(cfg.defaults.method).toBe("symlink");
-    expect(cfg.defaults.channels).toEqual(["common"]);
+    expect(cfg.defaults.collections).toEqual(["default"]);
     expect(cfg.defaults.secretMode).toBe("env");
-    expect(cfg.channels).toEqual({});
+    expect(cfg.collections).toEqual({});
     expect(cfg.artifacts).toEqual({});
     expect(cfg.agents).toEqual({});
     expect(cfg.adapters).toEqual({});
@@ -82,6 +82,14 @@ describe("store/config", () => {
     expect(() => parseConfig(JSON.stringify({ adapterOverrides: {} }))).toThrow();
     expect(() => parseConfig(JSON.stringify({ customAdapters: [] }))).toThrow();
     expect(() => parseConfig(JSON.stringify({ builtinAdapters: {} }))).toThrow();
+  });
+
+  it("rejects removed channel config fields", () => {
+    expect(() => parseConfig(JSON.stringify({ defaults: { channels: ["common"] } }))).toThrow();
+    expect(() => parseConfig(JSON.stringify({ channels: { common: {} } }))).toThrow();
+    expect(() =>
+      parseConfig(JSON.stringify({ artifacts: { "rules/x": { channels: ["common"] } } })),
+    ).toThrow();
   });
 
   describe("loadConfig from disk", () => {

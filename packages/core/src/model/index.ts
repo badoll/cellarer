@@ -7,8 +7,8 @@ export type Capability = "rules" | "mcp" | "skills";
 // 实际落地方式:计划用 LinkMethod;落地可能因 Windows 回退为 junction/copy,记台账。
 export type AppliedMethod = "write" | "symlink" | "junction" | "copy";
 
-// 通道:制品的场景标签(common / internal / 自定义)。
-export type Channel = string;
+// Collection:制品的场景标签(default / internal / 自定义)。
+export type Collection = string;
 
 // 制品类型(v1:rule 片段;M2 起扩展 mcp / skill)。
 export type ArtifactKind = "rules" | "mcp" | "skills";
@@ -21,7 +21,7 @@ export interface Artifact {
   name: string;
   // 库房内绝对路径(rule = .md 文件;skill = 目录)。
   sourcePath: string;
-  channels: Channel[];
+  collections: Collection[];
 }
 
 // 下发计划中的单个动作(纯描述,plan 阶段产出,不含真值密钥)。

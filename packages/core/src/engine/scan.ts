@@ -16,7 +16,7 @@ import { type McpServer, serverToRaw } from "../mcp/model.js";
 import type { Scope } from "../model/index.js";
 import { type SecretFinding, scanTextForSecrets } from "../secrets/detector.js";
 import { redactFields } from "../secrets/redactor.js";
-import { tagArtifactChannels } from "../store/config.js";
+import { tagArtifactCollections } from "../store/config.js";
 import {
   importSkillArtifact,
   listMcpArtifacts,
@@ -43,8 +43,8 @@ export interface ScanOptions {
   agent: string;
   scope: Scope;
   dir?: string;
-  // 入库目标通道(写 config.json 的 artifacts 标签)。
-  intoChannel?: string;
+  // 入库目标 collection(写 config.json 的 artifacts 标签)。
+  intoCollection?: string;
   conflict?: ConflictStrategy;
   // 仅扫描这些能力(缺省三类全扫)。
   capabilities?: ("rules" | "mcp" | "skills")[];
@@ -375,10 +375,10 @@ export async function applyScan(env: Env, opts: ScanOptions): Promise<ScanResult
     imported.push(c.item);
   }
 
-  // --into-channel:给本次导入的制品打通道标签。
-  if (opts.intoChannel && imported.length > 0) {
+  // --into-collection:给本次导入的制品打 collection 标签。
+  if (opts.intoCollection && imported.length > 0) {
     const ids = imported.map((i) => `${i.kind}/${i.name}`);
-    await tagArtifactChannels(env, opts.storeRoot, ids, opts.intoChannel);
+    await tagArtifactCollections(env, opts.storeRoot, ids, opts.intoCollection);
   }
 
   try {

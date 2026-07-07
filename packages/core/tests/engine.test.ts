@@ -8,7 +8,7 @@ import { type CellarerConfig, initialConfigText, parseConfig } from "../src/stor
 import { loadLedger, makeLedger, saveLedger } from "../src/store/ledger.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
-// 在临时库房里放一个 rule 制品(可选 channel 标签),返回库房根。
+// 在临时库房里放一个 rule 制品(可选 collection 标签),返回库房根。
 async function seedStore(
   t: TmpEnv,
   rules: Record<string, string>,
@@ -58,16 +58,16 @@ describe("engine/plan", () => {
     await expect(t.env.fs.readFile(t.path("home", ".claude", "CLAUDE.md"))).rejects.toThrow();
   });
 
-  it("filters rules by channel", async () => {
+  it("filters rules by collection", async () => {
     const storeRoot = await seedStore(t, { common1: "C", secret1: "S" }, (config) => {
-      config.artifacts["rules/secret1"] = { channels: ["internal"] };
-      config.artifacts["rules/common1"] = { channels: ["common"] };
+      config.artifacts["rules/secret1"] = { collections: ["internal"] };
+      config.artifacts["rules/common1"] = { collections: ["default"] };
     });
     const p = await plan(t.env, {
       storeRoot,
       scope: "global",
       agents: ["claude-code"],
-      channels: ["common"],
+      collections: ["default"],
     });
     expect(p.actions[0]?.preview?.after).toContain("C");
     expect(p.actions[0]?.preview?.after).not.toContain("\nS\n");

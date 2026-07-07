@@ -66,7 +66,7 @@ export {
   type SkillProvenance,
 } from "./engine/add.js";
 export { apply } from "./engine/apply.js";
-export { inChannels, plan } from "./engine/plan.js";
+export { inCollections, plan } from "./engine/plan.js";
 export { revert } from "./engine/revert.js";
 export {
   applyScan,
@@ -109,7 +109,7 @@ export type {
   Artifact,
   ArtifactKind,
   Capability,
-  Channel,
+  Collection,
   DistributePlan,
   Ledger,
   LedgerEntry,
@@ -157,6 +157,7 @@ export {
   PACKAGED_CONFIG_PATH,
   packagedConfigText,
   parseConfig,
+  tagArtifactCollections,
 } from "./store/config.js";
 export {
   addEntries,

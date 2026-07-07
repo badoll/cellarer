@@ -2,7 +2,7 @@
   "version": 1,
   "defaults": {
     "method": "symlink",
-    "channels": ["common"],
+    "collections": ["default"],
     "secretMode": "env",
     "os": {
       "win32": {
@@ -10,9 +10,9 @@
       }
     }
   },
-  "channels": {
-    "common": {
-      "description": "通用"
+  "collections": {
+    "default": {
+      "description": "Default"
     }
   },
   "artifacts": {},

@@ -6,7 +6,7 @@ import { lstatOrNull, readdirOrEmpty, readFileOrNull, statOrNull } from "../fs/p
 import { type McpServer, serverFromRaw } from "../mcp/model.js";
 import type { ArtifactKind } from "../model/index.js";
 import { detectSecret, scanTextForSecrets } from "../secrets/detector.js";
-import { tagArtifactChannels } from "../store/config.js";
+import { tagArtifactCollections } from "../store/config.js";
 import {
   importSkillArtifact,
   isSafeArtifactName,
@@ -51,8 +51,8 @@ export interface AddOptions {
   // 重复 --skill 的值。与 --all 互斥。
   skills?: string[];
   all?: boolean;
-  // 导入后写 config.artifacts channels;channel internal 也作为显式包含 internal skill 的策略信号。
-  channel?: string;
+  // 导入后写 config.artifacts collections;collection internal 也作为显式包含 internal skill 的策略信号。
+  collection?: string;
   // M2 只保留命令面兼容;当前没有交互确认。
   yes?: boolean;
   gitClient?: GitClient;
@@ -89,7 +89,7 @@ export interface SkillProvenance {
   ref: string | null;
   commit: string | null;
   subpath: string;
-  channel: string | null;
+  collection: string | null;
   importedAt: string;
   frontmatter: SkillFrontmatter | null;
   internal: boolean;
@@ -286,8 +286,8 @@ async function addLocalFile(
   }
 
   result.imported.push({ kind, name, path });
-  if (opts.channel)
-    await tagArtifactChannels(env, opts.storeRoot, [`${kind}/${name}`], opts.channel);
+  if (opts.collection)
+    await tagArtifactCollections(env, opts.storeRoot, [`${kind}/${name}`], opts.collection);
   return result;
 }
 
@@ -685,7 +685,7 @@ function selectCandidates(
   opts: AddOptions,
   result: AddResult,
 ): SkillCandidate[] {
-  const includeInternal = opts.channel === "internal";
+  const includeInternal = opts.collection === "internal";
   if (opts.list) return [];
 
   if (opts.all) {
@@ -695,7 +695,7 @@ function selectCandidates(
         result.skipped.push({
           kind: "skills",
           name: c.name,
-          reason: "internal skill skipped (use --channel internal to include)",
+          reason: "internal skill skipped (use --collection internal to include)",
         });
       }
     }
@@ -715,7 +715,7 @@ function selectCandidates(
         result.rejected.push({
           kind: "skills",
           name,
-          reason: "internal skill requires --channel internal",
+          reason: "internal skill requires --collection internal",
         });
         continue;
       }
@@ -728,7 +728,7 @@ function selectCandidates(
   if (visible.length === 1) return visible;
   if (visible.length === 0 && candidates.length > 0) {
     throw new Error(
-      "Source contains only internal skills. Use --channel internal to include them.",
+      "Source contains only internal skills. Use --collection internal to include them.",
     );
   }
   if (visible.length > 1) {
@@ -785,8 +785,8 @@ async function importSkillCandidate(
 
   const path = await importSkillArtifact(env, opts.storeRoot, candidate.name, candidate.path);
   result.imported.push({ kind: "skills", name: candidate.name, path });
-  if (opts.channel) {
-    await tagArtifactChannels(env, opts.storeRoot, [`skills/${candidate.name}`], opts.channel);
+  if (opts.collection) {
+    await tagArtifactCollections(env, opts.storeRoot, [`skills/${candidate.name}`], opts.collection);
   }
   const provenance: SkillProvenance = {
     kind: "skills",
@@ -797,7 +797,7 @@ async function importSkillCandidate(
     ref: candidate.ref,
     commit: candidate.commit,
     subpath: candidate.subpath,
-    channel: opts.channel ?? null,
+    collection: opts.collection ?? null,
     importedAt: env.now().toISOString(),
     frontmatter: candidate.frontmatter,
     internal: candidate.internal,
@@ -827,7 +827,7 @@ export async function add(env: Env, opts: AddOptions): Promise<AddResult> {
 
     const result = emptyResult();
     const candidates = await discoverSkillCandidates(env, stage);
-    result.candidates = visibleCandidates(candidates, opts.channel === "internal");
+    result.candidates = visibleCandidates(candidates, opts.collection === "internal");
     if (opts.list) return result;
 
     const selected = selectCandidates(candidates, opts, result);

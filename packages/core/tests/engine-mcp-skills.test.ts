@@ -548,7 +548,7 @@ describe("engine skills distribution", () => {
   });
 });
 
-describe("channel filtering across capabilities", () => {
+describe("collection filtering across capabilities", () => {
   let t: TmpEnv;
   beforeEach(async () => {
     t = makeTmpEnv();
@@ -556,13 +556,13 @@ describe("channel filtering across capabilities", () => {
   });
   afterEach(() => t.cleanup());
 
-  it("filters mcp + skills by channel like rules", async () => {
+  it("filters mcp + skills by collection like rules", async () => {
     const storeRoot = await seedStore(t, {
-      mcp: { common1: { command: "a" }, internal1: { command: "b" } },
-      skills: { commonSkill: { "x.md": "x" }, internalSkill: { "y.md": "y" } },
+      mcp: { default1: { command: "a" }, internal1: { command: "b" } },
+      skills: { defaultSkill: { "x.md": "x" }, internalSkill: { "y.md": "y" } },
       configure: (config) => {
-        config.artifacts["mcp/internal1"] = { channels: ["internal"] };
-        config.artifacts["skills/internalSkill"] = { channels: ["internal"] };
+        config.artifacts["mcp/internal1"] = { collections: ["internal"] };
+        config.artifacts["skills/internalSkill"] = { collections: ["internal"] };
       },
     });
     const p = await plan(t.env, {
@@ -570,15 +570,15 @@ describe("channel filtering across capabilities", () => {
       scope: "global",
       agents: ["claude-code"],
       capabilities: ["mcp", "skills"],
-      channels: ["common"],
+      collections: ["default"],
     });
-    // mcp:internal1 被过滤,只剩 common1。
+    // mcp:internal1 被过滤,只剩 default1。
     const mcp = p.actions.find((a) => a.capability === "mcp");
-    expect(mcp?.preview?.after).toContain("common1");
+    expect(mcp?.preview?.after).toContain("default1");
     expect(mcp?.preview?.after).not.toContain("internal1");
-    // skills:只下发 commonSkill。
+    // skills:只下发 defaultSkill。
     const skillTargets = p.actions.filter((a) => a.capability === "skills").map((a) => a.artifact);
-    expect(skillTargets).toContain("skills/commonSkill");
+    expect(skillTargets).toContain("skills/defaultSkill");
     expect(skillTargets).not.toContain("skills/internalSkill");
   });
 });

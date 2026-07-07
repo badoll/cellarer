@@ -6,7 +6,7 @@ import {
   writeMcpArtifact,
   writeRuleArtifact,
 } from "../src/index.js";
-import { tagArtifactChannels } from "../src/store/config.js";
+import { tagArtifactCollections } from "../src/store/config.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
 describe("dashboard summary", () => {
@@ -126,19 +126,19 @@ describe("dashboard summary", () => {
     expect(missing.agents[0]).toMatchObject({ id: "claude-code", status: "not-found" });
   });
 
-  it("uses explicit channel filters for coverage groups", async () => {
+  it("uses explicit collection filters for coverage groups", async () => {
     await writeRuleArtifact(t.env, storeRoot, "style", "# style");
-    await tagArtifactChannels(t.env, storeRoot, ["rules/style"], "internal");
+    await tagArtifactCollections(t.env, storeRoot, ["rules/style"], "internal");
 
     const summary = await dashboardSummary(t.env, {
       storeRoot,
-      channels: ["internal"],
+      collections: ["internal"],
       agents: ["codex"],
       capabilities: ["rules"],
     });
 
-    expect(summary.channels).toEqual(["internal"]);
-    expect(summary.distributionCoverage.map((group) => group.channel)).toEqual(["internal"]);
+    expect(summary.collections).toEqual(["internal"]);
+    expect(summary.distributionCoverage.map((group) => group.collection)).toEqual(["internal"]);
     expect(summary.distributionCoverage[0]?.artifactsCount).toBe(1);
   });
 });

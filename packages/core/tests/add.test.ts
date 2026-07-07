@@ -43,13 +43,13 @@ describe("engine/add — local source import", () => {
     expect(JSON.parse(written).command).toBe("npx");
   });
 
-  it("imports a single local skill directory and writes channel + provenance", async () => {
+  it("imports a single local skill directory and writes collection + provenance", async () => {
     const src = t.path("my-skill");
     await writeSkill(t, "my-skill", {
       name: "my-skill",
       description: "Does one useful thing",
     });
-    const r = await add(t.env, { storeRoot, source: src, channel: "public" });
+    const r = await add(t.env, { storeRoot, source: src, collection: "public" });
     expect(r.imported[0]?.kind).toBe("skills");
     expect(r.imported[0]?.name).toBe("my-skill");
     expect(
@@ -57,7 +57,7 @@ describe("engine/add — local source import", () => {
         t.path("home", ".cellarer", "store", "skills", "my-skill", "SKILL.md"),
       ),
     ).toContain("Does one useful thing");
-    expect((await loadConfig(t.env, storeRoot)).artifacts["skills/my-skill"]?.channels).toEqual([
+    expect((await loadConfig(t.env, storeRoot)).artifacts["skills/my-skill"]?.collections).toEqual([
       "public",
     ]);
     const provenance = JSON.parse(
@@ -67,7 +67,7 @@ describe("engine/add — local source import", () => {
       kind: "skills",
       name: "my-skill",
       vcs: "local",
-      channel: "public",
+      collection: "public",
       commit: null,
       subpath: ".",
     });
@@ -125,7 +125,7 @@ describe("engine/add — local source import", () => {
     expect(r.imported.map((i) => i.name).sort()).toEqual(["alpha", "beta"]);
   });
 
-  it("skips internal skills under --all unless --channel internal is provided", async () => {
+  it("skips internal skills under --all unless --collection internal is provided", async () => {
     await writeSkill(t, "repo/skills/public-one", {
       name: "public-one",
       description: "Public skill",
@@ -146,11 +146,11 @@ describe("engine/add — local source import", () => {
       storeRoot: internalStore,
       source: t.path("repo"),
       all: true,
-      channel: "internal",
+      collection: "internal",
     });
     expect(withInternal.imported.map((i) => i.name).sort()).toEqual(["private-one", "public-one"]);
     const config = await loadConfig(t.env, internalStore);
-    expect(config.artifacts["skills/private-one"]?.channels).toEqual(["internal"]);
+    expect(config.artifacts["skills/private-one"]?.collections).toEqual(["internal"]);
   });
 
   it("imports good candidates while rejecting invalid frontmatter under --all", async () => {

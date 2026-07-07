@@ -163,7 +163,7 @@ describe("engine/scan — mcp secret redaction (red line)", () => {
     expect(mcp.map((a) => a.name)).not.toContain("weird");
   });
 
-  it("--into-channel tags imported artifacts in config.json", async () => {
+  it("--into-collection tags imported artifacts in config.json", async () => {
     const storeRoot = await emptyStore(t);
     await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
     await t.env.fs.writeFile(
@@ -175,11 +175,11 @@ describe("engine/scan — mcp secret redaction (red line)", () => {
       agent: "claude-code",
       scope: "global",
       capabilities: ["mcp"],
-      intoChannel: "internal",
+      intoCollection: "internal",
     });
     const { loadConfig } = await import("../src/store/config.js");
     const config = await loadConfig(t.env, storeRoot);
-    expect(config.artifacts["mcp/internalsrv"]?.channels).toEqual(["internal"]);
+    expect(config.artifacts["mcp/internalsrv"]?.collections).toEqual(["internal"]);
   });
 });
 

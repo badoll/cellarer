@@ -8,7 +8,7 @@ export interface DistributeOptions {
   scope: Scope;
   dir?: string; // project scope 的工程根
   agents: string[]; // 选中的 agent id
-  channels?: string[]; // 通道过滤(缺省用 config.defaults.channels)
+  collections?: string[]; // collection 过滤(缺省用 config.defaults.collections)
   capabilities?: Capability[]; // 缺省 ["rules"](M1)
   method?: LinkMethod; // 覆盖默认 method
   // mcp 合并策略覆盖(CLI --mcp-overwrite);缺省用 adapter/config 默认。
