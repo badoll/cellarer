@@ -43,7 +43,7 @@ async function seedStore(c: Ctx): Promise<void> {
   }
 }
 
-describe("web app — artifacts/agents", () => {
+describe("web app — resources/agents", () => {
   let c: Ctx;
   beforeEach(async () => {
     c = makeCtx();
@@ -51,21 +51,20 @@ describe("web app — artifacts/agents", () => {
   });
   afterEach(() => c.cleanup());
 
-  it("lists store artifacts with collections", async () => {
+  it("lists resource catalog with collections", async () => {
     await c.env.fs.writeFile(join(c.storeRoot, "store", "rules", "style.md"), "# rules");
-    await c.env.fs.writeFile(
-      join(c.storeRoot, "store", "mcp", "ctx.json"),
-      JSON.stringify({ command: "npx" }),
-    );
-    const res = await c.app.request("/api/artifacts");
+    const res = await c.app.request("/api/resources/rules");
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.rules.map((a: { name: string }) => a.name)).toContain("style");
-    expect(body.mcp.map((a: { name: string }) => a.name)).toContain("ctx");
-    expect(body).toMatchObject({
-      collections: ["default"],
-    });
-    expect(body.rules[0]).toHaveProperty("collections");
+    expect(body.resources).toContainEqual(
+      expect.objectContaining({
+        id: "rules/style",
+        kind: "rules",
+        name: "style",
+        collections: [],
+        state: "managed",
+      }),
+    );
   });
 
   it("lists configured default agents with capabilities", async () => {
@@ -127,26 +126,50 @@ describe("web app — dashboard M3 routes", () => {
     expect(await activity.json()).toMatchObject({ events: [], warnings: [] });
   });
 
+  it("serves discovery summary by destination", async () => {
+    await c.env.fs.mkdir(join(c.root, "home", ".codex"), { recursive: true });
+    await c.env.fs.writeFile(join(c.root, "home", ".codex", "AGENTS.md"), "# rules");
+
+    const res = await c.app.request("/api/discovery?agents=codex&destination=user");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      destination: "user",
+      totals: { rules: 1, mcp: 0, skills: 0 },
+    });
+  });
+
   it("records mutating operations as activity but not previews or dry-runs", async () => {
     await c.env.fs.mkdir(join(c.root, "home", ".claude"), { recursive: true });
     await c.env.fs.writeFile(join(c.root, "home", ".claude", "CLAUDE.md"), "# Team rules");
 
-    await c.app.request("/api/scan", {
+    await c.app.request("/api/import/plan", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agent: "claude-code", scope: "global", capabilities: ["rules"] }),
+      body: JSON.stringify({
+        agent: "claude-code",
+        destination: "user",
+        capabilities: ["rules"],
+      }),
     });
     expect((await (await c.app.request("/api/activity")).json()).events).toHaveLength(0);
 
-    await c.app.request("/api/scan/apply", {
+    await c.app.request("/api/import/apply", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agent: "claude-code", scope: "global", capabilities: ["rules"] }),
+      body: JSON.stringify({
+        agent: "claude-code",
+        destination: "user",
+        capabilities: ["rules"],
+      }),
     });
-    await c.app.request("/api/apply", {
+    await c.app.request("/api/sync/apply", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agents: ["claude-code"], scope: "global", capabilities: ["rules"] }),
+      body: JSON.stringify({
+        agents: ["claude-code"],
+        destination: "user",
+        resources: { kinds: ["rules"] },
+      }),
     });
     await c.app.request("/api/revert", {
       method: "POST",
@@ -169,10 +192,14 @@ describe("web app — dashboard M3 routes", () => {
 
   it("serves available and unavailable drift diffs without plaintext secrets", async () => {
     await c.env.fs.writeFile(join(c.storeRoot, "store", "rules", "style.md"), "# style");
-    await c.app.request("/api/apply", {
+    await c.app.request("/api/sync/apply", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agents: ["claude-code"], scope: "global", capabilities: ["rules"] }),
+      body: JSON.stringify({
+        agents: ["claude-code"],
+        destination: "user",
+        resources: { kinds: ["rules"] },
+      }),
     });
     const [item] = (await (await c.app.request("/api/status")).json()).items;
     await c.env.fs.writeFile(item.target, `token=${REAL}`);
@@ -242,10 +269,14 @@ describe("web app — secret safety (red line)", () => {
       join(c.storeRoot, "store", "mcp", "ctx.json"),
       JSON.stringify({ command: "npx", env: { API_KEY: CELLARER_SECRET_REF } }),
     );
-    const res = await c.app.request("/api/plan", {
+    const res = await c.app.request("/api/sync/plan", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agents: ["claude-code"], scope: "global", capabilities: ["mcp"] }),
+      body: JSON.stringify({
+        agents: ["claude-code"],
+        destination: "user",
+        resources: { kinds: ["mcp"] },
+      }),
     });
     const text = await res.text();
     expect(text).not.toContain(REAL); // 真值绝不出现在响应
@@ -258,10 +289,14 @@ describe("web app — secret safety (red line)", () => {
       join(c.storeRoot, "store", "mcp", "ctx.json"),
       JSON.stringify({ command: "npx", env: { API_KEY: CELLARER_SECRET_REF } }),
     );
-    await c.app.request("/api/apply", {
+    await c.app.request("/api/sync/apply", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agents: ["claude-code"], scope: "global", capabilities: ["mcp"] }),
+      body: JSON.stringify({
+        agents: ["claude-code"],
+        destination: "user",
+        resources: { kinds: ["mcp"] },
+      }),
     });
     const res = await c.app.request("/api/secrets");
     const body = await res.json();
@@ -285,12 +320,12 @@ describe("web app — scan import", () => {
     await c.env.fs.mkdir(join(c.root, "home", ".claude"), { recursive: true });
     await c.env.fs.writeFile(join(c.root, "home", ".claude", "CLAUDE.md"), "# Team rules");
 
-    const res = await c.app.request("/api/scan/apply", {
+    const res = await c.app.request("/api/import/apply", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         agent: "claude-code",
-        scope: "global",
+        destination: "user",
         capabilities: ["rules"],
         intoCollection: "default",
       }),
@@ -301,11 +336,10 @@ describe("web app — scan import", () => {
       expect.objectContaining({ kind: "rules", name: "claude-code", action: "import" }),
     );
 
-    const artifacts = await (await c.app.request("/api/artifacts")).json();
-    expect(artifacts.rules).toContainEqual(
+    const artifacts = await (await c.app.request("/api/resources/rules")).json();
+    expect(artifacts.resources).toContainEqual(
       expect.objectContaining({ name: "claude-code", collections: ["default"] }),
     );
-    expect(artifacts.collections).toContain("default");
     const config = JSON.parse(await c.env.fs.readFile(join(c.storeRoot, "config.json"), "utf8"));
     expect(config.artifacts["rules/claude-code"]).toMatchObject({
       collections: ["default"],
@@ -320,12 +354,12 @@ describe("web app — scan import", () => {
       JSON.stringify({ mcpServers: { "claude-code": { command: "npx" } } }),
     );
 
-    const res = await c.app.request("/api/scan/apply", {
+    const res = await c.app.request("/api/import/apply", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         agent: "claude-code",
-        scope: "global",
+        destination: "user",
         capabilities: ["rules", "mcp"],
         selectItems: [
           {
@@ -342,9 +376,10 @@ describe("web app — scan import", () => {
       expect.objectContaining({ kind: "rules", name: "claude-code" }),
     ]);
 
-    const artifacts = await (await c.app.request("/api/artifacts")).json();
-    expect(artifacts.rules.map((a: { name: string }) => a.name)).toContain("claude-code");
-    expect(artifacts.mcp.map((a: { name: string }) => a.name)).not.toContain("claude-code");
+    const rules = await (await c.app.request("/api/resources/rules")).json();
+    const mcp = await (await c.app.request("/api/resources/mcp")).json();
+    expect(rules.resources.map((a: { name: string }) => a.name)).toContain("claude-code");
+    expect(mcp.resources.map((a: { name: string }) => a.name)).not.toContain("claude-code");
   });
 
   it("does not expose plaintext secrets while importing scanned MCP config", async () => {
@@ -354,10 +389,14 @@ describe("web app — scan import", () => {
       JSON.stringify({ mcpServers: { ctx: { command: "npx", env: { API_KEY: REAL } } } }),
     );
 
-    const res = await c.app.request("/api/scan/apply", {
+    const res = await c.app.request("/api/import/apply", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agent: "claude-code", scope: "global", capabilities: ["mcp"] }),
+      body: JSON.stringify({
+        agent: "claude-code",
+        destination: "user",
+        capabilities: ["mcp"],
+      }),
     });
     const text = await res.text();
     expect(res.status).toBe(200);
@@ -413,10 +452,14 @@ describe("web app — diagnostics and revert", () => {
 
   it("requires a dry-run preview before the UI can safely call revert", async () => {
     await c.env.fs.writeFile(join(c.storeRoot, "store", "rules", "style.md"), "# style");
-    await c.app.request("/api/apply", {
+    await c.app.request("/api/sync/apply", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agents: ["claude-code"], scope: "global", capabilities: ["rules"] }),
+      body: JSON.stringify({
+        agents: ["claude-code"],
+        destination: "user",
+        resources: { kinds: ["rules"] },
+      }),
     });
 
     const preview = await c.app.request("/api/revert", {
@@ -514,10 +557,14 @@ describe("web app — input validation", () => {
   afterEach(() => c.cleanup());
 
   it("rejects project-scope apply without a dir (would write into server cwd)", async () => {
-    const res = await c.app.request("/api/apply", {
+    const res = await c.app.request("/api/sync/plan", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agents: ["claude-code"], scope: "project", capabilities: ["rules"] }),
+      body: JSON.stringify({
+        agents: ["claude-code"],
+        destination: "project",
+        resources: { kinds: ["rules"] },
+      }),
     });
     expect(res.status).toBe(400);
     const body = await res.json();
@@ -525,10 +572,10 @@ describe("web app — input validation", () => {
   });
 
   it("rejects project-scope scan without a dir (would read server cwd)", async () => {
-    const res = await c.app.request("/api/scan", {
+    const res = await c.app.request("/api/import/plan", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agent: "claude-code", scope: "project" }),
+      body: JSON.stringify({ agent: "claude-code", destination: "project" }),
     });
     expect(res.status).toBe(400);
     const body = await res.json();
@@ -549,11 +596,74 @@ describe("web app — input validation", () => {
   });
 
   it("returns 400 (not 500) on a malformed JSON body", async () => {
-    const res = await c.app.request("/api/plan", {
+    const res = await c.app.request("/api/sync/plan", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: "not json",
     });
     expect(res.status).toBe(400);
+  });
+
+  it("previews and applies sync through product routes", async () => {
+    await c.env.fs.writeFile(join(c.storeRoot, "store", "rules", "style.md"), "# style");
+    const preview = await c.app.request("/api/sync/plan", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agents: ["claude-code"],
+        destination: "user",
+        resources: { kinds: ["rules"] },
+      }),
+    });
+    expect(preview.status).toBe(200);
+    expect((await preview.json()).actions.length).toBeGreaterThan(0);
+
+    const applied = await c.app.request("/api/sync/apply", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agents: ["claude-code"],
+        destination: "user",
+        resources: { kinds: ["rules"] },
+      }),
+    });
+    expect(applied.status).toBe(200);
+  });
+
+  it("rejects project destination without dir", async () => {
+    const res = await c.app.request("/api/sync/plan", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agents: ["codex"],
+        destination: "project",
+        resources: { kinds: ["rules"] },
+      }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("updates settings collections and agent enabled state", async () => {
+    const collections = await c.app.request("/api/settings/collections", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        collections: {
+          default: { description: "Default" },
+          work: { description: "Work" },
+        },
+      }),
+    });
+    expect(collections.status).toBe(200);
+
+    const agent = await c.app.request("/api/agents/codex/enabled", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(agent.status).toBe(200);
+
+    const settings = await (await c.app.request("/api/settings")).json();
+    expect(settings.collections.map((c: { name: string }) => c.name)).toContain("work");
   });
 });

@@ -6,6 +6,7 @@
 //   - core-first(不变量 1):路由只解析参数 + 调 core,不写业务逻辑。
 import {
   type ActivityAction,
+  type AdapterPatchConfig,
   apply,
   applyScan,
   type Capability,
@@ -13,6 +14,9 @@ import {
   collectLedgerSecretRefStats,
   collectLedgerSecretRefs,
   createRealEnv,
+  deleteCustomAdapterConfig,
+  discoverySummary,
+  type Destination,
   type DiffIdentity,
   dashboardSummary,
   diffTarget,
@@ -27,12 +31,18 @@ import {
   loadLedger,
   loadRegistry,
   plan,
+  resourceCatalog,
   resolveStoreRoot,
   revert,
+  saveCollections,
+  saveDefaults,
   type ScanSelection,
   type Scope,
   scanPlan,
+  setAgentEnabled,
+  settingsSummary,
   status,
+  upsertAdapterConfig,
 } from "@cellarer/core";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -67,6 +77,29 @@ interface ScanBody {
   intoCollection?: string;
 }
 
+interface ImportBody {
+  agent: string;
+  destination?: Destination;
+  dir?: string;
+  capabilities?: Capability[];
+  conflict?: ConflictStrategy;
+  select?: string[];
+  selectItems?: ScanSelection[];
+  intoCollection?: string;
+}
+
+interface SyncBody {
+  agents?: string[];
+  destination?: Destination;
+  dir?: string;
+  resources?: {
+    kinds?: Capability[];
+    collections?: string[];
+  };
+  method?: "symlink" | "copy";
+  mcpStrategy?: "merge" | "overwrite";
+}
+
 interface InspectBody {
   scope?: Scope;
   dir?: string;
@@ -92,6 +125,16 @@ interface DiffBody {
 function requireDirForProject(scope: Scope | undefined, dir: string | undefined): void {
   if ((scope ?? "global") === "project" && !dir) {
     throw new HTTPException(400, { message: 'scope "project" requires "dir"' });
+  }
+}
+
+function scopeForDestination(destination: Destination | undefined): Scope {
+  return destination === "project" ? "project" : "global";
+}
+
+function requireDirForDestination(destination: Destination | undefined, dir: string | undefined): void {
+  if (destination === "project" && !dir) {
+    throw new HTTPException(400, { message: 'destination "project" requires "dir"' });
   }
 }
 
@@ -133,6 +176,36 @@ function scanOpts(deps: AppDeps, b: ScanBody) {
     select: b.select,
     selectItems: b.selectItems,
     intoCollection: b.intoCollection,
+  };
+}
+
+function importOpts(deps: AppDeps, b: ImportBody) {
+  requireDirForDestination(b.destination, b.dir);
+  return {
+    storeRoot: deps.storeRoot,
+    agent: b.agent,
+    scope: scopeForDestination(b.destination),
+    dir: b.dir,
+    capabilities: b.capabilities,
+    conflict: b.conflict,
+    select: b.select,
+    selectItems: b.selectItems,
+    intoCollection: b.intoCollection,
+  };
+}
+
+function syncOpts(deps: AppDeps, body: SyncBody) {
+  requireDirForDestination(body.destination, body.dir);
+  return {
+    storeRoot: deps.storeRoot,
+    scope: scopeForDestination(body.destination),
+    dir: body.dir,
+    agents: body.agents ?? [],
+    collections: body.resources?.collections,
+    capabilities: body.resources?.kinds,
+    method: body.method,
+    mcpStrategy: body.mcpStrategy,
+    secretMode: "env" as const,
   };
 }
 
@@ -233,6 +306,54 @@ export function createApp(deps: AppDeps) {
   });
 
   const api = app
+    .get("/api/resources", async (c) => {
+      const destination = (c.req.query("destination") as Destination | undefined) ?? "user";
+      const dir = c.req.query("dir");
+      requireDirForDestination(destination, dir);
+      return c.json(
+        await resourceCatalog(deps.env, {
+          storeRoot: deps.storeRoot,
+          agents: parseCsv(c.req.query("agents")),
+          collections: parseCsv(c.req.query("collections")),
+          destination,
+          dir,
+          includeDiscovered: c.req.query("includeDiscovered") !== "false",
+        }),
+      );
+    })
+    .get("/api/resources/:kind", async (c) => {
+      const kind = c.req.param("kind");
+      if (kind !== "rules" && kind !== "mcp" && kind !== "skills") {
+        throw new HTTPException(400, { message: `invalid resource kind "${kind}"` });
+      }
+      const destination = (c.req.query("destination") as Destination | undefined) ?? "user";
+      const dir = c.req.query("dir");
+      requireDirForDestination(destination, dir);
+      return c.json(
+        await resourceCatalog(deps.env, {
+          storeRoot: deps.storeRoot,
+          kind,
+          agents: parseCsv(c.req.query("agents")),
+          collections: parseCsv(c.req.query("collections")),
+          destination,
+          dir,
+          includeDiscovered: c.req.query("includeDiscovered") !== "false",
+        }),
+      );
+    })
+    .get("/api/discovery", async (c) => {
+      const destination = (c.req.query("destination") as Destination | undefined) ?? "user";
+      const dir = c.req.query("dir");
+      requireDirForDestination(destination, dir);
+      return c.json(
+        await discoverySummary(deps.env, {
+          storeRoot: deps.storeRoot,
+          agents: parseCsv(c.req.query("agents")),
+          destination,
+          dir,
+        }),
+      );
+    })
     // 库房制品总览(三类 + collection 标签)。
     .get("/api/artifacts", async (c) => {
       const [config, rules, mcp, skills] = await Promise.all([
@@ -301,6 +422,22 @@ export function createApp(deps: AppDeps) {
       const r = await apply(deps.env, distributeOpts(deps, body));
       return c.json(r);
     })
+    .post("/api/import/plan", async (c) => {
+      const body = await c.req.json<ImportBody>();
+      return c.json(await scanPlan(deps.env, importOpts(deps, body)));
+    })
+    .post("/api/import/apply", async (c) => {
+      const body = await c.req.json<ImportBody>();
+      return c.json(await applyScan(deps.env, importOpts(deps, body)));
+    })
+    .post("/api/sync/plan", async (c) => {
+      const body = await c.req.json<SyncBody>();
+      return c.json(await plan(deps.env, syncOpts(deps, body)));
+    })
+    .post("/api/sync/apply", async (c) => {
+      const body = await c.req.json<SyncBody>();
+      return c.json(await apply(deps.env, syncOpts(deps, body)));
+    })
     // 扫描预览(只读;ScanItem 不含真值,secretRefs 只列名)。
     .post("/api/scan", async (c) => {
       const body = await c.req.json<ScanBody>();
@@ -343,6 +480,34 @@ export function createApp(deps: AppDeps) {
     .get("/api/status", async (c) => {
       const items = await status(deps.env, { storeRoot: deps.storeRoot });
       return c.json({ items });
+    })
+    .get("/api/settings", async (c) => {
+      return c.json(await settingsSummary(deps.env, { storeRoot: deps.storeRoot }));
+    })
+    .put("/api/settings/collections", async (c) => {
+      const body = await c.req.json<{ collections: Record<string, { description?: string }> }>();
+      return c.json(await saveCollections(deps.env, deps.storeRoot, body.collections));
+    })
+    .put("/api/settings/defaults", async (c) => {
+      const body = await c.req.json<{
+        defaults: {
+          method?: "symlink" | "copy";
+          collections?: string[];
+          secretMode?: "env" | "vault" | "keychain";
+        };
+      }>();
+      return c.json(await saveDefaults(deps.env, deps.storeRoot, body.defaults));
+    })
+    .put("/api/agents/:id/enabled", async (c) => {
+      const body = await c.req.json<{ enabled: boolean }>();
+      return c.json(await setAgentEnabled(deps.env, deps.storeRoot, c.req.param("id"), body.enabled));
+    })
+    .put("/api/agents/:id/adapter", async (c) => {
+      const body = await c.req.json<{ adapter: AdapterPatchConfig }>();
+      return c.json(await upsertAdapterConfig(deps.env, deps.storeRoot, c.req.param("id"), body.adapter));
+    })
+    .delete("/api/agents/:id/adapter", async (c) => {
+      return c.json(await deleteCustomAdapterConfig(deps.env, deps.storeRoot, c.req.param("id")));
     })
     // 密钥引用名(只列名,绝不回显真值)——聚合口径走 core helper(不变量 1)。
     .get("/api/secrets", async (c) => {
