@@ -134,6 +134,20 @@ export type {
   Scope,
 } from "./model/index.js";
 export { createRealEnv } from "./real-env.js";
+export type {
+  DefaultsPatch,
+  SettingsCollection,
+  SettingsSummary,
+  SettingsSummaryOptions,
+} from "./settings.js";
+export {
+  deleteCustomAdapterConfig,
+  saveCollections,
+  saveDefaults,
+  setAgentEnabled,
+  settingsSummary,
+  upsertAdapterConfig,
+} from "./settings.js";
 // secrets
 export {
   detectSecret,
@@ -164,7 +178,7 @@ export {
 } from "./secrets/vault.js";
 export { sha256 } from "./store/checksum.js";
 // store
-export type { CellarerConfig } from "./store/config.js";
+export type { AdapterBodyConfig, AdapterPatchConfig, CellarerConfig } from "./store/config.js";
 export {
   CONFIG_FILENAME,
   initialConfigText,
@@ -172,7 +186,9 @@ export {
   loadConfig,
   PACKAGED_CONFIG_PATH,
   packagedConfigText,
+  parsePackagedConfigForSettings,
   parseConfig,
+  saveConfig,
   tagArtifactCollections,
 } from "./store/config.js";
 export {

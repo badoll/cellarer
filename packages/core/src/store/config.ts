@@ -129,8 +129,8 @@ const packagedConfigSchema = z
 
 export type CellarerConfig = z.infer<typeof configSchema>;
 type PackagedConfig = z.infer<typeof packagedConfigSchema>;
-type AdapterBodyConfig = z.infer<typeof adapterBodySchema>;
-type AdapterPatchConfig = z.infer<typeof adapterPatchSchema>;
+export type AdapterBodyConfig = z.infer<typeof adapterBodySchema>;
+export type AdapterPatchConfig = z.infer<typeof adapterPatchSchema>;
 
 function inferScopes(
   explicit: Scope[] | undefined,
@@ -167,6 +167,13 @@ export function parseConfig(text: string): CellarerConfig {
 function parsePackagedConfig(text: string): PackagedConfig {
   const raw = text.trim().length === 0 ? {} : JSON.parse(text);
   return packagedConfigSchema.parse(raw);
+}
+
+export function parsePackagedConfigForSettings(text: string): {
+  builtinAdapters: Record<string, unknown>;
+} {
+  const parsed = parsePackagedConfig(text);
+  return { builtinAdapters: parsed.builtinAdapters };
 }
 
 function adapterToSpec(id: string, a: AdapterBodyConfig): AgentSpec {
@@ -282,7 +289,7 @@ export async function loadAdapterSpecs(env: Env, storeRoot: string): Promise<Ada
   return { specs, warnings };
 }
 
-async function saveConfig(env: Env, storeRoot: string, config: CellarerConfig): Promise<void> {
+export async function saveConfig(env: Env, storeRoot: string, config: CellarerConfig): Promise<void> {
   const path = join(storeRoot, CONFIG_FILENAME);
   await atomicWrite(env, path, `${JSON.stringify(config, null, 2)}\n`);
 }

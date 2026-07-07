@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { loadAdapterSpecs, loadConfig, parseConfig } from "../src/store/config.js";
+import {
+  initialConfigText,
+  loadAdapterSpecs,
+  loadConfig,
+  packagedConfigText,
+  parseConfig,
+  parsePackagedConfigForSettings,
+  saveConfig,
+} from "../src/store/config.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
 const SAMPLE = JSON.stringify({
@@ -114,6 +122,28 @@ describe("store/config", () => {
       await t.env.fs.writeFile(t.path("store", "config.json"), SAMPLE);
       const cfg = await loadConfig(t.env, storeRoot);
       expect(cfg.defaults.os?.win32?.method).toBe("copy");
+    });
+
+    it("saves config updates for later reads", async () => {
+      const storeRoot = t.path("store");
+      await t.env.fs.mkdir(storeRoot, { recursive: true });
+      const cfg = parseConfig(await initialConfigText(t.env));
+      cfg.agents.codex = { enabled: false };
+      cfg.adapters["my-agent"] = {
+        displayName: "My Agent",
+        rules: { global: "~/.my-agent/RULES.md" },
+      };
+
+      await saveConfig(t.env, storeRoot, cfg);
+
+      const loaded = await loadConfig(t.env, storeRoot);
+      expect(loaded.agents.codex?.enabled).toBe(false);
+      expect(loaded.adapters["my-agent"]?.rules?.global).toBe("~/.my-agent/RULES.md");
+    });
+
+    it("exposes packaged built-in adapter ids for settings", async () => {
+      const packaged = parsePackagedConfigForSettings(await packagedConfigText(t.env));
+      expect(Object.keys(packaged.builtinAdapters)).toContain("codex");
     });
   });
 });
