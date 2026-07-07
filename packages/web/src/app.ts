@@ -128,12 +128,25 @@ function requireDirForProject(scope: Scope | undefined, dir: string | undefined)
   }
 }
 
-function scopeForDestination(destination: Destination | undefined): Scope {
-  return destination === "project" ? "project" : "global";
+function parseDestination(raw: string | undefined): Destination | undefined {
+  if (raw === undefined || raw === "") return undefined;
+  if (raw === "user" || raw === "project") return raw;
+  throw new HTTPException(400, { message: `invalid destination "${raw}"` });
 }
 
-function requireDirForDestination(destination: Destination | undefined, dir: string | undefined): void {
-  if (destination === "project" && !dir) {
+function parseConflictStrategy(raw: string | undefined): ConflictStrategy | undefined {
+  if (raw === undefined || raw === "") return undefined;
+  if (raw === "keep-theirs" || raw === "keep-mine" || raw === "copy") return raw;
+  throw new HTTPException(400, { message: `invalid conflict "${raw}"` });
+}
+
+function scopeForDestination(destination: string | undefined): Scope {
+  const parsed = parseDestination(destination);
+  return parsed === "project" ? "project" : "global";
+}
+
+function requireDirForDestination(destination: string | undefined, dir: string | undefined): void {
+  if (parseDestination(destination) === "project" && !dir) {
     throw new HTTPException(400, { message: 'destination "project" requires "dir"' });
   }
 }
@@ -172,7 +185,7 @@ function scanOpts(deps: AppDeps, b: ScanBody) {
     scope: (b.scope ?? "global") as Scope,
     dir: b.dir,
     capabilities: b.capabilities,
-    conflict: b.conflict,
+    conflict: parseConflictStrategy(b.conflict),
     select: b.select,
     selectItems: b.selectItems,
     intoCollection: b.intoCollection,
@@ -187,7 +200,7 @@ function importOpts(deps: AppDeps, b: ImportBody) {
     scope: scopeForDestination(b.destination),
     dir: b.dir,
     capabilities: b.capabilities,
-    conflict: b.conflict,
+    conflict: parseConflictStrategy(b.conflict),
     select: b.select,
     selectItems: b.selectItems,
     intoCollection: b.intoCollection,
@@ -307,7 +320,7 @@ export function createApp(deps: AppDeps) {
 
   const api = app
     .get("/api/resources", async (c) => {
-      const destination = (c.req.query("destination") as Destination | undefined) ?? "user";
+      const destination = parseDestination(c.req.query("destination")) ?? "user";
       const dir = c.req.query("dir");
       requireDirForDestination(destination, dir);
       return c.json(
@@ -326,7 +339,7 @@ export function createApp(deps: AppDeps) {
       if (kind !== "rules" && kind !== "mcp" && kind !== "skills") {
         throw new HTTPException(400, { message: `invalid resource kind "${kind}"` });
       }
-      const destination = (c.req.query("destination") as Destination | undefined) ?? "user";
+      const destination = parseDestination(c.req.query("destination")) ?? "user";
       const dir = c.req.query("dir");
       requireDirForDestination(destination, dir);
       return c.json(
@@ -342,7 +355,7 @@ export function createApp(deps: AppDeps) {
       );
     })
     .get("/api/discovery", async (c) => {
-      const destination = (c.req.query("destination") as Destination | undefined) ?? "user";
+      const destination = parseDestination(c.req.query("destination")) ?? "user";
       const dir = c.req.query("dir");
       requireDirForDestination(destination, dir);
       return c.json(

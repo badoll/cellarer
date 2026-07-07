@@ -643,6 +643,59 @@ describe("web app — input validation", () => {
     expect(res.status).toBe(400);
   });
 
+  it("rejects invalid destination values before reading or writing resources", async () => {
+    const resources = await c.app.request("/api/resources?destination=projct");
+    const discovery = await c.app.request("/api/discovery?destination=projct");
+    const sync = await c.app.request("/api/sync/apply", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agents: ["claude-code"],
+        destination: "projct",
+        resources: { kinds: ["rules"] },
+      }),
+    });
+    const scanImport = await c.app.request("/api/import/plan", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "claude-code",
+        destination: "projct",
+        capabilities: ["rules"],
+      }),
+    });
+
+    for (const res of [resources, discovery, sync, scanImport]) {
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain("destination");
+    }
+  });
+
+  it("rejects invalid conflict strategies before scan import", async () => {
+    const importPlan = await c.app.request("/api/import/plan", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "claude-code",
+        destination: "user",
+        conflict: "keep-ours",
+      }),
+    });
+    const legacyScan = await c.app.request("/api/scan", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "claude-code",
+        conflict: "keep-ours",
+      }),
+    });
+
+    for (const res of [importPlan, legacyScan]) {
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain("conflict");
+    }
+  });
+
   it("updates settings collections and agent enabled state", async () => {
     const collections = await c.app.request("/api/settings/collections", {
       method: "PUT",
