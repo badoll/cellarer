@@ -1,5 +1,5 @@
-import type { Capability, ScanItem, ScanPlan } from "@cellarer/core";
-import { useEffect, useState } from "react";
+import type { Capability, ScanItem, ScanPlan, ScanSelection } from "@cellarer/core";
+import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "./api.js";
 import { readApiJson } from "./api-state.js";
 import { resourceKindLabel } from "./product-model.js";
@@ -8,6 +8,7 @@ interface ImportPayload {
   agent: string;
   destination: "user";
   capabilities?: Capability[];
+  selectItems?: ScanSelection[];
 }
 
 function errorMessage(err: unknown): string {
@@ -22,13 +23,16 @@ export function ImportDialog(props: {
 }) {
   const [agent, setAgent] = useState("codex");
   const [plan, setPlan] = useState<ScanPlan | null>(null);
+  const [plannedPayload, setPlannedPayload] = useState<ImportPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [applying, setApplying] = useState(false);
+  const latestPayloadKey = useRef("");
 
   useEffect(() => {
     if (!props.open) return;
     setPlan(null);
+    setPlannedPayload(null);
     setError(null);
   }, [props.open, props.kind]);
 
@@ -36,7 +40,7 @@ export function ImportDialog(props: {
 
   const currentKind = props.kind ? resourceKindLabel(props.kind) : "All resources";
   const canPreview = agent.trim().length > 0 && !previewing && !applying;
-  const canApply = canPreview && plan !== null;
+  const canApply = canPreview && plan !== null && plannedPayload !== null;
 
   function payload(): ImportPayload {
     return {
@@ -46,18 +50,26 @@ export function ImportDialog(props: {
     };
   }
 
+  latestPayloadKey.current = JSON.stringify(payload());
+
   async function preview() {
     setError(null);
     setPreviewing(true);
+    const request = payload();
+    const requestKey = JSON.stringify(request);
     try {
       const response = await apiFetch("/api/import/plan", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload()),
+        body: JSON.stringify(request),
       });
-      setPlan(await readApiJson<ScanPlan>(response));
+      const nextPlan = await readApiJson<ScanPlan>(response);
+      if (requestKey !== latestPayloadKey.current) return;
+      setPlan(nextPlan);
+      setPlannedPayload(request);
     } catch (err) {
       setPlan(null);
+      setPlannedPayload(null);
       setError(errorMessage(err));
     } finally {
       setPreviewing(false);
@@ -65,14 +77,17 @@ export function ImportDialog(props: {
   }
 
   async function applyImport() {
-    if (!plan) return;
+    if (!plan || !plannedPayload) return;
     setError(null);
     setApplying(true);
     try {
       const response = await apiFetch("/api/import/apply", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload()),
+        body: JSON.stringify({
+          ...plannedPayload,
+          selectItems: selectItemsForPlan(plan),
+        }),
       });
       await readApiJson<unknown>(response);
       props.onImported();
@@ -108,6 +123,7 @@ export function ImportDialog(props: {
               onChange={(event) => {
                 setAgent(event.target.value);
                 setPlan(null);
+                setPlannedPayload(null);
               }}
             />
           </label>
@@ -138,6 +154,12 @@ export function ImportDialog(props: {
       </section>
     </div>
   );
+}
+
+export function selectItemsForPlan(plan: ScanPlan): ScanSelection[] {
+  return plan.items
+    .filter((item) => item.action === "import")
+    .map((item) => ({ kind: item.kind, name: item.name, source: item.source }));
 }
 
 function ImportPlanTable(props: { plan: ScanPlan }) {
