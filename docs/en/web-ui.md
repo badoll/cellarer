@@ -27,7 +27,7 @@ The browser does not write files directly. All file operations go through core.
 
 | Route | Purpose |
 | --- | --- |
-| `GET /api/artifacts` | Store inventory and channel tags. |
+| `GET /api/artifacts` | Store inventory and collection tags. |
 | `GET /api/agents` | Registered adapters, capabilities, and global detection status. |
 | `POST /api/plan` | Distribution preview. |
 | `POST /api/apply` | Execute distribution. |

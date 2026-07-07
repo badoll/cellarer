@@ -35,7 +35,7 @@ node packages/cli/dist/bin.js add ./my-rules.md
 node packages/cli/dist/bin.js add ./context7.json
 node packages/cli/dist/bin.js add ./my-skill/
 node packages/cli/dist/bin.js add vercel-labs/skills --list
-node packages/cli/dist/bin.js add vercel-labs/skills --skill nextjs
+node packages/cli/dist/bin.js add vercel-labs/skills --skill nextjs --collection public
 ```
 
 当前源码版本支持:
@@ -53,7 +53,7 @@ GitLab 与 arbitrary git URLs 不属于本里程碑支持范围。
 
 ```bash
 node packages/cli/dist/bin.js ls
-node packages/cli/dist/bin.js ls --channel common
+node packages/cli/dist/bin.js ls --collection default
 ```
 
 ## 检查 Agent
@@ -87,7 +87,7 @@ node packages/cli/dist/bin.js apply --agent claude-code,codex --rules --mcp --sk
 
 ```bash
 node packages/cli/dist/bin.js scan --agent codex --dry-run --json
-node packages/cli/dist/bin.js scan --agent codex --into-channel common
+node packages/cli/dist/bin.js scan --agent codex --into-collection default
 ```
 
 `scan` 一次只接受一个 agent。计划输出不包含密钥真值,只返回密钥引用名。

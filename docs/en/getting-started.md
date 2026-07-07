@@ -37,7 +37,7 @@ node packages/cli/dist/bin.js add ./my-rules.md
 node packages/cli/dist/bin.js add ./context7.json
 node packages/cli/dist/bin.js add ./my-skill/
 node packages/cli/dist/bin.js add vercel-labs/skills --list
-node packages/cli/dist/bin.js add vercel-labs/skills --skill nextjs
+node packages/cli/dist/bin.js add vercel-labs/skills --skill nextjs --collection public
 ```
 
 Current source support:
@@ -55,7 +55,7 @@ GitLab and arbitrary git URLs are not supported in this milestone.
 
 ```bash
 node packages/cli/dist/bin.js ls
-node packages/cli/dist/bin.js ls --channel common
+node packages/cli/dist/bin.js ls --collection default
 ```
 
 ## Inspect Agents
@@ -89,7 +89,7 @@ agent's global location.
 
 ```bash
 node packages/cli/dist/bin.js scan --agent codex --dry-run --json
-node packages/cli/dist/bin.js scan --agent codex --into-channel common
+node packages/cli/dist/bin.js scan --agent codex --into-collection default
 ```
 
 `scan` accepts one agent at a time. The plan omits secret values and only returns

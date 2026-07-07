@@ -28,10 +28,11 @@
 - 一个 canonical MCP server 定义
 - 一个 skill 目录
 
-## Channel
+## Collection
 
-Channel 用于给制品标记使用场景。常见例子是 `common` 与 `internal`。下发时可以按
-一个 channel 过滤。
+Collection 是库房里的资源集合。默认 collection 是 `default`。用户可以创建
+`work`、`personal` 或 `internal` 等集合,并把某个 collection 同步到选中的
+target agents。
 
 ## Agent Adapter
 

@@ -7,7 +7,7 @@ export interface CommonOpts {
   global?: boolean;
   agent?: string;
   dir?: string;
-  channel?: string;
+  collection?: string;
 }
 
 export interface ResolvedContext {
@@ -19,7 +19,7 @@ export interface ResolvedContext {
   scopeFilter: Scope | undefined;
   dir?: string;
   agents: string[];
-  channels?: string[];
+  collections?: string[];
 }
 
 // 逗号分隔 agent 列表 → 数组(去空白)。
@@ -53,6 +53,6 @@ export function resolveContext(opts: CommonOpts): ResolvedContext {
     scopeFilter: dir ? "project" : undefined,
     dir,
     agents: parseAgents(opts.agent),
-    channels: opts.channel ? [opts.channel] : undefined,
+    collections: opts.collection ? [opts.collection] : undefined,
   };
 }

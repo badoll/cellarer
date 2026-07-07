@@ -62,7 +62,7 @@ node packages/cli/dist/bin.js ui
 | --- | --- |
 | `init` | Initialize the store at `~/.cellarer` or `CELLARER_HOME`. |
 | `add <source>` | Import local rules/MCP files or local/GitHub skill sources into the store. |
-| `ls` | List stored rules, MCP servers, skills, and channel tags. |
+| `ls` | List stored rules, MCP servers, skills, and collection tags. |
 | `agents` | Show registered agent adapters, detect results, capabilities, and target paths. |
 | `doctor` | Check store initialization, adapter loading, agent detection, and target path write access. |
 | `apply` | Plan and distribute artifacts to selected agents. Use `--dry-run` before writing. |

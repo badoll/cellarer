@@ -31,7 +31,7 @@ node packages/cli/dist/bin.js add ./my-rules.md
 node packages/cli/dist/bin.js add ./server.json --force
 node packages/cli/dist/bin.js add ./my-skill/
 node packages/cli/dist/bin.js add vercel-labs/skills --list
-node packages/cli/dist/bin.js add vercel-labs/skills --skill nextjs --channel public
+node packages/cli/dist/bin.js add vercel-labs/skills --skill nextjs --collection public
 node packages/cli/dist/bin.js add https://github.com/vercel-labs/skills/tree/main/skills/web-design-guidelines --json
 ```
 
@@ -43,7 +43,7 @@ Options:
 | `--list` | List skill candidates without writing to the store. |
 | `--skill <name>` | Import a named skill. May be repeated. |
 | `--all` | Import all eligible skills from a multi-skill source. |
-| `--channel <name>` | Tag imported artifacts with a channel. `internal` also includes internal skills. |
+| `--collection <name>` | Tag imported artifacts with a collection. `internal` also includes internal skills. |
 | `--yes` | Skip confirmations. `add` is currently non-interactive. |
 | `--json` | Print a JSON candidate list or import report. |
 
@@ -60,23 +60,23 @@ Supported sources:
 
 Skill imports require `SKILL.md` frontmatter with `name` and `description`.
 Candidates with `metadata.internal: true` are hidden from normal `--list` and
-skipped by `--all` unless `--channel internal` is provided. GitLab and arbitrary
+skipped by `--all` unless `--collection internal` is provided. GitLab and arbitrary
 git URLs are not part of the M2 import surface.
 
 ## `ls`
 
-Lists stored artifacts and channel tags.
+Lists stored artifacts and collection tags.
 
 ```bash
 node packages/cli/dist/bin.js ls
-node packages/cli/dist/bin.js ls --channel internal
+node packages/cli/dist/bin.js ls --collection default
 ```
 
 Options:
 
 | Option | Description |
 | --- | --- |
-| `--channel <channel>` | Show artifacts visible for a channel. |
+| `--collection <collection>` | Show artifacts visible for a collection. |
 
 ## `agents`
 
@@ -120,7 +120,7 @@ Plans or writes artifacts to selected agents.
 
 ```bash
 node packages/cli/dist/bin.js apply --dry-run --agent claude-code,codex
-node packages/cli/dist/bin.js apply --agent claude-code,codex --dir /path/to/project --rules
+node packages/cli/dist/bin.js apply --agent claude-code,codex --collection default
 ```
 
 Options:
@@ -129,7 +129,7 @@ Options:
 | --- | --- |
 | `-a, --agent <ids>` | Required. Comma-separated agent ids. |
 | `--dir <path>` | Project scope root. Omit for global scope. |
-| `--channel <channel>` | Filter artifacts by channel. |
+| `--collection <collection>` | Filter artifacts by collection. |
 | `--rules` | Include rules. If no capability flag is set, all capabilities are included. |
 | `--mcp` | Include MCP servers. |
 | `--skills` | Include skills. |
@@ -146,7 +146,7 @@ store.
 
 ```bash
 node packages/cli/dist/bin.js scan --agent codex --dry-run
-node packages/cli/dist/bin.js scan --agent codex --into-channel common --conflict copy
+node packages/cli/dist/bin.js scan --agent codex --into-collection default
 ```
 
 Options:
@@ -158,7 +158,7 @@ Options:
 | `--rules` | Scan only rules. |
 | `--mcp` | Scan only MCP servers. |
 | `--skills` | Scan only skills. |
-| `--into-channel <channel>` | Tag imported artifacts with this channel. |
+| `--into-collection <collection>` | Tag imported artifacts with this collection. |
 | `--conflict <strategy>` | `keep-theirs`, `keep-mine`, or `copy`. |
 | `--select <names>` | Comma-separated artifact names to import. |
 | `--dry-run` | Show candidates without writing. |

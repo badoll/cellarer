@@ -34,7 +34,7 @@ This keeps core behavior testable and avoids reading `process`, `os`, or
 
 ```text
 store artifacts
-  -> select agents, scope, channels, capabilities
+  -> select agents, scope, collections, capabilities
   -> load adapters and config
   -> render rules, MCP, and skills actions
   -> run secret guards
@@ -61,7 +61,7 @@ agent files
 
 Adapters expose paths, capabilities, detection, and codecs for each agent.
 Packaged built-ins and user `adapters` entries are resolved into the shared
-`AgentSpec` shape, so new common layouts do not require engine branches.
+`AgentSpec` shape, so recurring new layouts do not require engine branches.
 
 ## MCP Model
 

@@ -26,7 +26,7 @@ React SPA -> Hono API -> @cellarer/web -> @cellarer/core -> Env -> local files
 
 | 路由 | 用途 |
 | --- | --- |
-| `GET /api/artifacts` | 库房制品与 channel 标签。 |
+| `GET /api/artifacts` | 库房制品与 collection 标签。 |
 | `GET /api/agents` | 已注册适配器、能力矩阵与 global 探测状态。 |
 | `POST /api/plan` | 下发预览。 |
 | `POST /api/apply` | 执行下发。 |

@@ -31,7 +31,7 @@ node packages/cli/dist/bin.js add ./my-rules.md
 node packages/cli/dist/bin.js add ./server.json --force
 node packages/cli/dist/bin.js add ./my-skill/
 node packages/cli/dist/bin.js add vercel-labs/skills --list
-node packages/cli/dist/bin.js add vercel-labs/skills --skill nextjs --channel public
+node packages/cli/dist/bin.js add vercel-labs/skills --skill nextjs --collection public
 node packages/cli/dist/bin.js add https://github.com/vercel-labs/skills/tree/main/skills/web-design-guidelines --json
 ```
 
@@ -43,7 +43,7 @@ node packages/cli/dist/bin.js add https://github.com/vercel-labs/skills/tree/mai
 | `--list` | 只列出 skill candidates,不写库房。 |
 | `--skill <name>` | 导入指定 skill,可重复传入。 |
 | `--all` | 从 multi-skill source 导入所有 eligible skills。 |
-| `--channel <name>` | 给导入制品打 channel 标签。`internal` 也会包含 internal skills。 |
+| `--collection <name>` | 给导入制品打 collection 标签。`internal` 也会包含 internal skills。 |
 | `--yes` | 跳过确认提示。当前 `add` 为非交互。 |
 | `--json` | 输出 JSON candidate list 或 import report。 |
 
@@ -60,23 +60,23 @@ node packages/cli/dist/bin.js add https://github.com/vercel-labs/skills/tree/mai
 
 Skill 导入要求 `SKILL.md` frontmatter 包含 `name` 与 `description`。
 `metadata.internal: true` 的 candidates 默认不会出现在普通 `--list`,也会被
-`--all` 跳过;传入 `--channel internal` 才会包含它们。GitLab 与 arbitrary git
+`--all` 跳过;传入 `--collection internal` 才会包含它们。GitLab 与 arbitrary git
 URLs 不属于 M2 导入面。
 
 ## `ls`
 
-列出库房制品与 channel 标签。
+列出库房制品与 collection 标签。
 
 ```bash
 node packages/cli/dist/bin.js ls
-node packages/cli/dist/bin.js ls --channel internal
+node packages/cli/dist/bin.js ls --collection default
 ```
 
 选项:
 
 | 选项 | 说明 |
 | --- | --- |
-| `--channel <channel>` | 只显示某个 channel 可见的制品。 |
+| `--collection <collection>` | 只显示某个 collection 可见的制品。 |
 
 ## `agents`
 
@@ -119,7 +119,7 @@ node packages/cli/dist/bin.js doctor -a codex --json
 
 ```bash
 node packages/cli/dist/bin.js apply --dry-run --agent claude-code,codex
-node packages/cli/dist/bin.js apply --agent claude-code,codex --dir /path/to/project --rules
+node packages/cli/dist/bin.js apply --agent claude-code,codex --collection default
 ```
 
 选项:
@@ -128,7 +128,7 @@ node packages/cli/dist/bin.js apply --agent claude-code,codex --dir /path/to/pro
 | --- | --- |
 | `-a, --agent <ids>` | 必填。逗号分隔的 agent id。 |
 | `--dir <path>` | project scope 根目录。不传时为 global scope。 |
-| `--channel <channel>` | 按 channel 过滤制品。 |
+| `--collection <collection>` | 按 collection 过滤制品。 |
 | `--rules` | 包含 rules。不传任何能力 flag 时默认包含全部能力。 |
 | `--mcp` | 包含 MCP servers。 |
 | `--skills` | 包含 skills。 |
@@ -144,7 +144,7 @@ node packages/cli/dist/bin.js apply --agent claude-code,codex --dir /path/to/pro
 
 ```bash
 node packages/cli/dist/bin.js scan --agent codex --dry-run
-node packages/cli/dist/bin.js scan --agent codex --into-channel common --conflict copy
+node packages/cli/dist/bin.js scan --agent codex --into-collection default
 ```
 
 选项:
@@ -156,7 +156,7 @@ node packages/cli/dist/bin.js scan --agent codex --into-channel common --conflic
 | `--rules` | 只扫描 rules。 |
 | `--mcp` | 只扫描 MCP servers。 |
 | `--skills` | 只扫描 skills。 |
-| `--into-channel <channel>` | 给导入制品打上该 channel。 |
+| `--into-collection <collection>` | 给导入制品打上该 collection。 |
 | `--conflict <strategy>` | `keep-theirs`、`keep-mine` 或 `copy`。 |
 | `--select <names>` | 逗号分隔的制品名白名单。 |
 | `--dry-run` | 只展示候选项,不写入。 |

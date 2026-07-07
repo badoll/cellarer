@@ -24,12 +24,12 @@
   "version": 1,
   "defaults": {
     "method": "symlink",
-    "channels": ["common"],
+    "collections": ["default"],
     "secretMode": "env"
   },
-  "channels": {
-    "common": {
-      "description": "通用默认"
+  "collections": {
+    "default": {
+      "description": "Default"
     }
   },
   "artifacts": {},

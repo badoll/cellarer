@@ -28,10 +28,11 @@ An artifact is one distributable unit:
 - one canonical MCP server definition
 - one skill directory
 
-## Channel
+## Collection
 
-Channels classify artifacts by context. Common examples are `common` and
-`internal`. Distribution can filter by one channel.
+Collections group resources in the cellarer library. The default collection is
+`default`. Users can create collections such as `work`, `personal`, or
+`internal` and sync a collection to selected target agents.
 
 ## Agent Adapter
 

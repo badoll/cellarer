@@ -8,7 +8,7 @@ interface ScanOpts {
   rules?: boolean;
   mcp?: boolean;
   skills?: boolean;
-  intoChannel?: string;
+  intoCollection?: string;
   conflict?: string;
   select?: string;
   dryRun?: boolean;
@@ -35,7 +35,7 @@ export function scanCommand(): Command {
     .option("--rules", "仅扫 rules")
     .option("--mcp", "仅扫 mcp")
     .option("--skills", "仅扫 skills")
-    .option("--into-channel <channel>", "入库制品归入通道")
+    .option("--into-collection <collection>", "给导入制品归入 collection")
     .option("--conflict <strategy>", "冲突策略:keep-theirs(默认)| keep-mine | copy")
     .option("--select <names>", "仅导入这些制品名(逗号分隔)")
     .option("--dry-run", "仅预览发现项,不写库房")
@@ -58,7 +58,7 @@ export function scanCommand(): Command {
         agent: ctx.agents[0] as string,
         scope: ctx.scope,
         dir: ctx.dir,
-        intoChannel: opts.intoChannel,
+        intoCollection: opts.intoCollection,
         conflict: opts.conflict as ConflictStrategy | undefined,
         capabilities: resolveCaps(opts),
         select: opts.select

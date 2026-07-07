@@ -13,7 +13,7 @@ interface AddCliOpts {
   list?: boolean;
   skill?: string[];
   all?: boolean;
-  channel?: string;
+  collection?: string;
   yes?: boolean;
   json?: boolean;
 }
@@ -32,7 +32,7 @@ export function addCommand(): Command {
     .option("--list", "只列出可导入的 skill candidates,不写库房")
     .option("--skill <name>", "导入指定 skill;可重复传入", collect, [])
     .option("--all", "导入所有 eligible skills")
-    .option("--channel <name>", "给导入制品打 channel 标签;internal 会包含 internal skills")
+    .option("--collection <name>", "给导入制品归入 collection;internal 会包含 internal skills")
     .option("--yes", "跳过确认提示(当前 add 为非交互,保留命令面兼容)")
     .option("--json", "输出 JSON report")
     .action(async (source: string, opts: AddCliOpts) => {
@@ -47,7 +47,7 @@ export function addCommand(): Command {
           list: opts.list,
           skills: opts.skill,
           all: opts.all,
-          channel: opts.channel,
+          collection: opts.collection,
           yes: opts.yes,
           gitClient: createCliGitClient(),
         });

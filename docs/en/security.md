@@ -63,7 +63,7 @@ The Web server:
 ## Known Limits
 
 Secret detection is defensive but not perfect. Low-entropy passwords, custom
-token formats, or credentials embedded in uncommon fields may require manual
+token formats, or credentials embedded in less typical fields may require manual
 review. Treat `--dry-run`, code review, and repository scans as part of the
 release process for sensitive changes.
 

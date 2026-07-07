@@ -34,7 +34,8 @@ describe("cli program wiring", () => {
     expect(flags).toContain("--list");
     expect(flags).toContain("--skill");
     expect(flags).toContain("--all");
-    expect(flags).toContain("--channel");
+    expect(flags).toContain("--collection");
+    expect(flags.some((flag) => /^--c(?:hannel)$/.test(flag))).toBe(false);
     expect(flags).toContain("--yes");
     expect(flags).toContain("--json");
   });
@@ -122,6 +123,8 @@ describe("cli program wiring", () => {
     expect(flags).toContain("--agent");
     expect(shortFlags).toContain("-a");
     expect(flags).toContain("--conflict");
+    expect(flags).toContain("--into-collection");
+    expect(flags.some((flag) => /^--into-c(?:hannel)$/.test(flag))).toBe(false);
     expect(flags).toContain("--select");
     expect(flags).toContain("--dry-run");
     expect(flags).toContain("--json");

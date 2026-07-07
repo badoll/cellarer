@@ -1,6 +1,6 @@
 import {
   type Artifact,
-  inChannels,
+  inCollections,
   listMcpArtifacts,
   listRuleArtifacts,
   listSkillArtifacts,
@@ -9,12 +9,12 @@ import {
 import { Command } from "commander";
 import { resolveContext } from "../context.js";
 
-// 列出库房制品(rules / mcp / skills)及其通道标签。
+// 列出库房制品(rules / mcp / skills)及其 collection 标签。
 export function lsCommand(): Command {
   return new Command("ls")
-    .description("列出库房制品(rules / mcp / skills)及其通道标签")
-    .option("--channel <channel>", "按通道过滤")
-    .action(async (opts: { channel?: string }) => {
+    .description("列出库房制品(rules / mcp / skills)及其 collection 标签")
+    .option("--collection <collection>", "按 collection 过滤")
+    .action(async (opts: { collection?: string }) => {
       const ctx = resolveContext(opts);
       const [config, rules, mcp, skills] = await Promise.all([
         loadConfig(ctx.env, ctx.storeRoot),
@@ -27,28 +27,28 @@ export function lsCommand(): Command {
         console.log("库房暂无制品(先 cellarer init 并在 store/{rules,mcp,skills} 放置内容)。");
         return;
       }
-      printGroup("rules", rules, config, opts.channel);
-      printGroup("mcp", mcp, config, opts.channel);
-      printGroup("skills", skills, config, opts.channel);
+      printGroup("rules", rules, config, opts.collection);
+      printGroup("mcp", mcp, config, opts.collection);
+      printGroup("skills", skills, config, opts.collection);
     });
 }
 
 function printGroup(
   label: string,
   arts: Artifact[],
-  config: { artifacts: Record<string, { channels: string[] }> },
-  channel?: string,
+  config: { artifacts: Record<string, { collections: string[] }> },
+  collection?: string,
 ): void {
-  // 通道匹配规则与 plan 一致(复用 core 的 inChannels,不在 CLI 重写)。
+  // collection 匹配规则与 plan 一致(复用 core 的 inCollections,不在 CLI 重写)。
   const visible = arts.filter((a) => {
-    const channels = config.artifacts[a.id]?.channels ?? [];
-    return !channel || inChannels(channels, [channel]);
+    const collections = config.artifacts[a.id]?.collections ?? [];
+    return !collection || inCollections(collections, [collection]);
   });
   if (visible.length === 0) return;
   console.log(`${label} 制品:`);
   for (const a of visible) {
-    const channels = config.artifacts[a.id]?.channels ?? [];
-    const tag = channels.length > 0 ? ` [${channels.join(", ")}]` : "";
+    const collections = config.artifacts[a.id]?.collections ?? [];
+    const tag = collections.length > 0 ? ` [${collections.join(", ")}]` : "";
     console.log(`  ${a.id}${tag}`);
   }
 }

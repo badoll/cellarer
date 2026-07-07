@@ -59,7 +59,7 @@ node packages/cli/dist/bin.js ui
 | --- | --- |
 | `init` | 初始化 `~/.cellarer` 或 `CELLARER_HOME` 指向的库房。 |
 | `add <source>` | 将本地 rules/MCP 文件或本地/GitHub skill 来源导入库房。 |
-| `ls` | 列出库房中的 rules、MCP、skills 与 channel 标签。 |
+| `ls` | 列出库房中的 rules、MCP、skills 与 collection 标签。 |
 | `agents` | 展示已注册 agent adapter、探测结果、能力与目标路径。 |
 | `doctor` | 检查库房初始化、adapter 加载、agent 探测和目标路径写权限。 |
 | `apply` | 生成计划并下发制品到选中的 agent。写入前建议先用 `--dry-run`。 |

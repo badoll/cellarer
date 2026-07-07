@@ -50,7 +50,7 @@ interface DistributeBody {
   agents?: string[];
   scope?: Scope;
   dir?: string;
-  channels?: string[];
+  collections?: string[];
   capabilities?: Capability[];
   method?: "symlink" | "copy";
   mcpStrategy?: "merge" | "overwrite";
@@ -64,7 +64,7 @@ interface ScanBody {
   conflict?: ConflictStrategy;
   select?: string[];
   selectItems?: ScanSelection[];
-  intoChannel?: string;
+  intoCollection?: string;
 }
 
 interface InspectBody {
@@ -84,7 +84,7 @@ interface RevertBody {
 interface DiffBody {
   identity: DiffIdentity;
   dir?: string;
-  channels?: string[];
+  collections?: string[];
 }
 
 // project scope 必须带 dir,否则 core 会以 server cwd 为工程根,把文件写进进程启动目录(且无 .gitignore 守护)。
@@ -102,7 +102,7 @@ function distributeOpts(deps: AppDeps, b: DistributeBody) {
     scope: (b.scope ?? "global") as Scope,
     dir: b.dir,
     agents: b.agents ?? [],
-    channels: b.channels,
+    collections: b.collections,
     capabilities: b.capabilities,
     method: b.method,
     mcpStrategy: b.mcpStrategy,
@@ -132,7 +132,7 @@ function scanOpts(deps: AppDeps, b: ScanBody) {
     conflict: b.conflict,
     select: b.select,
     selectItems: b.selectItems,
-    intoChannel: b.intoChannel,
+    intoCollection: b.intoCollection,
   };
 }
 
@@ -191,7 +191,7 @@ function summaryOpts(deps: AppDeps, query: (name: string) => string | undefined)
     scope,
     dir,
     agents: parseCsv(query("agents")),
-    channels: parseCsv(query("channels")),
+    collections: parseCsv(query("collections")),
     capabilities: parseCapabilities(query("capabilities")),
     activityLimit: parseLimit(query("limit")),
   };
@@ -233,7 +233,7 @@ export function createApp(deps: AppDeps) {
   });
 
   const api = app
-    // 库房制品总览(三类 + 通道标签)。
+    // 库房制品总览(三类 + collection 标签)。
     .get("/api/artifacts", async (c) => {
       const [config, rules, mcp, skills] = await Promise.all([
         loadConfig(deps.env, deps.storeRoot),
@@ -241,12 +241,12 @@ export function createApp(deps: AppDeps) {
         listMcpArtifacts(deps.env, deps.storeRoot),
         listSkillArtifacts(deps.env, deps.storeRoot),
       ]);
-      const tag = (id: string) => config.artifacts[id]?.channels ?? [];
+      const tag = (id: string) => config.artifacts[id]?.collections ?? [];
       return c.json({
-        rules: rules.map((a) => ({ id: a.id, name: a.name, channels: tag(a.id) })),
-        mcp: mcp.map((a) => ({ id: a.id, name: a.name, channels: tag(a.id) })),
-        skills: skills.map((a) => ({ id: a.id, name: a.name, channels: tag(a.id) })),
-        channels: Object.keys(config.channels),
+        rules: rules.map((a) => ({ id: a.id, name: a.name, collections: tag(a.id) })),
+        mcp: mcp.map((a) => ({ id: a.id, name: a.name, collections: tag(a.id) })),
+        skills: skills.map((a) => ({ id: a.id, name: a.name, collections: tag(a.id) })),
+        collections: Object.keys(config.collections),
       });
     })
     // 可用 agent 适配器。
@@ -306,7 +306,7 @@ export function createApp(deps: AppDeps) {
       const body = await c.req.json<ScanBody>();
       return c.json(await scanPlan(deps.env, scanOpts(deps, body)));
     })
-    // 扫描导入:仍由 core 负责脱敏、冲突裁决、写前护栏与通道打标。
+    // 扫描导入:仍由 core 负责脱敏、冲突裁决、写前护栏与 collection 打标。
     .post("/api/scan/apply", async (c) => {
       const body = await c.req.json<ScanBody>();
       return c.json(await applyScan(deps.env, scanOpts(deps, body)));
@@ -335,7 +335,7 @@ export function createApp(deps: AppDeps) {
           storeRoot: deps.storeRoot,
           identity: body.identity,
           dir: body.dir,
-          channels: body.channels,
+          collections: body.collections,
         }),
       );
     })

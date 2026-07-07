@@ -27,12 +27,12 @@ existing file. Adapter customization uses this shape:
   "version": 1,
   "defaults": {
     "method": "symlink",
-    "channels": ["common"],
+    "collections": ["default"],
     "secretMode": "env"
   },
-  "channels": {
-    "common": {
-      "description": "Shared defaults"
+  "collections": {
+    "default": {
+      "description": "Default"
     }
   },
   "artifacts": {},
@@ -104,7 +104,7 @@ Expanded paths must stay inside the managed root for the selected scope.
 
 ## MCP Field Dialects
 
-Adapters can describe common MCP shape differences:
+Adapters can describe typical MCP shape differences:
 
 ```json
 {
@@ -131,7 +131,7 @@ Use these for agents that store command arguments as arrays, use
 ## When Configuration Is Not Enough
 
 If an agent needs non-trivial conversion, multi-file coordination, or behavior
-that cannot be represented as paths plus common JSON or TOML MCP formats, extend
+that cannot be represented as paths plus standard JSON or TOML MCP formats, extend
 the schema or shared codecs first. Built-in changes and new agent entries both
 live in `adapters`; the key decides whether the entry patches a built-in adapter
 or defines a custom adapter.

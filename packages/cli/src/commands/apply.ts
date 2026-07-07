@@ -5,7 +5,7 @@ import { resolveContext } from "../context.js";
 interface ApplyOpts {
   agent?: string;
   dir?: string;
-  channel?: string;
+  collection?: string;
   rules?: boolean;
   mcp?: boolean;
   skills?: boolean;
@@ -31,7 +31,7 @@ export function applyCommand(): Command {
     .description("下发库房制品到 agent(默认全局;指定 --dir 则下发到该工程)")
     .option("-a, --agent <ids>", "指定 agent(逗号分隔)")
     .option("--dir <path>", "下发到指定工程目录(否则下发到 agent 家目录)")
-    .option("--channel <channel>", "按通道过滤")
+    .option("--collection <collection>", "按 collection 过滤")
     .option("--rules", "下发 rules")
     .option("--mcp", "下发 mcp")
     .option("--skills", "下发 skills")
@@ -63,7 +63,7 @@ export function applyCommand(): Command {
         scope: ctx.scope,
         dir: ctx.dir,
         agents: ctx.agents,
-        channels: ctx.channels,
+        collections: ctx.collections,
         capabilities,
         method,
         mcpStrategy: opts.mcpOverwrite ? "overwrite" : undefined,
@@ -101,7 +101,7 @@ export function applyCommand(): Command {
         }
       }
       if (result.entries.length === 0) {
-        console.log("无可下发的制品(检查通道过滤与 agent 能力)。");
+        console.log("无可下发的制品(检查 collection 过滤与 agent 能力)。");
       }
     });
 }

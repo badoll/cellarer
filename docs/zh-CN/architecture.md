@@ -32,7 +32,7 @@ core 通过 `Env` 接收副作用:
 
 ```text
 store artifacts
-  -> select agents, scope, channels, capabilities
+  -> select agents, scope, collections, capabilities
   -> load adapters and config
   -> render rules, MCP, and skills actions
   -> run secret guards
