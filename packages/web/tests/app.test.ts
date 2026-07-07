@@ -757,5 +757,10 @@ describe("web app — input validation", () => {
 
     const settings = await (await c.app.request("/api/settings")).json();
     expect(settings.collections.map((c: { name: string }) => c.name)).toContain("work");
+
+    const agents = await (await c.app.request("/api/agents")).json();
+    expect(agents.agents.find((a: { id: string }) => a.id === "codex")).toMatchObject({
+      enabled: false,
+    });
   });
 });

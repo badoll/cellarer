@@ -10,6 +10,7 @@ import {
   type ResourceState,
 } from "./product-model.js";
 import { ImportDialog } from "./import-dialog.js";
+import { SyncDialog } from "./sync-dialog.js";
 
 interface ApiState<T> {
   data: T | null;
@@ -48,6 +49,7 @@ export function ResourcePage(props: { kind: Capability }) {
   });
   const [collection, setCollection] = useState("");
   const [importOpen, setImportOpen] = useState(false);
+  const [syncOpen, setSyncOpen] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const title = resourceKindLabel(props.kind);
 
@@ -114,6 +116,10 @@ export function ResourcePage(props: { kind: Capability }) {
               <DashboardIcon name="scan" />
               Import existing setup
             </button>
+            <button type="button" className="action" onClick={() => setSyncOpen(true)}>
+              <DashboardIcon name="apply" />
+              Sync to Agents
+            </button>
           </div>
         </div>
       </section>
@@ -139,6 +145,15 @@ export function ResourcePage(props: { kind: Capability }) {
         onClose={() => setImportOpen(false)}
         onImported={() => {
           setImportOpen(false);
+          setReloadKey((value) => value + 1);
+        }}
+      />
+      <SyncDialog
+        open={syncOpen}
+        kinds={[props.kind]}
+        onClose={() => setSyncOpen(false)}
+        onApplied={() => {
+          setSyncOpen(false);
           setReloadKey((value) => value + 1);
         }}
       />

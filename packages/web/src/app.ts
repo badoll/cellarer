@@ -385,7 +385,10 @@ export function createApp(deps: AppDeps) {
     })
     // 可用 agent 适配器。
     .get("/api/agents", async (c) => {
-      const reg = await loadRegistry(deps.env, deps.storeRoot);
+      const [reg, config] = await Promise.all([
+        loadRegistry(deps.env, deps.storeRoot),
+        loadConfig(deps.env, deps.storeRoot),
+      ]);
       const agents = await Promise.all(
         reg.list().map(async (a) => {
           const d = await a.detect(deps.env, "global");
@@ -395,6 +398,7 @@ export function createApp(deps: AppDeps) {
             capabilities: a.capabilities,
             detected: d.installed,
             root: d.root,
+            enabled: config.agents[a.id]?.enabled !== false,
           };
         }),
       );

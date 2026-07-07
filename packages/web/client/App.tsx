@@ -6,12 +6,12 @@ import type {
   DiscoverySummaryResult,
   ResourceCatalogItem,
   ResourceCatalogResult,
-  SettingsSummary,
 } from "@cellarer/core";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { client } from "./api.js";
 import { readApiJson } from "./api-state.js";
+import { AgentsPage } from "./agents-page.js";
 import { DashboardIcon, type DashboardIconName } from "./dashboard-icons.js";
 import { ImportDialog } from "./import-dialog.js";
 import {
@@ -23,6 +23,7 @@ import {
   type ResourceState,
 } from "./product-model.js";
 import { ResourcePage } from "./resource-pages.js";
+import { SettingsPage } from "./settings-page.js";
 
 interface NavItem {
   page: Page;
@@ -35,19 +36,6 @@ interface ApiState<T> {
   data: T | null;
   error: string | null;
   loading: boolean;
-}
-
-interface AgentInfo {
-  id: string;
-  displayName: string;
-  capabilities: Partial<Record<Capability, string[]>>;
-  detected: boolean;
-  root?: string;
-}
-
-interface AgentsResponse {
-  agents: AgentInfo[];
-  warnings: string[];
 }
 
 const NAV_ITEMS: NavItem[] = [
@@ -418,165 +406,6 @@ function DashboardShell(props: { onNavigate: (page: Page) => void }) {
   );
 }
 
-function AgentsPage() {
-  const agentsState = useApi<AgentsResponse>(() => client.api.agents.$get());
-  const summaryState = useApi<DashboardSummaryResult>(() => client.api.summary.$get());
-  const readinessById = new Map((summaryState.data?.agents ?? []).map((agent) => [agent.id, agent]));
-
-  return (
-    <div className="page-stack">
-      <ApiErrorList errors={[agentsState.error, summaryState.error]} />
-      {agentsState.loading && !agentsState.data ? (
-        <p className="empty-state">Loading agents...</p>
-      ) : agentsState.data?.agents.length === 0 ? (
-        <p className="empty-state">No agents registered.</p>
-      ) : (
-        <div className="agents-grid">
-          {agentsState.data?.agents.map((agent) => (
-            <AgentCard
-              agent={agent}
-              readiness={readinessById.get(agent.id)}
-              key={agent.id}
-            />
-          ))}
-        </div>
-      )}
-      {agentsState.data && agentsState.data.warnings.length > 0 && (
-        <WarningList warnings={agentsState.data.warnings} />
-      )}
-    </div>
-  );
-}
-
-function SettingsPage() {
-  const state = useApi<SettingsSummary>(() => client.api.settings.$get());
-  const settings = state.data;
-
-  return (
-    <div className="page-stack">
-      <ApiErrorList errors={[state.error]} />
-      {state.loading && !settings ? (
-        <p className="empty-state">Loading settings...</p>
-      ) : settings ? (
-        <>
-          <section className="settings-grid">
-            <Panel title="Store" icon="home">
-              <dl className="kv-list">
-                <div>
-                  <dt>Store root</dt>
-                  <dd className="mono">{settings.storeRoot}</dd>
-                </div>
-                <div>
-                  <dt>CELLARER_HOME</dt>
-                  <dd>{settings.cellarerHomeActive ? "active" : "not active"}</dd>
-                </div>
-              </dl>
-            </Panel>
-            <Panel title="Defaults" icon="settings">
-              <dl className="kv-list">
-                <div>
-                  <dt>Method</dt>
-                  <dd>{settings.defaults.method}</dd>
-                </div>
-                <div>
-                  <dt>Collections</dt>
-                  <dd>{defaultCollectionsLabel(settings.defaults.collections)}</dd>
-                </div>
-                <div>
-                  <dt>Secret mode</dt>
-                  <dd>{settings.defaults.secretMode}</dd>
-                </div>
-              </dl>
-            </Panel>
-            <Panel title="Adapters" icon="agent">
-              <dl className="kv-list">
-                <div>
-                  <dt>Built in</dt>
-                  <dd>{settings.builtinAdapterIds.length}</dd>
-                </div>
-                <div>
-                  <dt>Custom</dt>
-                  <dd>{settings.customAdapterIds.length}</dd>
-                </div>
-              </dl>
-            </Panel>
-            <Panel title="Secret References" icon="lock">
-              {settings.secretRefs.length === 0 ? (
-                <p className="empty-state">No ledger secret references.</p>
-              ) : (
-                <div className="settings-list">
-                  {settings.secretRefs.map((ref) => (
-                    <span className="tag amber mono" key={ref.name}>
-                      {ref.name} · {ref.ledgerEntryCount}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </Panel>
-          </section>
-
-          <Panel title="Collections" icon="settings">
-            {settings.collections.length === 0 ? (
-              <p className="empty-state">No collections configured.</p>
-            ) : (
-              <div className="collection-list">
-                {settings.collections.map((collection) => (
-                  <article className="collection-row" key={collection.name}>
-                    <span className="tag blue">{collection.name}</span>
-                    <p>{collection.description ?? "No description"}</p>
-                  </article>
-                ))}
-              </div>
-            )}
-          </Panel>
-        </>
-      ) : null}
-    </div>
-  );
-}
-
-function AgentCard(props: {
-  agent: AgentInfo;
-  readiness: DashboardAgentReadiness | undefined;
-}) {
-  const capabilities = RESOURCE_KINDS.filter((kind) => (props.agent.capabilities[kind] ?? []).length > 0);
-  return (
-    <article className="agent-card">
-      <div className="agent-card-head">
-        <span className={`adapter-marker ${adapterTone(props.agent.id)}`} aria-hidden="true">
-          {adapterInitials(props.agent.displayName, props.agent.id)}
-        </span>
-        <div>
-          <h3>{props.agent.displayName}</h3>
-          <p className="mono">{props.agent.id}</p>
-        </div>
-        <AgentDetectBadge detected={props.agent.detected} />
-      </div>
-      <dl className="kv-list compact">
-        <div>
-          <dt>Root</dt>
-          <dd className="mono">{props.agent.root ?? "not detected"}</dd>
-        </div>
-        <div>
-          <dt>Status</dt>
-          <dd>{props.readiness?.status ?? "unknown"}</dd>
-        </div>
-      </dl>
-      <div className="capability-strip">
-        {capabilities.length === 0 ? (
-          <span className="tag neutral">No capabilities</span>
-        ) : (
-          capabilities.map((capability) => (
-            <span className="tag blue" key={capability}>
-              {resourceKindLabel(capability)}
-            </span>
-          ))
-        )}
-      </div>
-    </article>
-  );
-}
-
 function AgentReadinessList(props: { agents: DashboardAgentReadiness[] }) {
   return (
     <div className="agent-readiness-table">
@@ -894,10 +723,6 @@ function countResourcesByKind(resources: ResourceCatalogItem[]): Record<Capabili
     mcp: resources.filter((resource) => resource.kind === "mcp").length,
     rules: resources.filter((resource) => resource.kind === "rules").length,
   };
-}
-
-function defaultCollectionsLabel(collections: string[]): string {
-  return collections.length === 0 ? "default" : collections.join(", ");
 }
 
 function formatTime(value: string): string {
