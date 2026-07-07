@@ -13,6 +13,7 @@ import { useEffect, useState } from "react";
 import { client } from "./api.js";
 import { readApiJson } from "./api-state.js";
 import { DashboardIcon, type DashboardIconName } from "./dashboard-icons.js";
+import { ImportDialog } from "./import-dialog.js";
 import {
   type Page,
   RESOURCE_KINDS,
@@ -21,6 +22,7 @@ import {
   summarizeResourceCounts,
   type ResourceState,
 } from "./product-model.js";
+import { ResourcePage } from "./resource-pages.js";
 
 interface NavItem {
   page: Page;
@@ -99,16 +101,6 @@ const RESOURCE_STATE_LABELS: Record<ResourceState, string> = {
   missing: "Missing",
   blocked: "Blocked",
 };
-
-const RESOURCE_STATE_TONES: Record<ResourceState, "green" | "blue" | "amber" | "red" | "neutral"> =
-  {
-    managed: "green",
-    discovered: "blue",
-    synced: "green",
-    drifted: "amber",
-    missing: "red",
-    blocked: "amber",
-  };
 
 export function App() {
   const [page, setPage] = useState<Page>("dashboard");
@@ -275,10 +267,11 @@ function DashboardPage(props: { onNavigate: (page: Page) => void }) {
 }
 
 function DashboardShell(props: { onNavigate: (page: Page) => void }) {
-  const summaryState = useApi<DashboardSummaryResult>(() => client.api.summary.$get());
-  const resourcesState = useApi<ResourceCatalogResult>(() => client.api.resources.$get());
-  const discoveryState = useApi<DiscoverySummaryResult>(() => client.api.discovery.$get());
-  const settingsState = useApi<SettingsSummary>(() => client.api.settings.$get());
+  const [importOpen, setImportOpen] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  const summaryState = useApi<DashboardSummaryResult>(() => client.api.summary.$get(), [reloadKey]);
+  const resourcesState = useApi<ResourceCatalogResult>(() => client.api.resources.$get(), [reloadKey]);
+  const discoveryState = useApi<DiscoverySummaryResult>(() => client.api.discovery.$get(), [reloadKey]);
   const summary = summaryState.data;
   const resourceCounts = resourcesState.data
     ? summarizeResourceCounts(resourcesState.data.resources)
@@ -287,23 +280,46 @@ function DashboardShell(props: { onNavigate: (page: Page) => void }) {
     ? countResourcesByKind(resourcesState.data.resources)
     : null;
   const discovery = discoveryState.data;
-  const settings = settingsState.data;
+  const discoveryTotal = discovery
+    ? discovery.totals.rules + discovery.totals.mcp + discovery.totals.skills
+    : "...";
+  const blockedSyncCount = resourceCounts
+    ? resourceCounts.drifted + resourceCounts.missing + resourceCounts.blocked
+    : null;
 
   return (
     <div className="page-stack">
       <ApiErrorList
-        errors={[summaryState.error, resourcesState.error, discoveryState.error, settingsState.error]}
+        errors={[summaryState.error, resourcesState.error, discoveryState.error]}
       />
       <section className="stat-grid" aria-label="Dashboard summary">
         <StatCard
-          label="Managed Resources"
+          label="Library Resources"
           value={summary?.artifactCounts.total ?? resourceCounts?.managed ?? "..."}
           detail={summary ? resourceCountDetail(summary.artifactCounts) : "Loading resource catalog"}
           tone="blue"
           icon="artifacts"
         />
         <StatCard
-          label="Detected Agents"
+          label="Discovery"
+          value={discoveryTotal}
+          detail={discovery ? `${destinationLabel(discovery.destination)} sources` : "Scanning readable files"}
+          tone="amber"
+          icon="scan"
+        />
+        <StatCard
+          label="Sync Health"
+          value={resourceCounts?.synced ?? "..."}
+          detail={
+            resourceCounts
+              ? `${blockedSyncCount} drift or missing targets`
+              : "Loading synced target state"
+          }
+          tone={blockedSyncCount && blockedSyncCount > 0 ? "amber" : "green"}
+          icon="check"
+        />
+        <StatCard
+          label="Agents"
           value={summary?.agentCounts.detected ?? "..."}
           detail={
             summary
@@ -313,20 +329,37 @@ function DashboardShell(props: { onNavigate: (page: Page) => void }) {
           tone="green"
           icon="agent"
         />
-        <StatCard
-          label="Discovery"
-          value={discovery ? discovery.totals.rules + discovery.totals.mcp + discovery.totals.skills : "..."}
-          detail={discovery ? `${destinationLabel(discovery.destination)} sources` : "Scanning readable files"}
-          tone="amber"
-          icon="rules"
-        />
-        <StatCard
-          label="Collections"
-          value={settings?.collections.length ?? summary?.collections.length ?? "..."}
-          detail={settings ? defaultCollectionsLabel(settings.defaults.collections) : "Loading defaults"}
-          tone="green"
-          icon="settings"
-        />
+      </section>
+
+      <section className="dashboard-actions next-actions" aria-label="Next actions">
+        <button type="button" className="resource-shortcut" onClick={() => setImportOpen(true)}>
+          <DashboardIcon name="scan" />
+          <span>
+            <strong>Import existing setup</strong>
+            <span>Preview before adding resources</span>
+          </span>
+        </button>
+        <button type="button" className="resource-shortcut" onClick={() => props.onNavigate("skills")}>
+          <DashboardIcon name="apply" />
+          <span>
+            <strong>Sync library</strong>
+            <span>{resourceCounts?.managed ?? 0} managed resources</span>
+          </span>
+        </button>
+        <button type="button" className="resource-shortcut" onClick={() => props.onNavigate("rules")}>
+          <DashboardIcon name="warning" />
+          <span>
+            <strong>Fix drift</strong>
+            <span>{blockedSyncCount ?? 0} targets need review</span>
+          </span>
+        </button>
+        <button type="button" className="resource-shortcut" onClick={() => props.onNavigate("agents")}>
+          <DashboardIcon name="agent" />
+          <span>
+            <strong>Review agents</strong>
+            <span>{summary?.agentCounts.registered ?? 0} registered targets</span>
+          </span>
+        </button>
       </section>
 
       <section className="dashboard-actions" aria-label="Resource shortcuts">
@@ -373,47 +406,14 @@ function DashboardShell(props: { onNavigate: (page: Page) => void }) {
           <ActivityTable events={summary?.latestActivity ?? null} />
         </Panel>
       </section>
-    </div>
-  );
-}
-
-function ResourcePage(props: { kind: Capability }) {
-  const state = useApi<ResourceCatalogResult>(
-    () => client.api.resources[":kind"].$get({ param: { kind: props.kind } }),
-    [props.kind],
-  );
-  const label = resourceKindLabel(props.kind);
-  const counts = state.data?.counts ?? (state.data ? summarizeResourceCounts(state.data.resources) : null);
-
-  return (
-    <div className="page-stack">
-      <ApiErrorList errors={[state.error]} />
-      <section className="resource-toolbar">
-        <div>
-          <p className="eyebrow">{destinationLabel("user")}</p>
-          <h3>{label} resources</h3>
-          <p>
-            {state.data
-              ? `${state.data.resources.length} resources generated at ${formatTime(state.data.generatedAt)}`
-              : "Loading resource catalog"}
-          </p>
-        </div>
-        <ResourceCountGrid counts={counts} compact />
-      </section>
-
-      {state.loading && !state.data ? (
-        <p className="empty-state">Loading {label.toLowerCase()} resources...</p>
-      ) : state.data?.resources.length === 0 ? (
-        <p className="empty-state">No {label.toLowerCase()} resources found.</p>
-      ) : (
-        <div className="resource-list">
-          {state.data?.resources.map((resource) => (
-            <ResourceCard resource={resource} key={resource.id} />
-          ))}
-        </div>
-      )}
-
-      {state.data && state.data.warnings.length > 0 && <WarningList warnings={state.data.warnings} />}
+      <ImportDialog
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImported={() => {
+          setImportOpen(false);
+          setReloadKey((value) => value + 1);
+        }}
+      />
     </div>
   );
 }
@@ -532,65 +532,6 @@ function SettingsPage() {
         </>
       ) : null}
     </div>
-  );
-}
-
-function ResourceCard(props: { resource: ResourceCatalogItem }) {
-  return (
-    <article className="resource-card">
-      <div className="resource-card-header">
-        <div>
-          <span className="tag neutral">{resourceKindLabel(props.resource.kind)}</span>
-          <h3>{props.resource.name}</h3>
-          <p className="mono">{props.resource.id}</p>
-        </div>
-        <ResourceStateBadge state={props.resource.state} />
-      </div>
-      <div className="resource-meta">
-        <MetaBlock label="Collections">
-          {props.resource.collections.length === 0 ? (
-            <span className="muted">default</span>
-          ) : (
-            props.resource.collections.map((collection) => (
-              <span className="tag blue" key={collection}>
-                {collection}
-              </span>
-            ))
-          )}
-        </MetaBlock>
-        {props.resource.sourcePath && (
-          <MetaBlock label="Source">
-            <span className="mono path-cell">{props.resource.sourcePath}</span>
-          </MetaBlock>
-        )}
-        {props.resource.lastActivityAt && (
-          <MetaBlock label="Last activity">
-            <span>{formatTime(props.resource.lastActivityAt)}</span>
-          </MetaBlock>
-        )}
-      </div>
-      {props.resource.syncTargets.length > 0 && (
-        <div className="sync-target-list">
-          {props.resource.syncTargets.map((target) => (
-            <div className="sync-target" key={`${target.agent}:${target.destination}:${target.target}`}>
-              <span>{target.agent}</span>
-              <span>{destinationLabel(target.destination)}</span>
-              <ResourceStateBadge state={target.state} />
-              <span className="mono path-cell">{target.target}</span>
-            </div>
-          ))}
-        </div>
-      )}
-      {props.resource.secretRefs.length > 0 && (
-        <div className="secret-list">
-          {props.resource.secretRefs.map((ref) => (
-            <span className="tag amber mono" key={ref}>
-              {ref}
-            </span>
-          ))}
-        </div>
-      )}
-    </article>
   );
 }
 
@@ -825,15 +766,6 @@ function ResourceCountGrid(props: {
   );
 }
 
-function ResourceStateBadge(props: { state: ResourceState }) {
-  return (
-    <span className={`tag status-badge ${RESOURCE_STATE_TONES[props.state]}`}>
-      <DashboardIcon name={statusIcon(props.state)} />
-      {RESOURCE_STATE_LABELS[props.state]}
-    </span>
-  );
-}
-
 function StatCard(props: {
   label: string;
   value: number | string;
@@ -899,15 +831,6 @@ function WarningList(props: { warnings: string[]; compact?: boolean }) {
         </p>
       ))}
     </section>
-  );
-}
-
-function MetaBlock(props: { label: string; children: ReactNode }) {
-  return (
-    <div className="meta-block">
-      <span>{props.label}</span>
-      <div>{props.children}</div>
-    </div>
   );
 }
 

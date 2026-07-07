@@ -316,6 +316,45 @@ describe("web app — scan import", () => {
   });
   afterEach(() => c.cleanup());
 
+  it("plans and applies current-kind imports through product routes with default user destination", async () => {
+    await c.env.fs.mkdir(join(c.root, "home", ".claude"), { recursive: true });
+    await c.env.fs.writeFile(join(c.root, "home", ".claude", "CLAUDE.md"), "# Team rules");
+    await c.env.fs.writeFile(
+      join(c.root, "home", ".claude", "mcp.json"),
+      JSON.stringify({ mcpServers: { ctx: { command: "npx" } } }),
+    );
+
+    const preview = await c.app.request("/api/import/plan", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "claude-code",
+        capabilities: ["rules"],
+      }),
+    });
+    expect(preview.status).toBe(200);
+    expect(await preview.json()).toMatchObject({
+      agent: "claude-code",
+      scope: "global",
+      items: [expect.objectContaining({ kind: "rules", name: "claude-code" })],
+    });
+
+    const applied = await c.app.request("/api/import/apply", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "claude-code",
+        capabilities: ["rules"],
+      }),
+    });
+    expect(applied.status).toBe(200);
+
+    const rules = await (await c.app.request("/api/resources/rules")).json();
+    const mcp = await (await c.app.request("/api/resources/mcp")).json();
+    expect(rules.resources.map((resource: { name: string }) => resource.name)).toContain("claude-code");
+    expect(mcp.resources.map((resource: { name: string }) => resource.name)).not.toContain("ctx");
+  });
+
   it("imports scan candidates and refreshes the artifact inventory", async () => {
     await c.env.fs.mkdir(join(c.root, "home", ".claude"), { recursive: true });
     await c.env.fs.writeFile(join(c.root, "home", ".claude", "CLAUDE.md"), "# Team rules");
