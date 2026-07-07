@@ -51,7 +51,7 @@ describe("web app — artifacts/agents", () => {
   });
   afterEach(() => c.cleanup());
 
-  it("lists store artifacts with channels", async () => {
+  it("lists store artifacts with collections", async () => {
     await c.env.fs.writeFile(join(c.storeRoot, "store", "rules", "style.md"), "# rules");
     await c.env.fs.writeFile(
       join(c.storeRoot, "store", "mcp", "ctx.json"),
@@ -62,6 +62,10 @@ describe("web app — artifacts/agents", () => {
     const body = await res.json();
     expect(body.rules.map((a: { name: string }) => a.name)).toContain("style");
     expect(body.mcp.map((a: { name: string }) => a.name)).toContain("ctx");
+    expect(body).toMatchObject({
+      collections: ["default"],
+    });
+    expect(body.rules[0]).toHaveProperty("collections");
   });
 
   it("lists configured default agents with capabilities", async () => {
@@ -112,7 +116,7 @@ describe("web app — dashboard M3 routes", () => {
     expect(body.artifactCounts).toMatchObject({ rules: 1, total: 1 });
     expect(body.agentCounts.detected).toBe(1);
     expect(body.distributionCoverage[0]).toMatchObject({
-      channel: "common",
+      collection: "default",
       scope: "global",
       desiredCount: 1,
       percentage: 0,
@@ -288,7 +292,7 @@ describe("web app — scan import", () => {
         agent: "claude-code",
         scope: "global",
         capabilities: ["rules"],
-        intoChannel: "common",
+        intoCollection: "default",
       }),
     });
     expect(res.status).toBe(200);
@@ -299,8 +303,13 @@ describe("web app — scan import", () => {
 
     const artifacts = await (await c.app.request("/api/artifacts")).json();
     expect(artifacts.rules).toContainEqual(
-      expect.objectContaining({ name: "claude-code", channels: ["common"] }),
+      expect.objectContaining({ name: "claude-code", collections: ["default"] }),
     );
+    expect(artifacts.collections).toContain("default");
+    const config = JSON.parse(await c.env.fs.readFile(join(c.storeRoot, "config.json"), "utf8"));
+    expect(config.artifacts["rules/claude-code"]).toMatchObject({
+      collections: ["default"],
+    });
   });
 
   it("imports only selected scan rows when different kinds share a name", async () => {

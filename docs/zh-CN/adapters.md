@@ -29,7 +29,7 @@
   },
   "collections": {
     "default": {
-      "description": "Default"
+      "description": "默认分组"
     }
   },
   "artifacts": {},

@@ -61,7 +61,7 @@ const PAGE_META: Record<Page, { title: string; subtitle: string }> = {
   },
   artifacts: {
     title: "Artifacts",
-    subtitle: "Rules, MCP servers, skills, and channel tags in the cellarer store.",
+    subtitle: "Rules, MCP servers, skills, and collection tags in the cellarer store.",
   },
   distribute: {
     title: "Distribute",
@@ -494,22 +494,22 @@ function readinessTone(status: string): "green" | "amber" | "red" | "neutral" {
 function DistributionOverview(props: { groups: DashboardCoverageGroup[] | null }) {
   if (!props.groups) return <p className="empty-state">Loading distribution coverage...</p>;
   if (props.groups.length === 0) return <p className="empty-state">No coverage groups yet.</p>;
-  const byChannel = new Map<string, DashboardCoverageGroup[]>();
+  const byCollection = new Map<string, DashboardCoverageGroup[]>();
   for (const group of props.groups) {
-    byChannel.set(group.channel, [...(byChannel.get(group.channel) ?? []), group]);
+    byCollection.set(group.collection, [...(byCollection.get(group.collection) ?? []), group]);
   }
   return (
     <div className="coverage-list">
-      {[...byChannel.entries()].map(([channel, groups]) => (
-        <section className="coverage-channel" key={channel}>
+      {[...byCollection.entries()].map(([collection, groups]) => (
+        <section className="coverage-channel" key={collection}>
           <div className="coverage-channel-header">
-            <span className="tag blue">{channel}</span>
+            <span className="tag blue">{collection}</span>
             <span className="muted">
               {groups.reduce((sum, group) => sum + group.artifactsCount, 0)} artifacts
             </span>
           </div>
           {groups.map((group) => (
-            <div className="coverage-row" key={`${group.channel}:${group.scope}`}>
+            <div className="coverage-row" key={`${group.collection}:${group.scope}`}>
               <div>
                 <strong>{group.scope}</strong>
                 <span className="muted-row">
@@ -960,12 +960,12 @@ function ArtifactsPage() {
                     <tr key={r.id}>
                       <td className="mono">{r.name}</td>
                       <td>
-                        {r.channels.length === 0 ? (
-                          <span className="muted">no channel</span>
+                        {r.collections.length === 0 ? (
+                          <span className="muted">no collection</span>
                         ) : (
-                          r.channels.map((ch) => (
-                            <span className="tag blue" key={ch}>
-                              {ch}
+                          r.collections.map((collection) => (
+                            <span className="tag blue" key={collection}>
+                              {collection}
                             </span>
                           ))
                         )}
@@ -989,7 +989,7 @@ interface DistributeRequest {
   agents: string[];
   scope: Scope;
   dir?: string;
-  channels?: string[];
+  collections?: string[];
   capabilities: Capability[];
   method?: "symlink" | "copy";
   mcpStrategy?: "merge" | "overwrite";
@@ -1017,7 +1017,7 @@ function DistributePage() {
     mcp: true,
     skills: true,
   });
-  const [channels, setChannels] = useState<Record<string, boolean>>({});
+  const [collections, setCollections] = useState<Record<string, boolean>>({});
   const [method, setMethod] = useState<MethodSelection>("default");
   const [mcpStrategy, setMcpStrategy] = useState<McpStrategySelection>("default");
   const [scope, setScope] = useState<Scope>("global");
@@ -1030,7 +1030,9 @@ function DistributePage() {
 
   const chosenAgents = Object.keys(selected).filter((a) => selected[a]);
   const chosenCaps = Object.keys(caps).filter((c) => caps[c]) as Capability[];
-  const chosenChannels = Object.keys(channels).filter((channel) => channels[channel]);
+  const chosenCollections = Object.keys(collections).filter(
+    (collection) => collections[collection],
+  );
   // project 作用域必须提供 dir(与后端一致);否则禁用动作按钮。
   const dirMissing = scope === "project" && dir.trim() === "";
   const disabled = chosenAgents.length === 0 || chosenCaps.length === 0 || dirMissing;
@@ -1051,7 +1053,7 @@ function DistributePage() {
       agents: chosenAgents,
       scope,
       dir: scope === "project" ? dir.trim() : undefined,
-      channels: chosenChannels.length > 0 ? chosenChannels : undefined,
+      collections: chosenCollections.length > 0 ? chosenCollections : undefined,
       capabilities: chosenCaps,
       method: method === "default" ? undefined : method,
       mcpStrategy: mcpStrategy === "default" ? undefined : mcpStrategy,
@@ -1134,33 +1136,35 @@ function DistributePage() {
             </div>
           </section>
           <section className="control-group">
-            <h3>Channels</h3>
+            <h3>Collections</h3>
             <div className="option-list">
               {artifactsState.error ? (
-                <span className="muted">Channels unavailable</span>
+                <span className="muted">Collections unavailable</span>
               ) : !artifacts ? (
-                <span className="muted">Loading channels...</span>
-              ) : artifacts.channels.length === 0 ? (
-                <span className="muted">Default channel set</span>
+                <span className="muted">Loading collections...</span>
+              ) : artifacts.collections.length === 0 ? (
+                <span className="muted">Default collection set</span>
               ) : (
-                artifacts.channels.map((channel) => (
-                  <label className="check-row" key={channel}>
+                artifacts.collections.map((collection) => (
+                  <label className="check-row" key={collection}>
                     <input
                       type="checkbox"
-                      checked={!!channels[channel]}
+                      checked={!!collections[collection]}
                       onChange={(e) =>
-                        setChannels((current) => ({
+                        setCollections((current) => ({
                           ...current,
-                          [channel]: e.target.checked,
+                          [collection]: e.target.checked,
                         }))
                       }
                     />
-                    <span>{channel}</span>
+                    <span>{collection}</span>
                   </label>
                 ))
               )}
             </div>
-            {chosenChannels.length === 0 && <span className="hint">Using configured defaults</span>}
+            {chosenCollections.length === 0 && (
+              <span className="hint">Using configured defaults</span>
+            )}
           </section>
           <section className="control-group">
             <h3>Write Options</h3>
@@ -1295,7 +1299,7 @@ function ScanPage(props: { onSessionPreview: (preview: SessionScanPreview) => vo
     skills: true,
   });
   const [conflict, setConflict] = useState<ConflictStrategy>("keep-theirs");
-  const [intoChannel, setIntoChannel] = useState("");
+  const [intoCollection, setIntoCollection] = useState("");
   const [selectedItems, setSelectedItems] = useState<Record<string, boolean>>({});
   const [plan, setPlan] = useState<ScanPlanResponse | null>(null);
   const [planKey, setPlanKey] = useState<string | null>(null);
@@ -1320,7 +1324,7 @@ function ScanPage(props: { onSessionPreview: (preview: SessionScanPreview) => vo
       dir: scope === "project" ? dir.trim() : undefined,
       capabilities: chosenCaps,
       conflict,
-      intoChannel: intoChannel.trim() || undefined,
+      intoCollection: intoCollection.trim() || undefined,
       selectItems,
     };
   }
@@ -1429,12 +1433,12 @@ function ScanPage(props: { onSessionPreview: (preview: SessionScanPreview) => vo
               </select>
             </label>
             <label className="field-row stacked">
-              <span>Into channel</span>
+              <span>Into collection</span>
               <input
                 type="text"
-                placeholder="optional channel"
-                value={intoChannel}
-                onChange={(e) => setIntoChannel(e.target.value)}
+                placeholder="optional collection"
+                value={intoCollection}
+                onChange={(e) => setIntoCollection(e.target.value)}
               />
             </label>
           </section>

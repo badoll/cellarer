@@ -12,7 +12,7 @@ const emptyArtifacts: ArtifactsResponse = {
   rules: [],
   mcp: [],
   skills: [],
-  channels: [],
+  collections: [],
 };
 
 const codex: AgentInfo = {

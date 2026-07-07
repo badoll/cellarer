@@ -17,14 +17,14 @@ export type MatrixCellState =
 export interface ArtifactRow {
   id: string;
   name: string;
-  channels: string[];
+  collections: string[];
 }
 
 export interface ArtifactsResponse {
   rules: ArtifactRow[];
   mcp: ArtifactRow[];
   skills: ArtifactRow[];
-  channels: string[];
+  collections: string[];
 }
 
 export interface AgentInfo {
