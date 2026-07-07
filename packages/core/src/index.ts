@@ -11,6 +11,22 @@ export {
   listActivity,
   summarizeActivity,
 } from "./activity.js";
+export type {
+  Destination,
+  ResourceCatalogCounts,
+  ResourceCatalogItem,
+  ResourceCatalogOptions,
+  ResourceCatalogResult,
+  ResourceState,
+  ResourceSyncTarget,
+} from "./resources/catalog.js";
+export { resourceCatalog } from "./resources/catalog.js";
+export type {
+  AgentDiscoverySummary,
+  DiscoverySummaryOptions,
+  DiscoverySummaryResult,
+} from "./resources/discovery.js";
+export { discoverySummary } from "./resources/discovery.js";
 // adapters
 export type { Registry } from "./adapters/registry.js";
 export { loadRegistry } from "./adapters/registry.js";
