@@ -3,8 +3,10 @@ import type { LinkMethod } from "./model/index.js";
 import type { SecretMode } from "./secrets/resolver.js";
 import {
   type AdapterPatchConfig,
+  type AdapterBodyConfig,
   type CellarerConfig,
   loadConfig,
+  parseAdapterBodyConfig,
   packagedConfigText,
   parsePackagedConfigForSettings,
   saveConfig,
@@ -35,6 +37,43 @@ export interface DefaultsPatch {
   method?: LinkMethod;
   collections?: string[];
   secretMode?: SecretMode;
+}
+
+function validateCollectionsConfig(config: CellarerConfig): void {
+  const errors: string[] = [];
+
+  if (!config.collections.default) {
+    errors.push('collections.default must exist');
+  }
+
+  if (config.defaults.collections.length === 0) {
+    errors.push("defaults.collections must contain at least one collection");
+  }
+
+  const missingDefaults = config.defaults.collections.filter((name) => !config.collections[name]);
+  if (missingDefaults.length > 0) {
+    errors.push(
+      `defaults.collections contains unknown collection${missingDefaults.length > 1 ? "s" : ""}: ${missingDefaults.join(", ")}`,
+    );
+  }
+
+  if (errors.length > 0) {
+    throw new Error(errors.join("; "));
+  }
+}
+
+async function loadBuiltinAdapterIds(env: Env): Promise<Set<string>> {
+  const packaged = parsePackagedConfigForSettings(await packagedConfigText(env));
+  return new Set(Object.keys(packaged.builtinAdapters));
+}
+
+function validateCustomAdapterConfig(adapterId: string, adapter: AdapterPatchConfig): AdapterBodyConfig {
+  try {
+    return parseAdapterBodyConfig(adapter);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`invalid custom adapter "${adapterId}": ${message}`);
+  }
 }
 
 export async function settingsSummary(
@@ -69,6 +108,7 @@ export async function saveCollections(
 ): Promise<CellarerConfig> {
   const config = await loadConfig(env, storeRoot);
   const next = { ...config, collections };
+  validateCollectionsConfig(next);
   await saveConfig(env, storeRoot, next);
   return next;
 }
@@ -80,6 +120,7 @@ export async function saveDefaults(
 ): Promise<CellarerConfig> {
   const config = await loadConfig(env, storeRoot);
   const next = { ...config, defaults: { ...config.defaults, ...patch } };
+  validateCollectionsConfig(next);
   await saveConfig(env, storeRoot, next);
   return next;
 }
@@ -109,7 +150,11 @@ export async function upsertAdapterConfig(
   adapter: AdapterPatchConfig,
 ): Promise<CellarerConfig> {
   const config = await loadConfig(env, storeRoot);
-  const next = { ...config, adapters: { ...config.adapters, [adapterId]: adapter } };
+  const builtinAdapterIds = await loadBuiltinAdapterIds(env);
+  const nextAdapter = builtinAdapterIds.has(adapterId)
+    ? adapter
+    : validateCustomAdapterConfig(adapterId, adapter);
+  const next = { ...config, adapters: { ...config.adapters, [adapterId]: nextAdapter } };
   await saveConfig(env, storeRoot, next);
   return next;
 }
@@ -119,8 +164,8 @@ export async function deleteCustomAdapterConfig(
   storeRoot: string,
   adapterId: string,
 ): Promise<CellarerConfig> {
-  const packaged = parsePackagedConfigForSettings(await packagedConfigText(env));
-  if (Object.keys(packaged.builtinAdapters).includes(adapterId)) {
+  const builtinAdapterIds = await loadBuiltinAdapterIds(env);
+  if (builtinAdapterIds.has(adapterId)) {
     throw new Error(`cannot delete built-in adapter "${adapterId}"`);
   }
   const config = await loadConfig(env, storeRoot);

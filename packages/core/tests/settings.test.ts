@@ -51,6 +51,30 @@ describe("settings and agent config writes", () => {
     expect(cfg.agents.codex?.enabled).toBe(false);
   });
 
+  it("rejects collections without the default collection", async () => {
+    await expect(
+      saveCollections(t.env, storeRoot, {
+        work: { description: "Work" },
+      }),
+    ).rejects.toThrow(/collections\.default must exist/);
+  });
+
+  it("rejects defaults that point at a missing collection", async () => {
+    await expect(
+      saveDefaults(t.env, storeRoot, {
+        collections: ["missing"],
+      }),
+    ).rejects.toThrow(/defaults\.collections contains unknown collection: missing/);
+  });
+
+  it("rejects empty default collections", async () => {
+    await expect(
+      saveDefaults(t.env, storeRoot, {
+        collections: [],
+      }),
+    ).rejects.toThrow(/defaults\.collections must contain at least one collection/);
+  });
+
   it("upserts and deletes a custom adapter", async () => {
     await upsertAdapterConfig(t.env, storeRoot, "my-agent", {
       displayName: "My Agent",
@@ -68,5 +92,13 @@ describe("settings and agent config writes", () => {
     await expect(deleteCustomAdapterConfig(t.env, storeRoot, "codex")).rejects.toThrow(
       /built-in adapter/,
     );
+  });
+
+  it("rejects invalid custom adapter upserts", async () => {
+    await expect(
+      upsertAdapterConfig(t.env, storeRoot, "my-agent", {
+        displayName: "My Agent",
+      }),
+    ).rejects.toThrow(/invalid custom adapter "my-agent"/);
   });
 });

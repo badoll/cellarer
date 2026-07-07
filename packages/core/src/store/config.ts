@@ -176,6 +176,10 @@ export function parsePackagedConfigForSettings(text: string): {
   return { builtinAdapters: parsed.builtinAdapters };
 }
 
+export function parseAdapterBodyConfig(adapter: unknown): AdapterBodyConfig {
+  return adapterBodySchema.parse(adapter);
+}
+
 function adapterToSpec(id: string, a: AdapterBodyConfig): AgentSpec {
   return {
     id,
