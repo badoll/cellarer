@@ -107,8 +107,10 @@ export async function resourceCatalog(
 
   const lastActivityByArtifact = new Map<string, string>();
   for (const event of activity.events) {
-    for (const artifactId of event.references?.artifactIds ?? []) {
-      if (!lastActivityByArtifact.has(artifactId)) lastActivityByArtifact.set(artifactId, event.time);
+    for (const artifactIdentity of event.references?.artifactIds ?? []) {
+      for (const artifactId of expandConcreteArtifactIdentities(artifactIdentity)) {
+        if (!lastActivityByArtifact.has(artifactId)) lastActivityByArtifact.set(artifactId, event.time);
+      }
     }
   }
 
@@ -126,7 +128,7 @@ export async function resourceCatalog(
   for (const artifact of filteredArtifacts) {
     const collections = config.artifacts[artifact.id]?.collections ?? [];
     const syncTargets = statusItems
-      .filter((item) => statusMatchesArtifact(item, artifact.id, artifact.kind))
+      .filter((item) => statusMatchesArtifact(item, artifact.id))
       .map((item) => ({
         agent: item.agent,
         destination: scopeToDestination(item.scope),
@@ -167,16 +169,24 @@ function collectArtifactSecretRefs(
 ): string[] {
   const refs = new Set<string>();
   for (const entry of entries) {
-    if (entry.artifact !== artifactId) continue;
+    if (!expandConcreteArtifactIdentities(entry.artifact).includes(artifactId)) continue;
     for (const ref of entry.secretRefs ?? []) refs.add(ref);
   }
   return [...refs].sort();
 }
 
-function statusMatchesArtifact(item: StatusItem, artifactId: string, kind: Capability): boolean {
-  if (item.artifact === artifactId) return true;
-  if (item.artifact === `${kind}/*`) return true;
-  return item.artifact.split(", ").includes(artifactId);
+function statusMatchesArtifact(item: StatusItem, artifactId: string): boolean {
+  return expandConcreteArtifactIdentities(item.artifact).includes(artifactId);
+}
+
+function expandConcreteArtifactIdentities(identity: string): string[] {
+  const parts = identity.split(",").map((part) => part.trim());
+  if (parts.length === 0 || parts.some((part) => !isConcreteArtifactId(part))) return [];
+  return [...new Set(parts)];
+}
+
+function isConcreteArtifactId(value: string): boolean {
+  return /^(rules|mcp|skills)\/[^/*,\s]+$/.test(value);
 }
 
 function emptyCounts(): ResourceCatalogCounts {
