@@ -1,22 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { adapterPatch } from "../client/agents-page.js";
+import { BUILTIN_ADAPTER_IDS, adapterPatch } from "../client/agents-page.js";
 
 describe("AgentsPage adapter helpers", () => {
   it("does not override built-in MCP dialect when patching paths", () => {
-    expect(
-      adapterPatch({
-        adapterId: "codex",
-        displayName: "",
-        rulesGlobal: "",
-        mcpGlobal: "~/.codex/custom.toml",
-        skillsGlobal: "",
-      }),
-    ).toEqual({
-      displayName: undefined,
-      rules: undefined,
-      mcp: { global: "~/.codex/custom.toml" },
-      skills: undefined,
-    });
+    for (const adapterId of BUILTIN_ADAPTER_IDS) {
+      expect(
+        adapterPatch({
+          adapterId,
+          displayName: "",
+          rulesGlobal: "",
+          mcpGlobal: `~/.${adapterId}/custom-mcp`,
+          skillsGlobal: "",
+        }),
+      ).toEqual({
+        displayName: undefined,
+        rules: undefined,
+        mcp: { global: `~/.${adapterId}/custom-mcp` },
+        skills: undefined,
+      });
+    }
   });
 
   it("includes JSON MCP dialect fields for custom adapters", () => {

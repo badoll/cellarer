@@ -26,7 +26,17 @@ interface AdapterFormState {
   skillsGlobal: string;
 }
 
-const BUILTIN_ADAPTER_IDS = new Set(["claude-code", "codex", "cursor"]);
+export const BUILTIN_ADAPTER_IDS = [
+  "agents-md",
+  "claude-code",
+  "codex",
+  "cursor",
+  "gemini-cli",
+  "opencode",
+  "windsurf",
+] as const;
+
+const BUILTIN_ADAPTER_ID_SET = new Set<string>(BUILTIN_ADAPTER_IDS);
 
 const EMPTY_ADAPTER_FORM: AdapterFormState = {
   adapterId: "",
@@ -294,7 +304,7 @@ function capabilityTags(agent: AgentInfo) {
 }
 
 function isBuiltinAdapter(adapterId: string): boolean {
-  return BUILTIN_ADAPTER_IDS.has(adapterId);
+  return BUILTIN_ADAPTER_ID_SET.has(adapterId);
 }
 
 export function adapterPatch(form: AdapterFormState, builtin = isBuiltinAdapter(form.adapterId.trim())) {
