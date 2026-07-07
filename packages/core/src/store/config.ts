@@ -180,6 +180,10 @@ export function parseAdapterBodyConfig(adapter: unknown): AdapterBodyConfig {
   return adapterBodySchema.parse(adapter);
 }
 
+export function parseAdapterPatchConfig(adapter: unknown): AdapterPatchConfig {
+  return adapterPatchSchema.parse(adapter);
+}
+
 function adapterToSpec(id: string, a: AdapterBodyConfig): AgentSpec {
   return {
     id,

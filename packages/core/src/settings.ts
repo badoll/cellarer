@@ -7,6 +7,7 @@ import {
   type CellarerConfig,
   loadConfig,
   parseAdapterBodyConfig,
+  parseAdapterPatchConfig,
   packagedConfigText,
   parsePackagedConfigForSettings,
   saveConfig,
@@ -152,7 +153,7 @@ export async function upsertAdapterConfig(
   const config = await loadConfig(env, storeRoot);
   const builtinAdapterIds = await loadBuiltinAdapterIds(env);
   const nextAdapter = builtinAdapterIds.has(adapterId)
-    ? adapter
+    ? parseAdapterPatchConfig(adapter)
     : validateCustomAdapterConfig(adapterId, adapter);
   const next = { ...config, adapters: { ...config.adapters, [adapterId]: nextAdapter } };
   await saveConfig(env, storeRoot, next);

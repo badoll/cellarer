@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   deleteCustomAdapterConfig,
   initStore,
+  loadAdapterSpecs,
+  loadConfig,
   saveCollections,
   saveDefaults,
   setAgentEnabled,
@@ -52,27 +54,36 @@ describe("settings and agent config writes", () => {
   });
 
   it("rejects collections without the default collection", async () => {
+    const before = await loadConfig(t.env, storeRoot);
     await expect(
       saveCollections(t.env, storeRoot, {
         work: { description: "Work" },
       }),
     ).rejects.toThrow(/collections\.default must exist/);
+    const after = await loadConfig(t.env, storeRoot);
+    expect(after).toEqual(before);
   });
 
   it("rejects defaults that point at a missing collection", async () => {
+    const before = await loadConfig(t.env, storeRoot);
     await expect(
       saveDefaults(t.env, storeRoot, {
         collections: ["missing"],
       }),
     ).rejects.toThrow(/defaults\.collections contains unknown collection: missing/);
+    const after = await loadConfig(t.env, storeRoot);
+    expect(after).toEqual(before);
   });
 
   it("rejects empty default collections", async () => {
+    const before = await loadConfig(t.env, storeRoot);
     await expect(
       saveDefaults(t.env, storeRoot, {
         collections: [],
       }),
     ).rejects.toThrow(/defaults\.collections must contain at least one collection/);
+    const after = await loadConfig(t.env, storeRoot);
+    expect(after).toEqual(before);
   });
 
   it("upserts and deletes a custom adapter", async () => {
@@ -100,5 +111,40 @@ describe("settings and agent config writes", () => {
         displayName: "My Agent",
       }),
     ).rejects.toThrow(/invalid custom adapter "my-agent"/);
+  });
+
+  it("stores built-in adapter patches and still resolves merged specs", async () => {
+    const patch = {
+      displayName: "Codex Override",
+      mcp: { mergeStrategy: "overwrite" as const },
+    };
+
+    await upsertAdapterConfig(t.env, storeRoot, "codex", patch);
+
+    const config = await loadConfig(t.env, storeRoot);
+    expect(config.adapters.codex).toEqual(patch);
+
+    const specs = await loadAdapterSpecs(t.env, storeRoot);
+    expect(specs.specs.find((spec) => spec.id === "codex")).toMatchObject({
+      id: "codex",
+      displayName: "Codex Override",
+      mcp: {
+        mergeStrategy: "overwrite",
+        global: "~/.codex/config.toml",
+        project: "{dir}/.codex/config.toml",
+        format: "toml",
+        serversKey: "mcp_servers",
+      },
+    });
+  });
+
+  it("rejects invalid built-in adapter patches", async () => {
+    await expect(
+      upsertAdapterConfig(t.env, storeRoot, "codex", {
+        mcp: {
+          format: "yaml",
+        },
+      } as unknown as Parameters<typeof upsertAdapterConfig>[3]),
+    ).rejects.toThrow();
   });
 });
