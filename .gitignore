@@ -6,4 +6,6 @@ docs/dev/
 *.tsbuildinfo
 .turbo/
 .claude/
+.agents/
 .DS_Store
+skills-lock.json
