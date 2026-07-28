@@ -226,7 +226,7 @@ describe("web app — dashboard M3 routes", () => {
     ]);
   });
 
-  it("serves available and unavailable drift diffs without plaintext secrets", async () => {
+  it("serves ownership-blocked and missing drift diffs without plaintext secrets", async () => {
     await c.env.fs.writeFile(join(c.storeRoot, "store", "rules", "style.md"), "# style");
     await c.app.request("/api/sync/apply", {
       method: "POST",
@@ -249,8 +249,9 @@ describe("web app — dashboard M3 routes", () => {
     expect(diff.status).toBe(200);
     expect(text).not.toContain(REAL);
     expect(JSON.parse(text)).toMatchObject({
-      available: true,
-      before: "[redacted secret content]",
+      available: false,
+      warning: "target content is hidden while ownership is blocked",
+      currentFingerprint: expect.stringMatching(/^sha256:/),
     });
 
     await c.env.fs.rm(item.target, { force: true });
@@ -263,6 +264,220 @@ describe("web app — dashboard M3 routes", () => {
       available: false,
       warning: "target is missing",
     });
+  });
+
+  it("never returns ownership-blocked target content for ordinary or nested secret fields", async () => {
+    await c.env.fs.writeFile(join(c.storeRoot, "store", "rules", "style.md"), "# style");
+    await c.app.request("/api/sync/apply", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agents: ["claude-code"],
+        destination: "user",
+        resources: { kinds: ["rules"] },
+      }),
+    });
+    const [item] = (await (await c.app.request("/api/status")).json()).items;
+    const sensitiveTargets = [
+      JSON.stringify({ password: "hunter2" }),
+      JSON.stringify({ token: "ordinary-token-value" }),
+      JSON.stringify({ service: { credentials: { password: "nested-password" } } }),
+    ];
+
+    for (const sensitive of sensitiveTargets) {
+      await c.env.fs.writeFile(item.target, sensitive);
+      const response = await c.app.request("/api/diff", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ identity: item }),
+      });
+      const text = await response.text();
+      expect(response.status).toBe(200);
+      expect(text).not.toContain(sensitive);
+      const body = JSON.parse(text);
+      expect(body).toMatchObject({
+        available: false,
+        warning: "target content is hidden while ownership is blocked",
+        currentFingerprint: expect.stringMatching(/^sha256:/),
+      });
+      expect(body.before).toBeUndefined();
+    }
+  });
+
+  it("does not serialize an ownership-blocked MCP merge containing existing secrets", async () => {
+    await c.env.fs.writeFile(
+      join(c.storeRoot, "store", "mcp", "managed.json"),
+      JSON.stringify({ kind: "stdio", command: "managed" }),
+    );
+    const target = join(c.root, "home", ".claude", "mcp.json");
+    await c.env.fs.mkdir(join(c.root, "home", ".claude"), { recursive: true });
+    await c.env.fs.writeFile(
+      target,
+      JSON.stringify({
+        password: "ordinary-password",
+        mcpServers: {
+          existing: {
+            command: "existing",
+            metadata: { credentials: { token: "nested-ordinary-token" } },
+          },
+        },
+      }),
+    );
+
+    const response = await c.app.request("/api/plan", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agents: ["claude-code"],
+        scope: "global",
+        capabilities: ["mcp"],
+      }),
+    });
+    const text = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(text).not.toContain("ordinary-password");
+    expect(text).not.toContain("nested-ordinary-token");
+    expect(JSON.parse(text).actions[0]).toMatchObject({
+      op: "skip",
+      ownership: { classification: "unowned-existing" },
+    });
+    expect(JSON.parse(text).actions[0].preview).toBeUndefined();
+  });
+
+  it("keeps duplicate ledger owners blocked through plan, apply, and revert APIs", async () => {
+    await c.env.fs.writeFile(join(c.storeRoot, "store", "rules", "style.md"), "# style");
+    await c.app.request("/api/apply", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agents: ["claude-code"],
+        scope: "global",
+        capabilities: ["rules"],
+      }),
+    });
+    const statePath = join(c.storeRoot, "state.json");
+    const ledger = JSON.parse(await c.env.fs.readFile(statePath));
+    const owner = ledger.owners[0];
+    ledger.owners.push({ ...owner, artifactIds: ["rules/duplicate"] });
+    const duplicateState = JSON.stringify(ledger);
+    await c.env.fs.writeFile(statePath, duplicateState);
+    const target = join(c.root, "home", ".claude", "CLAUDE.md");
+    const targetBefore = await c.env.fs.readFile(target);
+
+    const request = {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agents: ["claude-code"],
+        scope: "global",
+        capabilities: ["rules"],
+      }),
+    };
+    const response = await c.app.request("/api/plan", request);
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.actions[0]).toMatchObject({
+      op: "skip",
+      ownership: { classification: "invalid-owner" },
+    });
+    expect(body.conflicts[0]).toMatchObject({ code: "INVALID_TARGET_OWNER" });
+
+    const applyResponse = await c.app.request("/api/apply", request);
+    const applyBody = await applyResponse.json();
+    expect(applyResponse.status).toBe(200);
+    expect(applyBody.entries).toEqual([]);
+    expect(applyBody.plan.conflicts[0]).toMatchObject({ code: "INVALID_TARGET_OWNER" });
+
+    const revertResponse = await c.app.request("/api/revert", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agents: ["claude-code"], scope: "global" }),
+    });
+    const revertBody = await revertResponse.json();
+    expect(revertResponse.status).toBe(200);
+    expect(revertBody.reverted).toEqual([]);
+    expect(revertBody.plan.conflicts[0]).toMatchObject({ code: "INVALID_TARGET_OWNER" });
+    expect(await c.env.fs.readFile(target)).toBe(targetBefore);
+    expect(await c.env.fs.readFile(statePath)).toBe(duplicateState);
+  });
+
+  it("blocks apply on an unselected duplicate and selectively reverts a valid owner", async () => {
+    await c.env.fs.writeFile(join(c.storeRoot, "store", "rules", "style.md"), "# style");
+    await c.env.fs.mkdir(join(c.storeRoot, "store", "skills", "demo"), { recursive: true });
+    await c.env.fs.writeFile(
+      join(c.storeRoot, "store", "skills", "demo", "SKILL.md"),
+      "# managed skill",
+    );
+    const request = (path: string, body: unknown) =>
+      c.app.request(path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    await request("/api/apply", {
+      agents: ["claude-code"],
+      scope: "global",
+      capabilities: ["rules"],
+    });
+    await request("/api/apply", {
+      agents: ["codex"],
+      scope: "global",
+      capabilities: ["skills"],
+    });
+    const statePath = join(c.storeRoot, "state.json");
+    const ledger = JSON.parse(await c.env.fs.readFile(statePath));
+    const ruleOwner = ledger.owners.find(
+      (owner: { capability: string }) => owner.capability === "rules",
+    );
+    const skillOwner = ledger.owners.find(
+      (owner: { capability: string }) => owner.capability === "skills",
+    );
+    if (!ruleOwner || !skillOwner) throw new Error("expected Rules and Skill owners");
+    const duplicateRule = { ...ruleOwner, artifactIds: ["rules/duplicate"] };
+    const duplicateState = JSON.stringify({
+      ...ledger,
+      owners: [ruleOwner, duplicateRule, skillOwner],
+    });
+    await c.env.fs.writeFile(statePath, duplicateState);
+
+    const applyResponse = await request("/api/apply", {
+      agents: ["codex"],
+      scope: "global",
+      capabilities: ["skills"],
+    });
+    const applyBody = await applyResponse.json();
+    expect(applyBody.entries).toEqual([]);
+    expect(applyBody.plan.invalidLedger).toBe(true);
+    expect(applyBody.plan.actions[0]).toMatchObject({
+      capability: "skills",
+      ownership: { classification: "owned-current" },
+    });
+    expect(applyBody.plan.conflicts).toContainEqual(
+      expect.objectContaining({ code: "INVALID_TARGET_OWNER", target: ruleOwner.target }),
+    );
+    expect(await c.env.fs.readFile(statePath)).toBe(duplicateState);
+
+    const dryRunResponse = await request("/api/revert", {
+      agents: ["codex"],
+      scope: "global",
+      dryRun: true,
+    });
+    const dryRun = await dryRunResponse.json();
+    expect(dryRun.reverted).toEqual([skillOwner]);
+    expect(await c.env.fs.readFile(statePath)).toBe(duplicateState);
+
+    const revertResponse = await request("/api/revert", {
+      agents: ["codex"],
+      scope: "global",
+    });
+    const reverted = await revertResponse.json();
+    expect(reverted.reverted).toEqual([skillOwner]);
+    expect(JSON.parse(await c.env.fs.readFile(statePath)).owners).toEqual([
+      ruleOwner,
+      duplicateRule,
+    ]);
   });
 
   it("rejects project-scope summary, activity, and diff without a dir", async () => {
@@ -545,7 +760,14 @@ describe("web app — diagnostics and revert", () => {
       body: JSON.stringify({ agents: ["claude-code"], dryRun: true }),
     });
     expect(preview.status).toBe(200);
-    expect((await preview.json()).reverted).toHaveLength(1);
+    const previewBody = await preview.json();
+    expect(previewBody.reverted).toHaveLength(1);
+    expect(previewBody.plan.targets[0]).toMatchObject({
+      ownership: { classification: "owned-current" },
+      proposedAction: "remove-target",
+      blocked: false,
+    });
+    expect(previewBody.plan.conflicts).toEqual([]);
     expect((await (await c.app.request("/api/status")).json()).items).toHaveLength(1);
 
     const apply = await c.app.request("/api/revert", {
@@ -556,6 +778,41 @@ describe("web app — diagnostics and revert", () => {
     expect(apply.status).toBe(200);
     expect((await apply.json()).reverted).toHaveLength(1);
     expect((await (await c.app.request("/api/status")).json()).items).toHaveLength(0);
+  });
+
+  it("passes the exact drift acknowledgement from a revert plan back to Core", async () => {
+    await c.env.fs.writeFile(join(c.storeRoot, "store", "rules", "style.md"), "# style");
+    await c.app.request("/api/sync/apply", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agents: ["claude-code"],
+        destination: "user",
+        resources: { kinds: ["rules"] },
+      }),
+    });
+    const target = join(c.root, "home", ".claude", "CLAUDE.md");
+    await c.env.fs.writeFile(target, "user edit");
+
+    const preview = await c.app.request("/api/revert", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agents: ["claude-code"], dryRun: true }),
+    });
+    const previewBody = await preview.json();
+    expect(previewBody.plan.conflicts[0]?.code).toBe("REVERT_TARGET_DRIFTED");
+    const token = previewBody.plan.targets[0]?.acknowledgement?.token;
+    expect(token).toMatch(/^sha256:/);
+
+    const applied = await c.app.request("/api/revert", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agents: ["claude-code"], acknowledgements: [token] }),
+    });
+    const appliedBody = await applied.json();
+    expect(appliedBody.reverted).toHaveLength(1);
+    expect(appliedBody.plan.targets[0]?.driftOverridden).toBe(true);
+    await expect(c.env.fs.lstat(target)).rejects.toThrow();
   });
 });
 

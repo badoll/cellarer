@@ -1,53 +1,397 @@
-// revert:依据台账回滚(不变量 5;优于 ruler 的 marker 反推,见计划 §7.2)。
-// 对每条目:有 .bak → 恢复(--keep-backups 则保留 .bak 副本);
-// 生成文件(write/copy)→ 删除;软链 → 只删链不删真源;最后按剩余台账重建 project .gitignore。
-import { dirname } from "node:path";
+// Revert is plan-first: inspect every selected physical target, expose exact preconditions, then
+// mutate eligible targets once. Ownership is removed only after that target was restored/removed.
+import { dirname, join, normalize, relative, sep } from "node:path";
 import { appendActivity } from "../activity.js";
 import type { Env } from "../env.js";
-import { readFileOrNull } from "../fs/probe.js";
+import { lstatOrNull } from "../fs/probe.js";
 import { isPathInside } from "../fs/safety.js";
-import type { Ledger, LedgerEntry } from "../model/index.js";
-import { entryKey, loadLedger, makeLedger, matchesFilter, saveLedger } from "../store/ledger.js";
+import type {
+  AppliedReceipt,
+  Ledger,
+  LedgerEntry,
+  TargetAcknowledgement,
+  TargetConflict,
+  TargetOwnershipEvidence,
+} from "../model/index.js";
+import { sha256 } from "../store/checksum.js";
+import {
+  duplicateTargetOwnerKeys,
+  entryKey,
+  loadLedgerForPlanning,
+  makeLedger,
+  matchesFilter,
+  saveLedger,
+  saveLedgerAfterSelectiveRevert,
+} from "../store/ledger.js";
+import { fingerprintTarget, inspectTargetOwnership } from "../target-ownership.js";
+import { decryptTargetSnapshot, restoreTargetSnapshot } from "../target-snapshot.js";
 import { syncGitignore } from "./gitignore-sync.js";
-import type { RevertOptions, RevertResult } from "./types.js";
+import type {
+  RevertFailure,
+  RevertOptions,
+  RevertPlan,
+  RevertPlanTarget,
+  RevertProposedAction,
+  RevertResult,
+  RevertSnapshotAvailability,
+} from "./types.js";
+
+interface BuiltRevertPlan {
+  ledger: Ledger;
+  plan: RevertPlan;
+  duplicateOwnerKeys: string[];
+}
+
+class SnapshotPassphraseRequiredError extends Error {
+  constructor(target: string) {
+    super(`encrypted snapshot restoration for "${target}" requires a snapshot passphrase`);
+    this.name = "SnapshotPassphraseRequiredError";
+  }
+}
+
+export async function planRevert(env: Env, opts: RevertOptions): Promise<RevertPlan> {
+  return (await buildRevertPlan(env, opts)).plan;
+}
 
 export async function revert(env: Env, opts: RevertOptions): Promise<RevertResult> {
-  const ledger = await loadLedger(env, opts.storeRoot);
-  const matched = ledger.entries.filter((e) => matchesFilter(e, opts));
+  const { ledger, plan, duplicateOwnerKeys } = await buildRevertPlan(env, opts);
+  const warnings = [...plan.warnings];
+  const eligible = plan.targets.filter((target) => !target.blocked);
 
-  // 越界分区(先于任何破坏性删除):target 落在受管根内 → 回滚;否则 → 跳过 + 告警,保留台账不删。
-  // 不 throw:一个越界条目(被篡改,或落在 home/cwd/--dir 之外的合法工程)不应阻断其余合法条目的回滚,
-  // 也绝不删除盘外文件(安全)。用户可用 --dir 指明外部工程根来纳入其条目。
-  const roots = allowedRevertRoots(env, opts);
-  const warnings: string[] = [];
+  // Preserve the historical preview field while the complete, structured preview lives in plan.
+  if (opts.dryRun) {
+    return {
+      plan,
+      reverted: eligible.flatMap((target) => target.owners),
+      failures: [],
+      warnings,
+    };
+  }
+
   const reverted: LedgerEntry[] = [];
-  for (const entry of matched) {
-    if (entry.target === "" || roots.some((root) => isPathInside(entry.target, root))) {
-      reverted.push(entry);
-    } else {
-      warnings.push(
-        `refusing to revert "${entry.agent}" target "${entry.target}" — outside managed roots [${roots.join(", ")}]. Pass --dir to include a project outside your home directory.`,
-      );
+  const failures: RevertFailure[] = [];
+  const backupsToRemove = new Set<string>();
+  const successfulKeys = new Set<string>();
+
+  for (const target of eligible) {
+    try {
+      const backup = await revertOne(env, target, opts.snapshotPassphrase);
+      for (const owner of target.owners) {
+        const key = entryKey(owner);
+        if (successfulKeys.has(key)) continue;
+        successfulKeys.add(key);
+        reverted.push(owner);
+      }
+      if (backup) backupsToRemove.add(backup);
+    } catch (error) {
+      failures.push({
+        code:
+          error instanceof SnapshotPassphraseRequiredError
+            ? "SNAPSHOT_PASSPHRASE_REQUIRED"
+            : "REVERT_FAILED",
+        target: target.target,
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
-  if (opts.dryRun) {
-    return { reverted, warnings };
+  let remaining = ledger;
+  if (reverted.length > 0) {
+    if (duplicateOwnerKeys.length > 0) {
+      remaining = await saveLedgerAfterSelectiveRevert(env, opts.storeRoot, ledger, reverted);
+    } else {
+      remaining = makeLedger(ledger.owners.filter((owner) => !successfulKeys.has(entryKey(owner))));
+      // The save happens after every target in `reverted` succeeded. If save fails, backups remain.
+      await saveLedger(env, opts.storeRoot, remaining);
+    }
+
+    if (!opts.keepBackups) {
+      for (const backup of backupsToRemove) {
+        try {
+          await env.fs.rm(backup, { recursive: true, force: true });
+        } catch (error) {
+          warnings.push(
+            `revert succeeded but recovery snapshot cleanup failed for "${backup}": ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+    }
+
+    await resyncAffectedGitignores(env, reverted, remaining, opts.dir);
   }
 
+  // Preserve the existing activity contract for an explicit non-dry revert, including safe no-ops.
+  await recordRevertActivity(env, opts, reverted, warnings);
+
+  return { plan, reverted, failures, warnings };
+}
+
+async function buildRevertPlan(env: Env, opts: RevertOptions): Promise<BuiltRevertPlan> {
+  const ledger = await loadLedgerForPlanning(env, opts.storeRoot);
+  const duplicateOwnerKeys = duplicateTargetOwnerKeys(ledger.owners);
+  const selected = ledger.owners.filter(
+    (owner) =>
+      matchesFilter(owner, opts) &&
+      (!opts.artifactIds ||
+        opts.artifactIds.length === 0 ||
+        owner.artifactIds.some((id) => opts.artifactIds?.includes(id))),
+  );
+  const allByPhysicalTarget = groupByPhysicalTarget(ledger.owners);
+  const selectedByPhysicalTarget = groupByPhysicalTarget(selected);
+  const roots = allowedRevertRoots(env, opts);
+  const warnings: string[] = [];
+  const conflicts: TargetConflict[] = [];
+  const targets: RevertPlanTarget[] = [];
+
+  for (const [target, owners] of selectedByPhysicalTarget) {
+    const primary = owners[0];
+    if (!primary) continue;
+    const allOwners = allByPhysicalTarget.get(target) ?? owners;
+    let invalidReason: string | undefined;
+    if (allOwners.length !== owners.length) {
+      invalidReason = "the physical target also has an owner outside the revert selection";
+    } else if (!owners.every((owner) => sameReceipt(primary.receipt, owner.receipt))) {
+      invalidReason = "the physical target has owners with conflicting applied receipts";
+    }
+
+    let ownership: TargetOwnershipEvidence;
+    if (target === "" || !roots.some((root) => isPathInside(target, root))) {
+      invalidReason =
+        invalidReason ??
+        `target is outside managed roots [${roots.join(", ")}]. Pass --dir to include a project outside your home directory.`;
+      ownership = ownershipEvidence(primary, "invalid-owner", null);
+      warnings.push(
+        `refusing to revert "${primary.agent}" target "${target}" — outside managed roots [${roots.join(", ")}]. Pass --dir to include a project outside your home directory.`,
+      );
+    } else if (invalidReason) {
+      ownership = ownershipEvidence(primary, "invalid-owner", null);
+    } else {
+      const inspected = await inspectTargetOwnership(env, {
+        agent: primary.agent,
+        scope: primary.scope,
+        capability: primary.capability,
+        target,
+        dir: opts.dir,
+        owners: ledger.owners,
+      });
+      ownership = {
+        key: entryKey(primary),
+        classification: inspected.classification,
+        target: inspected.target,
+        currentFingerprint: inspected.fingerprint,
+        expectedReceipt: primary.receipt,
+      };
+      invalidReason = inspected.reason;
+    }
+
+    const snapshot = await snapshotAvailability(env, opts.storeRoot, primary.receipt.backup);
+    const proposedAction: RevertProposedAction =
+      snapshot.status === "none" ? "remove-target" : "restore-snapshot";
+    const acknowledgement =
+      ownership.classification === "owned-drifted"
+        ? revertAcknowledgement(owners, ownership, proposedAction)
+        : undefined;
+    const driftOverridden =
+      acknowledgement !== undefined &&
+      opts.acknowledgements?.includes(acknowledgement.token) === true;
+
+    let blocked = false;
+    let blockReason: string | undefined;
+    if (ownership.classification === "owned-drifted" && !driftOverridden) {
+      blocked = true;
+      blockReason = "owned target has drifted; exact revert acknowledgement required";
+    } else if (
+      ownership.classification === "invalid-owner" ||
+      ownership.classification === "unowned-existing"
+    ) {
+      blocked = true;
+      blockReason = invalidReason ?? "target ownership is invalid";
+    } else if (snapshot.status === "missing" || snapshot.status === "invalid") {
+      blocked = true;
+      blockReason =
+        snapshot.status === "missing"
+          ? "recorded recovery snapshot is missing"
+          : "recorded recovery snapshot is outside the snapshot store or has an invalid type";
+    }
+
+    const item: RevertPlanTarget = {
+      target,
+      owners,
+      expectedReceipt: primary.receipt,
+      ownership,
+      snapshot,
+      proposedAction,
+      blocked,
+      ...(blockReason ? { blockReason } : {}),
+      ...(acknowledgement ? { acknowledgement } : {}),
+      driftOverridden,
+    };
+    targets.push(item);
+
+    if (blocked && ownership.classification === "owned-drifted") {
+      conflicts.push({
+        code: "REVERT_TARGET_DRIFTED",
+        target,
+        message: blockReason ?? "owned target has drifted",
+        ownership,
+        acknowledgement,
+      });
+    } else if (blocked && ownership.classification === "invalid-owner") {
+      conflicts.push({
+        code: "INVALID_TARGET_OWNER",
+        target,
+        message: blockReason ?? "target ownership is invalid",
+        ownership,
+      });
+    } else if (blocked) {
+      conflicts.push({
+        code: "REVERT_SNAPSHOT_UNAVAILABLE",
+        target,
+        message: blockReason ?? "recovery snapshot is unavailable",
+        ownership,
+      });
+    }
+  }
+
+  return { ledger, plan: { targets, conflicts, warnings }, duplicateOwnerKeys };
+}
+
+function groupByPhysicalTarget(owners: readonly LedgerEntry[]): Map<string, LedgerEntry[]> {
+  const groups = new Map<string, LedgerEntry[]>();
+  for (const owner of owners) {
+    const target = normalize(owner.target);
+    const group = groups.get(target) ?? [];
+    group.push(owner);
+    groups.set(target, group);
+  }
+  return groups;
+}
+
+function sameReceipt(left: AppliedReceipt, right: AppliedReceipt): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function ownershipEvidence(
+  owner: LedgerEntry,
+  classification: TargetOwnershipEvidence["classification"],
+  currentFingerprint: string | null,
+): TargetOwnershipEvidence {
+  return {
+    key: entryKey(owner),
+    classification,
+    target: normalize(owner.target),
+    currentFingerprint,
+    expectedReceipt: owner.receipt,
+  };
+}
+
+async function snapshotAvailability(
+  env: Env,
+  storeRoot: string,
+  path: string | null,
+): Promise<RevertSnapshotAvailability> {
+  if (!path) return { path: null, status: "none", encrypted: false };
+  const encrypted = path.endsWith(".age");
+  const snapshotsRoot = join(storeRoot, "snapshots");
+  if (!encrypted || !isPathInside(path, snapshotsRoot)) {
+    return { path, status: "invalid", encrypted };
+  }
+  const rootStat = await lstatOrNull(env, snapshotsRoot);
+  if (!rootStat) return { path, status: "missing", encrypted };
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+    return { path, status: "invalid", encrypted };
+  }
+  const relParent = relative(snapshotsRoot, dirname(path));
+  let ancestor = snapshotsRoot;
+  for (const segment of relParent.length === 0 ? [] : relParent.split(sep)) {
+    ancestor = join(ancestor, segment);
+    const ancestorStat = await lstatOrNull(env, ancestor);
+    if (!ancestorStat) return { path, status: "missing", encrypted };
+    if (ancestorStat.isSymbolicLink() || !ancestorStat.isDirectory()) {
+      return { path, status: "invalid", encrypted };
+    }
+  }
+  const stat = await lstatOrNull(env, path);
+  if (!stat) return { path, status: "missing", encrypted };
+  if (!stat.isFile() || stat.isSymbolicLink()) return { path, status: "invalid", encrypted };
+  return { path, status: "available", encrypted };
+}
+
+function revertAcknowledgement(
+  owners: LedgerEntry[],
+  ownership: TargetOwnershipEvidence,
+  proposedAction: RevertProposedAction,
+): TargetAcknowledgement {
+  const kind = "revert-drift" as const;
+  return {
+    kind,
+    token: sha256(
+      JSON.stringify({
+        version: 1,
+        kind,
+        ownerKeys: owners.map(entryKey).sort(),
+        classification: ownership.classification,
+        currentFingerprint: ownership.currentFingerprint,
+        expectedReceipt: ownership.expectedReceipt,
+        proposedAction,
+      }),
+    ),
+  };
+}
+
+async function revertOne(
+  env: Env,
+  target: RevertPlanTarget,
+  snapshotPassphrase: string | undefined,
+): Promise<string | null> {
+  // Re-check the exact disk receipt consumed by the plan before the first destructive effect.
+  const currentFingerprint = await fingerprintTarget(env, target.target);
+  if (currentFingerprint !== target.ownership.currentFingerprint) {
+    throw new Error(`target "${target.target}" changed after revert planning`);
+  }
+
+  if (target.snapshot.status === "none") {
+    await env.fs.rm(target.target, { recursive: true, force: true });
+    return null;
+  }
+  if (target.snapshot.status !== "available" || !target.snapshot.path) {
+    throw new Error(`recorded recovery snapshot for "${target.target}" is unavailable`);
+  }
+
+  if (!snapshotPassphrase) throw new SnapshotPassphraseRequiredError(target.target);
+  // The plan only permits managed .age snapshots. Decrypt and fully validate before mutation.
+  const encrypted = await env.fs.readFile(target.snapshot.path);
+  const snapshot = await decryptTargetSnapshot(encrypted, snapshotPassphrase);
+  await restoreTargetSnapshot(env, target.target, snapshot, target.ownership.currentFingerprint);
+  return target.snapshot.path;
+}
+
+function allowedRevertRoots(env: Env, opts: RevertOptions): string[] {
+  const roots = [env.homedir(), env.cwd()];
+  if (opts.dir) roots.push(opts.dir);
+  return roots.map(normalize);
+}
+
+async function resyncAffectedGitignores(
+  env: Env,
+  reverted: LedgerEntry[],
+  remaining: Ledger,
+  optsDir: string | undefined,
+): Promise<void> {
+  const dirs = new Set<string>();
+  if (optsDir) dirs.add(optsDir);
   for (const entry of reverted) {
-    await revertOne(env, entry, opts.keepBackups ?? false);
+    if (entry.scope === "project") dirs.add(dirname(entry.target));
   }
+  for (const dir of dirs) await syncGitignore(env, dir, remaining);
+}
 
-  // 从台账移除已回滚条目(引用相等,reverted 是 ledger.entries 的子集);
-  // 跳过的越界条目与未命中过滤器者一并保留。
-  const revertedSet = new Set(reverted);
-  const remaining = makeLedger(ledger.entries.filter((e) => !revertedSet.has(e)));
-  await saveLedger(env, opts.storeRoot, remaining);
-
-  // 受影响 project 目录的 .gitignore 按剩余台账重建(可能仍有其它 agent 的条目)。
-  await resyncAffectedGitignores(env, reverted, remaining, opts.dir);
-
+async function recordRevertActivity(
+  env: Env,
+  opts: RevertOptions,
+  reverted: LedgerEntry[],
+  warnings: string[],
+): Promise<void> {
   try {
     await appendActivity(env, opts.storeRoot, {
       action: "revert",
@@ -60,53 +404,11 @@ export async function revert(env: Env, opts: RevertOptions): Promise<RevertResul
       summary: `Reverted ${reverted.length} ${reverted.length === 1 ? "target" : "targets"}`,
       references: {
         ledgerEntryKeys: reverted.map(entryKey),
-        artifactIds: reverted.map((entry) => entry.artifact),
+        artifactIds: reverted.flatMap((entry) => entry.artifactIds),
       },
       secretRefs: reverted.flatMap((entry) => entry.secretRefs ?? []),
     });
-  } catch (err) {
-    warnings.push(`activity log failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  return { reverted, warnings };
-}
-
-// 重建所有「被回滚条目波及的 project 目录」的 .gitignore,使其匹配剩余台账。
-async function resyncAffectedGitignores(
-  env: Env,
-  reverted: LedgerEntry[],
-  remaining: Ledger,
-  optsDir: string | undefined,
-): Promise<void> {
-  const dirs = new Set<string>();
-  if (optsDir) dirs.add(optsDir);
-  for (const e of reverted) {
-    if (e.scope === "project") dirs.add(dirname(e.target));
-  }
-  for (const dir of dirs) {
-    await syncGitignore(env, dir, remaining);
-  }
-}
-
-// revert 的可信受管根:target 必须落在其一内才允许删除(否则跳过 + 告警,绝不删盘外文件)。
-// 不按 entry.scope 分派根 —— scope 与 target 同存于可篡改台账,relabel 即可绕过按 scope 选根的校验。
-// 统一用「家目录(global 落点)∪ cwd ∪ 显式 --dir(project 工程根)」并集。
-function allowedRevertRoots(env: Env, opts: RevertOptions): string[] {
-  const roots = [env.homedir(), env.cwd()];
-  if (opts.dir) roots.push(opts.dir);
-  return roots;
-}
-
-async function revertOne(env: Env, entry: LedgerEntry, keepBackups: boolean): Promise<void> {
-  // 先移除落地物:软链只删链;生成文件直接删。
-  await env.fs.rm(entry.target, { recursive: true, force: true });
-
-  // 有备份 → 恢复用户原始文件。
-  if (entry.backup) {
-    const original = await readFileOrNull(env, entry.backup);
-    if (original !== null) {
-      await env.fs.writeFile(entry.target, original);
-      if (!keepBackups) await env.fs.rm(entry.backup, { force: true });
-    }
+  } catch (error) {
+    warnings.push(`activity log failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }

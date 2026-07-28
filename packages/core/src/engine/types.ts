@@ -1,6 +1,16 @@
 // 引擎对外选项与结果类型(不变量 3:plan/apply 分离)。
 
-import type { Capability, DistributePlan, LedgerEntry, LinkMethod, Scope } from "../model/index.js";
+import type {
+  AppliedReceipt,
+  Capability,
+  DistributePlan,
+  LedgerEntry,
+  LinkMethod,
+  Scope,
+  TargetAcknowledgement,
+  TargetConflict,
+  TargetOwnershipEvidence,
+} from "../model/index.js";
 import type { SecretMode } from "../secrets/resolver.js";
 
 export interface DistributeOptions {
@@ -16,12 +26,24 @@ export interface DistributeOptions {
   // 密钥来源:缺省 env(零落盘);vault/keychain 需配套口令/store。
   secretMode?: SecretMode;
   vaultPassphrase?: string;
+  // 精确 token 来自 plan.conflicts；两类破坏性授权不能互换。
+  replaceUnowned?: string[];
+  overrideDrift?: string[];
+  // 仅在调用期间用于 age 加密，不进入 plan、state、activity 或制品。
+  snapshotPassphrase?: string;
   dryRun?: boolean;
+}
+
+export interface ApplyFailure {
+  code: "SNAPSHOT_FAILED";
+  target: string;
+  message: string;
 }
 
 export interface ApplyResult {
   plan: DistributePlan;
   entries: LedgerEntry[]; // 实际写入台账的条目(dryRun 时为空)
+  failures: ApplyFailure[];
 }
 
 export interface RevertOptions {
@@ -29,12 +51,54 @@ export interface RevertOptions {
   scope?: Scope;
   dir?: string;
   agents?: string[];
+  artifactIds?: string[];
+  // 精确 token 来自 planRevert；绑定当前 target fingerprint 与 owner receipt。
+  acknowledgements?: string[];
+  // 仅用于本次解密 before-state，不写入 plan、state 或 activity。
+  snapshotPassphrase?: string;
   keepBackups?: boolean;
   dryRun?: boolean;
 }
 
+export type RevertProposedAction = "remove-target" | "restore-snapshot";
+export type RevertSnapshotStatus = "none" | "available" | "missing" | "invalid";
+
+export interface RevertSnapshotAvailability {
+  path: string | null;
+  status: RevertSnapshotStatus;
+  encrypted: boolean;
+}
+
+export interface RevertPlanTarget {
+  target: string;
+  // 同一物理 target 可能被多个历史选择命中；apply 只变更一次，成功后再释放这些 owners。
+  owners: LedgerEntry[];
+  expectedReceipt: AppliedReceipt;
+  ownership: TargetOwnershipEvidence;
+  snapshot: RevertSnapshotAvailability;
+  proposedAction: RevertProposedAction;
+  blocked: boolean;
+  blockReason?: string;
+  acknowledgement?: TargetAcknowledgement;
+  driftOverridden: boolean;
+}
+
+export interface RevertPlan {
+  targets: RevertPlanTarget[];
+  conflicts: TargetConflict[];
+  warnings: string[];
+}
+
+export interface RevertFailure {
+  code: "SNAPSHOT_PASSPHRASE_REQUIRED" | "REVERT_FAILED";
+  target: string;
+  message: string;
+}
+
 export interface RevertResult {
+  plan: RevertPlan;
   reverted: LedgerEntry[];
+  failures: RevertFailure[];
   // 越界跳过等告警(如 target 在受管根之外,拒绝删除但保留台账)。
   warnings: string[];
 }

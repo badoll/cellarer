@@ -3,6 +3,7 @@ import { apply } from "../src/engine/apply.js";
 import { plan } from "../src/engine/plan.js";
 import { revert } from "../src/engine/revert.js";
 import { status } from "../src/engine/status.js";
+import type { DistributeOptions } from "../src/engine/types.js";
 import { type CellarerConfig, initialConfigText, parseConfig } from "../src/store/config.js";
 import { loadLedger } from "../src/store/ledger.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
@@ -42,6 +43,19 @@ async function seedStore(
   return storeRoot;
 }
 
+async function applyReplacingUnowned(t: TmpEnv, opts: DistributeOptions) {
+  const conflict = (await plan(t.env, opts)).conflicts.find(
+    (item) => item.code === "UNOWNED_TARGET",
+  );
+  const token = conflict?.acknowledgement?.token;
+  if (!token) throw new Error("expected unowned-target replacement acknowledgement");
+  return apply(t.env, {
+    ...opts,
+    replaceUnowned: [token],
+    snapshotPassphrase: "test-snapshot-passphrase",
+  });
+}
+
 describe("engine mcp distribution", () => {
   let t: TmpEnv;
   beforeEach(async () => {
@@ -65,7 +79,7 @@ describe("engine mcp distribution", () => {
     const parsed = JSON.parse(await t.env.fs.readFile(target));
     expect(parsed.mcpServers.context7.command).toBe("npx");
     expect(r.entries[0]?.capability).toBe("mcp");
-    expect(r.entries[0]?.generated).toBe(false); // merge 进既有文件,非整文件生成
+    expect(r.entries[0]?.receipt.generated).toBe(false); // merge 进既有文件,非整文件生成
   });
 
   it("writes codex config.toml under [mcp_servers.*]", async () => {
@@ -91,7 +105,12 @@ describe("engine mcp distribution", () => {
     const target = t.path("home", ".codex", "config.toml");
     await t.env.fs.mkdir(t.path("home", ".codex"), { recursive: true });
     await t.env.fs.writeFile(target, `model = "gpt-5"\n\n[mcp_servers.kept]\ncommand = "old"\n`);
-    await apply(t.env, { storeRoot, scope: "global", agents: ["codex"], capabilities: ["mcp"] });
+    await applyReplacingUnowned(t, {
+      storeRoot,
+      scope: "global",
+      agents: ["codex"],
+      capabilities: ["mcp"],
+    });
     const content = await t.env.fs.readFile(target);
     expect(content).toContain('model = "gpt-5"');
     expect(content).toContain("[mcp_servers.kept]");
@@ -125,7 +144,7 @@ describe("engine mcp distribution", () => {
       target,
       JSON.stringify({ other: 1, mcpServers: { gone: { command: "x" } } }),
     );
-    await apply(t.env, {
+    await applyReplacingUnowned(t, {
       storeRoot,
       scope: "global",
       agents: ["claude-code"],
@@ -162,7 +181,7 @@ describe("engine mcp — secret handling (red line)", () => {
     expect(content).toContain("${C7_KEY}");
     expect(content).not.toContain("CELLARER_SECRET");
     const led = await loadLedger(t.env, storeRoot);
-    expect(led.entries[0]?.secretRefs).toContain("C7_KEY");
+    expect(led.owners[0]?.secretRefs).toContain("C7_KEY");
   });
 
   it("env mode also rewrites a CELLARER_SECRET ref inside args (not just env/headers)", async () => {
@@ -241,7 +260,7 @@ describe("engine mcp — secret handling (red line)", () => {
     // 但台账只记引用名,不记真值。
     const led = await loadLedger(t.env, storeRoot);
     expect(JSON.stringify(led)).not.toContain("ghp_realtoken");
-    expect(led.entries[0]?.secretRefs).toContain("C7_TOKEN");
+    expect(led.owners[0]?.secretRefs).toContain("C7_TOKEN");
   });
 
   it("project scope vault mode: secret-scan guard ABORTS (would write plaintext to git-tracked file)", async () => {
@@ -363,7 +382,7 @@ describe("engine skills distribution", () => {
     ).toBe("# My Skill");
     const st = await t.env.fs.lstat(target);
     expect(st.isSymbolicLink()).toBe(true);
-    expect(r.entries[0]?.method).toBe("symlink");
+    expect(r.entries[0]?.receipt.method).toBe("symlink");
   });
 
   it("on win32, an explicit symlink skill dir lands as a junction (recorded in the ledger)", async () => {
@@ -380,9 +399,9 @@ describe("engine skills distribution", () => {
         capabilities: ["skills"],
         method: "symlink",
       });
-      expect(r.entries[0]?.method).toBe("junction");
+      expect(r.entries[0]?.receipt.method).toBe("junction");
       const led = await loadLedger(w.env, storeRoot);
-      expect(led.entries[0]?.method).toBe("junction");
+      expect(led.owners[0]?.receipt.method).toBe("junction");
     } finally {
       await w.cleanup();
     }
@@ -408,7 +427,7 @@ describe("engine skills distribution", () => {
         method: "symlink" as const,
       };
       const r1 = await apply(w.env, opts);
-      expect(r1.entries[0]?.method).toBe("copy"); // 回退落地为 copy
+      expect(r1.entries[0]?.receipt.method).toBe("copy"); // 回退落地为 copy
       const led1 = JSON.stringify(await loadLedger(w.env, storeRoot));
       // 再次 apply:必须幂等(不 clearDest+重拷、不 churn appliedAt),尽管 action.method 仍是 symlink。
       await apply(w.env, opts);
@@ -493,7 +512,7 @@ describe("engine skills distribution", () => {
     expect((await status(t.env, { storeRoot }))[0]?.status).toBe("drifted");
   });
 
-  it("re-apply self-heals a hand-modified copy skill and stays idempotent afterwards", async () => {
+  it("blocks a drifted copy skill until exact override, then heals it idempotently", async () => {
     const storeRoot = await seedStore(t, { skills: { s: { "a.txt": "A" } } });
     const opts = {
       storeRoot,
@@ -503,9 +522,21 @@ describe("engine skills distribution", () => {
       method: "copy" as const,
     };
     await apply(t.env, opts);
-    // 手改后 re-apply 应把内容改回库房真源(自愈)。
+    // 手改后的普通 re-apply 必须保留用户改动并返回 drift conflict。
     await t.env.fs.writeFile(t.path("home", ".claude", "skills", "s", "a.txt"), "TAMPERED");
-    await apply(t.env, opts);
+    const blocked = await apply(t.env, opts);
+    expect(blocked.entries).toEqual([]);
+    expect(blocked.plan.conflicts[0]?.code).toBe("OWNED_TARGET_DRIFTED");
+    expect(await t.env.fs.readFile(t.path("home", ".claude", "skills", "s", "a.txt"))).toBe(
+      "TAMPERED",
+    );
+    const token = blocked.plan.conflicts[0]?.acknowledgement?.token;
+    if (!token) throw new Error("expected drift acknowledgement");
+    await apply(t.env, {
+      ...opts,
+      overrideDrift: [token],
+      snapshotPassphrase: "test-snapshot-passphrase",
+    });
     expect(await t.env.fs.readFile(t.path("home", ".claude", "skills", "s", "a.txt"))).toBe("A");
     // 自愈后未再改 → 再次 apply 台账字节不变(幂等)。
     const led1 = JSON.stringify(await loadLedger(t.env, storeRoot));
@@ -528,7 +559,7 @@ describe("engine skills distribution", () => {
     expect(JSON.stringify(await loadLedger(t.env, storeRoot))).toBe(led1);
   });
 
-  it("re-apply self-heals when a copy-landed skill dir was replaced by a plain file (no ENOTDIR crash)", async () => {
+  it("can explicitly heal a copy-landed skill replaced by a plain file without ENOTDIR", async () => {
     const storeRoot = await seedStore(t, { skills: { s: { "a.txt": "A" } } });
     const opts = {
       storeRoot,
@@ -542,8 +573,15 @@ describe("engine skills distribution", () => {
     // 用户把落地目录换成普通文件:hashDir(target) 若不先判目录会 readdir→ENOTDIR 中断整个 apply。
     await t.env.fs.rm(target, { recursive: true, force: true });
     await t.env.fs.writeFile(target, "not a dir");
-    // 不应抛;应重拷修复为目录。
-    await apply(t.env, opts);
+    const blocked = await plan(t.env, opts);
+    expect(blocked.conflicts[0]?.code).toBe("OWNED_TARGET_DRIFTED");
+    const token = blocked.conflicts[0]?.acknowledgement?.token;
+    if (!token) throw new Error("expected drift acknowledgement");
+    await apply(t.env, {
+      ...opts,
+      overrideDrift: [token],
+      snapshotPassphrase: "test-snapshot-passphrase",
+    });
     expect(await t.env.fs.readFile(t.path("home", ".claude", "skills", "s", "a.txt"))).toBe("A");
   });
 });
@@ -619,7 +657,7 @@ describe("per-agent config (agents.<id>)", () => {
     const target = t.path("home", ".claude", "mcp.json");
     await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
     await t.env.fs.writeFile(target, JSON.stringify({ mcpServers: { gone: { command: "x" } } }));
-    await apply(t.env, {
+    await applyReplacingUnowned(t, {
       storeRoot,
       scope: "global",
       agents: ["claude-code"],

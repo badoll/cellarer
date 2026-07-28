@@ -10,6 +10,7 @@
 //       · skills:op 由 method 推导(symlink→op=symlink,copy→op=copy),故 per-OS method 真正影响落地。
 //   - 实际落地方式(可能因 Windows 回退)记台账的 AppliedMethod,与计划 method 区分。
 
+import { normalize } from "node:path";
 import { loadRegistry } from "../adapters/registry.js";
 import type { AgentAdapter, RuleFragment } from "../adapters/types.js";
 import type { Env } from "../env.js";
@@ -20,15 +21,22 @@ import type {
   DistributePlan,
   LinkMethod,
   PlanAction,
+  TargetAcknowledgement,
+  TargetConflict,
+  TargetOwner,
+  TargetOwnershipEvidence,
 } from "../model/index.js";
 import { loadVault } from "../secrets/vault.js";
+import { sha256 } from "../store/checksum.js";
 import { type CellarerConfig, loadConfig } from "../store/config.js";
+import { duplicateTargetOwnerKeys, loadLedgerForPlanning, targetKey } from "../store/ledger.js";
 import {
   listMcpArtifacts,
   listRuleArtifacts,
   listSkillArtifacts,
   readRuleArtifact,
 } from "../store/store.js";
+import { inspectTargetOwnership } from "../target-ownership.js";
 import { loadSelectedMcp, planMcp, type RenderedMcp, renderMcp } from "./mcp-plan.js";
 import { dedupeCollisions } from "./plan/collision.js";
 import { applySecretScanGuard } from "./plan/secret-guard.js";
@@ -69,15 +77,19 @@ const PLANNERS: Record<Capability, CapabilityPlanner> = {
 export async function plan(env: Env, opts: DistributeOptions): Promise<DistributePlan> {
   const warnings: string[] = [];
   const actions: PlanAction[] = [];
+  const conflicts: TargetConflict[] = [];
 
   // 库房配置与制品独立读取并行(config.json / rules / mcp / skills)。
-  const [config, registry, ruleArtifacts, mcpArtifacts, skillArtifacts] = await Promise.all([
-    loadConfig(env, opts.storeRoot),
-    loadRegistry(env, opts.storeRoot),
-    listRuleArtifacts(env, opts.storeRoot),
-    listMcpArtifacts(env, opts.storeRoot),
-    listSkillArtifacts(env, opts.storeRoot),
-  ]);
+  const [config, registry, ruleArtifacts, mcpArtifacts, skillArtifacts, ledger] = await Promise.all(
+    [
+      loadConfig(env, opts.storeRoot),
+      loadRegistry(env, opts.storeRoot),
+      listRuleArtifacts(env, opts.storeRoot),
+      listMcpArtifacts(env, opts.storeRoot),
+      listSkillArtifacts(env, opts.storeRoot),
+      loadLedgerForPlanning(env, opts.storeRoot),
+    ],
+  );
   warnings.push(...registry.warnings);
 
   const collections = opts.collections ?? config.defaults.collections;
@@ -167,10 +179,170 @@ export async function plan(env: Env, opts: DistributeOptions): Promise<Distribut
   // 目标去冲突:多 agent 可能映射到同一物理文件(pass 抽到 plan/collision.ts)。
   dedupeCollisions(actions, warnings);
 
+  // 所有 capability 共用同一 target ownership 判定与显式授权协议，避免 planner 各自漂移。
+  const duplicateOwnerKeys = duplicateTargetOwnerKeys(ledger.owners);
+  addDuplicateOwnerConflicts(ledger.owners, duplicateOwnerKeys, conflicts);
+  await classifyPlannedTargets(env, opts, ledger.owners, actions, conflicts);
+
   // 统一 secret-scan 护栏,覆盖所有能力与所有 scope(pass 抽到 plan/secret-guard.ts)。
   applySecretScanGuard(actions, opts.scope);
 
-  return { actions, warnings };
+  return {
+    actions,
+    warnings,
+    conflicts,
+    ...(duplicateOwnerKeys.length > 0 ? { invalidLedger: true as const } : {}),
+  };
+}
+
+function addDuplicateOwnerConflicts(
+  owners: readonly TargetOwner[],
+  duplicateOwnerKeys: readonly string[],
+  conflicts: TargetConflict[],
+): void {
+  const duplicateKeys = new Set(duplicateOwnerKeys);
+  const emitted = new Set<string>();
+  for (const owner of owners) {
+    const key = targetKey(owner);
+    if (!duplicateKeys.has(key) || emitted.has(key)) continue;
+    emitted.add(key);
+    const target = normalize(owner.target);
+    conflicts.push({
+      code: "INVALID_TARGET_OWNER",
+      target,
+      message: `duplicate current owners for canonical target "${target}"`,
+      ownership: {
+        key,
+        classification: "invalid-owner",
+        target,
+        currentFingerprint: null,
+        expectedReceipt: null,
+      },
+    });
+  }
+}
+
+async function classifyPlannedTargets(
+  env: Env,
+  opts: DistributeOptions,
+  owners: readonly TargetOwner[],
+  actions: PlanAction[],
+  conflicts: TargetConflict[],
+): Promise<void> {
+  for (const action of actions) {
+    if (action.op === "skip" || action.target.length === 0) continue;
+    const inspection = await inspectTargetOwnership(env, {
+      agent: action.agent,
+      scope: action.scope,
+      capability: action.capability,
+      target: action.target,
+      dir: opts.dir,
+      owners,
+    });
+    const ownership: TargetOwnershipEvidence = {
+      key: targetKey(action),
+      classification: inspection.classification,
+      target: inspection.target,
+      currentFingerprint: inspection.fingerprint,
+      expectedReceipt: inspection.owner?.receipt ?? null,
+    };
+    action.target = inspection.target;
+    action.ownership = ownership;
+
+    if (inspection.classification === "absent" || inspection.classification === "owned-current") {
+      continue;
+    }
+
+    // before 可能来自用户文件并含明文凭据；冲突证据只暴露指纹，不把 payload 放进 plan 输出。
+    if (action.preview) action.preview.before = undefined;
+
+    if (inspection.classification === "invalid-owner") {
+      blockAction(action, inspection.reason ?? "target ownership is invalid");
+      if (
+        !conflicts.some(
+          (conflict) =>
+            conflict.code === "INVALID_TARGET_OWNER" && conflict.ownership.key === ownership.key,
+        )
+      ) {
+        conflicts.push({
+          code: "INVALID_TARGET_OWNER",
+          target: action.target,
+          message: action.reason ?? "target ownership is invalid",
+          ownership,
+        });
+      }
+      continue;
+    }
+
+    const acknowledgement = targetAcknowledgement(action, ownership);
+    const input =
+      inspection.classification === "unowned-existing" ? opts.replaceUnowned : opts.overrideDrift;
+    const approved = input?.includes(acknowledgement.token) === true;
+    if (!approved) {
+      const message =
+        inspection.classification === "unowned-existing"
+          ? "existing target is not owned by cellarer; exact replacement acknowledgement required"
+          : "owned target has drifted; exact drift acknowledgement required";
+      blockAction(action, message);
+      conflicts.push({
+        code:
+          inspection.classification === "unowned-existing"
+            ? "UNOWNED_TARGET"
+            : "OWNED_TARGET_DRIFTED",
+        target: action.target,
+        message,
+        ownership,
+        acknowledgement,
+      });
+      continue;
+    }
+
+    if (!opts.snapshotPassphrase) {
+      const message = "approved replacement requires an encrypted snapshot passphrase";
+      blockAction(action, message);
+      conflicts.push({
+        code: "SNAPSHOT_ENCRYPTION_REQUIRED",
+        target: action.target,
+        message,
+        ownership,
+        acknowledgement,
+      });
+      continue;
+    }
+
+    action.replacement = { acknowledgement, snapshotRequired: true };
+  }
+}
+
+function targetAcknowledgement(
+  action: PlanAction,
+  ownership: TargetOwnershipEvidence,
+): TargetAcknowledgement {
+  const kind =
+    ownership.classification === "unowned-existing" ? "replace-unowned" : "override-drift";
+  return {
+    kind,
+    token: sha256(
+      JSON.stringify({
+        version: 1,
+        kind,
+        key: ownership.key,
+        classification: ownership.classification,
+        currentFingerprint: ownership.currentFingerprint,
+        expectedReceipt: ownership.expectedReceipt,
+        artifactIds: action.artifactIds ?? [],
+      }),
+    ),
+  };
+}
+
+function blockAction(action: PlanAction, reason: string): void {
+  action.op = "skip";
+  action.reason = reason;
+  // A merge preview can contain payload copied from an existing, user-owned target. Once the
+  // ownership gate blocks the action, later secret scanning intentionally skips it, so retain only
+  // the ownership fingerprint/conflict evidence and suppress both sides of the preview.
+  action.preview = undefined;
 }
 
 function skipAction(
@@ -181,6 +353,7 @@ function skipAction(
 ): PlanAction {
   return {
     artifact: `${cap}/*`,
+    artifactIds: [],
     agent: agentId,
     scope,
     capability: cap,
@@ -257,6 +430,7 @@ async function planRules(
   return {
     // rules 是聚合制品,artifact 标 "rules/*" 并在 reason 列出参与的制品。
     artifact: "rules/*",
+    artifactIds: selectedRules.map((artifact) => artifact.id),
     agent: adapter.id,
     scope: opts.scope,
     capability: "rules",

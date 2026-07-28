@@ -8,13 +8,17 @@ import type { Env, FileStat, FsLike, Platform, SymlinkType } from "./env.js";
 function toFsLike(): FsLike {
   return {
     readFile: (path) => nodeFs.readFile(path, "utf8"),
-    writeFile: (path, data) => nodeFs.writeFile(path, data, "utf8"),
+    readFileBytes: (path) => nodeFs.readFile(path),
+    writeFile: (path, data, opts) =>
+      nodeFs.writeFile(path, data, { encoding: "utf8", mode: opts?.mode }),
+    writeFileBytes: (path, data, opts) => nodeFs.writeFile(path, data, { mode: opts?.mode }),
     appendFile: (path, data) => nodeFs.appendFile(path, data, "utf8"),
     access: (path, mode) =>
       nodeFs.access(path, mode === "read" ? fsConstants.R_OK : fsConstants.W_OK),
     mkdir: async (path, opts) => {
-      await nodeFs.mkdir(path, { recursive: opts?.recursive ?? false });
+      await nodeFs.mkdir(path, { recursive: opts?.recursive ?? false, mode: opts?.mode });
     },
+    chmod: (path, mode) => nodeFs.chmod(path, mode),
     rm: (path, opts) => nodeFs.rm(path, opts),
     readdir: (path) => nodeFs.readdir(path),
     lstat: async (path): Promise<FileStat> => nodeFs.lstat(path),

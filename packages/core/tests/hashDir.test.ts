@@ -55,4 +55,38 @@ describe("fs/hashDir", () => {
     await seedDir("b", { x: "a", y: "b" });
     expect(await hashDir(t.env, t.path("a"))).not.toBe(await hashDir(t.env, t.path("b")));
   });
+
+  it("hashes raw file bytes instead of lossy decoded text", async () => {
+    await t.env.fs.mkdir(t.path("a"), { recursive: true });
+    await t.env.fs.mkdir(t.path("b"), { recursive: true });
+    await t.env.fs.writeFileBytes(t.path("a", "binary.bin"), new Uint8Array([0xff]));
+    await t.env.fs.writeFileBytes(t.path("b", "binary.bin"), new Uint8Array([0xfe]));
+
+    expect(await hashDir(t.env, t.path("a"))).not.toBe(await hashDir(t.env, t.path("b")));
+  });
+
+  it("includes empty directories in the manifest", async () => {
+    await t.env.fs.mkdir(t.path("a"), { recursive: true });
+    await t.env.fs.mkdir(t.path("b", "empty"), { recursive: true });
+
+    expect(await hashDir(t.env, t.path("a"))).not.toBe(await hashDir(t.env, t.path("b")));
+  });
+
+  it("includes symlink nodes and their link targets in the manifest", async () => {
+    await t.env.fs.mkdir(t.path("a"), { recursive: true });
+    await t.env.fs.mkdir(t.path("b"), { recursive: true });
+    await t.env.fs.symlink("first.txt", t.path("a", "current"), "file");
+    await t.env.fs.symlink("second.txt", t.path("b", "current"), "file");
+
+    expect(await hashDir(t.env, t.path("a"))).not.toBe(await hashDir(t.env, t.path("b")));
+  });
+
+  it("includes node modes in the manifest", async () => {
+    await seedDir("a", { "SKILL.md": "same" });
+    await seedDir("b", { "SKILL.md": "same" });
+    await t.env.fs.chmod(t.path("a", "SKILL.md"), 0o600);
+    await t.env.fs.chmod(t.path("b", "SKILL.md"), 0o644);
+
+    expect(await hashDir(t.env, t.path("a"))).not.toBe(await hashDir(t.env, t.path("b")));
+  });
 });

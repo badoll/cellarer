@@ -31,15 +31,76 @@ describe("fs/linkOrCopy", () => {
       expect(r.skipped).toBe(true);
     });
 
-    it("replaces an existing regular file at dest with a symlink", async () => {
+    it("replaces an existing regular file only when the caller explicitly allows it", async () => {
       const src = t.path("src.md");
       const dest = t.path("dest.md");
       await t.env.fs.writeFile(src, "new");
       await t.env.fs.writeFile(dest, "old");
-      const r = await linkOrCopy(t.env, src, dest, { method: "symlink", kind: "file" });
+      await expect(
+        linkOrCopy(t.env, src, dest, { method: "symlink", kind: "file" }),
+      ).rejects.toThrow(/replacement was not approved/);
+      expect(await t.env.fs.readFile(dest)).toBe("old");
+      const r = await linkOrCopy(t.env, src, dest, {
+        method: "symlink",
+        kind: "file",
+        replaceExisting: true,
+      });
       expect(r.method).toBe("symlink");
       expect((await t.env.fs.lstat(dest)).isSymbolicLink()).toBe(true);
       expect(await t.env.fs.readFile(dest)).toBe("new");
+    });
+
+    it("retains both recovery paths when replacement cleanup and rollback rename fail", async () => {
+      const src = t.path("src.md");
+      const dest = t.path("dest.md");
+      await t.env.fs.writeFile(src, "new");
+      await t.env.fs.writeFile(dest, "old");
+      const baseFs = t.env.fs;
+      const env = {
+        ...t.env,
+        fs: {
+          ...baseFs,
+          rm: async (path: string, options?: { recursive?: boolean; force?: boolean }) => {
+            if (path.includes(".cellarer-before-")) {
+              throw new Error("injected displaced cleanup failure");
+            }
+            return baseFs.rm(path, options);
+          },
+          rename: async (oldPath: string, newPath: string) => {
+            if (oldPath.includes(".cellarer-before-") && newPath === dest) {
+              throw new Error("injected rollback rename failure");
+            }
+            return baseFs.rename(oldPath, newPath);
+          },
+        },
+      };
+
+      let failure: unknown;
+      try {
+        await linkOrCopy(env, src, dest, {
+          method: "symlink",
+          kind: "file",
+          replaceExisting: true,
+        });
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure).toBeInstanceOf(Error);
+      const children = await t.env.fs.readdir(t.root);
+      const staged = children.find((name) => name.includes(".cellarer-stage-"));
+      const displaced = children.find((name) => name.includes(".cellarer-before-"));
+      expect(staged).toBeDefined();
+      expect(displaced).toBeDefined();
+      if (!staged || !displaced || !(failure instanceof Error)) {
+        throw new Error("expected retained replacement recovery paths");
+      }
+      const stagedPath = t.path(staged);
+      const displacedPath = t.path(displaced);
+      expect(await t.env.fs.readFile(stagedPath)).toBe("new");
+      expect(await t.env.fs.readFile(displacedPath)).toBe("old");
+      expect(failure.message).toContain(stagedPath);
+      expect(failure.message).toContain(displacedPath);
     });
 
     it("creates parent directories for dest", async () => {

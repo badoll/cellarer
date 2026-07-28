@@ -2,7 +2,7 @@
 // POSIX:fs.symlink(文件/目录皆可)。
 // Windows:目录用 junction(免特权,绝对 target);文件软链需 Developer Mode,失败回退 copy。
 // 任何软链失败一律回退 copy;实际 method 回传供台账记录(status/revert 据此正确处理)。
-import { dirname, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { Env } from "../env.js";
 import type { AppliedMethod } from "../model/index.js";
 import { lstatOrNull } from "./probe.js";
@@ -10,6 +10,11 @@ import { lstatOrNull } from "./probe.js";
 export interface LinkOrCopyOpts {
   method: "symlink" | "copy";
   kind: "file" | "dir";
+  // 已存在的 dest 只有在上层证明 ownership 或完成加密快照后才能显式清理。
+  replaceExisting?: boolean;
+  // Complete fallible receipt preparation against the fully built placement before it is swapped
+  // over an existing target. For a new target, failure removes the incomplete placement.
+  preparePlaced?: (path: string, result: LinkOrCopyResult) => Promise<void>;
 }
 
 export interface LinkOrCopyResult {
@@ -30,12 +35,7 @@ async function alreadyLinkedTo(env: Env, dest: string, src: string): Promise<boo
   }
 }
 
-// 清掉 dest 处的既有条目(文件 / 目录 / 断链),为重新落地腾位。
-async function clearDest(env: Env, dest: string): Promise<void> {
-  if (await lstatOrNull(env, dest)) {
-    await env.fs.rm(dest, { recursive: true, force: true });
-  }
-}
+let replacementCounter = 0;
 
 export async function linkOrCopy(
   env: Env,
@@ -46,16 +46,130 @@ export async function linkOrCopy(
   const absSrc = resolve(src);
 
   if (opts.method === "symlink" && (await alreadyLinkedTo(env, dest, absSrc))) {
-    return {
+    const result: LinkOrCopyResult = {
       method: env.platform === "win32" && opts.kind === "dir" ? "junction" : "symlink",
       skipped: true,
     };
+    // A caller may still need a fresh receipt for the unchanged link node (for example after the
+    // linked source contents drifted). Receipt preparation is read-only here and must not remove
+    // the existing target if it fails.
+    await opts.preparePlaced?.(dest, result);
+    return result;
   }
 
-  // dest 父目录就绪 + 清掉既有落地物(两种 method 都需要)。
+  // dest 父目录就绪；普通 placement 不再无条件清掉未知目标。
   await env.fs.mkdir(dirname(dest), { recursive: true });
-  await clearDest(env, dest);
+  const existing = await lstatOrNull(env, dest);
+  if (existing) {
+    if (!opts.replaceExisting) {
+      throw new Error(`destination exists and replacement was not approved: "${dest}"`);
+    }
+    return replaceStaged(env, absSrc, dest, opts);
+  }
 
+  const result = await placeIntoEmptyDestination(env, absSrc, dest, opts);
+  try {
+    await opts.preparePlaced?.(dest, result);
+  } catch (error) {
+    await env.fs.rm(dest, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+  return result;
+}
+
+async function replaceStaged(
+  env: Env,
+  src: string,
+  dest: string,
+  opts: LinkOrCopyOpts,
+): Promise<LinkOrCopyResult> {
+  replacementCounter += 1;
+  const suffix = `${env.now().getTime()}-${replacementCounter}`;
+  const parent = dirname(dest);
+  const name = basename(dest);
+  const staged = join(parent, `.${name}.cellarer-stage-${suffix}`);
+  const displaced = join(parent, `.${name}.cellarer-before-${suffix}`);
+  if ((await lstatOrNull(env, staged)) || (await lstatOrNull(env, displaced))) {
+    throw new Error(`replacement staging path already exists for "${dest}"`);
+  }
+
+  let result: LinkOrCopyResult;
+  try {
+    result = await placeIntoEmptyDestination(env, src, staged, opts);
+    await opts.preparePlaced?.(staged, result);
+  } catch (error) {
+    await env.fs.rm(staged, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+
+  await env.fs.rename(dest, displaced);
+  try {
+    await env.fs.rename(staged, dest);
+  } catch (error) {
+    try {
+      await env.fs.rename(displaced, dest);
+    } catch (rollbackError) {
+      throw replacementRecoveryError(dest, error, rollbackError, [staged, displaced]);
+    }
+    if (!(await lstatOrNull(env, dest))) {
+      throw replacementRecoveryError(dest, error, new Error("canonical target is missing"), [
+        staged,
+      ]);
+    }
+    try {
+      await env.fs.rm(staged, { recursive: true, force: true });
+    } catch (cleanupError) {
+      throw replacementRecoveryError(dest, error, cleanupError, [dest, staged]);
+    }
+    throw error;
+  }
+
+  try {
+    await env.fs.rm(displaced, { recursive: true, force: true });
+  } catch (error) {
+    try {
+      await env.fs.rename(dest, staged);
+    } catch (rollbackError) {
+      throw replacementRecoveryError(dest, error, rollbackError, [dest, displaced]);
+    }
+    try {
+      await env.fs.rename(displaced, dest);
+    } catch (rollbackError) {
+      throw replacementRecoveryError(dest, error, rollbackError, [staged, displaced]);
+    }
+    if (!(await lstatOrNull(env, dest))) {
+      throw replacementRecoveryError(dest, error, new Error("canonical target is missing"), [
+        staged,
+      ]);
+    }
+    try {
+      await env.fs.rm(staged, { recursive: true, force: true });
+    } catch (cleanupError) {
+      throw replacementRecoveryError(dest, error, cleanupError, [dest, staged]);
+    }
+    throw error;
+  }
+  return result;
+}
+
+function replacementRecoveryError(
+  dest: string,
+  error: unknown,
+  rollbackError: unknown,
+  recoveryPaths: string[],
+): Error {
+  return new Error(
+    `replacement cleanup and rollback failed for "${dest}": ${String(error)}; rollback: ${String(rollbackError)}; recoverable paths: ${recoveryPaths.map((path) => `"${path}"`).join(", ")}`,
+    { cause: rollbackError },
+  );
+}
+
+async function placeIntoEmptyDestination(
+  env: Env,
+  absSrc: string,
+  dest: string,
+  opts: LinkOrCopyOpts,
+): Promise<LinkOrCopyResult> {
   if (opts.method === "copy") {
     await doCopy(env, absSrc, dest, opts.kind);
     return { method: "copy", skipped: false };

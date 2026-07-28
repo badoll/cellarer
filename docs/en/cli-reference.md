@@ -121,6 +121,7 @@ Plans or writes resources to selected agents.
 ```bash
 node packages/cli/dist/bin.js apply --dry-run --agent claude-code,codex
 node packages/cli/dist/bin.js apply --agent claude-code,codex --collection default
+node packages/cli/dist/bin.js apply --dry-run --agent claude-code --json
 ```
 
 Options:
@@ -137,7 +138,15 @@ Options:
 | `--mcp-overwrite` | Use overwrite instead of merge for MCP server groups. |
 | `--secret-mode <mode>` | `env`, `vault`, or `keychain`. |
 | `--vault-passphrase <pp>` | Vault passphrase for `--secret-mode vault`. |
+| `--replace-unowned <tokens>` | Comma-separated exact replacement tokens from `plan.conflicts`. |
+| `--override-drift <tokens>` | Comma-separated exact drift-override tokens from `plan.conflicts`. |
+| `--snapshot-passphrase <passphrase>` | Encrypt the before-state snapshot required by an approved replacement. |
 | `--dry-run` | Print the plan without writing. |
+| `--json` | Print the complete Core apply plan/result, including conflicts and acknowledgement tokens. |
+
+An unacknowledged ownership conflict blocks apply and exits nonzero. Inspect the JSON dry-run,
+then repeat the same selection with the exact conflict token in `--replace-unowned` or
+`--override-drift` and provide `--snapshot-passphrase`.
 
 ## `scan`
 
@@ -186,9 +195,13 @@ Options:
 Rolls back ledger entries.
 
 ```bash
-node packages/cli/dist/bin.js revert --agent codex
-node packages/cli/dist/bin.js revert --all --dry-run
+node packages/cli/dist/bin.js revert --agent codex --dry-run --json
+node packages/cli/dist/bin.js revert --agent codex --acknowledge "$ACK_TOKEN" --snapshot-passphrase "$CELLARER_SNAPSHOT_PASSPHRASE"
 ```
+
+Always inspect the dry-run plan first. If a target drifted after apply, copy its
+exact acknowledgement token into `ACK_TOKEN`. A target with an encrypted
+before-state snapshot also requires the original snapshot passphrase.
 
 Options:
 
@@ -198,7 +211,10 @@ Options:
 | `--dir <path>` | Filter by project root. |
 | `--all` | Required when reverting all entries without another selector. |
 | `--keep-backups` | Leave `.bak` files in place. |
+| `--acknowledge <tokens>` | Comma-separated exact drift tokens returned by the dry-run plan. |
+| `--snapshot-passphrase <passphrase>` | Passphrase used to decrypt a recorded before-state snapshot. |
 | `--dry-run` | Preview rollback actions. |
+| `--json` | Print the complete Core revert plan and result. |
 
 ## `secret`
 

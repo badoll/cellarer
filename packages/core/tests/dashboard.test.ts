@@ -80,32 +80,36 @@ describe("dashboard summary", () => {
 
   it("reports secret reference counts by ledger entry", async () => {
     await saveLedger(t.env, storeRoot, {
-      version: 1,
-      entries: [
+      version: 2,
+      owners: [
         {
-          artifact: "mcp/ctx",
           agent: "codex",
           scope: "global",
           capability: "mcp",
           target: t.path("home", ".codex", "config.toml"),
-          method: "write",
-          checksum: "sha256:1",
-          backup: null,
-          generated: false,
-          appliedAt: "2026-06-30T08:00:00.000Z",
+          artifactIds: ["mcp/ctx"],
+          receipt: {
+            method: "write",
+            fingerprint: "sha256:1",
+            backup: null,
+            generated: false,
+            appliedAt: "2026-06-30T08:00:00.000Z",
+          },
           secretRefs: ["API_KEY", "API_KEY"],
         },
         {
-          artifact: "mcp/db",
           agent: "codex",
           scope: "global",
           capability: "mcp",
           target: t.path("home", ".codex", "db.toml"),
-          method: "write",
-          checksum: "sha256:2",
-          backup: null,
-          generated: false,
-          appliedAt: "2026-06-30T08:01:00.000Z",
+          artifactIds: ["mcp/db"],
+          receipt: {
+            method: "write",
+            fingerprint: "sha256:2",
+            backup: null,
+            generated: false,
+            appliedAt: "2026-06-30T08:01:00.000Z",
+          },
           secretRefs: ["API_KEY"],
         },
       ],

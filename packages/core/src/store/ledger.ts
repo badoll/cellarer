@@ -1,45 +1,81 @@
 // state.json 台账读写(kickoff §7.3,见计划 §3.4)。
 // 台账是 revert 的权威来源(优于 ruler 靠 marker 反推),记录每次实际落地。
-import { join } from "node:path";
+import { join, normalize } from "node:path";
 import { z } from "zod";
 import type { Env } from "../env.js";
 import { atomicWrite } from "../fs/atomicWrite.js";
 import { readFileOrNull } from "../fs/probe.js";
 import { isPathInside } from "../fs/safety.js";
-import type { Ledger, LedgerEntry, Scope } from "../model/index.js";
+import type { Ledger, Scope, TargetOwner } from "../model/index.js";
 
-const entrySchema = z.object({
-  artifact: z.string(),
+const appliedReceiptSchema = z.object({
+  method: z.enum(["write", "symlink", "junction", "copy"]),
+  fingerprint: z.string(),
+  backup: z.string().nullable(),
+  generated: z.boolean(),
+  appliedAt: z.string(),
+});
+
+const artifactIdSchema = z.string().regex(/^(rules|mcp|skills)\/[^/*,\s]+$/);
+
+const targetOwnerSchema = z.object({
   agent: z.string(),
   scope: z.enum(["global", "project"]),
   capability: z.enum(["rules", "mcp", "skills"]),
   target: z.string(),
-  method: z.enum(["write", "symlink", "junction", "copy"]),
-  checksum: z.string(),
-  backup: z.string().nullable(),
-  generated: z.boolean(),
-  appliedAt: z.string(),
+  artifactIds: z
+    .array(artifactIdSchema)
+    .min(1)
+    .refine((ids) => new Set(ids).size === ids.length, "artifactIds must be an ordered set"),
+  receipt: appliedReceiptSchema,
   secretRefs: z.array(z.string()).optional(),
 });
 
 const ledgerSchema = z.object({
-  version: z.literal(1),
-  entries: z.array(entrySchema),
+  version: z.literal(2),
+  owners: z.array(targetOwnerSchema),
 });
 
-export function makeLedger(entries: LedgerEntry[]): Ledger {
-  return { version: 1, entries };
+export class LegacyLedgerVersionError extends Error {
+  constructor(path: string) {
+    super(
+      `legacy ledger version 1 at ${path} requires a pre-release reset; back up and remove state.json before re-applying managed artifacts`,
+    );
+    this.name = "LegacyLedgerVersionError";
+  }
+}
+
+export class DuplicateTargetOwnerError extends Error {
+  constructor(
+    path: string,
+    readonly ledger: Ledger,
+    readonly duplicateKeys: string[],
+  ) {
+    super(
+      `invalid ownership state at ${path}: duplicate physical owner ${duplicateKeys.join(", ")}`,
+    );
+    this.name = "DuplicateTargetOwnerError";
+  }
+}
+
+export function makeLedger(owners: TargetOwner[]): Ledger {
+  const normalizedOwners = z.array(targetOwnerSchema).parse(owners.map(normalizeOwner));
+  assertUniqueOwners(normalizedOwners);
+  return { version: 2, owners: normalizedOwners };
 }
 
 export function emptyLedger(): Ledger {
   return makeLedger([]);
 }
 
-// 唯一键:同一 (artifact, agent, scope, target) 视为同一条落地,重复 apply 时替换。
-// 单一来源:addEntries 合并与 apply 幂等查找都据此,避免身份定义漂移。
-export function entryKey(e: Pick<LedgerEntry, "artifact" | "agent" | "scope" | "target">): string {
-  return `${e.artifact} ${e.agent} ${e.scope} ${e.target}`;
+// owner 唯一键只描述物理目标；artifactIds 是 provenance，不参与身份。
+export function targetKey(
+  owner: Pick<TargetOwner, "agent" | "scope" | "capability" | "target">,
+): string {
+  return JSON.stringify([owner.agent, owner.scope, owner.capability, normalize(owner.target)]);
 }
+
+export const entryKey = targetKey;
 
 // 台账查询过滤器(scope / agents / dir),被 revert / status 共用。
 export interface LedgerFilter {
@@ -49,7 +85,7 @@ export interface LedgerFilter {
 }
 
 // entry 是否命中过滤器:dir 用 isPathInside(而非脆弱的 startsWith 前缀匹配)。
-export function matchesFilter(entry: LedgerEntry, filter: LedgerFilter): boolean {
+export function matchesFilter(entry: TargetOwner, filter: LedgerFilter): boolean {
   if (filter.scope && entry.scope !== filter.scope) return false;
   if (filter.agents && filter.agents.length > 0 && !filter.agents.includes(entry.agent)) {
     return false;
@@ -58,19 +94,21 @@ export function matchesFilter(entry: LedgerEntry, filter: LedgerFilter): boolean
   return true;
 }
 
-// 合并新条目:同键替换(保证幂等台账),新键追加。
-export function addEntries(ledger: Ledger, incoming: LedgerEntry[]): Ledger {
-  const map = new Map<string, LedgerEntry>();
-  for (const e of ledger.entries) map.set(entryKey(e), e);
-  for (const e of incoming) map.set(entryKey(e), e);
+// 合并 owner:同一物理目标由最新成功凭据替换，输入制品变化不会产生第二个 owner。
+export function addOwners(ledger: Ledger, incoming: TargetOwner[]): Ledger {
+  const map = new Map<string, TargetOwner>();
+  for (const owner of ledger.owners) map.set(targetKey(owner), owner);
+  for (const owner of incoming) map.set(targetKey(owner), normalizeOwner(owner));
   return makeLedger([...map.values()]);
 }
+
+export const addEntries = addOwners;
 
 // 聚合台账中用到的全部密钥引用名(去重 + 排序;只名不值)。
 // 单一来源:CLI(secret 审计)与 web(/api/secrets)共用,避免两处各写聚合口径(不变量 1)。
 export function collectLedgerSecretRefs(ledger: Ledger): string[] {
   const names = new Set<string>();
-  for (const e of ledger.entries) for (const r of e.secretRefs ?? []) names.add(r);
+  for (const owner of ledger.owners) for (const ref of owner.secretRefs ?? []) names.add(ref);
   return [...names].sort();
 }
 
@@ -81,8 +119,8 @@ export interface LedgerSecretRefStat {
 
 export function collectLedgerSecretRefStats(ledger: Ledger): LedgerSecretRefStat[] {
   const counts = new Map<string, number>();
-  for (const entry of ledger.entries) {
-    for (const ref of new Set(entry.secretRefs ?? [])) {
+  for (const owner of ledger.owners) {
+    for (const ref of new Set(owner.secretRefs ?? [])) {
       counts.set(ref, (counts.get(ref) ?? 0) + 1);
     }
   }
@@ -96,15 +134,141 @@ export async function loadLedger(env: Env, storeRoot: string): Promise<Ledger> {
   const text = await readFileOrNull(env, path);
   if (text === null) return emptyLedger();
   try {
-    return ledgerSchema.parse(JSON.parse(text));
+    const json: unknown = JSON.parse(text);
+    if (isLegacyLedger(json)) throw new LegacyLedgerVersionError(path);
+    const ledger = ledgerSchema.parse(json);
+    const duplicateLedger: Ledger = { version: 2, owners: ledger.owners };
+    const duplicateKeys = duplicateTargetOwnerKeys(duplicateLedger.owners);
+    if (duplicateKeys.length > 0) {
+      // Recovery planning must retain every duplicate record exactly as parsed. Normalizing this
+      // evidence would make a later selective recovery rewrite silently alter unrelated records.
+      throw new DuplicateTargetOwnerError(path, duplicateLedger, duplicateKeys);
+    }
+    return makeLedger(ledger.owners);
   } catch (err) {
+    if (err instanceof LegacyLedgerVersionError || err instanceof DuplicateTargetOwnerError) {
+      throw err;
+    }
     // 损坏的台账若直接抛原始栈,会连 revert(唯一恢复路径)都用不了 → 给可操作信息。
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(`corrupt ledger at ${path}: ${msg}. Fix or remove the file to recover.`);
   }
 }
 
+// Planning must surface duplicate owners as target-keyed INVALID_TARGET_OWNER conflicts. Ordinary
+// apply/save paths remain closed; only the narrow selective-revert writer below may preserve them.
+export async function loadLedgerForPlanning(env: Env, storeRoot: string): Promise<Ledger> {
+  try {
+    return await loadLedger(env, storeRoot);
+  } catch (error) {
+    if (error instanceof DuplicateTargetOwnerError) return error.ledger;
+    throw error;
+  }
+}
+
 export async function saveLedger(env: Env, storeRoot: string, ledger: Ledger): Promise<void> {
   const path = join(storeRoot, "state.json");
-  await atomicWrite(env, path, `${JSON.stringify(ledger, null, 2)}\n`);
+  const validated = makeLedger(ledgerSchema.parse(ledger).owners);
+  await atomicWrite(env, path, `${JSON.stringify(validated, null, 2)}\n`);
+}
+
+// Narrow recovery writer for a duplicate-bearing ledger. It only removes owners that the revert
+// engine reports as successfully reverted, and never normalizes or rewrites the duplicate records.
+export async function saveLedgerAfterSelectiveRevert(
+  env: Env,
+  storeRoot: string,
+  original: Ledger,
+  successfullyReverted: readonly TargetOwner[],
+): Promise<Ledger> {
+  const duplicateKeys = new Set(duplicateTargetOwnerKeys(original.owners));
+  if (duplicateKeys.size === 0) {
+    throw new Error("selective recovery writer requires a duplicate-bearing ledger");
+  }
+  if (successfullyReverted.length === 0) {
+    throw new Error("selective recovery writer requires a successfully reverted owner");
+  }
+
+  const current = await loadLedgerForPlanning(env, storeRoot);
+  if (!sameLedger(current, original)) {
+    throw new Error("ownership state changed after revert planning; refusing selective recovery");
+  }
+
+  const removedKeys = new Set<string>();
+  for (const reverted of successfullyReverted) {
+    const key = targetKey(reverted);
+    if (duplicateKeys.has(key)) {
+      throw new Error(`selective recovery cannot remove duplicate physical owner ${key}`);
+    }
+    if (removedKeys.has(key)) {
+      throw new Error(`selective recovery received duplicate successful owner ${key}`);
+    }
+    const matches = original.owners.filter((owner) => targetKey(owner) === key);
+    if (matches.length !== 1 || !sameOwner(matches[0], reverted)) {
+      throw new Error(`selective recovery owner is not an exact unique ledger record ${key}`);
+    }
+    removedKeys.add(key);
+  }
+
+  const remaining: Ledger = {
+    version: 2,
+    owners: original.owners.filter((owner) => !removedKeys.has(targetKey(owner))),
+  };
+  const validated = ledgerSchema.parse(remaining);
+  const remainingDuplicateKeys = duplicateTargetOwnerKeys(validated.owners);
+  if (
+    remainingDuplicateKeys.length !== duplicateKeys.size ||
+    remainingDuplicateKeys.some((key) => !duplicateKeys.has(key))
+  ) {
+    throw new Error("selective recovery changed duplicate owner groups");
+  }
+  for (const key of duplicateKeys) {
+    const before = original.owners.filter((owner) => targetKey(owner) === key);
+    const after = validated.owners.filter((owner) => targetKey(owner) === key);
+    if (JSON.stringify(after) !== JSON.stringify(before)) {
+      throw new Error(`selective recovery changed duplicate owner records ${key}`);
+    }
+  }
+
+  const path = join(storeRoot, "state.json");
+  await atomicWrite(env, path, `${JSON.stringify(validated, null, 2)}\n`);
+  return { version: 2, owners: validated.owners };
+}
+
+function normalizeOwner(owner: TargetOwner): TargetOwner {
+  return {
+    ...owner,
+    target: normalize(owner.target),
+    artifactIds: [...new Set(owner.artifactIds)],
+    secretRefs: owner.secretRefs ? [...new Set(owner.secretRefs)] : undefined,
+  };
+}
+
+function assertUniqueOwners(owners: TargetOwner[]): void {
+  const duplicates = duplicateTargetOwnerKeys(owners);
+  if (duplicates[0]) {
+    throw new Error(`invalid ownership state: duplicate physical owner ${duplicates[0]}`);
+  }
+}
+
+export function duplicateTargetOwnerKeys(owners: readonly TargetOwner[]): string[] {
+  const keys = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const owner of owners) {
+    const key = targetKey(owner);
+    if (keys.has(key)) duplicates.add(key);
+    keys.add(key);
+  }
+  return [...duplicates];
+}
+
+function sameLedger(left: Ledger, right: Ledger): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function sameOwner(left: TargetOwner | undefined, right: TargetOwner): boolean {
+  return left !== undefined && JSON.stringify(left) === JSON.stringify(right);
+}
+
+function isLegacyLedger(value: unknown): value is { version: 1 } {
+  return typeof value === "object" && value !== null && "version" in value && value.version === 1;
 }

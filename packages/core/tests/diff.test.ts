@@ -22,7 +22,7 @@ describe("dashboard diff", () => {
   });
   afterEach(() => t.cleanup());
 
-  it("returns an available file diff from reconstructed plan output", async () => {
+  it("hides target content when drift makes ownership blocked", async () => {
     await writeRuleArtifact(t.env, storeRoot, "style", "# style");
     await apply(t.env, {
       storeRoot,
@@ -38,9 +38,13 @@ describe("dashboard diff", () => {
       identity: item,
     });
 
-    expect(diff).toMatchObject({ available: true, status: "available" });
-    expect(diff.before).toContain("# changed");
-    expect(diff.after).toContain("# style");
+    expect(diff).toMatchObject({
+      available: false,
+      status: "unavailable",
+      warning: "target content is hidden while ownership is blocked",
+      currentFingerprint: expect.stringMatching(/^sha256:/),
+    });
+    expect(diff.before).toBeUndefined();
   });
 
   it("returns unavailable for a missing target", async () => {
@@ -112,7 +116,10 @@ describe("dashboard diff", () => {
     const diff = await diffTarget(t.env, { storeRoot, identity: item });
 
     expect(JSON.stringify(diff)).not.toContain(REAL);
-    expect(diff.before).toBe("[redacted secret content]");
-    expect(diff.redactionNotices.length).toBeGreaterThan(0);
+    expect(diff).toMatchObject({
+      available: false,
+      warning: "target content is hidden while ownership is blocked",
+    });
+    expect(diff.before).toBeUndefined();
   });
 });

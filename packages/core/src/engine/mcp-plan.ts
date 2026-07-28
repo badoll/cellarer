@@ -180,6 +180,7 @@ export async function planMcp(ctx: McpPlanContext, adapter: AgentAdapter): Promi
 
   const action: PlanAction = {
     artifact: ctx.selectedMcp.map((a) => a.id).join(", ") || "mcp/*",
+    artifactIds: ctx.selectedMcp.map((artifact) => artifact.id),
     agent: adapter.id,
     scope: ctx.scope,
     capability: "mcp",

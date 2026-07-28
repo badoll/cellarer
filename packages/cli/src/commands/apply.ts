@@ -13,7 +13,11 @@ interface ApplyOpts {
   mcpOverwrite?: boolean;
   secretMode?: string;
   vaultPassphrase?: string;
+  replaceUnowned?: string;
+  overrideDrift?: string;
+  snapshotPassphrase?: string;
   dryRun?: boolean;
+  json?: boolean;
 }
 
 // 从 --rules/--mcp/--skills 解析能力集合;都不给 → 默认全部三类。
@@ -39,7 +43,11 @@ export function applyCommand(): Command {
     .option("--mcp-overwrite", "mcp 用 overwrite 策略(默认 merge)")
     .option("--secret-mode <mode>", "密钥来源:env(默认)| vault | keychain")
     .option("--vault-passphrase <pp>", "vault 口令(secret-mode=vault 时用;留空走交互更安全)")
+    .option("--replace-unowned <tokens>", "确认 plan 返回的精确非托管替换 token(逗号分隔)")
+    .option("--override-drift <tokens>", "确认 plan 返回的精确漂移覆盖 token(逗号分隔)")
+    .option("--snapshot-passphrase <passphrase>", "加密 replacement before-state snapshot 的口令")
     .option("--dry-run", "仅预览,不落地")
+    .option("--json", "输出完整 Core apply plan/result")
     .action(async (opts: ApplyOpts) => {
       const ctx = resolveContext(opts);
       if (ctx.agents.length === 0) {
@@ -69,10 +77,33 @@ export function applyCommand(): Command {
         mcpStrategy: opts.mcpOverwrite ? "overwrite" : undefined,
         secretMode,
         vaultPassphrase: opts.vaultPassphrase,
+        replaceUnowned: parseTokens(opts.replaceUnowned),
+        overrideDrift: parseTokens(opts.overrideDrift),
+        snapshotPassphrase: opts.snapshotPassphrase,
         dryRun: opts.dryRun,
       });
 
+      const blocked = result.plan.conflicts.length > 0;
+      const failed = result.failures.length > 0;
+      const guarded = result.plan.actions.some(
+        (action) => action.op === "skip" && action.reason?.includes("secret-scan"),
+      );
+      if (blocked || failed || guarded) process.exitCode = 1;
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+
       for (const w of result.plan.warnings) console.warn(`⚠ ${w}`);
+      for (const conflict of result.plan.conflicts) {
+        console.error(`⛔ ${conflict.code} ${conflict.target} — ${conflict.message}`);
+        if (conflict.acknowledgement) {
+          console.error(`   acknowledgement: ${conflict.acknowledgement.token}`);
+        }
+      }
+      for (const failure of result.failures) {
+        console.error(`⛔ ${failure.code} ${failure.target} — ${failure.message}`);
+      }
 
       if (opts.dryRun) {
         console.log("dry-run 预览:");
@@ -91,17 +122,27 @@ export function applyCommand(): Command {
       for (const e of result.entries) {
         const refs =
           e.secretRefs && e.secretRefs.length > 0 ? ` 🔑[${e.secretRefs.join(",")}]` : "";
-        console.log(`✓ ${e.agent} ${e.capability}/${e.scope} → ${e.target} (${e.method})${refs}`);
+        console.log(
+          `✓ ${e.agent} ${e.capability}/${e.scope} → ${e.target} (${e.receipt.method})${refs}`,
+        );
       }
       // skip 的安全护栏命中要醒目提示(secret-scan 拦截)。
       for (const a of result.plan.actions) {
         if (a.op === "skip" && a.reason?.includes("secret-scan")) {
           console.error(`⛔ ${a.agent} ${a.capability} 被安全护栏拦截:${a.reason}`);
-          process.exitCode = 1;
         }
       }
       if (result.entries.length === 0) {
         console.log("无可下发的资源(检查 collection 过滤与 agent 能力)。");
       }
     });
+}
+
+function parseTokens(spec: string | undefined): string[] | undefined {
+  if (!spec) return undefined;
+  const tokens = spec
+    .split(",")
+    .map((token) => token.trim())
+    .filter(Boolean);
+  return tokens.length > 0 ? tokens : undefined;
 }

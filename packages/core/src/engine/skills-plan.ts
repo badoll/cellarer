@@ -22,6 +22,7 @@ export function planSkills(ctx: SkillsPlanContext, adapter: AgentAdapter): PlanA
   const op = ctx.method === "copy" ? "copy" : "symlink";
   return ctx.selectedSkills.map((skill) => ({
     artifact: skill.id,
+    artifactIds: [skill.id],
     agent: adapter.id,
     scope: ctx.scope,
     capability: "skills",

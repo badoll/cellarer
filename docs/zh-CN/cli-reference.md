@@ -120,6 +120,7 @@ node packages/cli/dist/bin.js doctor -a codex --json
 ```bash
 node packages/cli/dist/bin.js apply --dry-run --agent claude-code,codex
 node packages/cli/dist/bin.js apply --agent claude-code,codex --collection default
+node packages/cli/dist/bin.js apply --dry-run --agent claude-code --json
 ```
 
 选项:
@@ -136,7 +137,15 @@ node packages/cli/dist/bin.js apply --agent claude-code,codex --collection defau
 | `--mcp-overwrite` | MCP server 组使用 overwrite,而非默认 merge。 |
 | `--secret-mode <mode>` | `env`、`vault` 或 `keychain`。 |
 | `--vault-passphrase <pp>` | `--secret-mode vault` 时使用的 vault 口令。 |
+| `--replace-unowned <tokens>` | `plan.conflicts` 返回的逗号分隔精确 replacement tokens。 |
+| `--override-drift <tokens>` | `plan.conflicts` 返回的逗号分隔精确 drift override tokens。 |
+| `--snapshot-passphrase <passphrase>` | 为已批准 replacement 所需的 before-state snapshot 加密。 |
 | `--dry-run` | 只打印计划,不写入。 |
+| `--json` | 输出完整 Core apply plan/result,包括 conflicts 与 acknowledgement tokens。 |
+
+未确认的 ownership conflict 会阻止 apply 并以非零状态退出。先检查 JSON dry-run,再用相同选择
+重试:把精确 token 放入 `--replace-unowned` 或 `--override-drift`,并提供
+`--snapshot-passphrase`。
 
 ## `scan`
 
@@ -184,9 +193,13 @@ node packages/cli/dist/bin.js status --agent codex --json
 回滚台账条目。
 
 ```bash
-node packages/cli/dist/bin.js revert --agent codex
-node packages/cli/dist/bin.js revert --all --dry-run
+node packages/cli/dist/bin.js revert --agent codex --dry-run --json
+node packages/cli/dist/bin.js revert --agent codex --acknowledge "$ACK_TOKEN" --snapshot-passphrase "$CELLARER_SNAPSHOT_PASSPHRASE"
 ```
+
+务必先检查 dry-run plan。若 target 在 apply 后发生漂移,把它返回的精确 acknowledgement
+token 放入 `ACK_TOKEN`。存在加密 before-state snapshot 的 target 还需要原始 snapshot
+passphrase。
 
 选项:
 
@@ -196,7 +209,10 @@ node packages/cli/dist/bin.js revert --all --dry-run
 | `--dir <path>` | 按 project 根目录过滤。 |
 | `--all` | 不传其他选择器时,回滚全部必须显式使用。 |
 | `--keep-backups` | 保留 `.bak` 备份。 |
+| `--acknowledge <tokens>` | 逗号分隔的精确 drift tokens,由 dry-run plan 返回。 |
+| `--snapshot-passphrase <passphrase>` | 解密已记录 before-state snapshot 的 passphrase。 |
 | `--dry-run` | 预览回滚动作。 |
+| `--json` | 输出完整 Core revert plan 与 result。 |
 
 ## `secret`
 

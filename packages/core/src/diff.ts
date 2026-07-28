@@ -26,6 +26,7 @@ export interface DiffTargetResult {
   before?: string;
   after?: string;
   redactionNotices: string[];
+  currentFingerprint?: string | null;
   warning?: string;
 }
 
@@ -46,11 +47,22 @@ export async function diffTarget(env: Env, opts: DiffTargetOptions): Promise<Dif
       candidate.agent === identity.agent &&
       candidate.scope === identity.scope &&
       candidate.capability === identity.capability &&
-      candidate.target === identity.target &&
-      candidate.artifact === identity.artifact,
+      candidate.target === identity.target,
   );
   if (!action) return unavailable(identity, "expected output could not be reconstructed");
-  if (action.op === "skip") {
+  // Ownership conflicts intentionally suppress preview.before in the raw plan, but diffTarget can
+  // still read the exact target through Env and apply its existing secret redaction boundary.
+  const ownershipBlocked =
+    action.ownership?.classification === "unowned-existing" ||
+    action.ownership?.classification === "owned-drifted";
+  if (ownershipBlocked) {
+    return unavailable(
+      identity,
+      "target content is hidden while ownership is blocked",
+      action.ownership?.currentFingerprint,
+    );
+  }
+  if (action.op === "skip" && !ownershipBlocked) {
     return unavailable(identity, action.reason ?? "desired unit is skipped");
   }
   if (action.capability === "skills") {
@@ -77,12 +89,17 @@ export async function diffTarget(env: Env, opts: DiffTargetOptions): Promise<Dif
   };
 }
 
-function unavailable(identity: DiffIdentity, warning: string): DiffTargetResult {
+function unavailable(
+  identity: DiffIdentity,
+  warning: string,
+  currentFingerprint?: string | null,
+): DiffTargetResult {
   return {
     identity,
     available: false,
     status: "unavailable",
     redactionNotices: [],
+    ...(currentFingerprint !== undefined ? { currentFingerprint } : {}),
     warning,
   };
 }

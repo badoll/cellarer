@@ -10,7 +10,7 @@ import type { Ledger } from "../model/index.js";
 function projectTargetsUnder(ledger: Ledger, dir: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const e of ledger.entries) {
+  for (const e of ledger.owners) {
     if (e.scope !== "project") continue;
     if (!isPathInside(e.target, dir)) continue;
     if (seen.has(e.target)) continue;

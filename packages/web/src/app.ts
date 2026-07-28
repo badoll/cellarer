@@ -64,6 +64,9 @@ interface DistributeBody {
   capabilities?: Capability[];
   method?: "symlink" | "copy";
   mcpStrategy?: "merge" | "overwrite";
+  replaceUnowned?: string[];
+  overrideDrift?: string[];
+  snapshotPassphrase?: string;
 }
 
 interface ScanBody {
@@ -98,6 +101,9 @@ interface SyncBody {
   };
   method?: "symlink" | "copy";
   mcpStrategy?: "merge" | "overwrite";
+  replaceUnowned?: string[];
+  overrideDrift?: string[];
+  snapshotPassphrase?: string;
 }
 
 interface InspectBody {
@@ -110,6 +116,9 @@ interface RevertBody {
   scope?: Scope;
   dir?: string;
   agents?: string[];
+  artifactIds?: string[];
+  acknowledgements?: string[];
+  snapshotPassphrase?: string;
   keepBackups?: boolean;
   dryRun?: boolean;
 }
@@ -162,6 +171,9 @@ function distributeOpts(deps: AppDeps, b: DistributeBody) {
     capabilities: b.capabilities,
     method: b.method,
     mcpStrategy: b.mcpStrategy,
+    replaceUnowned: b.replaceUnowned,
+    overrideDrift: b.overrideDrift,
+    snapshotPassphrase: b.snapshotPassphrase,
     // 安全红线:web 永远 env 模式,绝不在 HTTP 路径解出真值。
     secretMode: "env" as const,
   };
@@ -218,6 +230,9 @@ function syncOpts(deps: AppDeps, body: SyncBody) {
     capabilities: body.resources?.kinds,
     method: body.method,
     mcpStrategy: body.mcpStrategy,
+    replaceUnowned: body.replaceUnowned,
+    overrideDrift: body.overrideDrift,
+    snapshotPassphrase: body.snapshotPassphrase,
     secretMode: "env" as const,
   };
 }
@@ -475,6 +490,9 @@ export function createApp(deps: AppDeps) {
           scope: body.scope,
           dir: body.dir,
           agents: body.agents,
+          artifactIds: body.artifactIds,
+          acknowledgements: body.acknowledgements,
+          snapshotPassphrase: body.snapshotPassphrase,
           keepBackups: body.keepBackups,
           dryRun: body.dryRun,
         }),

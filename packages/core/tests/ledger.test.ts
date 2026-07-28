@@ -1,21 +1,31 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { LedgerEntry } from "../src/model/index.js";
+import type { TargetOwner } from "../src/model/index.js";
 import { sha256 } from "../src/store/checksum.js";
-import { addEntries, emptyLedger, loadLedger, saveLedger } from "../src/store/ledger.js";
+import {
+  addOwners,
+  emptyLedger,
+  loadLedger,
+  loadLedgerForPlanning,
+  saveLedger,
+  saveLedgerAfterSelectiveRevert,
+  targetKey,
+} from "../src/store/ledger.js";
 import { ensureBaseDirs, FIXED_NOW, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
-function sampleEntry(over: Partial<LedgerEntry> = {}): LedgerEntry {
+function sampleOwner(over: Partial<TargetOwner> = {}): TargetOwner {
   return {
-    artifact: "rules/coding-style",
     agent: "claude-code",
     scope: "global",
     capability: "rules",
     target: "/home/.claude/CLAUDE.md",
-    method: "write",
-    checksum: "sha256:abc",
-    backup: null,
-    generated: true,
-    appliedAt: FIXED_NOW.toISOString(),
+    artifactIds: ["rules/coding-style"],
+    receipt: {
+      method: "write",
+      fingerprint: "sha256:abc",
+      backup: null,
+      generated: true,
+      appliedAt: FIXED_NOW.toISOString(),
+    },
     ...over,
   };
 }
@@ -45,31 +55,129 @@ describe("store/ledger", () => {
   it("returns an empty ledger when state.json is absent", async () => {
     const led = await loadLedger(t.env, storeRoot);
     expect(led).toEqual(emptyLedger());
-    expect(led.version).toBe(1);
-    expect(led.entries).toEqual([]);
+    expect(led.version).toBe(2);
+    expect(led.owners).toEqual([]);
   });
 
-  it("round-trips entries through save/load", async () => {
-    const led = addEntries(emptyLedger(), [sampleEntry()]);
+  it("round-trips target owners, contributing artifacts, and receipts", async () => {
+    const led = addOwners(emptyLedger(), [sampleOwner()]);
     await saveLedger(t.env, storeRoot, led);
     const loaded = await loadLedger(t.env, storeRoot);
-    expect(loaded.entries).toHaveLength(1);
-    expect(loaded.entries[0]?.target).toBe("/home/.claude/CLAUDE.md");
+    expect(loaded.owners).toEqual([sampleOwner()]);
   });
 
-  it("addEntries replaces entries with the same (artifact, agent, scope, target)", () => {
-    const base = addEntries(emptyLedger(), [sampleEntry({ checksum: "sha256:old" })]);
-    const next = addEntries(base, [sampleEntry({ checksum: "sha256:new" })]);
-    expect(next.entries).toHaveLength(1);
-    expect(next.entries[0]?.checksum).toBe("sha256:new");
-  });
-
-  it("addEntries keeps distinct targets", () => {
-    const led = addEntries(emptyLedger(), [
-      sampleEntry({ target: "/a" }),
-      sampleEntry({ target: "/b" }),
+  it("keys current ownership by normalized physical target rather than artifact", () => {
+    const base = addOwners(emptyLedger(), [sampleOwner()]);
+    const next = addOwners(base, [
+      sampleOwner({
+        target: "/home/.claude/../.claude/CLAUDE.md",
+        artifactIds: ["rules/security"],
+        receipt: { ...sampleOwner().receipt, fingerprint: "sha256:new" },
+      }),
     ]);
-    expect(led.entries).toHaveLength(2);
+
+    expect(next.owners).toHaveLength(1);
+    expect(next.owners[0]?.artifactIds).toEqual(["rules/security"]);
+    expect(next.owners[0]?.receipt.fingerprint).toBe("sha256:new");
+    const [owner] = next.owners;
+    expect(owner).toBeDefined();
+    if (!owner) throw new Error("expected a current owner");
+    expect(targetKey(owner)).toBe(targetKey(sampleOwner()));
+  });
+
+  it("keeps distinct physical targets", () => {
+    const led = addOwners(emptyLedger(), [
+      sampleOwner({ target: "/a" }),
+      sampleOwner({ target: "/b" }),
+    ]);
+    expect(led.owners).toHaveLength(2);
+  });
+
+  it("rejects duplicate physical owners in version 2 state", async () => {
+    const duplicate = {
+      version: 2,
+      owners: [
+        sampleOwner(),
+        sampleOwner({ target: "/home/.claude/./CLAUDE.md", artifactIds: ["rules/other"] }),
+      ],
+    };
+    await t.env.fs.writeFile(t.path("store", "state.json"), JSON.stringify(duplicate));
+
+    await expect(loadLedger(t.env, storeRoot)).rejects.toThrow(/duplicate physical owner/i);
+  });
+
+  it("selective recovery refuses duplicate or inexact successful owner removals", async () => {
+    const duplicateA = sampleOwner();
+    const duplicateB = sampleOwner({ artifactIds: ["rules/other"] });
+    const unique = sampleOwner({
+      agent: "codex",
+      target: "/home/.codex/AGENTS.md",
+      artifactIds: ["rules/codex"],
+    });
+    await t.env.fs.writeFile(
+      t.path("store", "state.json"),
+      JSON.stringify({ version: 2, owners: [duplicateA, duplicateB, unique] }),
+    );
+    const original = await loadLedgerForPlanning(t.env, storeRoot);
+
+    await expect(
+      saveLedgerAfterSelectiveRevert(t.env, storeRoot, original, [duplicateA]),
+    ).rejects.toThrow(/cannot remove duplicate physical owner/i);
+    await expect(
+      saveLedgerAfterSelectiveRevert(t.env, storeRoot, original, [
+        { ...unique, artifactIds: ["rules/not-the-original"] },
+      ]),
+    ).rejects.toThrow(/not an exact unique ledger record/i);
+  });
+
+  it("selective recovery refuses to rewrite changed duplicate evidence", async () => {
+    const duplicateA = sampleOwner();
+    const duplicateB = sampleOwner({ artifactIds: ["rules/other"] });
+    const unique = sampleOwner({
+      agent: "codex",
+      target: "/home/.codex/AGENTS.md",
+      artifactIds: ["rules/codex"],
+    });
+    const statePath = t.path("store", "state.json");
+    await t.env.fs.writeFile(
+      statePath,
+      JSON.stringify({ version: 2, owners: [duplicateA, duplicateB, unique] }),
+    );
+    const original = await loadLedgerForPlanning(t.env, storeRoot);
+    const changedState = JSON.stringify({
+      version: 2,
+      owners: [duplicateA, { ...duplicateB, artifactIds: ["rules/changed"] }, unique],
+    });
+    await t.env.fs.writeFile(statePath, changedState);
+
+    await expect(
+      saveLedgerAfterSelectiveRevert(t.env, storeRoot, original, [unique]),
+    ).rejects.toThrow(/state changed after revert planning/i);
+    expect(await t.env.fs.readFile(statePath)).toBe(changedState);
+  });
+
+  it("rejects ambiguous legacy state with an explicit pre-release reset requirement", async () => {
+    const legacyEntry = {
+      artifact: "mcp/alpha",
+      agent: "codex",
+      scope: "global",
+      capability: "mcp",
+      target: "/home/.codex/config.toml",
+      method: "write",
+      checksum: "sha256:old",
+      backup: null,
+      generated: false,
+      appliedAt: FIXED_NOW.toISOString(),
+    };
+    await t.env.fs.writeFile(
+      t.path("store", "state.json"),
+      JSON.stringify({
+        version: 1,
+        entries: [legacyEntry, { ...legacyEntry, artifact: "mcp/beta" }],
+      }),
+    );
+
+    await expect(loadLedger(t.env, storeRoot)).rejects.toThrow(/legacy.*reset/i);
   });
 
   it("rejects a malformed state.json with an actionable message", async () => {

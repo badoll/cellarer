@@ -149,7 +149,7 @@ export async function resourceCatalog(
           ? await readSkillProvenance(env, opts.storeRoot, artifact.name)
           : undefined,
       syncTargets,
-      secretRefs: collectArtifactSecretRefs(ledger.entries, artifact.id),
+      secretRefs: collectArtifactSecretRefs(ledger.owners, artifact.id),
       lastActivityAt: lastActivityByArtifact.get(artifact.id),
     });
   }
@@ -251,12 +251,12 @@ function addCounts(target: ResourceCatalogCounts, source: ResourceCatalogCounts)
 }
 
 function collectArtifactSecretRefs(
-  entries: { artifact: string; secretRefs?: string[] }[],
+  entries: { artifactIds: string[]; secretRefs?: string[] }[],
   artifactId: string,
 ): string[] {
   const refs = new Set<string>();
   for (const entry of entries) {
-    if (!expandConcreteArtifactIdentities(entry.artifact).includes(artifactId)) continue;
+    if (!entry.artifactIds.includes(artifactId)) continue;
     for (const ref of entry.secretRefs ?? []) refs.add(ref);
   }
   return [...refs].sort();

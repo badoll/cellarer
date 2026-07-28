@@ -8,6 +8,9 @@ interface RevertOpts {
   keepBackups?: boolean;
   dryRun?: boolean;
   all?: boolean;
+  acknowledge?: string;
+  snapshotPassphrase?: string;
+  json?: boolean;
 }
 
 // 依据台账回滚下发。
@@ -18,7 +21,10 @@ export function revertCommand(): Command {
     .option("--dir <path>", "指定工程目录")
     .option("--all", "回滚台账中的全部条目(无 --agent/--dir 时必须显式确认)")
     .option("--keep-backups", "保留 .bak 备份")
+    .option("--acknowledge <tokens>", "确认 dry-run 返回的精确漂移 token(逗号分隔)")
+    .option("--snapshot-passphrase <passphrase>", "解密恢复快照的口令")
     .option("--dry-run", "仅预览,不落地")
+    .option("--json", "输出完整 Core revert plan/result")
     .action(async (opts: RevertOpts) => {
       const ctx = resolveContext(opts);
       // 防误删:无 --agent/--dir 选择器时,必须 --all 才回滚全部(对齐 apply 要求 --agent)。
@@ -34,17 +40,52 @@ export function revertCommand(): Command {
         scope: ctx.scopeFilter,
         dir: ctx.dir,
         agents: ctx.agents.length > 0 ? ctx.agents : undefined,
+        acknowledgements: parseTokens(opts.acknowledge),
+        snapshotPassphrase: opts.snapshotPassphrase,
         keepBackups: opts.keepBackups,
         dryRun: opts.dryRun,
       });
+      const failed =
+        !opts.dryRun &&
+        (result.plan.targets.some((target) => target.blocked) || result.failures.length > 0);
+      if (failed) process.exitCode = 1;
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
       for (const w of result.warnings) console.warn(`⚠ ${w}`);
-      if (result.reverted.length === 0) {
+      for (const target of result.plan.targets) {
+        if (!target.blocked) continue;
+        console.error(`⛔ ${target.target} — ${target.blockReason ?? "revert blocked"}`);
+        if (target.acknowledgement) {
+          console.error(`   acknowledgement: ${target.acknowledgement.token}`);
+        }
+      }
+      for (const failure of result.failures) {
+        console.error(`⛔ ${failure.target} — ${failure.message}`);
+      }
+      if (result.plan.targets.length === 0) {
         console.log("台账中无匹配条目可回滚。");
         return;
       }
-      const verb = opts.dryRun ? "将回滚" : "已回滚";
-      for (const e of result.reverted) {
-        console.log(`↩ ${verb} ${e.agent} ${e.capability}/${e.scope} → ${e.target}`);
+      if (opts.dryRun) {
+        for (const target of result.plan.targets) {
+          const verb = target.blocked ? "已阻止" : "将回滚";
+          console.log(`↩ ${verb} ${target.proposedAction} → ${target.target}`);
+        }
+        return;
+      }
+      for (const entry of result.reverted) {
+        console.log(`↩ 已回滚 ${entry.agent} ${entry.capability}/${entry.scope} → ${entry.target}`);
       }
     });
+}
+
+function parseTokens(spec: string | undefined): string[] | undefined {
+  if (!spec) return undefined;
+  const tokens = spec
+    .split(",")
+    .map((token) => token.trim())
+    .filter(Boolean);
+  return tokens.length > 0 ? tokens : undefined;
 }

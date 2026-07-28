@@ -67,7 +67,7 @@ export {
 } from "./engine/add.js";
 export { apply } from "./engine/apply.js";
 export { inCollections, plan } from "./engine/plan.js";
-export { revert } from "./engine/revert.js";
+export { planRevert, revert } from "./engine/revert.js";
 export {
   applyScan,
   type ConflictStrategy,
@@ -80,11 +80,18 @@ export {
 } from "./engine/scan.js";
 export { status } from "./engine/status.js";
 export type {
+  ApplyFailure,
   ApplyResult,
   DistributeOptions,
   DriftStatus,
+  RevertFailure,
   RevertOptions,
+  RevertPlan,
+  RevertPlanTarget,
+  RevertProposedAction,
   RevertResult,
+  RevertSnapshotAvailability,
+  RevertSnapshotStatus,
   StatusItem,
   StatusOptions,
 } from "./engine/types.js";
@@ -106,6 +113,7 @@ export type { MergeStrategy } from "./mcp/merge.js";
 export type { McpDialect, McpServer, McpServerSet } from "./mcp/model.js";
 export type {
   AppliedMethod,
+  AppliedReceipt,
   Artifact,
   ArtifactKind,
   Capability,
@@ -116,6 +124,14 @@ export type {
   LinkMethod,
   PlanAction,
   Scope,
+  TargetAcknowledgement,
+  TargetAcknowledgementKind,
+  TargetClassification,
+  TargetConflict,
+  TargetConflictCode,
+  TargetOwner,
+  TargetOwnershipEvidence,
+  TargetReplacementApproval,
 } from "./model/index.js";
 export { createRealEnv } from "./real-env.js";
 export type {
@@ -193,13 +209,16 @@ export {
 } from "./store/config.js";
 export {
   addEntries,
+  addOwners,
   collectLedgerSecretRefStats,
   collectLedgerSecretRefs,
   emptyLedger,
   entryKey,
   type LedgerSecretRefStat,
+  LegacyLedgerVersionError,
   loadLedger,
   saveLedger,
+  targetKey,
 } from "./store/ledger.js";
 export type { InitResult } from "./store/store.js";
 export {
@@ -217,3 +236,9 @@ export {
   writeRuleArtifact,
   writeSkillProvenance,
 } from "./store/store.js";
+export {
+  fingerprintTarget,
+  type InspectTargetOwnershipOptions,
+  inspectTargetOwnership,
+  type TargetOwnershipInspection,
+} from "./target-ownership.js";

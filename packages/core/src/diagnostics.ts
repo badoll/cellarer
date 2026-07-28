@@ -6,6 +6,7 @@ import type { Env, FileStat } from "./env.js";
 import { readFileOrNull, statOrNull } from "./fs/probe.js";
 import type { Capability, LinkMethod, Scope } from "./model/index.js";
 import { type CellarerConfig, CONFIG_FILENAME, loadConfig, parseConfig } from "./store/config.js";
+import { loadLedger } from "./store/ledger.js";
 
 const CAPABILITIES: Capability[] = ["rules", "mcp", "skills"];
 
@@ -247,7 +248,29 @@ async function storeChecks(env: Env, storeRoot: string): Promise<DiagnosticCheck
     });
   }
 
+  checks.push(await ownershipStateCheck(env, storeRoot));
+
   return checks;
+}
+
+async function ownershipStateCheck(env: Env, storeRoot: string): Promise<DiagnosticCheck> {
+  const path = join(storeRoot, "state.json");
+  try {
+    const ledger = await loadLedger(env, storeRoot);
+    return {
+      id: "ownership-state",
+      status: "ok",
+      path,
+      message: `target ownership state is valid (version ${ledger.version})`,
+    };
+  } catch (err) {
+    return {
+      id: "ownership-state",
+      status: "error",
+      path,
+      message: errorMessage(err),
+    };
+  }
 }
 
 async function safeStat(

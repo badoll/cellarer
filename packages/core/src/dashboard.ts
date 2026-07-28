@@ -187,7 +187,7 @@ export async function dashboardSummary(
           capabilities,
           artifacts,
           statusItems,
-          ledger.entries,
+          ledger.owners,
         );
 
   const artifactCounts = {
@@ -221,7 +221,7 @@ export async function dashboardSummary(
     },
     driftCounts,
     secretRefs: collectLedgerSecretRefStats(ledger),
-    isEmptyStore: artifactCounts.total === 0 && ledger.entries.length === 0,
+    isEmptyStore: artifactCounts.total === 0 && ledger.owners.length === 0,
     agents,
     distributionCoverage: coverage,
     driftItems: statusItems.filter((item) => item.status !== "ok"),
@@ -300,11 +300,11 @@ async function coverageGroups(
   artifacts: ArtifactLike[],
   statusItems: StatusItem[],
   ledgerEntries: {
-    artifact: string;
+    artifactIds: string[];
     agent: string;
     scope: Scope;
     target: string;
-    appliedAt: string;
+    receipt: { appliedAt: string };
   }[],
 ): Promise<DashboardCoverageGroup[]> {
   const scopes: Scope[] = opts.dir ? ["global", "project"] : ["global"];
@@ -327,10 +327,7 @@ async function coverageGroups(
       });
       const nonSkip = desired.filter((action) => action.op !== "skip");
       const statusByKey = new Map(
-        statusItems.map((item) => [
-          `${item.artifact}\0${item.agent}\0${item.scope}\0${item.capability}\0${item.target}`,
-          item.status,
-        ]),
+        statusItems.map((item) => [statusIdentityKey(item), item.status]),
       );
       let appliedCount = 0;
       let driftedCount = 0;
@@ -338,9 +335,7 @@ async function coverageGroups(
       let brokenLinkCount = 0;
       const blockedCount = desired.filter((action) => action.op === "skip").length;
       for (const action of nonSkip) {
-        const state = statusByKey.get(
-          `${action.artifact}\0${action.agent}\0${action.scope}\0${action.capability}\0${action.target}`,
-        );
+        const state = statusByKey.get(entryKey(action));
         if (state === "ok") appliedCount += 1;
         else if (state === "drifted") driftedCount += 1;
         else if (state === "missing") missingCount += 1;
@@ -380,7 +375,7 @@ async function coverageGroups(
 }
 
 function latestAppliedAt(
-  entries: { artifact: string; scope: Scope; appliedAt: string }[],
+  entries: { artifactIds: string[]; scope: Scope; receipt: { appliedAt: string } }[],
   collection: string,
   scope: Scope,
   artifacts: ArtifactLike[],
@@ -389,15 +384,12 @@ function latestAppliedAt(
   const times = entries
     .filter((entry) => entry.scope === scope)
     .filter((entry) => {
-      if (entry.artifact === "rules/*")
-        return artifacts.some(
-          (artifact) =>
-            artifact.kind === "rules" && inCollections(artifact.collections, [collection]),
-        );
-      const artifact = byId.get(entry.artifact);
-      return artifact ? inCollections(artifact.collections, [collection]) : true;
+      return entry.artifactIds.some((id) => {
+        const artifact = byId.get(id);
+        return artifact ? inCollections(artifact.collections, [collection]) : false;
+      });
     })
-    .map((entry) => entry.appliedAt)
+    .map((entry) => entry.receipt.appliedAt)
     .sort();
   return times.at(-1);
 }
@@ -411,7 +403,7 @@ function driftCount(items: StatusItem[]): DashboardDriftCounts {
 }
 
 export function statusIdentityKey(
-  item: Pick<StatusItem, "artifact" | "agent" | "scope" | "target">,
+  item: Pick<StatusItem, "agent" | "scope" | "capability" | "target">,
 ): string {
   return entryKey(item);
 }

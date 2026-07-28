@@ -173,19 +173,26 @@ describe("engine/apply + revert", () => {
     expect(content).toContain("Use tabs.");
     expect(r.entries).toHaveLength(1);
     const led = await loadLedger(t.env, storeRoot);
-    expect(led.entries[0]?.target).toBe(target);
-    expect(led.entries[0]?.generated).toBe(true);
-    expect(led.entries[0]?.method).toBe("write");
+    expect(led.owners[0]?.target).toBe(target);
+    expect(led.owners[0]?.artifactIds).toEqual(["rules/coding-style"]);
+    expect(led.owners[0]?.receipt.generated).toBe(true);
+    expect(led.owners[0]?.receipt.method).toBe("write");
   });
 
-  it("backs up a pre-existing user file before overwriting", async () => {
+  it("blocks a pre-existing unowned user file instead of overwriting it", async () => {
     const storeRoot = await seedStore(t, { r: "new content" });
     const target = t.path("home", ".claude", "CLAUDE.md");
     await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
     await t.env.fs.writeFile(target, "my hand-written rules");
-    await apply(t.env, { storeRoot, scope: "global", agents: ["claude-code"] });
-    expect(await t.env.fs.readFile(`${target}.bak`)).toBe("my hand-written rules");
-    expect(await t.env.fs.readFile(target)).toContain("new content");
+    const result = await apply(t.env, {
+      storeRoot,
+      scope: "global",
+      agents: ["claude-code"],
+    });
+    expect(result.entries).toEqual([]);
+    expect(result.plan.conflicts[0]?.code).toBe("UNOWNED_TARGET");
+    await expect(t.env.fs.readFile(`${target}.bak`)).rejects.toThrow();
+    expect(await t.env.fs.readFile(target)).toBe("my hand-written rules");
   });
 
   it("is idempotent: applying twice yields identical disk + ledger", async () => {
@@ -204,19 +211,26 @@ describe("engine/apply + revert", () => {
     await expect(t.env.fs.lstat(`${target}.bak`)).rejects.toThrow();
   });
 
-  it("preserves the original backup pointer across re-apply, so revert still restores it", async () => {
+  it("preserves the encrypted snapshot pointer across ordinary re-apply", async () => {
     const storeRoot = await seedStore(t, { r: "generated" });
     const target = t.path("home", ".claude", "CLAUDE.md");
     await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
     await t.env.fs.writeFile(target, "user original");
-    // 首次 apply 备份用户文件;二次 apply 目标已是生成物。
-    await apply(t.env, { storeRoot, scope: "global", agents: ["claude-code"] });
+    const opts = { storeRoot, scope: "global" as const, agents: ["claude-code"] };
+    const conflict = (await plan(t.env, opts)).conflicts[0];
+    const token = conflict?.acknowledgement?.token;
+    if (!token) throw new Error("expected replacement acknowledgement");
+    await apply(t.env, {
+      ...opts,
+      replaceUnowned: [token],
+      snapshotPassphrase: "test-snapshot-passphrase",
+    });
     await apply(t.env, { storeRoot, scope: "global", agents: ["claude-code"] });
     const led = await loadLedger(t.env, storeRoot);
-    // 台账仍指向首次确立的 .bak,而非被二次 apply 抹成 null。
-    expect(led.entries[0]?.backup).toBe(`${target}.bak`);
-    await revert(t.env, { storeRoot, agents: ["claude-code"] });
-    expect(await t.env.fs.readFile(target)).toBe("user original");
+    const snapshotPath = led.owners[0]?.receipt.backup;
+    expect(snapshotPath).toMatch(/snapshots[/\\].+\.age$/);
+    if (!snapshotPath) throw new Error("expected encrypted snapshot path");
+    expect(await t.env.fs.readFile(snapshotPath)).not.toContain("user original");
   });
 
   it("dry-run writes nothing and records no ledger entries", async () => {
@@ -230,7 +244,7 @@ describe("engine/apply + revert", () => {
     expect(r.entries).toHaveLength(0);
     await expect(t.env.fs.readFile(t.path("home", ".claude", "CLAUDE.md"))).rejects.toThrow();
     const led = await loadLedger(t.env, storeRoot);
-    expect(led.entries).toHaveLength(0);
+    expect(led.owners).toHaveLength(0);
   });
 
   it("project scope maintains a .gitignore managed block", async () => {
@@ -271,19 +285,31 @@ describe("engine/apply + revert", () => {
     expect(gi).toContain("/.cursor/rules/cellarer.mdc");
   });
 
-  it("revert restores .bak and removes the generated file + ledger entry", async () => {
+  it("revert rejects a tampered plaintext .bak receipt and preserves target ownership", async () => {
     const storeRoot = await seedStore(t, { r: "generated" });
     const target = t.path("home", ".claude", "CLAUDE.md");
     await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
-    await t.env.fs.writeFile(target, "original");
     await apply(t.env, { storeRoot, scope: "global", agents: ["claude-code"] });
+    const backup = `${target}.bak`;
+    await t.env.fs.writeFile(backup, "original");
+    const ledger = await loadLedger(t.env, storeRoot);
+    await saveLedger(
+      t.env,
+      storeRoot,
+      makeLedger(
+        ledger.owners.map((owner) => ({
+          ...owner,
+          receipt: { ...owner.receipt, backup },
+        })),
+      ),
+    );
     const rr = await revert(t.env, { storeRoot, agents: ["claude-code"] });
-    expect(rr.reverted).toHaveLength(1);
-    // .bak 恢复为原始内容
-    expect(await t.env.fs.readFile(target)).toBe("original");
-    // 台账清空
+    expect(rr.reverted).toEqual([]);
+    expect(rr.plan.conflicts[0]?.code).toBe("REVERT_SNAPSHOT_UNAVAILABLE");
+    expect(await t.env.fs.readFile(target)).toContain("generated");
+    expect(await t.env.fs.readFile(backup)).toBe("original");
     const led = await loadLedger(t.env, storeRoot);
-    expect(led.entries).toHaveLength(0);
+    expect(led.owners).toHaveLength(1);
   });
 
   it("revert deletes the generated file when there was no prior user file", async () => {
@@ -294,14 +320,31 @@ describe("engine/apply + revert", () => {
     await expect(t.env.fs.readFile(target)).rejects.toThrow();
   });
 
-  it("revert --keep-backups leaves the .bak in place", async () => {
+  it("revert --keep-backups leaves the encrypted snapshot in place", async () => {
     const storeRoot = await seedStore(t, { r: "g" });
     const target = t.path("home", ".claude", "CLAUDE.md");
     await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
     await t.env.fs.writeFile(target, "original");
-    await apply(t.env, { storeRoot, scope: "global", agents: ["claude-code"] });
-    await revert(t.env, { storeRoot, agents: ["claude-code"], keepBackups: true });
-    expect(await t.env.fs.readFile(`${target}.bak`)).toBe("original");
+    const options = { storeRoot, scope: "global" as const, agents: ["claude-code"] };
+    const token = (await plan(t.env, options)).conflicts[0]?.acknowledgement?.token;
+    if (!token) throw new Error("expected replacement acknowledgement");
+    await apply(t.env, {
+      ...options,
+      replaceUnowned: [token],
+      snapshotPassphrase: "test-snapshot-passphrase",
+    });
+    const snapshot = (await loadLedger(t.env, storeRoot)).owners[0]?.receipt.backup;
+    if (!snapshot) throw new Error("expected encrypted snapshot");
+
+    await revert(t.env, {
+      storeRoot,
+      agents: ["claude-code"],
+      snapshotPassphrase: "test-snapshot-passphrase",
+      keepBackups: true,
+    });
+
+    expect(await t.env.fs.readFile(target)).toBe("original");
+    expect(await t.env.fs.readFile(snapshot)).toContain("BEGIN AGE ENCRYPTED FILE");
   });
 
   it("revert clears the project .gitignore managed block", async () => {
@@ -322,7 +365,7 @@ describe("engine/apply + revert", () => {
     await t.env.fs.mkdir(t.path("outside"), { recursive: true });
     await t.env.fs.writeFile(outside, "DO NOT DELETE");
     const led = await loadLedger(t.env, storeRoot);
-    const tampered = makeLedger(led.entries.map((e) => ({ ...e, target: outside })));
+    const tampered = makeLedger(led.owners.map((e) => ({ ...e, target: outside })));
     await saveLedger(t.env, storeRoot, tampered);
     // 不 throw:越界条目被跳过 + 告警,盘外文件完好。
     const r = await revert(t.env, { storeRoot, agents: ["claude-code"] });
@@ -330,7 +373,7 @@ describe("engine/apply + revert", () => {
     expect(r.warnings.some((w) => /outside managed root/.test(w))).toBe(true);
     expect(await t.env.fs.readFile(outside)).toBe("DO NOT DELETE");
     // 越界条目保留在台账(未丢失),供用户带 --dir 重试。
-    expect((await loadLedger(t.env, storeRoot)).entries).toHaveLength(1);
+    expect((await loadLedger(t.env, storeRoot)).owners).toHaveLength(1);
   });
 
   it("cannot be bypassed by relabeling a tampered entry as project scope (no --dir)", async () => {
@@ -342,7 +385,7 @@ describe("engine/apply + revert", () => {
     const led = await loadLedger(t.env, storeRoot);
     // 攻击者把恶意条目标成 project(scope 与 target 同存于可篡改台账),企图绕过按 scope 选根的校验。
     const tampered = makeLedger(
-      led.entries.map((e) => ({ ...e, scope: "project" as const, target: outside })),
+      led.owners.map((e) => ({ ...e, scope: "project" as const, target: outside })),
     );
     await saveLedger(t.env, storeRoot, tampered);
     // 无 --dir:护栏不按 entry.scope 分派根,仍以 home∪cwd 兜底跳过 + 告警。
@@ -361,7 +404,8 @@ describe("engine/apply + revert", () => {
     await t.env.fs.writeFile(outside, "DO NOT DELETE");
     // 一条合法 in-home 条目 + 一条越界条目,同一 --agent 选择器命中。
     const led = await loadLedger(t.env, storeRoot);
-    const legit = led.entries[0]!;
+    const [legit] = led.owners;
+    if (!legit) throw new Error("expected an applied owner");
     const bad = { ...legit, agent: "cursor" as string, target: outside };
     await saveLedger(t.env, storeRoot, makeLedger([legit, bad]));
     const r = await revert(t.env, { storeRoot }); // 无选择器:命中全部

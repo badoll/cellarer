@@ -8,6 +8,7 @@ export type Platform = "darwin" | "linux" | "win32" | (string & {});
 export type SymlinkType = "file" | "dir" | "junction";
 
 export interface FileStat {
+  mode: number;
   isFile(): boolean;
   isDirectory(): boolean;
   isSymbolicLink(): boolean;
@@ -16,10 +17,13 @@ export interface FileStat {
 // fs 抽象:只暴露引擎实际用到的最小集合,full real 实现见 createRealEnv。
 export interface FsLike {
   readFile(path: string): Promise<string>;
-  writeFile(path: string, data: string): Promise<void>;
+  readFileBytes(path: string): Promise<Uint8Array>;
+  writeFile(path: string, data: string, opts?: { mode?: number }): Promise<void>;
+  writeFileBytes(path: string, data: Uint8Array, opts?: { mode?: number }): Promise<void>;
   appendFile(path: string, data: string): Promise<void>;
   access(path: string, mode: "read" | "write"): Promise<void>;
-  mkdir(path: string, opts?: { recursive?: boolean }): Promise<void>;
+  mkdir(path: string, opts?: { recursive?: boolean; mode?: number }): Promise<void>;
+  chmod(path: string, mode: number): Promise<void>;
   rm(path: string, opts?: { recursive?: boolean; force?: boolean }): Promise<void>;
   readdir(path: string): Promise<string[]>;
   // lstat 不跟随软链(用于安全校验与漂移检测);stat 跟随。

@@ -191,7 +191,12 @@ export async function importSkillArtifact(
 ): Promise<string> {
   assertSafeName(name);
   const abs = join(skillsDir(storeRoot), name);
-  await linkOrCopy(env, srcDir, abs, { method: "copy", kind: "dir" });
+  await linkOrCopy(env, srcDir, abs, {
+    method: "copy",
+    kind: "dir",
+    // store import 的 collision policy 已由调用方决定；此处不是 agent target placement。
+    replaceExisting: true,
+  });
   return abs;
 }
 

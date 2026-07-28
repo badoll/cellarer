@@ -66,6 +66,41 @@ describe("diagnostics", () => {
     expect(report.defaultMethod).toBe("symlink");
   });
 
+  it("reports a pre-release reset diagnostic for legacy ownership state", async () => {
+    await initStore(t.env, storeRoot);
+    const statePath = join(storeRoot, "state.json");
+    await t.env.fs.writeFile(
+      statePath,
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            artifact: "mcp/alpha",
+            agent: "codex",
+            scope: "global",
+            capability: "mcp",
+            target: t.path("home", ".codex", "config.toml"),
+            method: "write",
+            checksum: "sha256:old",
+            backup: null,
+            generated: false,
+            appliedAt: "2026-06-30T08:00:00.000Z",
+          },
+        ],
+      }),
+    );
+
+    const report = await doctor(t.env, { storeRoot, scope: "global", agents: ["codex"] });
+
+    expect(report.checks.find((check) => check.id === "ownership-state")).toMatchObject({
+      status: "error",
+      path: statePath,
+    });
+    expect(report.checks.find((check) => check.id === "ownership-state")?.message).toMatch(
+      /pre-release.*back up.*remove.*state\.json/i,
+    );
+  });
+
   it("turns unreadable config probes into doctor errors", async () => {
     await initStore(t.env, storeRoot);
     const configPath = t.path("home", ".cellarer", "config.json");

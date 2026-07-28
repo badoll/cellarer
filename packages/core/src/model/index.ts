@@ -4,6 +4,13 @@ export type Scope = "global" | "project";
 export type LinkMethod = "symlink" | "copy";
 export type Capability = "rules" | "mcp" | "skills";
 
+export type TargetClassification =
+  | "absent"
+  | "owned-current"
+  | "owned-drifted"
+  | "unowned-existing"
+  | "invalid-owner";
+
 // 实际落地方式:计划用 LinkMethod;落地可能因 Windows 回退为 junction/copy,记台账。
 export type AppliedMethod = "write" | "symlink" | "junction" | "copy";
 
@@ -27,6 +34,7 @@ export interface Artifact {
 // 下发计划中的单个动作(纯描述,plan 阶段产出,不含真值密钥)。
 export interface PlanAction {
   artifact: string; // "rules/coding-style"
+  artifactIds?: string[]; // 实际参与该物理 target 的 concrete artifacts（owner provenance）
   agent: string;
   scope: Scope;
   capability: Capability;
@@ -43,30 +51,79 @@ export interface PlanAction {
   // 结构化字段探测出「意外明文」(库房脏数据:非占位符却命中高置信密钥规则,如按字段名 API_KEY 判定)。
   // 通用文本扫描只认厂商格式,看不到字段名,故由 planner 标记;护栏对其无条件拦截、无逃生通道。
   accidentalPlaintext?: boolean;
+  ownership?: TargetOwnershipEvidence;
+  replacement?: TargetReplacementApproval;
 }
 
 export interface DistributePlan {
   actions: PlanAction[];
   warnings: string[];
+  conflicts: TargetConflict[];
+  // Duplicate canonical owner keys invalidate the mutation ledger even when no selected action
+  // happens to target that key. Apply uses this flag rather than broad action-level conflicts.
+  invalidLedger?: true;
 }
 
-// 台账条目(state.json):记录实际落地,支撑 revert 与漂移检测。
-export interface LedgerEntry {
-  artifact: string;
+export interface TargetOwnershipEvidence {
+  key: string;
+  classification: TargetClassification;
+  target: string;
+  currentFingerprint: string | null;
+  expectedReceipt: AppliedReceipt | null;
+}
+
+export type TargetAcknowledgementKind = "replace-unowned" | "override-drift" | "revert-drift";
+
+export interface TargetAcknowledgement {
+  kind: TargetAcknowledgementKind;
+  token: string;
+}
+
+export type TargetConflictCode =
+  | "UNOWNED_TARGET"
+  | "OWNED_TARGET_DRIFTED"
+  | "INVALID_TARGET_OWNER"
+  | "SNAPSHOT_ENCRYPTION_REQUIRED"
+  | "REVERT_TARGET_DRIFTED"
+  | "REVERT_SNAPSHOT_UNAVAILABLE";
+
+export interface TargetConflict {
+  code: TargetConflictCode;
+  target: string;
+  message: string;
+  ownership: TargetOwnershipEvidence;
+  acknowledgement?: TargetAcknowledgement;
+}
+
+export interface TargetReplacementApproval {
+  acknowledgement: TargetAcknowledgement;
+  snapshotRequired: true;
+}
+
+// 物理目标的最近一次成功落地凭据。fingerprint 同时覆盖文件 checksum 与目录 fingerprint。
+export interface AppliedReceipt {
+  method: AppliedMethod;
+  fingerprint: string;
+  backup: string | null;
+  generated: boolean;
+  appliedAt: string;
+}
+
+// state.json v2 以物理目标而非输入制品为 owner 身份。artifactIds 只记录该目标的来源集合。
+export interface TargetOwner {
   agent: string;
   scope: Scope;
   capability: Capability;
   target: string;
-  method: AppliedMethod; // 实际落地方式
-  checksum: string; // sha256:… 写入内容指纹(软链则为指向目标的指纹)
-  backup: string | null; // .bak 路径(无则 null)
-  // 该 target 是否由 cellarer 整体生成(可整体删除);false 表示 merge 进既有文件。
-  generated: boolean;
-  appliedAt: string; // ISO 时间戳
+  artifactIds: string[];
+  receipt: AppliedReceipt;
   secretRefs?: string[];
 }
 
+// Apply/Revert 结果仍沿用 LedgerEntry 这个公共类型名，但内容已经是 target owner。
+export type LedgerEntry = TargetOwner;
+
 export interface Ledger {
-  version: 1;
-  entries: LedgerEntry[];
+  version: 2;
+  owners: TargetOwner[];
 }
