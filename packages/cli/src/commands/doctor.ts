@@ -6,6 +6,7 @@ import {
 } from "@cellarer/core";
 import { Command } from "commander";
 import { resolveContext } from "../context.js";
+import { printMutationRecovery } from "../mutation-output.js";
 
 interface DoctorOpts {
   agent?: string;
@@ -36,6 +37,7 @@ export function doctorCommand(): Command {
 
       for (const w of report.warnings) console.warn(`⚠ ${w}`);
       console.log(`cellarer doctor (${report.scope})`);
+      printMutationRecovery(report.mutationRecovery);
       for (const check of report.checks) printCheck(check, "  ");
 
       if (report.agents.length > 0) console.log("agents:");

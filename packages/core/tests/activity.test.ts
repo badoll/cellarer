@@ -1,12 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  activityPath,
-  appendActivity,
-  apply,
-  initStore,
-  listActivity,
-  writeRuleArtifact,
-} from "../src/index.js";
+import { appendActivity } from "../src/activity.js";
+import { activityPath, applyMutationPlan, listActivity, planApplyMutation } from "../src/index.js";
+import { initStore, writeRuleArtifact } from "../src/store/store.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
 describe("activity store", () => {
@@ -105,16 +100,26 @@ describe("activity store", () => {
       },
     };
 
-    const result = await apply(env, {
+    const prepared = await planApplyMutation(t.env, {
       storeRoot,
       scope: "global",
       agents: ["claude-code"],
       capabilities: ["rules"],
     });
+    const signedDisplayPlan = prepared.mutationPlan.normalizedInputs.distributePlan as {
+      warnings: readonly string[];
+    };
+    const originalDigest = prepared.mutationPlan.digest;
+    expect(Object.isFrozen(signedDisplayPlan)).toBe(true);
+
+    const result = await applyMutationPlan(env, prepared.mutationPlan, { storeRoot });
 
     expect(result.entries).toHaveLength(1);
     expect(result.plan.warnings.some((warning) => warning.includes("activity log failed"))).toBe(
       true,
     );
+    expect(prepared.mutationPlan.digest).toBe(originalDigest);
+    expect(Object.isFrozen(prepared.mutationPlan)).toBe(true);
+    expect(signedDisplayPlan.warnings).toEqual([]);
   });
 });

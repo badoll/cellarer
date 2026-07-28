@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { doctor, initStore, inspectAgents } from "../src/index.js";
+import { doctor, inspectAgents } from "../src/index.js";
+import { initStore } from "../src/store/store.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
 async function writeConfig(t: TmpEnv, config: unknown): Promise<string> {

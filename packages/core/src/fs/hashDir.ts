@@ -18,6 +18,10 @@ export async function hashDir(env: Env, dir: string): Promise<string> {
   return sha256(JSON.stringify(manifest));
 }
 
+export function emptyDirectoryFingerprint(mode: number): string {
+  return sha256(JSON.stringify([{ path: "", kind: "directory", mode: mode & 0o7777 }]));
+}
+
 async function appendEntries(
   env: Env,
   base: string,

@@ -13,6 +13,16 @@ export type TargetClassification =
 
 // 实际落地方式:计划用 LinkMethod;落地可能因 Windows 回退为 junction/copy,记台账。
 export type AppliedMethod = "write" | "symlink" | "junction" | "copy";
+export type DesiredPlacementMethod = "write" | "symlink" | "copy";
+
+export interface DesiredTargetEvidence {
+  method: DesiredPlacementMethod;
+  // Exact target fingerprint for rendered file outputs. The rendered content itself is never
+  // published as verification evidence.
+  contentFingerprint?: string;
+  // Skills compare source state independently from the placement node fingerprint.
+  sourceFingerprint?: string;
+}
 
 // Collection:制品的场景标签(default / internal / 自定义)。
 export type Collection = string;
@@ -51,6 +61,7 @@ export interface PlanAction {
   // 结构化字段探测出「意外明文」(库房脏数据:非占位符却命中高置信密钥规则,如按字段名 API_KEY 判定)。
   // 通用文本扫描只认厂商格式,看不到字段名,故由 planner 标记;护栏对其无条件拦截、无逃生通道。
   accidentalPlaintext?: boolean;
+  desiredEvidence?: DesiredTargetEvidence;
   ownership?: TargetOwnershipEvidence;
   replacement?: TargetReplacementApproval;
 }
@@ -104,6 +115,10 @@ export interface TargetReplacementApproval {
 export interface AppliedReceipt {
   method: AppliedMethod;
   fingerprint: string;
+  // Semantic rendered-input evidence for generated file content. This is intentionally separate
+  // from fingerprint, which proves the complete target bytes for applied-versus-disk checks.
+  contentFingerprint?: string;
+  sourceFingerprint?: string;
   backup: string | null;
   generated: boolean;
   appliedAt: string;
@@ -115,6 +130,9 @@ export interface TargetOwner {
   scope: Scope;
   capability: Capability;
   target: string;
+  // Project owners retain their canonical project root separately from physical target identity.
+  // It is required for project scope and absent for global scope.
+  projectRoot?: string;
   artifactIds: string[];
   receipt: AppliedReceipt;
   secretRefs?: string[];

@@ -10,6 +10,10 @@ import { relativeInside } from "./safety.js";
 export const GITIGNORE_START = "# START cellarer Generated Files";
 export const GITIGNORE_END = "# END cellarer Generated Files";
 
+export function gitignorePath(projectDir: string): string {
+  return resolve(projectDir, ".gitignore");
+}
+
 // 把绝对路径相对化到 projectDir、POSIX 化、加前导 /;越界(库房真源等)返回 null 过滤掉。
 function toIgnoreLine(absPath: string, projectDir: string): string | null {
   const rel = relativeInside(projectDir, absPath);
@@ -49,26 +53,39 @@ export async function updateGitignore(
   projectDir: string,
   targets: string[],
 ): Promise<void> {
-  const giPath = resolve(projectDir, ".gitignore");
+  const giPath = gitignorePath(projectDir);
   const existing = (await readFileOrNull(env, giPath)) ?? "";
-  const withoutBlock = stripBlock(existing);
-  const block = buildBlock(targets, projectDir);
-
-  // 用户区在前、managed block 在后;用户区非空则用一个空行隔开。
-  const head = withoutBlock.trimEnd();
-  const body = head.length > 0 ? `${head}\n\n${block}\n` : `${block}\n`;
+  const body = renderGitignore(existing, projectDir, targets);
+  if (body === null) return;
   await env.fs.writeFile(giPath, body);
 }
 
 // 移除 managed block;若移除后内容为空则删除整个 .gitignore。
 export async function removeManagedBlock(env: Env, projectDir: string): Promise<void> {
-  const giPath = resolve(projectDir, ".gitignore");
+  const giPath = gitignorePath(projectDir);
   const existing = await readFileOrNull(env, giPath);
   if (existing === null) return; // 无 .gitignore → no-op
-  const stripped = stripBlock(existing).trim();
-  if (stripped.length === 0) {
+  const rendered = renderGitignore(existing, projectDir, []);
+  if (rendered === null) {
     await env.fs.rm(giPath, { force: true });
     return;
   }
-  await env.fs.writeFile(giPath, `${stripped}\n`);
+  await env.fs.writeFile(giPath, rendered);
+}
+
+export function renderGitignore(
+  existing: string | null,
+  projectDir: string,
+  targets: readonly string[],
+): string | null {
+  if (targets.length === 0) {
+    if (existing === null) return null;
+    const stripped = stripBlock(existing).trim();
+    return stripped.length === 0 ? null : `${stripped}\n`;
+  }
+  const withoutBlock = stripBlock(existing ?? "");
+  const block = buildBlock([...targets], projectDir);
+  // 用户区在前、managed block 在后;用户区非空则用一个空行隔开。
+  const head = withoutBlock.trimEnd();
+  return head.length > 0 ? `${head}\n\n${block}\n` : `${block}\n`;
 }

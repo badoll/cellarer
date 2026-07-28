@@ -30,12 +30,14 @@ import {
   loadConfig,
   loadLedger,
   loadRegistry,
-  plan,
+  mutationPresentation,
+  planApplyMutation,
   resolveStoreRoot,
   resourceCatalog,
   revert,
   type ScanSelection,
   type Scope,
+  StoreMutationConflictError,
   saveCollections,
   saveDefaults,
   scanPlan,
@@ -43,6 +45,7 @@ import {
   settingsSummary,
   status,
   upsertAdapterConfig,
+  verify,
 } from "@cellarer/core";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -316,6 +319,9 @@ export function createApp(deps: AppDeps) {
   // 统一错误处理:HTTPException 按其状态码;其余(如 JSON 解析失败、core 抛错)→ 400 JSON,不裸 500/栈。
   app.onError((err, c) => {
     if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
+    if (err instanceof StoreMutationConflictError) {
+      return c.json({ error: err.message, conflict: err.conflict }, 409);
+    }
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
   });
 
@@ -445,8 +451,11 @@ export function createApp(deps: AppDeps) {
     // 下发预览(dry-run plan)。preview 已是 env 模式渲染(无真值);护栏命中项 op=skip。
     .post("/api/plan", async (c) => {
       const body = await c.req.json<DistributeBody>();
-      const p = await plan(deps.env, distributeOpts(deps, body));
-      return c.json(p);
+      const prepared = await planApplyMutation(deps.env, distributeOpts(deps, body));
+      return c.json({
+        ...prepared.plan,
+        mutation: mutationPresentation(prepared.mutationPlan),
+      });
     })
     // 执行下发。
     .post("/api/apply", async (c) => {
@@ -464,7 +473,11 @@ export function createApp(deps: AppDeps) {
     })
     .post("/api/sync/plan", async (c) => {
       const body = await c.req.json<SyncBody>();
-      return c.json(await plan(deps.env, syncOpts(deps, body)));
+      const prepared = await planApplyMutation(deps.env, syncOpts(deps, body));
+      return c.json({
+        ...prepared.plan,
+        mutation: mutationPresentation(prepared.mutationPlan),
+      });
     })
     .post("/api/sync/apply", async (c) => {
       const body = await c.req.json<SyncBody>();
@@ -515,6 +528,22 @@ export function createApp(deps: AppDeps) {
     .get("/api/status", async (c) => {
       const items = await status(deps.env, { storeRoot: deps.storeRoot });
       return c.json({ items });
+    })
+    .post("/api/verify", async (c) => {
+      const body = await c.req.json<DistributeBody>();
+      const opts = distributeOpts(deps, body);
+      return c.json(
+        await verify(deps.env, {
+          storeRoot: opts.storeRoot,
+          scope: opts.scope,
+          dir: opts.dir,
+          agents: opts.agents,
+          collections: opts.collections,
+          capabilities: opts.capabilities,
+          method: opts.method,
+          mcpStrategy: opts.mcpStrategy,
+        }),
+      );
     })
     .get("/api/settings", async (c) => {
       return c.json(await settingsSummary(deps.env, { storeRoot: deps.storeRoot }));

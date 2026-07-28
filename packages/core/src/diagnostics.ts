@@ -5,6 +5,12 @@ import type { AgentAdapter, AgentPaths } from "./adapters/types.js";
 import type { Env, FileStat } from "./env.js";
 import { readFileOrNull, statOrNull } from "./fs/probe.js";
 import type { Capability, LinkMethod, Scope } from "./model/index.js";
+import { operationJournalPath } from "./protocol/journal.js";
+import {
+  type MutationRecoveryPresentation,
+  mutationRecoveryPresentation,
+} from "./protocol/presentation.js";
+import { diagnoseMutationRecovery } from "./protocol/recovery.js";
 import { type CellarerConfig, CONFIG_FILENAME, loadConfig, parseConfig } from "./store/config.js";
 import { loadLedger } from "./store/ledger.js";
 
@@ -57,6 +63,7 @@ export interface DoctorReport {
   dir?: string;
   defaultMethod?: LinkMethod;
   checks: DiagnosticCheck[];
+  mutationRecovery: MutationRecoveryPresentation;
   agents: AgentDoctorReport[];
   warnings: string[];
 }
@@ -82,7 +89,47 @@ export async function doctor(env: Env, opts: InspectAgentsOptions): Promise<Doct
   const checks = await storeChecks(env, opts.storeRoot);
   let config: CellarerConfig | undefined;
   let registry: Registry | undefined;
+  let mutationRecovery: MutationRecoveryPresentation;
   const warnings: string[] = [];
+
+  try {
+    const mutation = await diagnoseMutationRecovery(env, opts.storeRoot);
+    mutationRecovery = mutationRecoveryPresentation(mutation);
+    const operation =
+      mutation.journal?.operationId ??
+      mutation.recoveryLockOwner?.operationId ??
+      mutation.lockOwner?.operationId;
+    checks.push({
+      id: "mutation-recovery",
+      status:
+        mutation.status === "clean"
+          ? "ok"
+          : mutation.status === "completed-pending-cleanup"
+            ? "warning"
+            : "error",
+      message: operation ? `${mutation.message}: ${operation}` : mutation.message,
+      ...(mutation.journal ? { path: operationJournalPath(opts.storeRoot) } : {}),
+    });
+  } catch (error) {
+    const message = `mutation recovery evidence is unreadable: ${errorMessage(error)}`;
+    mutationRecovery = {
+      status: "manual-recovery-required",
+      operationId: "unknown",
+      error: {
+        code: "MANUAL_RECOVERY_REQUIRED",
+        message: "manual recovery is required",
+        operationId: "unknown",
+        targets: [],
+        guidance: message,
+      },
+    };
+    checks.push({
+      id: "mutation-recovery",
+      status: "error",
+      message,
+      path: operationJournalPath(opts.storeRoot),
+    });
+  }
 
   try {
     config = await loadConfig(env, opts.storeRoot);
@@ -117,6 +164,7 @@ export async function doctor(env: Env, opts: InspectAgentsOptions): Promise<Doct
     dir: opts.dir,
     defaultMethod,
     checks,
+    mutationRecovery,
     agents,
     warnings,
   };

@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { SecretStore } from "../src/env.js";
+import type { Env, SecretStore } from "../src/env.js";
+import { readOperationJournal } from "../src/protocol/journal.js";
+import { readStoreRevision } from "../src/protocol/store-revision.js";
 import { resolveFields, resolveSecretValue } from "../src/secrets/resolver.js";
 import {
   decryptVault,
@@ -50,7 +52,72 @@ describe("secrets/vault (age passphrase)", () => {
     const data = await loadVault(t.env, t.path("home", ".cellarer"), "any");
     expect(data).toEqual({});
   });
+
+  it("rejects external vault drift before the lock without overwriting it", async () => {
+    const storeRoot = t.path("home", ".cellarer");
+    const external = await encryptVault({ EXTERNAL: "must-survive" }, "external-pass");
+    await t.env.fs.mkdir(t.path("home", ".cellarer", "secrets"), { recursive: true });
+    const driftEnv = driftBeforeMutationLock(t.env, async () => {
+      await t.env.fs.writeFile(vaultPath(storeRoot), external);
+    });
+
+    await expect(saveVault(driftEnv, storeRoot, { MINE: REAL }, "mine-pass")).rejects.toMatchObject(
+      {
+        code: "TARGET_PRECONDITION_CONFLICT",
+        conflict: { code: "TARGET_PRECONDITION_CONFLICT", target: vaultPath(storeRoot) },
+      },
+    );
+    await expect(t.env.fs.readFile(vaultPath(storeRoot))).resolves.toBe(external);
+  });
+
+  it("does not commit when the signed vault publication mode is silently changed", async () => {
+    const storeRoot = t.path("home", ".cellarer");
+    const path = vaultPath(storeRoot);
+    const publishFileAtomically = t.env.fs.publishFileAtomically;
+    const env: Env = {
+      ...t.env,
+      fs: {
+        ...t.env.fs,
+        publishFileAtomically: async (target, data, opts) => {
+          await publishFileAtomically(target, data, opts);
+          if (target === path) await t.env.fs.chmod(target, 0o644);
+        },
+      },
+    };
+
+    await expect(
+      saveVault(env, storeRoot, { COMPANY_TOKEN: REAL }, "vault-pass"),
+    ).rejects.toMatchObject({ code: "PARTIAL_FAILURE" });
+    await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(0);
+    await expect(readOperationJournal(t.env, storeRoot)).resolves.toMatchObject({
+      status: "recovery-required",
+      actions: [
+        {
+          status: "failed",
+          receipt: { error: { code: "PUBLICATION_POSTCONDITION_FAILED" } },
+        },
+      ],
+    });
+  });
 });
+
+function driftBeforeMutationLock(env: Env, drift: () => Promise<void>): Env {
+  const writeFileExclusive = env.fs.writeFileExclusive;
+  let injected = false;
+  return {
+    ...env,
+    fs: {
+      ...env.fs,
+      writeFileExclusive: async (path, data, opts) => {
+        if (!injected && path.endsWith("mutation.lock")) {
+          injected = true;
+          await drift();
+        }
+        return writeFileExclusive(path, data, opts);
+      },
+    },
+  };
+}
 
 describe("secrets/resolver", () => {
   let t: TmpEnv;

@@ -10,7 +10,10 @@ node packages/cli/dist/bin.js <command>
 
 ## `init`
 
-初始化库房。
+通过已签名的 mutation journal 初始化库房。产品目录与 `config.json` 都会取得 action
+receipt,`config.json` 使用原子发布;成功会推进 store revision,并输出 operation id 与
+结果 revision。若已有并发 mutation 或 recovery claim,命令至多创建幂等的协议骨架,
+不会创建产品目录或 config。
 
 ```bash
 node packages/cli/dist/bin.js init
@@ -97,8 +100,8 @@ node packages/cli/dist/bin.js agents -a codex,claude-code --dir /path/to/project
 
 ## `doctor`
 
-检查库房初始化、`config.json`、store 目录、adapter 加载、agent 探测和目标路径写权限,
-且不会写入文件。
+检查库房初始化、`config.json`、store 目录、adapter 加载、agent 探测、目标路径写权限
+与 mutation recovery evidence,且不会写入文件。
 
 ```bash
 node packages/cli/dist/bin.js doctor
@@ -112,6 +115,11 @@ node packages/cli/dist/bin.js doctor -a codex --json
 | `-a, --agent <ids>` | 只检查这些逗号分隔的 agent id。 |
 | `--dir <path>` | project scope 根目录。不传时为 global scope。 |
 | `--json` | 输出机器可读结果。 |
+
+JSON 报告包含 `mutationRecovery`。`clean` 表示没有未完成 operation;
+`incomplete` 与 `manual-recovery-required` 会包含 typed error 和 operation evidence。
+`doctor` 只诊断,不修复 operation。不要手动删除旧 lock;请按[核心概念](concepts.md#并发与中断-operation-恢复)
+中基于 evidence 的流程处理。
 
 ## `apply`
 
@@ -141,11 +149,19 @@ node packages/cli/dist/bin.js apply --dry-run --agent claude-code --json
 | `--override-drift <tokens>` | `plan.conflicts` 返回的逗号分隔精确 drift override tokens。 |
 | `--snapshot-passphrase <passphrase>` | 为已批准 replacement 所需的 before-state snapshot 加密。 |
 | `--dry-run` | 只打印计划,不写入。 |
-| `--json` | 输出完整 Core apply plan/result,包括 conflicts 与 acknowledgement tokens。 |
+| `--json` | 输出 Core apply plan/result、mutation identity 或 receipt、conflicts 与 acknowledgement tokens。 |
 
 未确认的 ownership conflict 会阻止 apply 并以非零状态退出。先检查 JSON dry-run,再用相同选择
 重试:把精确 token 放入 `--replace-unowned` 或 `--override-drift`,并提供
 `--snapshot-passphrase`。
+
+每份响应都包含 `mutation.planId`、`planDigest`、`operation` 和 `baseRevision`。
+成功的非 dry-run 响应还会包含 `mutation.result.receipt`,其中有 operation id、
+resulting revision、outcome 和每个 action 的 receipts。CLI 在同一次调用内 plan 并
+apply;后续的非 dry-run 调用不会重新提交序列化的 dry-run plan。
+`LOCK_CONFLICT`、`STALE_REVISION`、`TARGET_PRECONDITION_CONFLICT` 与
+`INTERRUPTED_OPERATION` 等 typed protocol conflicts 会以非零状态退出,且不执行未授权的
+target write。
 
 ## `scan`
 
@@ -173,7 +189,8 @@ node packages/cli/dist/bin.js scan --agent codex --into-collection default
 
 ## `status`
 
-用文件系统状态检查 apply 台账。
+检查已 apply 状态。传入 `--agent` 时,会分别验证 desired-versus-applied 与
+applied-versus-disk,并包含 mutation recovery health。
 
 ```bash
 node packages/cli/dist/bin.js status
@@ -187,6 +204,11 @@ node packages/cli/dist/bin.js status --agent codex --json
 | `-a, --agent <ids>` | 按逗号分隔的 agent id 过滤。 |
 | `--dir <path>` | 按 project 根目录过滤。 |
 | `--json` | 输出机器可读结果。 |
+
+`status --agent <ids> --json` 返回 `verification.desiredVsApplied`、
+`verification.appliedVsDisk`、`verification.recovery` 和 `verification.healthy`。
+不传 `--agent` 时,命令只返回 ledger-versus-disk `items`,不表示完整 verification
+health。
 
 ## `revert`
 
@@ -208,11 +230,15 @@ passphrase。
 | `-a, --agent <ids>` | 按逗号分隔的 agent id 过滤。 |
 | `--dir <path>` | 按 project 根目录过滤。 |
 | `--all` | 不传其他选择器时,回滚全部必须显式使用。 |
-| `--keep-backups` | 保留 `.bak` 备份。 |
+| `--keep-backups` | 请求保留备份。当前不支持按路径自动删除,因此无论是否传入都会保留加密 snapshot。 |
 | `--acknowledge <tokens>` | 逗号分隔的精确 drift tokens,由 dry-run plan 返回。 |
 | `--snapshot-passphrase <passphrase>` | 解密已记录 before-state snapshot 的 passphrase。 |
 | `--dry-run` | 预览回滚动作。 |
-| `--json` | 输出完整 Core revert plan 与 result。 |
+| `--json` | 输出 Core revert plan/result 与 mutation identity 或 receipt。 |
+
+Revert 与 apply 使用相同的 store lock、immutable plan 校验、journal、revision 和
+operation receipt 边界。Dry-run 没有 mutation result;成功写入后会返回
+`mutation.result.receipt`。
 
 ## `secret`
 

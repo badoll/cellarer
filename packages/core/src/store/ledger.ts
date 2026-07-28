@@ -1,9 +1,8 @@
 // state.json 台账读写(kickoff §7.3,见计划 §3.4)。
 // 台账是 revert 的权威来源(优于 ruler 靠 marker 反推),记录每次实际落地。
-import { join, normalize } from "node:path";
+import { isAbsolute, join, normalize } from "node:path";
 import { z } from "zod";
 import type { Env } from "../env.js";
-import { atomicWrite } from "../fs/atomicWrite.js";
 import { readFileOrNull } from "../fs/probe.js";
 import { isPathInside } from "../fs/safety.js";
 import type { Ledger, Scope, TargetOwner } from "../model/index.js";
@@ -11,6 +10,8 @@ import type { Ledger, Scope, TargetOwner } from "../model/index.js";
 const appliedReceiptSchema = z.object({
   method: z.enum(["write", "symlink", "junction", "copy"]),
   fingerprint: z.string(),
+  contentFingerprint: z.string().optional(),
+  sourceFingerprint: z.string().optional(),
   backup: z.string().nullable(),
   generated: z.boolean(),
   appliedAt: z.string(),
@@ -18,9 +19,8 @@ const appliedReceiptSchema = z.object({
 
 const artifactIdSchema = z.string().regex(/^(rules|mcp|skills)\/[^/*,\s]+$/);
 
-const targetOwnerSchema = z.object({
+const targetOwnerFields = {
   agent: z.string(),
-  scope: z.enum(["global", "project"]),
   capability: z.enum(["rules", "mcp", "skills"]),
   target: z.string(),
   artifactIds: z
@@ -29,7 +29,16 @@ const targetOwnerSchema = z.object({
     .refine((ids) => new Set(ids).size === ids.length, "artifactIds must be an ordered set"),
   receipt: appliedReceiptSchema,
   secretRefs: z.array(z.string()).optional(),
-});
+};
+
+const targetOwnerSchema = z.discriminatedUnion("scope", [
+  z.object({ ...targetOwnerFields, scope: z.literal("global"), projectRoot: z.never().optional() }),
+  z.object({
+    ...targetOwnerFields,
+    scope: z.literal("project"),
+    projectRoot: z.string().refine(isAbsolute, "projectRoot must be absolute"),
+  }),
+]);
 
 const ledgerSchema = z.object({
   version: z.literal(2),
@@ -42,6 +51,15 @@ export class LegacyLedgerVersionError extends Error {
       `legacy ledger version 1 at ${path} requires a pre-release reset; back up and remove state.json before re-applying managed artifacts`,
     );
     this.name = "LegacyLedgerVersionError";
+  }
+}
+
+export class PreReleaseProjectOwnerError extends Error {
+  constructor(path: string) {
+    super(
+      `project owner at ${path} is missing a canonical projectRoot; back up and move state.json aside, then re-apply project targets with the current pre-release build`,
+    );
+    this.name = "PreReleaseProjectOwnerError";
   }
 }
 
@@ -90,7 +108,13 @@ export function matchesFilter(entry: TargetOwner, filter: LedgerFilter): boolean
   if (filter.agents && filter.agents.length > 0 && !filter.agents.includes(entry.agent)) {
     return false;
   }
-  if (filter.dir && !isPathInside(entry.target, filter.dir)) return false;
+  if (filter.dir) {
+    if (entry.scope === "project") {
+      if (normalize(entry.projectRoot ?? "") !== normalize(filter.dir)) return false;
+    } else if (!isPathInside(entry.target, filter.dir)) {
+      return false;
+    }
+  }
   return true;
 }
 
@@ -136,6 +160,9 @@ export async function loadLedger(env: Env, storeRoot: string): Promise<Ledger> {
   try {
     const json: unknown = JSON.parse(text);
     if (isLegacyLedger(json)) throw new LegacyLedgerVersionError(path);
+    if (hasProjectOwnerWithoutCanonicalRoot(json)) {
+      throw new PreReleaseProjectOwnerError(path);
+    }
     const ledger = ledgerSchema.parse(json);
     const duplicateLedger: Ledger = { version: 2, owners: ledger.owners };
     const duplicateKeys = duplicateTargetOwnerKeys(duplicateLedger.owners);
@@ -146,7 +173,11 @@ export async function loadLedger(env: Env, storeRoot: string): Promise<Ledger> {
     }
     return makeLedger(ledger.owners);
   } catch (err) {
-    if (err instanceof LegacyLedgerVersionError || err instanceof DuplicateTargetOwnerError) {
+    if (
+      err instanceof LegacyLedgerVersionError ||
+      err instanceof PreReleaseProjectOwnerError ||
+      err instanceof DuplicateTargetOwnerError
+    ) {
       throw err;
     }
     // 损坏的台账若直接抛原始栈,会连 revert(唯一恢复路径)都用不了 → 给可操作信息。
@@ -168,8 +199,14 @@ export async function loadLedgerForPlanning(env: Env, storeRoot: string): Promis
 
 export async function saveLedger(env: Env, storeRoot: string, ledger: Ledger): Promise<void> {
   const path = join(storeRoot, "state.json");
+  await env.fs.publishFileAtomically(path, serializeLedger(ledger), {
+    mode: 0o600,
+  });
+}
+
+export function serializeLedger(ledger: Ledger): string {
   const validated = makeLedger(ledgerSchema.parse(ledger).owners);
-  await atomicWrite(env, path, `${JSON.stringify(validated, null, 2)}\n`);
+  return `${JSON.stringify(validated, null, 2)}\n`;
 }
 
 // Narrow recovery writer for a duplicate-bearing ledger. It only removes owners that the revert
@@ -180,6 +217,29 @@ export async function saveLedgerAfterSelectiveRevert(
   original: Ledger,
   successfullyReverted: readonly TargetOwner[],
 ): Promise<Ledger> {
+  const prepared = await prepareLedgerAfterSelectiveRevert(
+    env,
+    storeRoot,
+    original,
+    successfullyReverted,
+  );
+  await env.fs.publishFileAtomically(join(storeRoot, "state.json"), prepared.serialized, {
+    mode: 0o600,
+  });
+  return prepared.ledger;
+}
+
+export interface PreparedSelectiveRevertLedger {
+  ledger: Ledger;
+  serialized: string;
+}
+
+export async function prepareLedgerAfterSelectiveRevert(
+  env: Env,
+  storeRoot: string,
+  original: Ledger,
+  successfullyReverted: readonly TargetOwner[],
+): Promise<PreparedSelectiveRevertLedger> {
   const duplicateKeys = new Set(duplicateTargetOwnerKeys(original.owners));
   if (duplicateKeys.size === 0) {
     throw new Error("selective recovery writer requires a duplicate-bearing ledger");
@@ -229,15 +289,17 @@ export async function saveLedgerAfterSelectiveRevert(
     }
   }
 
-  const path = join(storeRoot, "state.json");
-  await atomicWrite(env, path, `${JSON.stringify(validated, null, 2)}\n`);
-  return { version: 2, owners: validated.owners };
+  const ledger = { version: 2 as const, owners: validated.owners };
+  return { ledger, serialized: `${JSON.stringify(ledger, null, 2)}\n` };
 }
 
 function normalizeOwner(owner: TargetOwner): TargetOwner {
   return {
     ...owner,
     target: normalize(owner.target),
+    ...(owner.scope === "project" && owner.projectRoot
+      ? { projectRoot: normalize(owner.projectRoot) }
+      : {}),
     artifactIds: [...new Set(owner.artifactIds)],
     secretRefs: owner.secretRefs ? [...new Set(owner.secretRefs)] : undefined,
   };
@@ -271,4 +333,18 @@ function sameOwner(left: TargetOwner | undefined, right: TargetOwner): boolean {
 
 function isLegacyLedger(value: unknown): value is { version: 1 } {
   return typeof value === "object" && value !== null && "version" in value && value.version === 1;
+}
+
+function hasProjectOwnerWithoutCanonicalRoot(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const owners = (value as { owners?: unknown }).owners;
+  if (!Array.isArray(owners)) return false;
+  return owners.some(
+    (owner) =>
+      typeof owner === "object" &&
+      owner !== null &&
+      (owner as { scope?: unknown }).scope === "project" &&
+      (typeof (owner as { projectRoot?: unknown }).projectRoot !== "string" ||
+        !isAbsolute((owner as { projectRoot: string }).projectRoot)),
+  );
 }

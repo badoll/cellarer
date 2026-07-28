@@ -29,16 +29,37 @@ React SPA -> Hono API -> @cellarer/web -> @cellarer/core -> Env -> local files
 | `GET /api/resources` | 资源目录、状态计数、collections 与同步目标。 |
 | `GET /api/resources/:kind` | 按 `skills`、`mcp` 或 `rules` 过滤的资源目录。 |
 | `GET /api/discovery` | 可导入的既有 agent 文件。 |
+| `POST /api/doctor` | 只读诊断,包括 typed mutation recovery evidence。 |
+| `POST /api/plan` | 带 mutation plan identity 与 base revision 的下发预览。 |
+| `POST /api/apply` | 通过 mutation receipt 边界 plan 并 apply 下发。 |
 | `POST /api/import/plan` | 导入预览。 |
 | `POST /api/import/apply` | 导入已预览并选择的资源。 |
 | `POST /api/sync/plan` | 同步预览。 |
 | `POST /api/sync/apply` | 将已预览的资源同步到 agents。 |
+| `POST /api/revert` | 通过同一 receipt 边界预览或执行 ledger revert。 |
+| `POST /api/verify` | Desired-versus-applied、applied-versus-disk 与 recovery health。 |
 | `GET /api/agents` | 已注册适配器、启用状态、能力矩阵与 global 探测状态。 |
 | `GET /api/settings` | 库房默认值、collections、adapter ids 与密钥引用。 |
 | `GET /api/status` | 台账漂移状态。 |
 | `GET /api/secrets` | 只返回密钥引用名。 |
 
 project scope 请求必须包含 `dir`。
+
+## Mutation 与 Verification 响应
+
+Plan 响应包含安全的 `mutation` 摘要,其中有 `planId`、`planDigest`、operation 和
+`baseRevision`。成功的 apply 与 revert 响应还会包含 operation receipt,其中有
+resulting revision 和每个 action 的 outcomes。Typed conflicts 与 recovery errors 不会
+暴露原始 plan content 或 state publication data;durable journal 对这些字段只保留
+安全的引用和 digests。
+
+当前本地 API 通过 `/api/doctor` 和 `/api/verify` 诊断中断 operation,但没有暴露
+写侧 recovery 路由。不要按 lock 存续时间删除它。恢复必须由可信 Core 调用方使用
+精确的诊断 operation id 执行,详见[核心概念](concepts.md#并发与中断-operation-恢复)。
+
+`GET /api/status` 只返回 ledger-versus-disk items。完整报告请使用
+`POST /api/verify`;`healthy` 要求两个 verification axes 都是 `converged`,且
+recovery 为 `clean`。
 
 ## 安全行为
 

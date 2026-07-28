@@ -92,6 +92,15 @@ export async function inspectTargetOwnership(
     return invalid(target, `duplicate current owners for adapter target "${target}"`);
   }
   const owner = matchingOwners[0] ?? null;
+  if (
+    owner?.scope === "project" &&
+    normalize(owner.projectRoot ?? "") !== normalize(rootResult.path)
+  ) {
+    return invalid(
+      target,
+      `project owner root "${owner.projectRoot ?? "missing"}" does not match managed root "${rootResult.path}"`,
+    );
+  }
   const directStat = await lstatOrNull(env, target);
   if (directStat === null) {
     return { classification: "absent", target, fingerprint: null, owner };

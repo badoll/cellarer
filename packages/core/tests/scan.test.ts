@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { applyScan, scanPlan } from "../src/engine/scan.js";
+import type { Env } from "../src/env.js";
+import { readOperationJournal } from "../src/protocol/journal.js";
+import { readStoreRevision } from "../src/protocol/store-revision.js";
 import {
   listMcpArtifacts,
   listRuleArtifacts,
@@ -35,6 +38,53 @@ describe("engine/scan — rules", () => {
     expect(r.imported.map((i) => i.kind)).toContain("rules");
     const rules = await listRuleArtifacts(t.env, storeRoot);
     expect(rules.map((a) => a.name)).toContain("claude-code");
+  });
+
+  it("rejects silently wrong scan output and retains signed recovery evidence", async () => {
+    const storeRoot = await emptyStore(t);
+    const source = t.path("home", ".claude", "CLAUDE.md");
+    const target = t.path("home", ".cellarer", "store", "rules", "claude-code.md");
+    await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
+    await t.env.fs.writeFile(source, "# signed scan rules");
+    const rename = t.env.fs.rename;
+    const env: Env = {
+      ...t.env,
+      fs: {
+        ...t.env.fs,
+        rename: async (oldPath, newPath) => {
+          await rename(oldPath, newPath);
+          if (newPath === target) await t.env.fs.writeFile(newPath, "silent wrong scan output");
+        },
+      },
+    };
+
+    const result = await applyScan(env, {
+      storeRoot,
+      agent: "claude-code",
+      scope: "global",
+      capabilities: ["rules"],
+    });
+
+    expect(result).toMatchObject({
+      imported: [],
+      operation: {
+        ok: false,
+        conflict: { code: "PARTIAL_FAILURE" },
+        journal: {
+          status: "recovery-required",
+          actions: [
+            {
+              status: "failed",
+              receipt: { error: { code: "ACTION_POSTCONDITION_FAILED" } },
+            },
+          ],
+        },
+      },
+    });
+    await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(0);
+    await expect(readOperationJournal(t.env, storeRoot)).resolves.toMatchObject({
+      status: "recovery-required",
+    });
   });
 
   it("does NOT re-absorb a cellarer-generated rules file (provenance via marker)", async () => {
@@ -181,7 +231,59 @@ describe("engine/scan — mcp secret redaction (red line)", () => {
     const config = await loadConfig(t.env, storeRoot);
     expect(config.artifacts["mcp/internalsrv"]?.collections).toEqual(["internal"]);
   });
+
+  it("rejects collection drift before the lock without importing or overwriting config", async () => {
+    const storeRoot = await emptyStore(t);
+    const configPath = t.path("home", ".cellarer", "config.json");
+    const external = `${JSON.stringify({ version: 1, external: true }, null, 2)}\n`;
+    await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
+    await t.env.fs.writeFile(
+      t.path("home", ".claude", "mcp.json"),
+      JSON.stringify({ mcpServers: { drifted: { command: "x" } } }),
+    );
+    const driftEnv = driftBeforeMutationLock(t.env, async () => {
+      await t.env.fs.writeFile(configPath, external);
+    });
+
+    const result = await applyScan(driftEnv, {
+      storeRoot,
+      agent: "claude-code",
+      scope: "global",
+      capabilities: ["mcp"],
+      intoCollection: "external-drift",
+    });
+
+    expect(result).toMatchObject({
+      imported: [],
+      operation: {
+        ok: false,
+        conflict: { code: "TARGET_PRECONDITION_CONFLICT", target: configPath },
+      },
+    });
+    await expect(t.env.fs.readFile(configPath)).resolves.toBe(external);
+    await expect(
+      t.env.fs.lstat(t.path("home", ".cellarer", "store", "mcp", "drifted.json")),
+    ).rejects.toThrow();
+  });
 });
+
+function driftBeforeMutationLock(env: Env, drift: () => Promise<void>): Env {
+  const writeFileExclusive = env.fs.writeFileExclusive;
+  let injected = false;
+  return {
+    ...env,
+    fs: {
+      ...env.fs,
+      writeFileExclusive: async (path, data, opts) => {
+        if (!injected && path.endsWith("mutation.lock")) {
+          injected = true;
+          await drift();
+        }
+        return writeFileExclusive(path, data, opts);
+      },
+    },
+  };
+}
 
 describe("engine/scan — skills", () => {
   let t: TmpEnv;

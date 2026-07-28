@@ -25,6 +25,30 @@ describe("cli program wiring", () => {
     );
   });
 
+  it("init prints its committed operation and resulting revision", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "cellarer-cli-test-")));
+    const storeRoot = join(root, "cellarer-home");
+    const oldHome = process.env.CELLARER_HOME;
+    const logs: string[] = [];
+    const oldLog = console.log;
+    try {
+      process.env.CELLARER_HOME = storeRoot;
+      console.log = (message?: unknown) => logs.push(String(message));
+
+      await buildProgram().parseAsync(["node", "cellarer", "init"], { from: "node" });
+
+      expect(logs.join("\n")).toMatch(/operation operation-.+, revision 1/);
+      await expect(fs.readFile(join(storeRoot, "revision.json"), "utf8")).resolves.toContain(
+        '"revision": 1',
+      );
+    } finally {
+      console.log = oldLog;
+      if (oldHome === undefined) delete process.env.CELLARER_HOME;
+      else process.env.CELLARER_HOME = oldHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("add exposes remote import selection flags", () => {
     const program = buildProgram();
     const addCmd = program.commands.find((c) => c.name() === "add");
@@ -208,6 +232,11 @@ describe("cli program wiring", () => {
         code: "UNOWNED_TARGET",
         acknowledgement: { kind: "replace-unowned" },
       });
+      expect(blocked.mutation).toMatchObject({
+        planId: expect.stringMatching(/^plan-/),
+        operation: "apply",
+        baseRevision: 0,
+      });
       const replacement = blocked.plan.conflicts[0].acknowledgement.token as string;
 
       logs = [];
@@ -231,8 +260,40 @@ describe("cli program wiring", () => {
         { from: "node" },
       );
       expect(process.exitCode).toBeUndefined();
-      expect(JSON.parse(logs.join("\n")).entries).toHaveLength(1);
+      const applied = JSON.parse(logs.join("\n"));
+      expect(applied.entries).toHaveLength(1);
+      expect(applied.mutation).toMatchObject({
+        planId: expect.stringMatching(/^plan-/),
+        operation: "apply",
+        baseRevision: 0,
+        result: {
+          ok: true,
+          receipt: {
+            planId: expect.stringMatching(/^plan-/),
+            baseRevision: 0,
+            resultingRevision: 1,
+            outcome: "committed",
+            actionReceipts: [
+              expect.objectContaining({ target, outcome: "applied" }),
+              expect.objectContaining({ target: join(project, ".gitignore"), outcome: "applied" }),
+            ],
+          },
+        },
+      });
+      expect(JSON.stringify(applied.mutation)).not.toContain("statePublications");
       expect(await fs.readFile(target, "utf8")).toContain("# managed");
+
+      await fs.writeFile(join(storeRoot, "store", "rules", "new.md"), "# new desired", "utf8");
+      logs = [];
+      process.exitCode = undefined;
+      await buildProgram().parseAsync(
+        ["node", "cellarer", "status", "--agent", "claude-code", "--dir", project, "--json"],
+        { from: "node" },
+      );
+      const verification = JSON.parse(logs.join("\n")).verification;
+      expect(verification.desiredVsApplied).toMatchObject({ status: "diverged" });
+      expect(verification.appliedVsDisk).toMatchObject({ status: "converged" });
+      expect(verification.recovery).toEqual({ status: "clean" });
 
       await fs.writeFile(target, "user drift", "utf8");
       logs = [];

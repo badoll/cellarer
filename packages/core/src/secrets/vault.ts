@@ -6,6 +6,10 @@ import { join } from "node:path";
 import { armor, Decrypter, Encrypter } from "age-encryption";
 import type { Env } from "../env.js";
 import { readFileOrNull } from "../fs/probe.js";
+import {
+  executeStorePublicationMutation,
+  unwrapStorePublicationMutation,
+} from "../protocol/store-mutation.js";
 
 // vault 解密后的明文结构:引用名 → 真值。
 type VaultData = Record<string, string>;
@@ -64,8 +68,21 @@ export async function saveVault(
   data: VaultData,
   passphrase: string,
 ): Promise<void> {
-  const armored = await encryptVault(data, passphrase);
-  const path = vaultPath(storeRoot);
-  await env.fs.mkdir(join(storeRoot, "secrets"), { recursive: true });
-  await env.fs.writeFile(path, armored);
+  const result = await executeStorePublicationMutation(
+    env,
+    storeRoot,
+    "secret-metadata",
+    "vault-update",
+    async () => ({
+      value: undefined,
+      publications: [
+        {
+          path: vaultPath(storeRoot),
+          data: await encryptVault(data, passphrase),
+          mode: 0o600,
+        },
+      ],
+    }),
+  );
+  unwrapStorePublicationMutation(result);
 }

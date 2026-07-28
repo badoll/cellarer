@@ -10,7 +10,11 @@ node packages/cli/dist/bin.js <command>
 
 ## `init`
 
-Initializes the store.
+Initializes the store through the signed mutation journal. Product directories
+and `config.json` are action-receipted, `config.json` is published atomically,
+and success advances the store revision and prints the operation id and
+resulting revision. A concurrent mutation or recovery claim may create only the
+idempotent protocol scaffold; it creates no product layout or config.
 
 ```bash
 node packages/cli/dist/bin.js init
@@ -99,7 +103,8 @@ Options:
 ## `doctor`
 
 Checks store initialization, `config.json`, store directories, adapter loading,
-agent detection, and target path write access without writing files.
+agent detection, target path write access, and mutation recovery evidence
+without writing files.
 
 ```bash
 node packages/cli/dist/bin.js doctor
@@ -113,6 +118,12 @@ Options:
 | `-a, --agent <ids>` | Check only these comma-separated agent ids. |
 | `--dir <path>` | Project scope root. Omit for global scope. |
 | `--json` | Print machine-readable output. |
+
+The JSON report includes `mutationRecovery`. `clean` means there is no
+incomplete operation; `incomplete` and `manual-recovery-required` include a
+typed error and operation evidence. `doctor` diagnoses but does not repair an
+operation. Do not delete an old lock manually; follow the evidence-based
+procedure in [Concepts](concepts.md#concurrency-and-interrupted-operation-recovery).
 
 ## `apply`
 
@@ -142,11 +153,20 @@ Options:
 | `--override-drift <tokens>` | Comma-separated exact drift-override tokens from `plan.conflicts`. |
 | `--snapshot-passphrase <passphrase>` | Encrypt the before-state snapshot required by an approved replacement. |
 | `--dry-run` | Print the plan without writing. |
-| `--json` | Print the complete Core apply plan/result, including conflicts and acknowledgement tokens. |
+| `--json` | Print the Core apply plan/result, mutation identity or receipt, conflicts, and acknowledgement tokens. |
 
 An unacknowledged ownership conflict blocks apply and exits nonzero. Inspect the JSON dry-run,
 then repeat the same selection with the exact conflict token in `--replace-unowned` or
 `--override-drift` and provide `--snapshot-passphrase`.
+
+Every response includes `mutation.planId`, `planDigest`, `operation`, and
+`baseRevision`. A successful non-dry-run also includes
+`mutation.result.receipt`, with its operation id, resulting revision, outcome,
+and per-action receipts. The CLI plans and applies within one invocation; a
+later non-dry-run invocation does not resubmit the serialized dry-run plan.
+Typed protocol conflicts such as `LOCK_CONFLICT`, `STALE_REVISION`,
+`TARGET_PRECONDITION_CONFLICT`, and `INTERRUPTED_OPERATION` exit nonzero without
+performing an unauthorized target write.
 
 ## `scan`
 
@@ -175,7 +195,8 @@ Options:
 
 ## `status`
 
-Checks the apply ledger against the file system.
+Checks applied state. With `--agent`, it verifies desired-versus-applied and
+applied-versus-disk separately and includes mutation recovery health.
 
 ```bash
 node packages/cli/dist/bin.js status
@@ -189,6 +210,11 @@ Options:
 | `-a, --agent <ids>` | Filter by comma-separated agent ids. |
 | `--dir <path>` | Filter by project root. |
 | `--json` | Print machine-readable output. |
+
+`status --agent <ids> --json` returns `verification.desiredVsApplied`,
+`verification.appliedVsDisk`, `verification.recovery`, and
+`verification.healthy`. Without `--agent`, the command returns ledger-versus-
+disk `items` only and does not claim full verification health.
 
 ## `revert`
 
@@ -210,11 +236,15 @@ Options:
 | `-a, --agent <ids>` | Filter by comma-separated agent ids. |
 | `--dir <path>` | Filter by project root. |
 | `--all` | Required when reverting all entries without another selector. |
-| `--keep-backups` | Leave `.bak` files in place. |
+| `--keep-backups` | Request backup retention. Encrypted snapshots are currently retained regardless because automatic path-based deletion is unsupported. |
 | `--acknowledge <tokens>` | Comma-separated exact drift tokens returned by the dry-run plan. |
 | `--snapshot-passphrase <passphrase>` | Passphrase used to decrypt a recorded before-state snapshot. |
 | `--dry-run` | Preview rollback actions. |
-| `--json` | Print the complete Core revert plan and result. |
+| `--json` | Print the Core revert plan/result and mutation identity or receipt. |
+
+Revert uses the same store lock, immutable plan validation, journal, revision,
+and operation receipt boundary as apply. A dry-run has no mutation result; a
+successful write returns `mutation.result.receipt`.
 
 ## `secret`
 

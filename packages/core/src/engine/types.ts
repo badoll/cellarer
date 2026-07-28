@@ -11,6 +11,8 @@ import type {
   TargetConflict,
   TargetOwnershipEvidence,
 } from "../model/index.js";
+import type { MutationPlan, OperationResult, PlanExpiry } from "../protocol/models.js";
+import type { MutationPresentation } from "../protocol/presentation.js";
 import type { SecretMode } from "../secrets/resolver.js";
 
 export interface DistributeOptions {
@@ -35,7 +37,7 @@ export interface DistributeOptions {
 }
 
 export interface ApplyFailure {
-  code: "SNAPSHOT_FAILED";
+  code: "SNAPSHOT_FAILED" | "ACTION_IO_FAILED";
   target: string;
   message: string;
 }
@@ -44,6 +46,29 @@ export interface ApplyResult {
   plan: DistributePlan;
   entries: LedgerEntry[]; // 实际写入台账的条目(dryRun 时为空)
   failures: ApplyFailure[];
+}
+
+export interface ApplyCallResult extends ApplyResult {
+  mutation: MutationPresentation;
+}
+
+export interface MutationPlanOptions {
+  planId?: string;
+  expires?: PlanExpiry;
+}
+
+export interface PlannedApplyMutation {
+  plan: DistributePlan;
+  mutationPlan: MutationPlan;
+}
+
+export interface ApplyMutationContext {
+  storeRoot: string;
+  snapshotPassphrase?: string;
+}
+
+export interface ApplyMutationResult extends ApplyCallResult {
+  operation: OperationResult;
 }
 
 export interface RevertOptions {
@@ -67,6 +92,8 @@ export interface RevertSnapshotAvailability {
   path: string | null;
   status: RevertSnapshotStatus;
   encrypted: boolean;
+  digest?: string;
+  mode?: number;
 }
 
 export interface RevertPlanTarget {
@@ -101,6 +128,25 @@ export interface RevertResult {
   failures: RevertFailure[];
   // 越界跳过等告警(如 target 在受管根之外,拒绝删除但保留台账)。
   warnings: string[];
+}
+
+export interface RevertCallResult extends RevertResult {
+  mutation: MutationPresentation;
+}
+
+export interface PlannedRevertMutation {
+  plan: RevertPlan;
+  mutationPlan: MutationPlan;
+}
+
+export interface RevertMutationContext {
+  storeRoot: string;
+  snapshotPassphrase?: string;
+  keepBackups?: boolean;
+}
+
+export interface RevertMutationResult extends RevertCallResult {
+  operation: OperationResult;
 }
 
 export type DriftStatus = "ok" | "drifted" | "missing" | "broken-link";

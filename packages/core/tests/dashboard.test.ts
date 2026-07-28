@@ -1,12 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  dashboardSummary,
-  initStore,
-  saveLedger,
-  writeMcpArtifact,
-  writeRuleArtifact,
-} from "../src/index.js";
+import { dashboardSummary } from "../src/index.js";
 import { tagArtifactCollections } from "../src/store/config.js";
+import { saveLedger } from "../src/store/ledger.js";
+import { initStore, writeMcpArtifact, writeRuleArtifact } from "../src/store/store.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
 describe("dashboard summary", () => {

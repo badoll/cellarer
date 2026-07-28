@@ -6,16 +6,14 @@ import { apply } from "../src/engine/apply.js";
 import { plan } from "../src/engine/plan.js";
 import { planRevert, revert } from "../src/engine/revert.js";
 import { status } from "../src/engine/status.js";
+import { loadConfig, saveConfig } from "../src/store/config.js";
+import { loadLedger, saveLedger } from "../src/store/ledger.js";
 import {
   importSkillArtifact,
   initStore,
-  loadConfig,
-  loadLedger,
-  saveConfig,
-  saveLedger,
   writeMcpArtifact,
   writeRuleArtifact,
-} from "../src/index.js";
+} from "../src/store/store.js";
 import { decryptTargetSnapshot } from "../src/target-snapshot.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
@@ -351,10 +349,72 @@ describe("safe target planning and placement", () => {
       });
     }
 
-    expect(await t.env.fs.readdir(join(storeRoot, "snapshots"))).toEqual([]);
+    const retainedSnapshots = await t.env.fs.readdir(join(storeRoot, "snapshots"));
+    expect(retainedSnapshots).toHaveLength(2);
     const reverted = await revert(t.env, { storeRoot, agents: ["claude-code"] });
     expect(reverted.reverted).toHaveLength(1);
     await expect(t.env.fs.lstat(target)).rejects.toThrow();
+    expect(await t.env.fs.readdir(join(storeRoot, "snapshots"))).toEqual(retainedSnapshots);
+  });
+
+  it("never deletes a transient apply snapshot after an ancestor swap at commit", async () => {
+    await writeRuleArtifact(t.env, storeRoot, "style", "# managed");
+    const opts = {
+      storeRoot,
+      scope: "global" as const,
+      agents: ["claude-code"],
+      capabilities: ["rules" as const],
+    };
+    await apply(t.env, opts);
+    const target = t.path("home", ".claude", "CLAUDE.md");
+    await t.env.fs.writeFile(target, "drift before override");
+    const token = (await plan(t.env, opts)).conflicts[0]?.acknowledgement?.token;
+    if (!token) throw new Error("expected drift acknowledgement");
+    const snapshotsRoot = join(storeRoot, "snapshots");
+    const retainedRoot = t.path("retained-apply-snapshots");
+    const outsideRoot = t.path("outside-apply-same-name");
+    const revisionPath = join(storeRoot, "revision.json");
+    const publishFileAtomically = t.env.fs.publishFileAtomically;
+    const rm = t.env.fs.rm;
+    let swappedName: string | undefined;
+    let snapshotRmCalls = 0;
+    const env = {
+      ...t.env,
+      fs: {
+        ...t.env.fs,
+        publishFileAtomically: async (path: string, data: string, mode?: { mode?: number }) => {
+          await publishFileAtomically(path, data, mode);
+          if (!swappedName && path === revisionPath) {
+            [swappedName] = await t.env.fs.readdir(snapshotsRoot);
+            if (!swappedName) throw new Error("expected transient apply snapshot");
+            await t.env.fs.rename(snapshotsRoot, retainedRoot);
+            await t.env.fs.mkdir(outsideRoot, { recursive: true });
+            await t.env.fs.writeFile(join(outsideRoot, swappedName), "external same-name snapshot");
+            await t.env.fs.symlink(outsideRoot, snapshotsRoot, "dir");
+          }
+        },
+        rm: async (path: string, options?: { recursive?: boolean; force?: boolean }) => {
+          if (path.startsWith(`${snapshotsRoot}/`)) snapshotRmCalls += 1;
+          await rm(path, options);
+        },
+      },
+    };
+
+    const result = await apply(env, {
+      ...opts,
+      overrideDrift: [token],
+      snapshotPassphrase: SNAPSHOT_PASSPHRASE,
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(snapshotRmCalls).toBe(0);
+    if (!swappedName) throw new Error("expected snapshot ancestor swap");
+    await expect(t.env.fs.readFile(join(outsideRoot, swappedName))).resolves.toBe(
+      "external same-name snapshot",
+    );
+    await expect(t.env.fs.readFile(join(retainedRoot, swappedName))).resolves.toContain(
+      "BEGIN AGE ENCRYPTED FILE",
+    );
   });
 
   it("preserves the original unmanaged baseline across repeated drift overrides", async () => {
@@ -392,7 +452,9 @@ describe("safe target planning and placement", () => {
       expect((await loadLedger(t.env, storeRoot)).owners[0]?.receipt.backup).toBe(baseline);
     }
 
-    expect(await t.env.fs.readdir(join(storeRoot, "snapshots"))).toEqual([basename(baseline)]);
+    const retainedSnapshots = await t.env.fs.readdir(join(storeRoot, "snapshots"));
+    expect(retainedSnapshots).toHaveLength(3);
+    expect(retainedSnapshots).toContain(basename(baseline));
     const reverted = await revert(t.env, {
       storeRoot,
       agents: ["claude-code"],
@@ -400,7 +462,7 @@ describe("safe target planning and placement", () => {
     });
     expect(reverted.reverted).toHaveLength(1);
     expect(await t.env.fs.readFile(target)).toBe("original unmanaged content");
-    expect(await t.env.fs.readdir(join(storeRoot, "snapshots"))).toEqual([]);
+    expect(await t.env.fs.readdir(join(storeRoot, "snapshots"))).toEqual(retainedSnapshots);
   });
 
   it("retains the drift recovery snapshot when the owner receipt cannot be saved", async () => {
@@ -423,9 +485,13 @@ describe("safe target planning and placement", () => {
       ...t.env,
       fs: {
         ...baseFs,
-        rename: async (oldPath: string, newPath: string) => {
-          if (newPath === statePath) throw new Error("injected state save failure");
-          return baseFs.rename(oldPath, newPath);
+        publishFileAtomically: async (
+          path: string,
+          data: string,
+          publishOpts?: { mode?: number },
+        ) => {
+          if (path === statePath) throw new Error("injected state save failure");
+          return baseFs.publishFileAtomically(path, data, publishOpts);
         },
       },
     };
@@ -655,10 +721,11 @@ describe("safe target planning and placement", () => {
     expect((await t.env.fs.lstat(target)).mode & 0o7777).toBe(originalMode);
     expect(await t.env.fs.readFile(join(target, "SKILL.md"))).toBe("# unmanaged referent drift");
     expect((await loadLedger(t.env, storeRoot)).owners).toEqual([]);
-    if (keepBackups) {
-      await expect(t.env.fs.readFile(snapshotPath)).resolves.toContain("BEGIN AGE ENCRYPTED FILE");
-    } else {
-      await expect(t.env.fs.lstat(snapshotPath)).rejects.toThrow();
+    await expect(t.env.fs.readFile(snapshotPath)).resolves.toContain("BEGIN AGE ENCRYPTED FILE");
+    if (!keepBackups) {
+      expect(restored.warnings).toContainEqual(
+        expect.stringContaining("automatic snapshot deletion is unsupported"),
+      );
     }
   });
 
@@ -698,7 +765,7 @@ describe("safe target planning and placement", () => {
     expect(replacedOwner.artifactIds).toEqual(firstOwner.artifactIds);
     expect(replacedOwner.receipt.fingerprint).not.toBe(firstOwner.receipt.fingerprint);
     expect(replacedOwner.receipt.backup).toBeNull();
-    expect(await t.env.fs.readdir(join(storeRoot, "snapshots"))).toEqual([]);
+    expect(await t.env.fs.readdir(join(storeRoot, "snapshots"))).toHaveLength(1);
 
     expect((await plan(t.env, options)).actions[0]?.ownership).toMatchObject({
       classification: "owned-current",
@@ -724,7 +791,7 @@ describe("safe target planning and placement", () => {
     await expect(t.env.fs.lstat(target)).rejects.toThrow();
   });
 
-  it("preserves an unmanaged Skill and leaves no orphan snapshot when staged copy fails", async () => {
+  it("preserves an unmanaged Skill and retains its encrypted snapshot when staged copy fails", async () => {
     await addSkill("demo", "# managed");
     const target = t.path("home", ".claude", "skills", "demo");
     const original = t.path("home", ".claude", "skills", "demo", "SKILL.md");
@@ -759,11 +826,11 @@ describe("safe target planning and placement", () => {
 
     expect(await t.env.fs.readFile(original)).toBe(UNMANAGED_SECRET);
     expect((await loadLedger(t.env, storeRoot)).owners).toEqual([]);
-    expect(await t.env.fs.readdir(t.path("home", ".cellarer", "snapshots"))).toEqual([]);
+    expect(await t.env.fs.readdir(t.path("home", ".cellarer", "snapshots"))).toHaveLength(1);
     expect(await readStoredText()).not.toContain(UNMANAGED_SECRET);
   });
 
-  it("preserves an unmanaged Skill and leaves no orphan snapshot when staged symlink fails", async () => {
+  it("preserves an unmanaged Skill and retains its encrypted snapshot when staged symlink fails", async () => {
     await addSkill("demo", "# managed");
     const target = t.path("home", ".claude", "skills", "demo");
     const original = t.path("home", ".claude", "skills", "demo", "SKILL.md");
@@ -797,7 +864,7 @@ describe("safe target planning and placement", () => {
 
     expect(await t.env.fs.readFile(original)).toBe(UNMANAGED_SECRET);
     expect((await loadLedger(t.env, storeRoot)).owners).toEqual([]);
-    expect(await t.env.fs.readdir(t.path("home", ".cellarer", "snapshots"))).toEqual([]);
+    expect(await t.env.fs.readdir(t.path("home", ".cellarer", "snapshots"))).toHaveLength(1);
     expect(await readStoredText()).not.toContain(UNMANAGED_SECRET);
   });
 

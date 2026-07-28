@@ -424,6 +424,7 @@ async function planRules(
   if (!target || !adapter.rules || fragments.length === 0) return null;
 
   const after = adapter.rules.render(fragments);
+  const contentFingerprint = sha256(after);
   // before 是 per-agent 差异:既供 dry-run diff,也是 apply 幂等短路的依据。
   const before = (await readFileOrNull(env, target)) ?? undefined;
 
@@ -440,5 +441,9 @@ async function planRules(
     op: "write",
     reason: selectedRules.map((a) => a.id).join(", "),
     preview: { before, after },
+    desiredEvidence: {
+      method: "write",
+      contentFingerprint,
+    },
   };
 }

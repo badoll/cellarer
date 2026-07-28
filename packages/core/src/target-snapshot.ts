@@ -3,7 +3,7 @@ import { basename, dirname, isAbsolute, join, normalize } from "node:path";
 import { armor, Decrypter, Encrypter } from "age-encryption";
 import type { Env, FileStat } from "./env.js";
 import { lstatOrNull } from "./fs/probe.js";
-import { isPathInside } from "./fs/safety.js";
+import { assertSafeAtomicPublicationPath, isPathInside } from "./fs/safety.js";
 import { sha256 } from "./store/checksum.js";
 import { fingerprintTarget } from "./target-ownership.js";
 
@@ -24,6 +24,14 @@ export interface EncryptedTargetSnapshot {
   path: string;
   targetFingerprint: string;
   sizeBytes: number;
+  digest: string;
+  mode: number;
+}
+
+export interface EncryptedTargetSnapshotEvidence {
+  path: string;
+  digest: string;
+  mode: number;
 }
 
 export class SnapshotCreationError extends Error {
@@ -72,6 +80,7 @@ export async function createEncryptedTargetSnapshot(
     const temporaryPath = join(dir, `.${name}.tmp`);
     let renamed = false;
 
+    let evidence: EncryptedTargetSnapshotEvidence | undefined;
     try {
       await env.fs.chmod(dir, 0o700);
       await env.fs.writeFile(temporaryPath, encrypted, { mode: 0o600 });
@@ -79,20 +88,97 @@ export async function createEncryptedTargetSnapshot(
       await env.fs.rename(temporaryPath, path);
       renamed = true;
       await env.fs.chmod(path, 0o600);
+      evidence = await inspectEncryptedTargetSnapshot(env, storeRoot, path);
+      if (evidence.digest !== sha256(encrypted)) {
+        throw new Error("encrypted snapshot does not match its publication digest");
+      }
     } catch (error) {
       await env.fs.rm(temporaryPath, { force: true }).catch(() => {});
       if (renamed) await env.fs.rm(path, { force: true }).catch(() => {});
       throw error;
     }
 
+    if (!evidence) throw new Error("encrypted snapshot evidence is unavailable");
     return {
       path,
       targetFingerprint: snapshot.targetFingerprint,
       sizeBytes: snapshot.sizeBytes,
+      digest: evidence.digest,
+      mode: evidence.mode,
     };
   } catch (error) {
     if (error instanceof SnapshotCreationError) throw error;
     throw new SnapshotCreationError(target, error);
+  }
+}
+
+export async function inspectEncryptedTargetSnapshot(
+  env: Env,
+  storeRoot: string,
+  path: string,
+): Promise<EncryptedTargetSnapshotEvidence> {
+  assertEncryptedSnapshotPath(storeRoot, path);
+  await assertSafeAtomicPublicationPath(env, path, storeRoot, "encrypted recovery snapshot");
+  const beforeRead = await env.fs.lstat(path);
+  if (!beforeRead.isFile() || beforeRead.isSymbolicLink()) {
+    throw new Error(`encrypted recovery snapshot is not a regular file: "${path}"`);
+  }
+  const encrypted = await env.fs.readFile(path);
+  await assertSafeAtomicPublicationPath(env, path, storeRoot, "encrypted recovery snapshot");
+  const afterRead = await env.fs.lstat(path);
+  if (!afterRead.isFile() || afterRead.isSymbolicLink()) {
+    throw new Error(`encrypted recovery snapshot changed type while being read: "${path}"`);
+  }
+  const mode = afterRead.mode & 0o777;
+  if (env.platform !== "win32" && mode !== 0o600) {
+    throw new Error(`encrypted recovery snapshot has unsafe mode: "${path}"`);
+  }
+  return { path, digest: sha256(encrypted), mode };
+}
+
+export async function readAuthorizedEncryptedTargetSnapshot(
+  env: Env,
+  storeRoot: string,
+  evidence: EncryptedTargetSnapshotEvidence,
+): Promise<string> {
+  assertEncryptedSnapshotPath(storeRoot, evidence.path);
+  await assertSafeAtomicPublicationPath(
+    env,
+    evidence.path,
+    storeRoot,
+    "authorized encrypted recovery snapshot",
+  );
+  const beforeRead = await env.fs.lstat(evidence.path);
+  if (!beforeRead.isFile() || beforeRead.isSymbolicLink()) {
+    throw new Error(`authorized recovery snapshot is not a regular file: "${evidence.path}"`);
+  }
+  const encrypted = await env.fs.readFile(evidence.path);
+  await assertSafeAtomicPublicationPath(
+    env,
+    evidence.path,
+    storeRoot,
+    "authorized encrypted recovery snapshot",
+  );
+  const afterRead = await env.fs.lstat(evidence.path);
+  const modeMatches =
+    env.platform === "win32" || (afterRead.mode & 0o777) === (evidence.mode & 0o777);
+  if (
+    !afterRead.isFile() ||
+    afterRead.isSymbolicLink() ||
+    sha256(encrypted) !== evidence.digest ||
+    !modeMatches
+  ) {
+    throw new Error(
+      `authorized recovery snapshot does not match its signed path, digest, type, or mode: "${evidence.path}"`,
+    );
+  }
+  return encrypted;
+}
+
+function assertEncryptedSnapshotPath(storeRoot: string, path: string): void {
+  const snapshotsRoot = join(storeRoot, "snapshots");
+  if (!path.endsWith(".age") || !isPathInside(path, snapshotsRoot)) {
+    throw new Error(`encrypted recovery snapshot is outside the snapshot store: "${path}"`);
   }
 }
 
@@ -193,7 +279,7 @@ export async function restoreTargetSnapshot(
 
   try {
     await rebuildTargetSnapshot(env, staged, snapshot);
-    if ((await fingerprintTargetNodeState(env, staged)) !== snapshot.nodeFingerprint) {
+    if ((await fingerprintTargetSnapshotNodeState(env, staged)) !== snapshot.nodeFingerprint) {
       throw new Error("staged target does not match the encrypted snapshot fingerprint");
     }
     if (
@@ -309,7 +395,10 @@ async function captureTargetSnapshot(env: Env, target: string): Promise<TargetSn
   };
 }
 
-async function fingerprintTargetNodeState(env: Env, target: string): Promise<string | null> {
+export async function fingerprintTargetSnapshotNodeState(
+  env: Env,
+  target: string,
+): Promise<string | null> {
   const stat = await lstatOrNull(env, target);
   if (!stat) return null;
   const entries: TargetSnapshotEntry[] = [];

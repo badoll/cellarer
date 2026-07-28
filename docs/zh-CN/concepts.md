@@ -17,6 +17,10 @@
 │   └── skills/
 ├── config.json
 ├── state.json
+├── revision.json
+├── operations/
+│   ├── active.json
+│   └── receipts/
 └── secrets/
 ```
 
@@ -50,15 +54,103 @@ Scope 决定资源落点:
 
 下发被拆成两个阶段:
 
-- plan: 计算动作与预览
-- apply: 执行计划并写入台账
+- plan: 计算动作与预览,并将它们绑定到不可变的 mutation plan
+- apply: 校验并执行这份精确的 mutation plan,然后发布台账
 
-`--dry-run` 只返回 plan。
+带版本的 mutation plan 包含 `planId`、operation、基础 store revision、
+normalized inputs、有序 actions、target preconditions、过期策略和 canonical
+digest。Apply 会在持有 store mutation lock 时校验 digest、revision、过期时间
+与 target preconditions。无效或过期的 plan、过时 revision,或规划后发生变化的
+target,都会在 target mutation 前被拒绝。
+
+需要可复用授权的 Core 调用方可先调用 `planApplyMutation`,再把它返回的
+精确 `mutationPlan` 交给 `applyMutationPlan`。便捷调用方（包括 CLI）会在同一个
+receipt 边界内先 plan 再立即 apply。CLI `--dry-run` 会打印预览及其 mutation
+identity;后续的非 dry-run CLI 调用会新建并执行一份 plan,因此仍要检查该次
+调用的结果。
+
+成功的 mutation 会返回 operation receipt,其中包含 operation 和 plan ids、plan
+digest、基础与结果 revisions、outcome、时间戳,以及每个 action 的 before/after
+receipt。已完成的 receipts 保留在 `operations/receipts/`。CLI 与 Web 响应只暴露
+安全的 receipt 字段,不暴露 journal 的 recovery payloads。active journal 只保存
+plan 与 state publication 的引用和 digest;原始 plan preview、渲染内容与 state
+publication data 仅留在内存中,不会写入 journal。
+
+Settings 与 adapter config、加密 vault 更新、add/scan collection 标签及项目
+`.gitignore` 更新均属于已签名文件 actions。其 plan payload 会绑定精确 path、content
+digest、mode 与观测到的 before-state;journal 只保留 durable action payload digest 和
+receipts,原始 publication bytes 只留在内存中。Ledger `state.json` publication 保持
+独立的 recovery 语义。项目 `.gitignore` action 必须在 ledger publication 与 revision
+前取得 action receipt。
+
+每个 action 都会在 executor 真正运行前再次比较已签名 target precondition。已签名文件
+publication 还会在 action receipt 成功前校验实际文件 bytes 与必要 mode。任一边界发生
+漂移都会留下 typed failed evidence,不会发布 committed receipt,也不会推进 revision。
+
+非 publication 的 store actions 也会在 plan 中携带已签名 after-condition:成功记录
+receipt 前,会从实际 target 读回并核验文件内容、目录或节点 fingerprint。协议 publication
+（`state.json`、配置、vault、journal、revision 与 operation receipt）还会额外绑定并核验
+POSIX mode。普通 managed file receipt 延续既有 content-fingerprint 模型,不会单独签名文件
+顶层 POSIX mode;目录 fingerprint 则保持既有 node manifest 语义。
 
 ## 台账
 
-`state.json` 记录已下发的 target、method、checksum、backup 和 secret refs。
-`status` 与 `revert` 使用这份台账工作。
+`state.json` 记录已下发的 target、method、checksum、backup 和 secret refs。每个 project
+owner 还会单独记录 canonical project root;它不改变物理 target identity,并让跨项目
+revert 只重建各自真实的 `<project>/.gitignore`。`revision.json` 会随每次改变状态的
+operation 单调递增。`status`、verification 与 `revert` 使用这些 evidence。
+
+## 并发与中断 Operation 恢复
+
+同一个 store 同时只允许一个改变状态的 operation 持有 mutation lock。竞争
+operation 不会修改产品数据,并会返回带 owner evidence 的 `LOCK_CONFLICT`:operation id、
+process id、hostname 和获取时间。绝不会仅因为 lock 较旧就删除它。
+
+Operation（包括初始化）会在第一次产品写入前发布 write-ahead journal,然后持久化每个 action
+outcome,最后原子发布下一份 state 和 revision。未完成的 journal 会以
+`INTERRUPTED_OPERATION` 阻止后续 mutation。恢复步骤如下:
+
+1. 停止该 store 的 apply 与 revert 调用。运行
+   `node packages/cli/dist/bin.js doctor --json`,记录
+   `mutationRecovery.operationId`、status 与 guidance。
+2. 不要按存续时间删除 `mutation.lock`、`recovery.lock` 或
+   `operations/active.json`,在评估 recovery evidence 期间也不要编辑受影响的 targets。
+3. 当前 CLI 和 Web API 可诊断 recovery 状态,但没有暴露写侧 recovery 命令。
+   可信的 `@cellarer/core` 调用方必须用诊断得到的精确 operation id 调用
+   `recoverInterruptedOperation(env, storeRoot, { operationId,
+   snapshotPassphrase })`。
+4. Core 仅在所有规划的 after-states 都被证明,且每个必需的 state publication 已存在
+   并匹配 durable digest 时完成 finalize。若 digest-only publication 缺失或不匹配,
+   Core 不会猜测重建原始 state,而会返回 `MANUAL_RECOVERY_REQUIRED`。Core 只在 target
+   存在已证明且可恢复的 before-state 时 compensate;否则返回带精确 targets 和 guidance 的
+   `MANUAL_RECOVERY_REQUIRED`。手动恢复情况下,不可验证的 targets 保持不变。
+5. 再次运行 `doctor --json`,然后对每个受影响的 agent 运行
+   `status --agent <id> --json`。只有 recovery 为 `clean` 且两个 verification axes
+   都收敛后才能恢复 mutations。
+
+Recovery-artifact retention 会持有同一把 store mutation lock,并在 mutation 或 recovery
+期间拒绝运行。当前不支持自动删除 receipts 与 snapshots:现有 Node/`Env` 文件系统接口
+无法把 directory identity 与 no-follow delete 绑定为可信原子操作,因此 retention 会返回
+`unsupported` 并保留所有 receipts 与 snapshots,而不会依赖 check-then-remove。Commit 后工作
+仅限不会抛错的 best-effort activity notification。Apply 与 revert 都不会按已存路径删除
+加密 snapshot;即使 `keepBackups: false`,也会保守保留并给出 warning,直到具备绑定 directory
+identity 的 no-follow delete 原语。
+
+## Verification Axes
+
+Verification 分别报告三类独立信号:
+
+- `desiredVsApplied`:当前资源选择、生成内容与 method,对比最后一次 apply 的
+  ledger state。
+- `appliedVsDisk`:最后一次 apply 的 receipts,对比当前 targets。
+- `recovery`:任何未完成或需要人工恢复的 mutation。
+
+因此,修改 collection 可能只使 `desiredVsApplied` 发生分歧,而 disk 仍完好;编辑
+已 apply 的文件可能只使 `appliedVsDisk` 发生分歧,而 selection 仍匹配。只有
+两个 axes 都是 `converged` 且 recovery 为 `clean` 时,`healthy` 才是 true。CLI
+`status --agent <id> --json` 包含完整的 `verification` 报告;不传 `--agent`
+时,`status` 只报告 ledger-versus-disk items。本地 Web API 通过 `POST /api/verify`
+暴露同一份完整报告。
 
 ## Target 所有权与显式替换
 
@@ -88,8 +180,9 @@ Revert 同样要求先生成 plan。漂移 target 会保持 blocked,直到调用
 
 ## Pre-release 所有权状态重置
 
-Ledger version 1 不会被静默解释为当前所有权。`doctor` 会报告 ownership-state error,
-并要求执行 pre-release reset。按以下流程恢复:
+Ledger version 1,以及缺少 canonical `projectRoot` 的 pre-release project owner,都不会被
+静默解释为当前所有权。`doctor` 会报告 ownership-state error,并要求执行 pre-release
+reset。按以下流程恢复:
 
 1. 停止 apply 与 revert。备份 `state.json` 及其中描述的每个 target。条件允许时,
    先用兼容旧台账的 cellarer build 回滚这些 targets。

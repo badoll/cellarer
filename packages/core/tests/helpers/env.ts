@@ -4,7 +4,7 @@
 import { promises as fs, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Env, Platform } from "../../src/env.js";
+import type { Env, Platform, ProcessLiveness } from "../../src/env.js";
 import { createRealEnv } from "../../src/real-env.js";
 
 export interface TmpEnv {
@@ -24,6 +24,10 @@ export interface TmpEnvOptions {
   // 覆盖 homedir / cwd(默认指向临时目录下的 home / cwd 子目录)。
   homedir?: string;
   cwd?: string;
+  processId?: number;
+  hostname?: string;
+  probeProcessLiveness?: (processId: number) => Promise<ProcessLiveness>;
+  randomId?: () => string;
 }
 
 // 固定时间戳,便于断言台账可重现。
@@ -37,12 +41,19 @@ export function makeTmpEnv(opts: TmpEnvOptions = {}): TmpEnv {
   const real = createRealEnv();
   const homedir = opts.homedir ?? join(root, "home");
   const cwd = opts.cwd ?? join(root, "cwd");
+  const processId = opts.processId ?? real.processId();
 
   const env: Env = {
     fs: real.fs,
     homedir: () => homedir,
     cwd: () => cwd,
     platform: opts.platform ?? "darwin",
+    processId: () => processId,
+    hostname: () => opts.hostname ?? "cellarer-test",
+    probeProcessLiveness:
+      opts.probeProcessLiveness ??
+      (async (candidate) => (candidate === processId ? "alive" : "unknown")),
+    randomId: opts.randomId ?? real.randomId,
     now: () => opts.now ?? FIXED_NOW,
     env: opts.env ?? {},
   };

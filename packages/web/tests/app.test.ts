@@ -1,8 +1,9 @@
 import { promises as fs, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRealEnv, type Env } from "@cellarer/core";
+import { createMutationPlan, createRealEnv, type Env, readStoreRevision } from "@cellarer/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { executeMutationPlan } from "../../core/src/protocol/execute.js";
 import { createApp } from "../src/app.js";
 
 // web 测试基座:临时库房 + 真实 Env(注入 homedir/cwd 指向临时目录)。
@@ -23,6 +24,9 @@ function makeCtx(envVars: Record<string, string | undefined> = {}): Ctx {
     homedir: () => home,
     cwd: () => join(root, "cwd"),
     platform: "darwin",
+    processId: real.processId,
+    hostname: real.hostname,
+    randomId: real.randomId,
     now: () => new Date("2026-06-30T08:00:00.000Z"),
     env: envVars,
   };
@@ -599,6 +603,8 @@ describe("web app — scan import", () => {
       }),
     });
     expect(applied.status).toBe(200);
+    expect(await applied.json()).toMatchObject({ operation: { ok: true } });
+    await expect(readStoreRevision(c.env, c.storeRoot)).resolves.toBe(1);
 
     const rules = await (await c.app.request("/api/resources/rules")).json();
     const mcp = await (await c.app.request("/api/resources/mcp")).json();
@@ -739,12 +745,86 @@ describe("web app — diagnostics and revert", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.checks.map((check: { id: string }) => check.id)).toContain("store-root");
+    expect(body.mutationRecovery).toEqual({ status: "clean" });
     expect(JSON.stringify(body)).not.toContain("Error:");
+  });
+
+  it("surfaces typed incomplete-operation recovery evidence without journal payloads", async () => {
+    const target = join(c.root, "home", ".agent", "rules.md");
+    const mutationPlan = createMutationPlan({
+      schemaVersion: 1,
+      planId: "plan-web-interrupted",
+      operation: "apply",
+      baseRevision: 0,
+      normalizedInputs: {},
+      targetPreconditions: [{ actionId: "action-1", target, expected: { state: "absent" } }],
+      actions: [{ actionId: "action-1", kind: "write", target, payload: {} }],
+      expires: { policy: "none" },
+    });
+    await expect(
+      executeMutationPlan(c.env, c.storeRoot, mutationPlan, async () => {
+        throw new Error("web interruption fixture");
+      }),
+    ).rejects.toThrow("web interruption fixture");
+
+    const res = await c.app.request("/api/doctor", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ scope: "global", agents: ["codex"] }),
+    });
+    const body = await res.json();
+
+    expect(body.mutationRecovery).toMatchObject({
+      status: "incomplete",
+      planId: "plan-web-interrupted",
+      baseRevision: 0,
+      error: { code: "INTERRUPTED_OPERATION", journalStatus: "executing" },
+    });
+    expect(JSON.stringify(body.mutationRecovery)).not.toContain("statePublications");
+  });
+
+  it("exposes desired-versus-applied separately from applied-versus-disk verification", async () => {
+    await c.env.fs.writeFile(join(c.storeRoot, "store", "rules", "style.md"), "# style");
+    await c.app.request("/api/apply", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agents: ["claude-code"],
+        scope: "global",
+        capabilities: ["rules"],
+      }),
+    });
+    await c.env.fs.writeFile(join(c.storeRoot, "store", "rules", "style.md"), "# updated");
+
+    const res = await c.app.request("/api/verify", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agents: ["claude-code"],
+        scope: "global",
+        capabilities: ["rules"],
+      }),
+    });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.desiredVsApplied).toMatchObject({
+      status: "diverged",
+      items: [
+        {
+          status: "content-mismatch",
+          comparisons: { selection: "matched", content: "mismatched", method: "matched" },
+        },
+      ],
+    });
+    expect(body.appliedVsDisk).toMatchObject({ status: "converged" });
+    expect(body.recovery).toEqual({ status: "clean" });
+    expect(JSON.stringify(body)).not.toContain("# updated");
   });
 
   it("requires a dry-run preview before the UI can safely call revert", async () => {
     await c.env.fs.writeFile(join(c.storeRoot, "store", "rules", "style.md"), "# style");
-    await c.app.request("/api/sync/apply", {
+    const applied = await c.app.request("/api/sync/apply", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -753,6 +833,17 @@ describe("web app — diagnostics and revert", () => {
         resources: { kinds: ["rules"] },
       }),
     });
+    const appliedBody = await applied.json();
+    expect(appliedBody.mutation).toMatchObject({
+      planId: expect.stringMatching(/^plan-/),
+      operation: "apply",
+      baseRevision: 0,
+      result: {
+        ok: true,
+        receipt: { baseRevision: 0, resultingRevision: 1, outcome: "committed" },
+      },
+    });
+    expect(JSON.stringify(appliedBody.mutation)).not.toContain("statePublications");
 
     const preview = await c.app.request("/api/revert", {
       method: "POST",
@@ -768,6 +859,11 @@ describe("web app — diagnostics and revert", () => {
       blocked: false,
     });
     expect(previewBody.plan.conflicts).toEqual([]);
+    expect(previewBody.mutation).toMatchObject({
+      planId: expect.stringMatching(/^plan-/),
+      operation: "revert",
+      baseRevision: 1,
+    });
     expect((await (await c.app.request("/api/status")).json()).items).toHaveLength(1);
 
     const apply = await c.app.request("/api/revert", {
@@ -776,7 +872,16 @@ describe("web app — diagnostics and revert", () => {
       body: JSON.stringify({ agents: ["claude-code"], dryRun: false }),
     });
     expect(apply.status).toBe(200);
-    expect((await apply.json()).reverted).toHaveLength(1);
+    const revertedBody = await apply.json();
+    expect(revertedBody.reverted).toHaveLength(1);
+    expect(revertedBody.mutation).toMatchObject({
+      operation: "revert",
+      baseRevision: 1,
+      result: {
+        ok: true,
+        receipt: { baseRevision: 1, resultingRevision: 2, outcome: "committed" },
+      },
+    });
     expect((await (await c.app.request("/api/status")).json()).items).toHaveLength(0);
   });
 
@@ -826,6 +931,9 @@ describe("web app — access token", () => {
       homedir: () => join(root, "home"),
       cwd: () => root,
       platform: "darwin",
+      processId: real.processId,
+      hostname: real.hostname,
+      randomId: real.randomId,
       now: () => new Date(),
       env: {},
     };
@@ -1043,12 +1151,32 @@ describe("web app — input validation", () => {
     });
     expect(collections.status).toBe(200);
 
+    const defaults = await c.app.request("/api/settings/defaults", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ defaults: { method: "copy" } }),
+    });
+    expect(defaults.status).toBe(200);
+
     const agent = await c.app.request("/api/agents/codex/enabled", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ enabled: false }),
     });
     expect(agent.status).toBe(200);
+
+    const adapterConfig = await c.app.request("/api/agents/local-review/adapter", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ adapter: { rules: { global: "~/.local-review/RULES.md" } } }),
+    });
+    expect(adapterConfig.status).toBe(200);
+
+    const deletedAdapter = await c.app.request("/api/agents/local-review/adapter", {
+      method: "DELETE",
+    });
+    expect(deletedAdapter.status).toBe(200);
+    await expect(readStoreRevision(c.env, c.storeRoot)).resolves.toBe(5);
 
     const settings = await (await c.app.request("/api/settings")).json();
     expect(settings.collections.map((c: { name: string }) => c.name)).toContain("work");

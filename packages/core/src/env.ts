@@ -4,6 +4,8 @@
 
 export type Platform = "darwin" | "linux" | "win32" | (string & {});
 
+export type ProcessLiveness = "alive" | "dead" | "unknown";
+
 // 软链类型:POSIX 不区分;Windows 目录用 junction。
 export type SymlinkType = "file" | "dir" | "junction";
 
@@ -20,6 +22,10 @@ export interface FsLike {
   readFileBytes(path: string): Promise<Uint8Array>;
   writeFile(path: string, data: string, opts?: { mode?: number }): Promise<void>;
   writeFileBytes(path: string, data: Uint8Array, opts?: { mode?: number }): Promise<void>;
+  // Publish fully-written owner evidence only when path does not already exist.
+  writeFileExclusive(path: string, data: string, opts?: { mode?: number }): Promise<boolean>;
+  // Flush content before atomic replacement, then flush the containing directory when supported.
+  publishFileAtomically(path: string, data: string, opts?: { mode?: number }): Promise<void>;
   appendFile(path: string, data: string): Promise<void>;
   access(path: string, mode: "read" | "write"): Promise<void>;
   mkdir(path: string, opts?: { recursive?: boolean; mode?: number }): Promise<void>;
@@ -57,6 +63,14 @@ export interface Env {
   homedir(): string;
   cwd(): string;
   platform: Platform;
+  // Store-lock owner identity and receipt ids stay injectable; core business logic never reads
+  // process/os/crypto globals directly.
+  processId(): number;
+  hostname(): string;
+  // Caller verifies that lock-owner hostname is local before probing its PID. Only "dead" is
+  // affirmative abandonment evidence; permission errors and unsupported probes return "unknown".
+  probeProcessLiveness(processId: number): Promise<ProcessLiveness>;
+  randomId(): string;
   // 台账时间戳来源;测试注入固定值保证可重现。
   now(): Date;
   // 读环境变量(密钥解析用);非 process.env 直读,测试可注入。

@@ -32,4 +32,11 @@ describe("createRealEnv", () => {
     expect(env.now() instanceof Date).toBe(true);
     expect(typeof env.platform).toBe("string");
   });
+
+  it("probes the current Node process as alive and invalid PIDs as unknown", async () => {
+    const env = createRealEnv();
+
+    await expect(env.probeProcessLiveness(env.processId())).resolves.toBe("alive");
+    await expect(env.probeProcessLiveness(0)).resolves.toBe("unknown");
+  });
 });

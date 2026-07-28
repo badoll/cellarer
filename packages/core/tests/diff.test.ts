@@ -1,12 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  apply,
-  diffTarget,
-  importSkillArtifact,
-  initStore,
-  status,
-  writeRuleArtifact,
-} from "../src/index.js";
+import { apply, diffTarget, status } from "../src/index.js";
+import { importSkillArtifact, initStore, writeRuleArtifact } from "../src/store/store.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
 describe("dashboard diff", () => {

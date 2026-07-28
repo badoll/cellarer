@@ -7,6 +7,7 @@
 //     避免把 cellarer 自己写的内容当用户新增重复收编。
 //   - plan/apply 分离:scanPlan 只读 + 产出计划;applyScan 才写库房。
 
+import { join } from "node:path";
 import { appendActivity } from "../activity.js";
 import { loadRegistry } from "../adapters/registry.js";
 import type { Env } from "../env.js";
@@ -14,9 +15,12 @@ import { lstatOrNull, readdirOrEmpty, readFileOrNull } from "../fs/probe.js";
 import { isGenerated } from "../markers.js";
 import { type McpServer, serverToRaw } from "../mcp/model.js";
 import type { Scope } from "../model/index.js";
+import type { OperationResult } from "../protocol/models.js";
+import { executeStoreActionMutation } from "../protocol/store-mutation.js";
 import { type SecretFinding, scanTextForSecrets } from "../secrets/detector.js";
 import { redactFields } from "../secrets/redactor.js";
-import { tagArtifactCollections } from "../store/config.js";
+import { sha256 } from "../store/checksum.js";
+import { type CellarerConfig, CONFIG_FILENAME, loadConfig } from "../store/config.js";
 import {
   importSkillArtifact,
   listMcpArtifacts,
@@ -25,6 +29,7 @@ import {
   writeMcpArtifact,
   writeRuleArtifact,
 } from "../store/store.js";
+import { fingerprintTarget } from "../target-ownership.js";
 
 // 冲突策略:库房已有同名制品时的处理。
 //   keep-theirs:用扫描来的覆盖库房(默认,"收编")。
@@ -350,58 +355,167 @@ export async function scanPlan(env: Env, opts: ScanOptions): Promise<ScanPlan> {
 export interface ScanResult {
   plan: ScanPlan;
   imported: ScanItem[];
+  operation: OperationResult;
 }
 
 // applyScan:执行扫描计划,把 action==="import" 的候选写库房(已脱敏 + 过写前护栏)。
 export async function applyScan(env: Env, opts: ScanOptions): Promise<ScanResult> {
-  const { candidates, warnings } = await scanCandidates(env, opts);
-  const selected = applySelect(candidates, opts.select, opts.selectItems);
-  const existing = await existingNames(env, opts.storeRoot);
-  const resolved = guardPlaintext(
-    resolveConflicts(selected, existing, opts.conflict ?? "keep-theirs", opts.agent),
-    warnings,
+  const transaction = await executeStoreActionMutation(
+    env,
+    opts.storeRoot,
+    "store-import",
+    "scan-import",
+    async () => {
+      const { candidates, warnings } = await scanCandidates(env, opts);
+      const selected = applySelect(candidates, opts.select, opts.selectItems);
+      const existing = await existingNames(env, opts.storeRoot);
+      const resolved = guardPlaintext(
+        resolveConflicts(selected, existing, opts.conflict ?? "keep-theirs", opts.agent),
+        warnings,
+      );
+      const imports = resolved
+        .filter((candidate) => candidate.item.action === "import")
+        .map((candidate, index) => {
+          const target = scanImportTarget(opts.storeRoot, candidate.item);
+          const actionId = `scan-${index + 1}-${candidate.item.kind}-${candidate.item.name}`;
+          return { actionId, candidate, target };
+        });
+      const publications = await scanCollectionPublication(
+        env,
+        opts,
+        imports.map(({ candidate }) => candidate.item),
+      );
+      const importedItems = imports.map(({ candidate }) => candidate.item);
+      const actions = await Promise.all(
+        imports.map(async ({ actionId, candidate, target }) => ({
+          actionId,
+          kind: `scan-${candidate.item.kind}`,
+          target,
+          payload: JSON.parse(JSON.stringify(candidate.payload)),
+          postcondition: {
+            state: "present" as const,
+            fingerprint: await scanImportFingerprint(env, candidate.payload),
+          },
+          execute: async () => {
+            if (candidate.payload.kind === "rules") {
+              await writeRuleArtifact(
+                env,
+                opts.storeRoot,
+                candidate.item.name,
+                candidate.payload.content,
+              );
+            } else if (candidate.payload.kind === "mcp") {
+              await writeMcpArtifact(
+                env,
+                opts.storeRoot,
+                candidate.item.name,
+                candidate.payload.server,
+              );
+            } else {
+              await importSkillArtifact(
+                env,
+                opts.storeRoot,
+                candidate.item.name,
+                candidate.payload.srcDir,
+              );
+            }
+          },
+        })),
+      );
+      return {
+        value: {
+          plan: {
+            agent: opts.agent,
+            scope: opts.scope,
+            items: resolved.map((candidate) => candidate.item),
+            warnings,
+          },
+          imports: imports.map(({ actionId, candidate }) => ({
+            actionId,
+            item: candidate.item,
+          })),
+        },
+        actions,
+        ...(publications.length > 0 ? { publications } : {}),
+        afterCommit: async () => {
+          try {
+            await appendActivity(env, opts.storeRoot, {
+              action: "scan-import",
+              scope: opts.scope,
+              projectDir: opts.dir,
+              agents: [opts.agent],
+              capabilities: [...new Set(importedItems.map((item) => item.kind))],
+              affectedCount: importedItems.length,
+              warningsCount: warnings.length,
+              summary: `Imported ${importedItems.length} scanned ${importedItems.length === 1 ? "item" : "items"}`,
+              references: {
+                artifactIds: importedItems.map((item) => `${item.kind}/${item.name}`),
+              },
+              secretRefs: importedItems.flatMap((item) => item.secretRefs ?? []),
+            });
+          } catch (err) {
+            warnings.push(
+              `activity log failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        },
+      };
+    },
   );
-
-  const imported: ScanItem[] = [];
-  for (const c of resolved) {
-    if (c.item.action !== "import") continue;
-    if (c.payload.kind === "rules") {
-      await writeRuleArtifact(env, opts.storeRoot, c.item.name, c.payload.content);
-    } else if (c.payload.kind === "mcp") {
-      await writeMcpArtifact(env, opts.storeRoot, c.item.name, c.payload.server);
-    } else {
-      await importSkillArtifact(env, opts.storeRoot, c.item.name, c.payload.srcDir);
-    }
-    imported.push(c.item);
-  }
-
-  // --into-collection:给本次导入的制品打 collection 标签。
-  if (opts.intoCollection && imported.length > 0) {
-    const ids = imported.map((i) => `${i.kind}/${i.name}`);
-    await tagArtifactCollections(env, opts.storeRoot, ids, opts.intoCollection);
-  }
-
-  try {
-    await appendActivity(env, opts.storeRoot, {
-      action: "scan-import",
-      scope: opts.scope,
-      projectDir: opts.dir,
-      agents: [opts.agent],
-      capabilities: [...new Set(imported.map((item) => item.kind))],
-      affectedCount: imported.length,
-      warningsCount: warnings.length,
-      summary: `Imported ${imported.length} scanned ${imported.length === 1 ? "item" : "items"}`,
-      references: {
-        artifactIds: imported.map((item) => `${item.kind}/${item.name}`),
-      },
-      secretRefs: imported.flatMap((item) => item.secretRefs ?? []),
-    });
-  } catch (err) {
-    warnings.push(`activity log failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
+  const successfulActionIds = new Set(
+    transaction.operation.ok
+      ? transaction.operation.receipt.actionReceipts
+          .filter((receipt) => receipt.outcome !== "failed")
+          .map((receipt) => receipt.actionId)
+      : (transaction.operation.journal?.actions ?? [])
+          .filter((action) => action.status === "succeeded")
+          .map((action) => action.actionId),
+  );
   return {
-    plan: { agent: opts.agent, scope: opts.scope, items: resolved.map((c) => c.item), warnings },
-    imported,
+    plan: transaction.value.plan,
+    imported: transaction.value.imports
+      .filter(({ actionId }) => successfulActionIds.has(actionId))
+      .map(({ item }) => item),
+    operation: transaction.operation,
   };
+}
+
+async function scanImportFingerprint(env: Env, payload: ScanCandidate["payload"]): Promise<string> {
+  if (payload.kind === "rules") return sha256(payload.content);
+  if (payload.kind === "mcp") {
+    return sha256(`${JSON.stringify(serverToRaw(payload.server), null, 2)}\n`);
+  }
+  const fingerprint = await fingerprintTarget(env, payload.srcDir);
+  if (!fingerprint) throw new Error(`scan source cannot be fingerprinted: ${payload.srcDir}`);
+  return fingerprint;
+}
+
+function scanImportTarget(storeRoot: string, item: ScanItem): string {
+  if (item.kind === "rules") return join(storeRoot, "store", "rules", `${item.name}.md`);
+  if (item.kind === "mcp") return join(storeRoot, "store", "mcp", `${item.name}.json`);
+  return join(storeRoot, "store", "skills", item.name);
+}
+
+async function scanCollectionPublication(
+  env: Env,
+  opts: ScanOptions,
+  imported: readonly ScanItem[],
+): Promise<{ path: string; data: string; mode: number }[]> {
+  if (!opts.intoCollection || imported.length === 0) return [];
+  const config = await loadConfig(env, opts.storeRoot);
+  const next = JSON.parse(JSON.stringify(config)) as CellarerConfig;
+  for (const item of imported) {
+    const id = `${item.kind}/${item.name}`;
+    const collections = next.artifacts[id]?.collections ?? [];
+    if (!collections.includes(opts.intoCollection)) {
+      next.artifacts[id] = { collections: [...collections, opts.intoCollection] };
+    }
+  }
+  return [
+    {
+      path: join(opts.storeRoot, CONFIG_FILENAME),
+      data: `${JSON.stringify(next, null, 2)}\n`,
+      mode: 0o600,
+    },
+  ];
 }

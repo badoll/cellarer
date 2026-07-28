@@ -1,6 +1,7 @@
 import { revert } from "@cellarer/core";
 import { Command } from "commander";
 import { resolveContext } from "../context.js";
+import { printMutation } from "../mutation-output.js";
 
 interface RevertOpts {
   agent?: string;
@@ -47,12 +48,15 @@ export function revertCommand(): Command {
       });
       const failed =
         !opts.dryRun &&
-        (result.plan.targets.some((target) => target.blocked) || result.failures.length > 0);
+        (result.plan.targets.some((target) => target.blocked) ||
+          result.failures.length > 0 ||
+          result.mutation.result?.ok === false);
       if (failed) process.exitCode = 1;
       if (opts.json) {
         console.log(JSON.stringify(result, null, 2));
         return;
       }
+      printMutation(result.mutation);
       for (const w of result.warnings) console.warn(`⚠ ${w}`);
       for (const target of result.plan.targets) {
         if (!target.blocked) continue;

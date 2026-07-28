@@ -1,5 +1,11 @@
+import { dirname } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { add, type GitClient } from "../src/engine/add.js";
+import { applyMutationPlan, planApplyMutation } from "../src/engine/apply.js";
+import type { Env } from "../src/env.js";
+import { readOperationJournal } from "../src/protocol/journal.js";
+import { acquireStoreMutationLock } from "../src/protocol/mutation-lock.js";
+import { readStoreRevision } from "../src/protocol/store-revision.js";
 import { loadConfig } from "../src/store/config.js";
 import { initStore, skillProvenancePath } from "../src/store/store.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
@@ -29,6 +35,268 @@ describe("engine/add — local source import", () => {
     expect(
       await t.env.fs.readFile(t.path("home", ".cellarer", "store", "rules", "style.md")),
     ).toContain("use tabs");
+  });
+
+  it("advances revision and makes an older apply plan stale after a rules add", async () => {
+    const prepared = await planApplyMutation(t.env, {
+      storeRoot,
+      scope: "global",
+      agents: ["claude-code"],
+      capabilities: ["rules"],
+    });
+    const src = t.path("revision-rule.md");
+    await t.env.fs.writeFile(src, "# revision rule");
+
+    const added = await add(t.env, { storeRoot, source: src });
+    const stale = await applyMutationPlan(t.env, prepared.mutationPlan, { storeRoot });
+
+    expect(added.operation).toMatchObject({ ok: true, receipt: { resultingRevision: 1 } });
+    expect(stale.operation).toMatchObject({
+      ok: false,
+      conflict: { code: "STALE_REVISION", expectedRevision: 0, actualRevision: 1 },
+    });
+  });
+
+  it("performs no artifact or collection write when the store lock conflicts", async () => {
+    const src = t.path("locked-rule.md");
+    await t.env.fs.writeFile(src, "# locked rule");
+    const acquired = await acquireStoreMutationLock(t.env, storeRoot, {
+      operationId: "operation-held",
+      processId: 4242,
+      hostname: "other-process",
+      acquiredAt: "2026-07-28T12:00:00.000Z",
+    });
+    if (!acquired.ok) throw new Error("expected lock fixture");
+    try {
+      const result = await add(t.env, { storeRoot, source: src, collection: "locked" });
+      expect(result).toMatchObject({
+        imported: [],
+        operation: { ok: false, conflict: { code: "LOCK_CONFLICT" } },
+      });
+      await expect(
+        t.env.fs.lstat(t.path("home", ".cellarer", "store", "rules", "locked-rule.md")),
+      ).rejects.toThrow();
+      expect((await loadConfig(t.env, storeRoot)).artifacts["rules/locked-rule"]).toBeUndefined();
+      await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(0);
+    } finally {
+      await acquired.lock.release();
+    }
+  });
+
+  it("rejects collection drift before the lock without importing or overwriting config", async () => {
+    const src = t.path("drifted-rule.md");
+    const configPath = t.path("home", ".cellarer", "config.json");
+    const external = `${JSON.stringify({ version: 1, external: true }, null, 2)}\n`;
+    await t.env.fs.writeFile(src, "# must not import");
+    const driftEnv = driftBeforeMutationLock(t.env, async () => {
+      await t.env.fs.writeFile(configPath, external);
+    });
+
+    const result = await add(driftEnv, {
+      storeRoot,
+      source: src,
+      collection: "external-drift",
+    });
+
+    expect(result).toMatchObject({
+      imported: [],
+      operation: {
+        ok: false,
+        conflict: { code: "TARGET_PRECONDITION_CONFLICT", target: configPath },
+      },
+    });
+    await expect(t.env.fs.readFile(configPath)).resolves.toBe(external);
+    await expect(
+      t.env.fs.lstat(t.path("home", ".cellarer", "store", "rules", "drifted-rule.md")),
+    ).rejects.toThrow();
+  });
+
+  it("stops before collection publication when the first artifact action fails", async () => {
+    const src = t.path("failed-rule.md");
+    const target = t.path("home", ".cellarer", "store", "rules", "failed-rule.md");
+    const configPath = t.path("home", ".cellarer", "config.json");
+    const configBefore = await t.env.fs.readFile(configPath);
+    await t.env.fs.writeFile(src, "# must not import or tag");
+    const writeFile = t.env.fs.writeFile;
+    const failingEnv: Env = {
+      ...t.env,
+      fs: {
+        ...t.env.fs,
+        writeFile: async (path, data, opts) => {
+          if (path.startsWith(`${dirname(target)}/.cellarer-tmp-`)) {
+            const error = new Error("simulated artifact write failure") as Error & {
+              code: string;
+            };
+            error.code = "EIO";
+            throw error;
+          }
+          return writeFile(path, data, opts);
+        },
+      },
+    };
+
+    const result = await add(failingEnv, {
+      storeRoot,
+      source: src,
+      collection: "must-not-publish",
+    });
+
+    expect(result).toMatchObject({
+      imported: [],
+      operation: {
+        ok: false,
+        conflict: { code: "PARTIAL_FAILURE" },
+        journal: {
+          status: "recovery-required",
+          actions: [{ status: "failed" }, { status: "pending" }],
+        },
+      },
+    });
+    await expect(t.env.fs.lstat(target)).rejects.toThrow();
+    await expect(t.env.fs.readFile(configPath)).resolves.toBe(configBefore);
+    await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(0);
+    await expect(readOperationJournal(t.env, storeRoot)).resolves.toMatchObject({
+      actions: [{ status: "failed" }, { status: "pending" }],
+    });
+  });
+
+  it.each([
+    { source: "wrong-rule.md", target: ["store", "rules", "wrong-rule.md"] },
+    { source: "wrong-mcp.json", target: ["store", "mcp", "wrong-mcp.json"] },
+  ])("rejects silently wrong $source file output without advancing revision", async ({
+    source,
+    target,
+  }) => {
+    const sourcePath = t.path(source);
+    await t.env.fs.writeFile(
+      sourcePath,
+      source.endsWith(".md") ? "# signed rule" : JSON.stringify({ command: "npx" }),
+    );
+    const targetPath = t.path("home", ".cellarer", ...target);
+    const rename = t.env.fs.rename;
+    const env: Env = {
+      ...t.env,
+      fs: {
+        ...t.env.fs,
+        rename: async (oldPath, newPath) => {
+          await rename(oldPath, newPath);
+          if (newPath === targetPath) await t.env.fs.writeFile(newPath, "silent wrong output");
+        },
+      },
+    };
+
+    const result = await add(env, { storeRoot, source: sourcePath });
+
+    expect(result.operation).toMatchObject({
+      ok: false,
+      conflict: { code: "PARTIAL_FAILURE" },
+      journal: {
+        status: "recovery-required",
+        actions: [
+          {
+            status: "failed",
+            receipt: { error: { code: "ACTION_POSTCONDITION_FAILED" } },
+          },
+        ],
+      },
+    });
+    expect(result.imported).toEqual([]);
+    await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(0);
+  });
+
+  it("rejects a silently wrong skill directory and leaves provenance pending", async () => {
+    await writeSkill(t, "wrong-skill", {
+      name: "wrong-skill",
+      description: "Signed directory output",
+    });
+    const target = t.path("home", ".cellarer", "store", "skills", "wrong-skill");
+    const provenance = skillProvenancePath(storeRoot, "wrong-skill");
+    const cp = t.env.fs.cp;
+    const env: Env = {
+      ...t.env,
+      fs: {
+        ...t.env.fs,
+        cp: async (source, destination, opts) => {
+          await cp(source, destination, opts);
+          if (destination === target) {
+            await t.env.fs.writeFile(
+              t.path("home", ".cellarer", "store", "skills", "wrong-skill", "SKILL.md"),
+              "wrong",
+            );
+          }
+        },
+      },
+    };
+
+    const result = await add(env, { storeRoot, source: t.path("wrong-skill") });
+
+    expect(result.operation).toMatchObject({
+      ok: false,
+      conflict: { code: "PARTIAL_FAILURE" },
+      journal: {
+        status: "recovery-required",
+        actions: [
+          { status: "failed", receipt: { error: { code: "ACTION_POSTCONDITION_FAILED" } } },
+          { status: "pending" },
+        ],
+      },
+    });
+    await expect(t.env.fs.lstat(provenance)).rejects.toThrow();
+    await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(0);
+  });
+
+  it("rejects silently wrong provenance bytes after the signed skill directory action", async () => {
+    await writeSkill(t, "wrong-provenance", {
+      name: "wrong-provenance",
+      description: "Signed provenance output",
+    });
+    const provenance = skillProvenancePath(storeRoot, "wrong-provenance");
+    const rename = t.env.fs.rename;
+    const env: Env = {
+      ...t.env,
+      fs: {
+        ...t.env.fs,
+        rename: async (oldPath, newPath) => {
+          await rename(oldPath, newPath);
+          if (newPath === provenance) await t.env.fs.writeFile(newPath, "wrong provenance");
+        },
+      },
+    };
+
+    const result = await add(env, { storeRoot, source: t.path("wrong-provenance") });
+
+    expect(result.operation).toMatchObject({
+      ok: false,
+      conflict: { code: "PARTIAL_FAILURE" },
+      journal: {
+        status: "recovery-required",
+        actions: [
+          { status: "succeeded" },
+          { status: "failed", receipt: { error: { code: "ACTION_POSTCONDITION_FAILED" } } },
+        ],
+      },
+    });
+    await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(0);
+  });
+
+  it("routes rules, MCP, and skills through the same transactional add result", async () => {
+    const rule = t.path("shared.md");
+    const mcp = t.path("shared.json");
+    await t.env.fs.writeFile(rule, "# shared");
+    await t.env.fs.writeFile(mcp, JSON.stringify({ command: "npx", args: ["shared"] }));
+    await writeSkill(t, "shared-skill", {
+      name: "shared-skill",
+      description: "Shared transactional path",
+    });
+
+    const results = [
+      await add(t.env, { storeRoot, source: rule }),
+      await add(t.env, { storeRoot, source: mcp }),
+      await add(t.env, { storeRoot, source: t.path("shared-skill") }),
+    ];
+
+    expect(results.map((result) => result.operation?.ok)).toEqual([true, true, true]);
+    await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(3);
   });
 
   it("imports a local .json file into store/mcp (normalized)", async () => {
@@ -403,6 +671,24 @@ describe("engine/add — local source import", () => {
     );
   });
 });
+
+function driftBeforeMutationLock(env: Env, drift: () => Promise<void>): Env {
+  const writeFileExclusive = env.fs.writeFileExclusive;
+  let injected = false;
+  return {
+    ...env,
+    fs: {
+      ...env.fs,
+      writeFileExclusive: async (path, data, opts) => {
+        if (!injected && path.endsWith("mutation.lock")) {
+          injected = true;
+          await drift();
+        }
+        return writeFileExclusive(path, data, opts);
+      },
+    },
+  };
+}
 
 async function writeSkill(
   t: TmpEnv,

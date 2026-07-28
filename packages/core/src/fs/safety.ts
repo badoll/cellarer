@@ -2,7 +2,7 @@
 // 所有写 / 删 / 还原前调用,防软链穿越与越界写入。
 // 注意:本文件用 node:path 做纯路径计算;resolve 对相对路径会读 process.cwd,
 // 故调用方须传绝对路径(CLI 在边界已 absolutize --dir,adapter target 亦为绝对)。
-import { relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import type { Env } from "../env.js";
 import { lstatOrNull } from "./probe.js";
 
@@ -51,5 +51,51 @@ export async function assertNotSymbolicLink(env: Env, path: string): Promise<voi
   const stat = await lstatOrNull(env, path);
   if (stat?.isSymbolicLink()) {
     throw new Error(`safety: refusing to write through symlink at "${path}"`);
+  }
+}
+
+// Atomic rename does not follow a symlink at the final path, but it does follow symlinked parent
+// directories. Validate every existing ancestor inside the store before publishing durable state.
+export async function assertSafeAtomicPublicationPath(
+  env: Env,
+  path: string,
+  root: string,
+  label: string,
+): Promise<void> {
+  if (!isAbsolute(path) || !isAbsolute(root)) {
+    throw new Error(`safety: ${label} path and root must be absolute`);
+  }
+  assertPathInside(path, root, label);
+
+  const normalizedRoot = normalize(root);
+  const rootStat = await lstatOrNull(env, normalizedRoot);
+  if (!rootStat?.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new Error(`safety: ${label} root is missing, not a directory, or a symlink: "${root}"`);
+  }
+  const realRoot = await env.fs.realpath(normalizedRoot);
+  const relativeParent = relative(normalizedRoot, dirname(normalize(path)));
+  const segments = relativeParent.length === 0 ? [] : relativeParent.split(sep);
+  let nearestExisting = normalizedRoot;
+  let current = normalizedRoot;
+  for (const segment of segments) {
+    current = join(current, segment);
+    const stat = await lstatOrNull(env, current);
+    if (!stat) break;
+    if (stat.isSymbolicLink()) {
+      throw new Error(`safety: ${label} has an unsafe ancestor symlink at "${current}"`);
+    }
+    if (!stat.isDirectory()) {
+      throw new Error(`safety: ${label} ancestor is not a directory: "${current}"`);
+    }
+    nearestExisting = current;
+  }
+
+  const realAncestor = await env.fs.realpath(nearestExisting);
+  if (!isWithinRoot(realRoot, realAncestor)) {
+    throw new Error(`safety: ${label} ancestor resolves outside store root: "${nearestExisting}"`);
+  }
+  const finalStat = await lstatOrNull(env, path);
+  if (finalStat?.isSymbolicLink()) {
+    throw new Error(`safety: ${label} final path is a symlink: "${path}"`);
   }
 }

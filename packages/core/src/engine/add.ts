@@ -3,20 +3,28 @@
 import { basename, extname, join, relative } from "node:path";
 import type { Env } from "../env.js";
 import { lstatOrNull, readdirOrEmpty, readFileOrNull, statOrNull } from "../fs/probe.js";
-import { type McpServer, serverFromRaw } from "../mcp/model.js";
+import { type McpServer, serverFromRaw, serverToRaw } from "../mcp/model.js";
 import type { ArtifactKind } from "../model/index.js";
+import type { CanonicalJsonObject, OperationResult } from "../protocol/models.js";
+import {
+  executeStoreActionMutation,
+  type PreparedStoreMutationAction,
+} from "../protocol/store-mutation.js";
 import { detectSecret, scanTextForSecrets } from "../secrets/detector.js";
-import { tagArtifactCollections } from "../store/config.js";
+import { sha256 } from "../store/checksum.js";
+import { type CellarerConfig, CONFIG_FILENAME, loadConfig } from "../store/config.js";
 import {
   importSkillArtifact,
   isSafeArtifactName,
   listMcpArtifacts,
   listRuleArtifacts,
   listSkillArtifacts,
+  skillProvenancePath,
   writeMcpArtifact,
   writeRuleArtifact,
   writeSkillProvenance,
 } from "../store/store.js";
+import { fingerprintTarget } from "../target-ownership.js";
 
 export interface GitHubSource {
   source: string;
@@ -102,6 +110,16 @@ export interface AddResult {
   rejected: { kind: ArtifactKind; name: string; reason: string }[];
   candidates: SkillCandidate[];
   warnings: string[];
+  operation?: OperationResult;
+}
+
+interface PreparedAddAction extends PreparedStoreMutationAction {
+  imported?: { kind: ArtifactKind; name: string; path: string };
+}
+
+interface PreparedAdd {
+  result: AddResult;
+  actions: PreparedAddAction[];
 }
 
 interface SourceStage {
@@ -235,7 +253,7 @@ async function addLocalFile(
   name: string,
   source: string,
   isDir: boolean,
-): Promise<AddResult> {
+): Promise<PreparedAdd> {
   const result = emptyResult();
   if (opts.list || opts.all || (opts.skills && opts.skills.length > 0)) {
     throw new Error(
@@ -245,12 +263,12 @@ async function addLocalFile(
 
   if (!opts.force && (await nameExists(env, opts.storeRoot, kind, name))) {
     result.skipped.push({ kind, name, reason: "already exists (use --force to overwrite)" });
-    return result;
+    return { result, actions: [] };
   }
 
-  const reject = (reason: string): AddResult => {
+  const reject = (reason: string): PreparedAdd => {
     result.rejected.push({ kind, name, reason });
-    return result;
+    return { result, actions: [] };
   };
 
   const payloadText = isDir ? await collectDirText(env, source) : await env.fs.readFile(source);
@@ -261,9 +279,20 @@ async function addLocalFile(
     );
   }
 
-  let path: string;
+  let action: PreparedAddAction;
   if (kind === "rules") {
-    path = await writeRuleArtifact(env, opts.storeRoot, name, payloadText);
+    const path = join(opts.storeRoot, "store", "rules", `${name}.md`);
+    action = {
+      actionId: addActionId(kind, name, path),
+      kind: "add-rules",
+      target: path,
+      payload: { contentDigest: sha256(payloadText) },
+      postcondition: { state: "present", fingerprint: sha256(payloadText) },
+      execute: async () => {
+        await writeRuleArtifact(env, opts.storeRoot, name, payloadText);
+      },
+      imported: { kind, name, path },
+    };
   } else if (kind === "mcp") {
     let raw: unknown;
     try {
@@ -280,15 +309,37 @@ async function addLocalFile(
         `plaintext secret in mcp field(s) [${fieldHits.join(", ")}] — replace with \${ENV} or \${CELLARER_SECRET:name} before importing`,
       );
     }
-    path = await writeMcpArtifact(env, opts.storeRoot, name, server);
+    const path = join(opts.storeRoot, "store", "mcp", `${name}.json`);
+    const serializedServer = `${JSON.stringify(serverToRaw(server), null, 2)}\n`;
+    action = {
+      actionId: addActionId(kind, name, path),
+      kind: "add-mcp",
+      target: path,
+      payload: jsonObject({ server }),
+      postcondition: { state: "present", fingerprint: sha256(serializedServer) },
+      execute: async () => {
+        await writeMcpArtifact(env, opts.storeRoot, name, server);
+      },
+      imported: { kind, name, path },
+    };
   } else {
-    path = await importSkillArtifact(env, opts.storeRoot, name, source);
+    const path = join(opts.storeRoot, "store", "skills", name);
+    const sourceFingerprint = await requiredSourceFingerprint(env, source);
+    action = {
+      actionId: addActionId(kind, name, path),
+      kind: "add-skills",
+      target: path,
+      payload: { sourceFingerprint },
+      postcondition: { state: "present", fingerprint: sourceFingerprint },
+      execute: async () => {
+        await assertSourceFingerprint(env, source, sourceFingerprint);
+        await importSkillArtifact(env, opts.storeRoot, name, source);
+      },
+      imported: { kind, name, path },
+    };
   }
 
-  result.imported.push({ kind, name, path });
-  if (opts.collection)
-    await tagArtifactCollections(env, opts.storeRoot, [`${kind}/${name}`], opts.collection);
-  return result;
+  return { result, actions: [action] };
 }
 
 function parseGitHubSource(source: string): GitHubSource | null {
@@ -745,6 +796,7 @@ async function importSkillCandidate(
   stage: SourceStage,
   candidate: SkillCandidate,
   result: AddResult,
+  actions: PreparedAddAction[],
 ): Promise<void> {
   if (candidate.rejected) {
     result.rejected.push({
@@ -783,16 +835,8 @@ async function importSkillCandidate(
     return;
   }
 
-  const path = await importSkillArtifact(env, opts.storeRoot, candidate.name, candidate.path);
-  result.imported.push({ kind: "skills", name: candidate.name, path });
-  if (opts.collection) {
-    await tagArtifactCollections(
-      env,
-      opts.storeRoot,
-      [`skills/${candidate.name}`],
-      opts.collection,
-    );
-  }
+  const path = join(opts.storeRoot, "store", "skills", candidate.name);
+  const sourceFingerprint = await requiredSourceFingerprint(env, candidate.path);
   const provenance: SkillProvenance = {
     kind: "skills",
     name: candidate.name,
@@ -808,7 +852,122 @@ async function importSkillCandidate(
     internal: candidate.internal,
     warnings: candidate.warnings,
   };
-  await writeSkillProvenance(env, opts.storeRoot, candidate.name, provenance);
+  const provenancePath = skillProvenancePath(opts.storeRoot, candidate.name);
+  actions.push(
+    {
+      actionId: addActionId("skills", candidate.name, path),
+      kind: "add-skills",
+      target: path,
+      payload: { sourceFingerprint },
+      postcondition: { state: "present", fingerprint: sourceFingerprint },
+      execute: async () => {
+        await assertSourceFingerprint(env, candidate.path, sourceFingerprint);
+        await importSkillArtifact(env, opts.storeRoot, candidate.name, candidate.path);
+      },
+      imported: { kind: "skills", name: candidate.name, path },
+    },
+    {
+      actionId: addActionId("skills-provenance", candidate.name, provenancePath),
+      kind: "add-skill-provenance",
+      target: provenancePath,
+      payload: jsonObject({ provenance }),
+      postcondition: {
+        state: "present",
+        fingerprint: sha256(`${JSON.stringify(provenance, null, 2)}\n`),
+      },
+      execute: async () => {
+        await writeSkillProvenance(env, opts.storeRoot, candidate.name, provenance);
+      },
+    },
+  );
+}
+
+async function executeAddTransaction(
+  env: Env,
+  opts: AddOptions,
+  prepare: () => Promise<PreparedAdd>,
+): Promise<AddResult> {
+  const transaction = await executeStoreActionMutation(
+    env,
+    opts.storeRoot,
+    "store-import",
+    "add",
+    async () => {
+      const prepared = await prepare();
+      const imported = prepared.actions.flatMap((action) =>
+        action.imported ? [action.imported] : [],
+      );
+      const publications = await addCollectionPublication(env, opts, imported);
+      return {
+        value: prepared,
+        actions: prepared.actions,
+        ...(publications.length > 0 ? { publications } : {}),
+      };
+    },
+  );
+  const successfulActionIds = new Set(
+    transaction.operation.ok
+      ? transaction.operation.receipt.actionReceipts
+          .filter((receipt) => receipt.outcome !== "failed")
+          .map((receipt) => receipt.actionId)
+      : (transaction.operation.journal?.actions ?? [])
+          .filter((action) => action.status === "succeeded")
+          .map((action) => action.actionId),
+  );
+  return {
+    ...transaction.value.result,
+    imported: transaction.value.actions.flatMap((action) =>
+      action.imported && successfulActionIds.has(action.actionId) ? [action.imported] : [],
+    ),
+    operation: transaction.operation,
+  };
+}
+
+async function addCollectionPublication(
+  env: Env,
+  opts: AddOptions,
+  imported: readonly { kind: ArtifactKind; name: string }[],
+): Promise<{ path: string; data: string; mode: number }[]> {
+  if (!opts.collection || imported.length === 0) return [];
+  const config = await loadConfig(env, opts.storeRoot);
+  const next = JSON.parse(JSON.stringify(config)) as CellarerConfig;
+  for (const item of imported) {
+    const id = `${item.kind}/${item.name}`;
+    const collections = next.artifacts[id]?.collections ?? [];
+    if (!collections.includes(opts.collection)) {
+      next.artifacts[id] = { collections: [...collections, opts.collection] };
+    }
+  }
+  return [
+    {
+      path: join(opts.storeRoot, CONFIG_FILENAME),
+      data: `${JSON.stringify(next, null, 2)}\n`,
+      mode: 0o600,
+    },
+  ];
+}
+
+function addActionId(kind: string, name: string, target: string): string {
+  return sha256(JSON.stringify({ kind, name, target }));
+}
+
+function jsonObject(value: unknown): CanonicalJsonObject {
+  return JSON.parse(JSON.stringify(value)) as CanonicalJsonObject;
+}
+
+async function requiredSourceFingerprint(env: Env, source: string): Promise<string> {
+  const fingerprint = await fingerprintTarget(env, source);
+  if (!fingerprint) throw new Error(`add source cannot be fingerprinted completely: ${source}`);
+  return fingerprint;
+}
+
+async function assertSourceFingerprint(env: Env, source: string, expected: string): Promise<void> {
+  if ((await fingerprintTarget(env, source)) === expected) return;
+  const error = new Error(`add source changed after preparation: ${source}`) as Error & {
+    code: string;
+  };
+  error.code = "ESTALE";
+  throw error;
 }
 
 export async function add(env: Env, opts: AddOptions): Promise<AddResult> {
@@ -816,7 +975,9 @@ export async function add(env: Env, opts: AddOptions): Promise<AddResult> {
   const localStat = await statOrNull(env, opts.source);
   if (localStat !== null && !localStat.isDirectory()) {
     const kind = inferKind(false, opts.source);
-    return addLocalFile(env, opts, kind, deriveName(opts.source, false), opts.source, false);
+    return executeAddTransaction(env, opts, () =>
+      addLocalFile(env, opts, kind, deriveName(opts.source, false), opts.source, false),
+    );
   }
 
   const stage = await stageSource(env, opts);
@@ -827,19 +988,27 @@ export async function add(env: Env, opts: AddOptions): Promise<AddResult> {
     }
     if (!stagedStat.isDirectory()) {
       const kind = inferKind(false, stage.path);
-      return addLocalFile(env, opts, kind, deriveName(stage.path, false), stage.path, false);
+      return executeAddTransaction(env, opts, () =>
+        addLocalFile(env, opts, kind, deriveName(stage.path, false), stage.path, false),
+      );
     }
 
-    const result = emptyResult();
     const candidates = await discoverSkillCandidates(env, stage);
-    result.candidates = visibleCandidates(candidates, opts.collection === "internal");
-    if (opts.list) return result;
-
-    const selected = selectCandidates(candidates, opts, result);
-    for (const candidate of selected) {
-      await importSkillCandidate(env, opts, stage, candidate, result);
+    if (opts.list) {
+      const result = emptyResult();
+      result.candidates = visibleCandidates(candidates, opts.collection === "internal");
+      return result;
     }
-    return result;
+    return executeAddTransaction(env, opts, async () => {
+      const result = emptyResult();
+      result.candidates = visibleCandidates(candidates, opts.collection === "internal");
+      const selected = selectCandidates(candidates, opts, result);
+      const actions: PreparedAddAction[] = [];
+      for (const candidate of selected) {
+        await importSkillCandidate(env, opts, stage, candidate, result, actions);
+      }
+      return { result, actions };
+    });
   } finally {
     await stage.cleanup?.();
   }

@@ -1,17 +1,18 @@
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { apply } from "../src/engine/apply.js";
 import { plan } from "../src/engine/plan.js";
-import { planRevert, revert } from "../src/engine/revert.js";
 import {
-  importSkillArtifact,
-  initStore,
-  loadLedger,
-  saveLedger,
-  writeRuleArtifact,
-} from "../src/index.js";
-import { makeLedger } from "../src/store/ledger.js";
+  applyRevertMutationPlan,
+  planRevert,
+  planRevertMutation,
+  revert,
+} from "../src/engine/revert.js";
+import { readStoreRevision } from "../src/protocol/store-revision.js";
+import { loadLedger, makeLedger, saveLedger } from "../src/store/ledger.js";
+import { importSkillArtifact, initStore, writeRuleArtifact } from "../src/store/store.js";
 import { fingerprintTarget } from "../src/target-ownership.js";
+import { createEncryptedTargetSnapshot } from "../src/target-snapshot.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
 const SNAPSHOT_PASSPHRASE = "revert-snapshot-passphrase";
@@ -141,6 +142,81 @@ describe("drift-aware revert", () => {
     expect(result.reverted).toHaveLength(2);
     expect(targetRemovals).toBe(1);
     expect((await loadLedger(t.env, storeRoot)).owners).toEqual([]);
+  });
+
+  it("revert --all uses each persisted project root for nested Skill gitignore actions", async () => {
+    const source = t.path("source", "nested");
+    const projectA = t.path("cwd", "project-a");
+    const projectB = t.path("cwd", "project-b");
+    await t.env.fs.mkdir(source, { recursive: true });
+    await t.env.fs.writeFile(join(source, "SKILL.md"), "# nested");
+    await importSkillArtifact(t.env, storeRoot, "nested", source);
+    for (const dir of [projectA, projectB]) {
+      await t.env.fs.mkdir(dir, { recursive: true });
+      const result = await apply(t.env, {
+        storeRoot,
+        scope: "project",
+        dir,
+        agents: ["claude-code"],
+        capabilities: ["skills"],
+      });
+      expect(result.failures).toEqual([]);
+    }
+
+    const owners = (await loadLedger(t.env, storeRoot)).owners;
+    expect(owners.map((owner) => owner.projectRoot).sort()).toEqual([projectA, projectB]);
+    const prepared = await planRevertMutation(t.env, {
+      storeRoot,
+      scope: "project",
+      agents: ["claude-code"],
+    });
+    expect(
+      prepared.mutationPlan.actions
+        .filter((action) => action.kind === "sync-gitignore")
+        .map((action) => action.target)
+        .sort(),
+    ).toEqual([join(projectA, ".gitignore"), join(projectB, ".gitignore")]);
+
+    const result = await revert(t.env, {
+      storeRoot,
+      scope: "project",
+      agents: ["claude-code"],
+    });
+    expect(result.failures).toEqual([]);
+    expect(result.reverted).toHaveLength(2);
+    for (const project of [projectA, projectB]) {
+      await expect(t.env.fs.lstat(join(project, ".gitignore"))).rejects.toThrow();
+      await expect(
+        t.env.fs.lstat(join(project, ".claude", "skills", ".gitignore")),
+      ).rejects.toThrow();
+    }
+  });
+
+  it("fails closed when a pre-release project owner has no canonical project root", async () => {
+    const project = t.path("cwd", "project");
+    await t.env.fs.mkdir(project, { recursive: true });
+    await writeRuleArtifact(t.env, storeRoot, "style", "# managed");
+    await apply(t.env, {
+      storeRoot,
+      scope: "project",
+      dir: project,
+      agents: ["claude-code"],
+      capabilities: ["rules"],
+    });
+    const ledger = await loadLedger(t.env, storeRoot);
+    const owner = ledger.owners[0];
+    if (!owner) throw new Error("expected project owner");
+    const { projectRoot: _removed, ...preReleaseOwner } = owner;
+    await t.env.fs.writeFile(
+      join(storeRoot, "state.json"),
+      `${JSON.stringify({ ...ledger, owners: [preReleaseOwner] }, null, 2)}\n`,
+    );
+
+    await expect(planRevert(t.env, { storeRoot, scope: "project" })).rejects.toThrow(
+      /missing a canonical projectRoot.*move state\.json aside/,
+    );
+    await expect(t.env.fs.lstat(owner.target)).resolves.toBeDefined();
+    await expect(t.env.fs.lstat(join(project, ".gitignore"))).resolves.toBeDefined();
   });
 
   it("plans duplicate owners as invalid and makes actual revert non-executable", async () => {
@@ -303,7 +379,12 @@ describe("drift-aware revert", () => {
 
     const preview = await planRevert(t.env, { storeRoot, agents: ["claude-code"] });
     expect(preview.targets[0]).toMatchObject({
-      snapshot: { status: "available", encrypted: true },
+      snapshot: {
+        status: "available",
+        encrypted: true,
+        digest: expect.stringMatching(/^sha256:/),
+        mode: 0o600,
+      },
       proposedAction: "restore-snapshot",
       blocked: false,
     });
@@ -336,6 +417,96 @@ describe("drift-aware revert", () => {
       "original.txt",
     );
     expect((await loadLedger(t.env, storeRoot)).owners).toEqual([]);
+  });
+
+  it("rejects replacement by another valid snapshot after revert planning", async () => {
+    const { target, snapshotPath, managedFingerprint } = await applySkillOverExistingTarget();
+    const prepared = await planRevertMutation(t.env, {
+      storeRoot,
+      agents: ["claude-code"],
+    });
+    const alternateTarget = t.path("home", ".claude", "alternate-before");
+    await t.env.fs.mkdir(alternateTarget, { recursive: true });
+    await t.env.fs.writeFile(join(alternateTarget, "alternate.txt"), "alternate");
+    const alternateFingerprint = await fingerprintTarget(t.env, alternateTarget);
+    if (!alternateFingerprint) throw new Error("expected alternate fingerprint");
+    const alternateSnapshot = await createEncryptedTargetSnapshot(
+      t.env,
+      storeRoot,
+      alternateTarget,
+      SNAPSHOT_PASSPHRASE,
+      alternateFingerprint,
+    );
+    await t.env.fs.publishFileAtomically(
+      snapshotPath,
+      await t.env.fs.readFile(alternateSnapshot.path),
+      { mode: 0o600 },
+    );
+
+    const result = await applyRevertMutationPlan(t.env, prepared.mutationPlan, {
+      storeRoot,
+      snapshotPassphrase: SNAPSHOT_PASSPHRASE,
+    });
+
+    expect(result.operation).toMatchObject({ ok: false, conflict: { code: "PARTIAL_FAILURE" } });
+    await expect(fingerprintTarget(t.env, target)).resolves.toBe(managedFingerprint);
+    await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(1);
+    expect((await loadLedger(t.env, storeRoot)).owners).toHaveLength(1);
+  });
+
+  it("restores the signed bytes read before a snapshot path swap and never deletes the replacement", async () => {
+    const { target, snapshotPath } = await applySkillOverExistingTarget();
+    const prepared = await planRevertMutation(t.env, {
+      storeRoot,
+      agents: ["claude-code"],
+    });
+    const alternateTarget = t.path("home", ".claude", "alternate-read-swap");
+    await t.env.fs.mkdir(alternateTarget, { recursive: true });
+    await t.env.fs.writeFile(join(alternateTarget, "alternate.txt"), "alternate");
+    const alternateFingerprint = await fingerprintTarget(t.env, alternateTarget);
+    if (!alternateFingerprint) throw new Error("expected alternate fingerprint");
+    const alternateSnapshot = await createEncryptedTargetSnapshot(
+      t.env,
+      storeRoot,
+      alternateTarget,
+      SNAPSHOT_PASSPHRASE,
+      alternateFingerprint,
+    );
+    const alternateBytes = await t.env.fs.readFile(alternateSnapshot.path);
+    const readFile = t.env.fs.readFile;
+    const rm = t.env.fs.rm;
+    let swapped = false;
+    let snapshotRmCalls = 0;
+    const env = {
+      ...t.env,
+      fs: {
+        ...t.env.fs,
+        readFile: async (path: string) => {
+          const bytes = await readFile(path);
+          if (!swapped && path === snapshotPath) {
+            swapped = true;
+            await t.env.fs.publishFileAtomically(snapshotPath, alternateBytes, { mode: 0o600 });
+          }
+          return bytes;
+        },
+        rm: async (path: string, opts?: { recursive?: boolean; force?: boolean }) => {
+          if (path === snapshotPath) snapshotRmCalls += 1;
+          await rm(path, opts);
+        },
+      },
+    };
+
+    const result = await applyRevertMutationPlan(env, prepared.mutationPlan, {
+      storeRoot,
+      snapshotPassphrase: SNAPSHOT_PASSPHRASE,
+      keepBackups: false,
+    });
+
+    expect(result.operation).toMatchObject({ ok: true, receipt: { outcome: "committed" } });
+    await expect(t.env.fs.readFile(join(target, "original.txt"))).resolves.toBe("original");
+    await expect(t.env.fs.lstat(join(target, "alternate.txt"))).rejects.toThrow();
+    await expect(t.env.fs.readFile(snapshotPath)).resolves.toBe(alternateBytes);
+    expect(snapshotRmCalls).toBe(0);
   });
 
   it("keeps the current target, owner, and snapshot when restore build fails", async () => {
@@ -478,6 +649,57 @@ describe("drift-aware revert", () => {
     expect(result.failures[0]?.message).toContain(displacedPath);
     expect((await loadLedger(t.env, storeRoot)).owners).toEqual([owner]);
     expect(await t.env.fs.readFile(snapshotPath)).toBe(encrypted);
+  });
+
+  it("never deletes a snapshot path after commit when its ancestor is swapped", async () => {
+    const { snapshotPath } = await applySkillOverExistingTarget();
+    const snapshotsRoot = dirname(snapshotPath);
+    const retainedRoot = t.path("retained-snapshots");
+    const outsideRoot = t.path("outside-same-name");
+    const outsideFile = join(outsideRoot, basename(snapshotPath));
+    const revisionPath = t.path("home", ".cellarer", "revision.json");
+    const publishFileAtomically = t.env.fs.publishFileAtomically;
+    const rm = t.env.fs.rm;
+    let swapped = false;
+    let snapshotRmCalls = 0;
+    const env = {
+      ...t.env,
+      fs: {
+        ...t.env.fs,
+        publishFileAtomically: async (path: string, data: string, opts?: { mode?: number }) => {
+          await publishFileAtomically(path, data, opts);
+          if (!swapped && path === revisionPath) {
+            swapped = true;
+            await t.env.fs.rename(snapshotsRoot, retainedRoot);
+            await t.env.fs.mkdir(outsideRoot, { recursive: true });
+            await t.env.fs.writeFile(outsideFile, "external same-name snapshot");
+            await t.env.fs.symlink(outsideRoot, snapshotsRoot, "dir");
+          }
+        },
+        rm: async (path: string, opts?: { recursive?: boolean; force?: boolean }) => {
+          if (path === snapshotPath) snapshotRmCalls += 1;
+          await rm(path, opts);
+        },
+      },
+    };
+
+    const result = await revert(env, {
+      storeRoot,
+      agents: ["claude-code"],
+      snapshotPassphrase: SNAPSHOT_PASSPHRASE,
+      keepBackups: false,
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(result.reverted).toHaveLength(1);
+    expect(snapshotRmCalls).toBe(0);
+    await expect(t.env.fs.readFile(outsideFile)).resolves.toBe("external same-name snapshot");
+    await expect(t.env.fs.readFile(join(retainedRoot, basename(snapshotPath)))).resolves.toContain(
+      "BEGIN AGE ENCRYPTED FILE",
+    );
+    expect(result.warnings).toContainEqual(
+      expect.stringContaining("automatic snapshot deletion is unsupported"),
+    );
   });
 
   it("keeps the owner for a wrong passphrase and for a missing snapshot", async () => {

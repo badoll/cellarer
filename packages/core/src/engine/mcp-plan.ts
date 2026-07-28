@@ -20,6 +20,7 @@ import type { Artifact, PlanAction } from "../model/index.js";
 import { detectSecret } from "../secrets/detector.js";
 import { envPlaceholder, parseSecretRef } from "../secrets/redactor.js";
 import { resolveSecretValue, type SecretMode } from "../secrets/resolver.js";
+import { sha256 } from "../store/checksum.js";
 import { readMcpArtifact } from "../store/store.js";
 
 // 渲染后的 incoming 集合(agent 无关,plan() 顶层算一次)。
@@ -168,6 +169,16 @@ export async function planMcp(ctx: McpPlanContext, adapter: AgentAdapter): Promi
   if (!target || !adapter.mcp || ctx.selectedMcp.length === 0) return [];
 
   const strategy: MergeStrategy = ctx.strategyOverride ?? adapter.mcp.defaultStrategy;
+  // Desired-state evidence must depend only on the current selection/configuration. Render the
+  // selected server set into an empty document before reading the target used for merge preview.
+  const desiredContent = applyMerge(
+    adapter.mcp.codec,
+    null,
+    ctx.rendered.incoming,
+    adapter.mcp.serversKey,
+    "overwrite",
+  );
+  const contentFingerprint = sha256(desiredContent);
   const existing = await readFileOrNull(ctx.env, target);
   const content = applyMerge(
     adapter.mcp.codec,
@@ -189,6 +200,10 @@ export async function planMcp(ctx: McpPlanContext, adapter: AgentAdapter): Promi
     op: strategy,
     reason: ctx.selectedMcp.map((a) => a.id).join(", "),
     preview: { before: existing ?? undefined, after: content },
+    desiredEvidence: {
+      method: "write",
+      contentFingerprint,
+    },
     secretRefs: ctx.rendered.refs,
     // 故意解析的真值(vault/keychain)是 §10.2 的「必须明文」逃生通道:标记后让 plan() 的
     // 通用护栏在 global 放行、project(git 跟踪)拦截。意外明文(脏库房)另标 accidentalPlaintext,无逃生。

@@ -385,7 +385,12 @@ describe("engine/apply + revert", () => {
     const led = await loadLedger(t.env, storeRoot);
     // 攻击者把恶意条目标成 project(scope 与 target 同存于可篡改台账),企图绕过按 scope 选根的校验。
     const tampered = makeLedger(
-      led.owners.map((e) => ({ ...e, scope: "project" as const, target: outside })),
+      led.owners.map((e) => ({
+        ...e,
+        scope: "project" as const,
+        projectRoot: t.env.cwd(),
+        target: outside,
+      })),
     );
     await saveLedger(t.env, storeRoot, tampered);
     // 无 --dir:护栏不按 entry.scope 分派根,仍以 home∪cwd 兜底跳过 + 告警。

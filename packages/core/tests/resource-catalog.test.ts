@@ -1,14 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  appendActivity,
-  initStore,
-  resourceCatalog,
-  saveLedger,
-  sha256,
-  tagArtifactCollections,
-  writeMcpArtifact,
-  writeRuleArtifact,
-} from "../src/index.js";
+import { appendActivity } from "../src/activity.js";
+import { resourceCatalog, sha256 } from "../src/index.js";
+import { tagArtifactCollections } from "../src/store/config.js";
+import { saveLedger } from "../src/store/ledger.js";
+import { initStore, writeMcpArtifact, writeRuleArtifact } from "../src/store/store.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
 describe("resource catalog", () => {

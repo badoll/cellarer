@@ -7,7 +7,6 @@ export {
   type ActivityEvent,
   type ActivityFilter,
   activityPath,
-  appendActivity,
   listActivity,
   summarizeActivity,
 } from "./activity.js";
@@ -65,9 +64,14 @@ export {
   type SkillFrontmatter,
   type SkillProvenance,
 } from "./engine/add.js";
-export { apply } from "./engine/apply.js";
+export { apply, applyMutationPlan, planApplyMutation } from "./engine/apply.js";
 export { inCollections, plan } from "./engine/plan.js";
-export { planRevert, revert } from "./engine/revert.js";
+export {
+  applyRevertMutationPlan,
+  planRevert,
+  planRevertMutation,
+  revert,
+} from "./engine/revert.js";
 export {
   applyScan,
   type ConflictStrategy,
@@ -80,11 +84,20 @@ export {
 } from "./engine/scan.js";
 export { status } from "./engine/status.js";
 export type {
+  ApplyCallResult,
   ApplyFailure,
+  ApplyMutationContext,
+  ApplyMutationResult,
   ApplyResult,
   DistributeOptions,
   DriftStatus,
+  MutationPlanOptions,
+  PlannedApplyMutation,
+  PlannedRevertMutation,
+  RevertCallResult,
   RevertFailure,
+  RevertMutationContext,
+  RevertMutationResult,
   RevertOptions,
   RevertPlan,
   RevertPlanTarget,
@@ -95,11 +108,23 @@ export type {
   StatusItem,
   StatusOptions,
 } from "./engine/types.js";
+export {
+  type AppliedDiskVerification,
+  type DesiredAppliedComparisons,
+  type DesiredAppliedItem,
+  type DesiredAppliedStatus,
+  type DesiredAppliedVerification,
+  type EvidenceComparison,
+  type VerificationOptions,
+  type VerificationReport,
+  verify,
+} from "./engine/verification.js";
 export type {
   Env,
   FileStat,
   FsLike,
   Platform,
+  ProcessLiveness,
   SecretGet,
   SecretStore,
   SymlinkType,
@@ -118,6 +143,8 @@ export type {
   ArtifactKind,
   Capability,
   Collection,
+  DesiredPlacementMethod,
+  DesiredTargetEvidence,
   DistributePlan,
   Ledger,
   LedgerEntry,
@@ -133,6 +160,97 @@ export type {
   TargetOwnershipEvidence,
   TargetReplacementApproval,
 } from "./model/index.js";
+export {
+  canonicalJson,
+  canonicalMutationPlan,
+  createDurableMutationPlan,
+  createMutationPlan,
+  mutationPlanDigest,
+  verifyDurableMutationPlanDigest,
+  verifyMutationPlanDigest,
+} from "./protocol/canonical.js";
+export { targetState } from "./protocol/execute.js";
+export {
+  DEFAULT_OPERATION_RECEIPT_RETENTION,
+  listOperationReceipts,
+  operationJournalPath,
+  operationReceiptPath,
+  operationReceiptsPath,
+  readOperationJournal,
+  readOperationReceipt,
+} from "./protocol/journal.js";
+export {
+  type ActionPrecondition,
+  type CanonicalJsonObject,
+  type CanonicalJsonPrimitive,
+  type CanonicalJsonValue,
+  type DurableMutationPlan,
+  type DurableMutationPlanAction,
+  type ExpiredPlanConflict,
+  type InterruptedOperationConflict,
+  type InvalidPlanDigestConflict,
+  type LockConflict,
+  type LockOwnerEvidence,
+  type ManualRecoveryRequiredConflict,
+  MUTATION_PLAN_SCHEMA_VERSION,
+  type MutationConflict,
+  type MutationOperation,
+  type MutationPlan,
+  type MutationPlanAction,
+  type MutationPlanInput,
+  OPERATION_JOURNAL_SCHEMA_VERSION,
+  OPERATION_RECEIPT_SCHEMA_VERSION,
+  type OperationActionFailure,
+  type OperationActionReceipt,
+  type OperationJournal,
+  type OperationJournalAction,
+  type OperationJournalStatus,
+  type OperationReceipt,
+  type OperationResult,
+  type OperationStatePublication,
+  type PartialFailureConflict,
+  type PlanExpiry,
+  type StaleRevisionConflict,
+  type StoreRevision,
+  type TargetPreconditionConflict,
+  type TargetStateReceipt,
+} from "./protocol/models.js";
+export {
+  mutationLockPath,
+  readStoreMutationLockOwner,
+  readStoreRecoveryLockOwner,
+  recoveryLockPath,
+  type StoreMutationLock,
+  type StoreMutationLockResult,
+} from "./protocol/mutation-lock.js";
+export {
+  type MutationPresentation,
+  type MutationRecoveryError,
+  type MutationRecoveryPresentation,
+  mutationPresentation,
+  mutationRecoveryPresentation,
+  type PresentedOperationResult,
+} from "./protocol/presentation.js";
+export {
+  diagnoseMutationRecovery,
+  type MutationRecoveryDiagnosis,
+  type MutationRecoveryStatus,
+  type OperationRecoveryRetentionOptions,
+  type OperationRecoveryRetentionResult,
+  pruneOperationRecoveryArtifacts,
+  type RecoverInterruptedOperationOptions,
+  recoverInterruptedOperation,
+} from "./protocol/recovery.js";
+export {
+  StoreMutationConflictError,
+  type StorePublicationMutationResult,
+} from "./protocol/store-mutation.js";
+export {
+  observeAtStableStoreRevision,
+  readStoreRevision,
+  StoreRevisionChangedDuringPlanningError,
+  storeRevisionPath,
+} from "./protocol/store-revision.js";
 export { createRealEnv } from "./real-env.js";
 export type {
   Destination,
@@ -204,9 +322,8 @@ export {
   packagedConfigText,
   parseConfig,
   parsePackagedConfigForSettings,
-  saveConfig,
-  tagArtifactCollections,
 } from "./store/config.js";
+export { type InitializeStoreResult, initializeStore } from "./store/initialize.js";
 export {
   addEntries,
   addOwners,
@@ -217,13 +334,10 @@ export {
   type LedgerSecretRefStat,
   LegacyLedgerVersionError,
   loadLedger,
-  saveLedger,
   targetKey,
 } from "./store/ledger.js";
 export type { InitResult } from "./store/store.js";
 export {
-  importSkillArtifact,
-  initStore,
   isSafeArtifactName,
   listMcpArtifacts,
   listRuleArtifacts,
@@ -232,9 +346,6 @@ export {
   readRuleArtifact,
   resolveStoreRoot,
   skillProvenancePath,
-  writeMcpArtifact,
-  writeRuleArtifact,
-  writeSkillProvenance,
 } from "./store/store.js";
 export {
   fingerprintTarget,

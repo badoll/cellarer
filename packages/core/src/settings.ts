@@ -1,16 +1,21 @@
+import { join } from "node:path";
 import type { Env } from "./env.js";
 import type { LinkMethod } from "./model/index.js";
+import {
+  executeStorePublicationMutation,
+  unwrapStorePublicationMutation,
+} from "./protocol/store-mutation.js";
 import type { SecretMode } from "./secrets/resolver.js";
 import {
   type AdapterBodyConfig,
   type AdapterPatchConfig,
   type CellarerConfig,
+  CONFIG_FILENAME,
   loadConfig,
   packagedConfigText,
   parseAdapterBodyConfig,
   parseAdapterPatchConfig,
   parsePackagedConfigForSettings,
-  saveConfig,
 } from "./store/config.js";
 import { collectLedgerSecretRefStats, loadLedger } from "./store/ledger.js";
 import { resolveStoreRoot } from "./store/store.js";
@@ -112,11 +117,12 @@ export async function saveCollections(
   storeRoot: string,
   collections: CellarerConfig["collections"],
 ): Promise<CellarerConfig> {
-  const config = await loadConfig(env, storeRoot);
-  const next = { ...config, collections };
-  validateCollectionsConfig(next);
-  await saveConfig(env, storeRoot, next);
-  return next;
+  return publishSettingsConfig(env, storeRoot, "collections", async () => {
+    const config = await loadConfig(env, storeRoot);
+    const next = { ...config, collections };
+    validateCollectionsConfig(next);
+    return next;
+  });
 }
 
 export async function saveDefaults(
@@ -124,11 +130,12 @@ export async function saveDefaults(
   storeRoot: string,
   patch: DefaultsPatch,
 ): Promise<CellarerConfig> {
-  const config = await loadConfig(env, storeRoot);
-  const next = { ...config, defaults: { ...config.defaults, ...patch } };
-  validateCollectionsConfig(next);
-  await saveConfig(env, storeRoot, next);
-  return next;
+  return publishSettingsConfig(env, storeRoot, "defaults", async () => {
+    const config = await loadConfig(env, storeRoot);
+    const next = { ...config, defaults: { ...config.defaults, ...patch } };
+    validateCollectionsConfig(next);
+    return next;
+  });
 }
 
 export async function setAgentEnabled(
@@ -137,16 +144,16 @@ export async function setAgentEnabled(
   agentId: string,
   enabled: boolean,
 ): Promise<CellarerConfig> {
-  const config = await loadConfig(env, storeRoot);
-  const next = {
-    ...config,
-    agents: {
-      ...config.agents,
-      [agentId]: { ...config.agents[agentId], enabled },
-    },
-  };
-  await saveConfig(env, storeRoot, next);
-  return next;
+  return publishSettingsConfig(env, storeRoot, "agent-enabled", async () => {
+    const config = await loadConfig(env, storeRoot);
+    return {
+      ...config,
+      agents: {
+        ...config.agents,
+        [agentId]: { ...config.agents[agentId], enabled },
+      },
+    };
+  });
 }
 
 export async function upsertAdapterConfig(
@@ -155,14 +162,14 @@ export async function upsertAdapterConfig(
   adapterId: string,
   adapter: AdapterPatchConfig,
 ): Promise<CellarerConfig> {
-  const config = await loadConfig(env, storeRoot);
-  const builtinAdapterIds = await loadBuiltinAdapterIds(env);
-  const nextAdapter = builtinAdapterIds.has(adapterId)
-    ? parseAdapterPatchConfig(adapter)
-    : validateCustomAdapterConfig(adapterId, adapter);
-  const next = { ...config, adapters: { ...config.adapters, [adapterId]: nextAdapter } };
-  await saveConfig(env, storeRoot, next);
-  return next;
+  return publishSettingsConfig(env, storeRoot, "adapter-upsert", async () => {
+    const config = await loadConfig(env, storeRoot);
+    const builtinAdapterIds = await loadBuiltinAdapterIds(env);
+    const nextAdapter = builtinAdapterIds.has(adapterId)
+      ? parseAdapterPatchConfig(adapter)
+      : validateCustomAdapterConfig(adapterId, adapter);
+    return { ...config, adapters: { ...config.adapters, [adapterId]: nextAdapter } };
+  });
 }
 
 export async function deleteCustomAdapterConfig(
@@ -170,14 +177,42 @@ export async function deleteCustomAdapterConfig(
   storeRoot: string,
   adapterId: string,
 ): Promise<CellarerConfig> {
-  const builtinAdapterIds = await loadBuiltinAdapterIds(env);
-  if (builtinAdapterIds.has(adapterId)) {
-    throw new Error(`cannot delete built-in adapter "${adapterId}"`);
-  }
-  const config = await loadConfig(env, storeRoot);
-  const adapters = { ...config.adapters };
-  delete adapters[adapterId];
-  const next = { ...config, adapters };
-  await saveConfig(env, storeRoot, next);
-  return next;
+  return publishSettingsConfig(env, storeRoot, "adapter-delete", async () => {
+    const builtinAdapterIds = await loadBuiltinAdapterIds(env);
+    if (builtinAdapterIds.has(adapterId)) {
+      throw new Error(`cannot delete built-in adapter "${adapterId}"`);
+    }
+    const config = await loadConfig(env, storeRoot);
+    const adapters = { ...config.adapters };
+    delete adapters[adapterId];
+    return { ...config, adapters };
+  });
+}
+
+async function publishSettingsConfig(
+  env: Env,
+  storeRoot: string,
+  mutationKind: string,
+  prepare: () => Promise<CellarerConfig>,
+): Promise<CellarerConfig> {
+  const result = await executeStorePublicationMutation(
+    env,
+    storeRoot,
+    "settings",
+    mutationKind,
+    async () => {
+      const value = await prepare();
+      return {
+        value,
+        publications: [
+          {
+            path: join(storeRoot, CONFIG_FILENAME),
+            data: `${JSON.stringify(value, null, 2)}\n`,
+            mode: 0o600,
+          },
+        ],
+      };
+    },
+  );
+  return unwrapStorePublicationMutation(result);
 }

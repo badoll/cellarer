@@ -1,0 +1,175 @@
+{
+  "canonicalPlan": "{\"actions\":[{\"actionId\":\"action-1\",\"kind\":\"write\",\"payload\":{\"contentDigest\":\"sha256:after-a\",\"mode\":420},\"target\":\"/tmp/a\"},{\"actionId\":\"action-2\",\"kind\":\"remove\",\"payload\":{},\"target\":\"/tmp/b\"}],\"baseRevision\":7,\"expires\":{\"expiresAt\":\"2026-07-28T12:00:00.000Z\",\"policy\":\"expires-at\"},\"normalizedInputs\":{\"agents\":[\"claude-code\",\"codex\"],\"scope\":\"global\"},\"operation\":\"apply\",\"planId\":\"plan-0001\",\"schemaVersion\":1,\"targetPreconditions\":[{\"actionId\":\"action-1\",\"expected\":{\"state\":\"absent\"},\"target\":\"/tmp/a\"},{\"actionId\":\"action-2\",\"expected\":{\"fingerprint\":\"sha256:before\",\"state\":\"present\"},\"target\":\"/tmp/b\"}]}",
+  "digest": "sha256:09e730fb152ae8f9d1d755679cce3c35172412eaf25515eac6a0aa867f0e4466",
+  "conflicts": [
+    {
+      "code": "LOCK_CONFLICT",
+      "message": "store mutation lock is held",
+      "owner": {
+        "operationId": "operation-active",
+        "processId": 1234,
+        "hostname": "workstation",
+        "acquiredAt": "2026-07-28T10:00:00.000Z"
+      }
+    },
+    {
+      "code": "STALE_REVISION",
+      "message": "store revision changed; replan required",
+      "planId": "plan-0001",
+      "expectedRevision": 7,
+      "actualRevision": 8,
+      "replanRequired": true
+    },
+    {
+      "code": "EXPIRED_PLAN",
+      "message": "plan expired",
+      "planId": "plan-0001",
+      "expiredAt": "2026-07-28T12:00:00.000Z"
+    },
+    {
+      "code": "INVALID_PLAN_DIGEST",
+      "message": "plan digest does not match its contents",
+      "planId": "plan-0001",
+      "expectedDigest": "sha256:expected",
+      "actualDigest": "sha256:actual"
+    },
+    {
+      "code": "TARGET_PRECONDITION_CONFLICT",
+      "message": "target changed after planning",
+      "planId": "plan-0001",
+      "actionId": "action-2",
+      "target": "/tmp/b",
+      "expected": {
+        "state": "present",
+        "fingerprint": "sha256:before"
+      },
+      "actual": {
+        "state": "present",
+        "fingerprint": "sha256:changed"
+      }
+    },
+    {
+      "code": "INTERRUPTED_OPERATION",
+      "message": "an incomplete operation requires recovery",
+      "operationId": "operation-0001",
+      "journalStatus": "executing"
+    },
+    {
+      "code": "PARTIAL_FAILURE",
+      "message": "one or more actions failed",
+      "operationId": "operation-0001",
+      "failedActionIds": ["action-2"]
+    },
+    {
+      "code": "MANUAL_RECOVERY_REQUIRED",
+      "message": "target matches neither recorded receipt",
+      "operationId": "operation-0001",
+      "targets": ["/tmp/b"],
+      "guidance": "inspect the target and journal before changing either"
+    }
+  ],
+  "journal": {
+    "schemaVersion": 1,
+    "operationId": "operation-0001",
+    "plan": {
+      "actions": [
+        {
+          "actionId": "action-1",
+          "kind": "write",
+          "payloadDigest": "sha256:fa5c0f07d89d9ee4500a619bbeb96550a477a3e702d2e8dac9243f13f1c51cd5",
+          "target": "/tmp/a"
+        },
+        {
+          "actionId": "action-2",
+          "kind": "remove",
+          "payloadDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "target": "/tmp/b"
+        }
+      ],
+      "baseRevision": 7,
+      "expires": {
+        "expiresAt": "2026-07-28T12:00:00.000Z",
+        "policy": "expires-at"
+      },
+      "normalizedInputsDigest": "sha256:114d5c8664693920565458962c8eb6f6c56fe36cdcccf41552b7ad18b0d08149",
+      "operation": "apply",
+      "planId": "plan-0001",
+      "schemaVersion": 1,
+      "targetPreconditions": [
+        {
+          "actionId": "action-1",
+          "expected": {
+            "state": "absent"
+          },
+          "target": "/tmp/a"
+        },
+        {
+          "actionId": "action-2",
+          "expected": {
+            "fingerprint": "sha256:before",
+            "state": "present"
+          },
+          "target": "/tmp/b"
+        }
+      ],
+      "digest": "sha256:09e730fb152ae8f9d1d755679cce3c35172412eaf25515eac6a0aa867f0e4466",
+      "durableDigest": "sha256:e50e6bc5d827fd56ff4209e75ed103d575c9e6eada6c1dbbde32dc39a8c11048"
+    },
+    "nextRevision": 8,
+    "status": "executing",
+    "startedAt": "2026-07-28T10:01:00.000Z",
+    "updatedAt": "2026-07-28T10:01:01.000Z",
+    "actions": [
+      {
+        "actionId": "action-1",
+        "target": "/tmp/a",
+        "status": "succeeded",
+        "receipt": {
+          "actionId": "action-1",
+          "target": "/tmp/a",
+          "outcome": "applied",
+          "before": {
+            "state": "absent"
+          },
+          "after": {
+            "state": "present",
+            "fingerprint": "sha256:after-a"
+          },
+          "recordedAt": "2026-07-28T10:01:01.000Z"
+        }
+      },
+      {
+        "actionId": "action-2",
+        "target": "/tmp/b",
+        "status": "pending"
+      }
+    ]
+  },
+  "receipt": {
+    "schemaVersion": 1,
+    "operationId": "operation-0001",
+    "planId": "plan-0001",
+    "planDigest": "sha256:09e730fb152ae8f9d1d755679cce3c35172412eaf25515eac6a0aa867f0e4466",
+    "operation": "apply",
+    "baseRevision": 7,
+    "resultingRevision": 8,
+    "outcome": "committed",
+    "actionReceipts": [
+      {
+        "actionId": "action-1",
+        "target": "/tmp/a",
+        "outcome": "applied",
+        "before": {
+          "state": "absent"
+        },
+        "after": {
+          "state": "present",
+          "fingerprint": "sha256:after-a"
+        },
+        "recordedAt": "2026-07-28T10:01:01.000Z"
+      }
+    ],
+    "startedAt": "2026-07-28T10:01:00.000Z",
+    "completedAt": "2026-07-28T10:01:02.000Z"
+  }
+}

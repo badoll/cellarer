@@ -1,6 +1,7 @@
 import { apply, type Capability, type LinkMethod, type SecretMode } from "@cellarer/core";
 import { Command } from "commander";
 import { resolveContext } from "../context.js";
+import { printMutation } from "../mutation-output.js";
 
 interface ApplyOpts {
   agent?: string;
@@ -85,15 +86,17 @@ export function applyCommand(): Command {
 
       const blocked = result.plan.conflicts.length > 0;
       const failed = result.failures.length > 0;
+      const operationFailed = result.mutation.result?.ok === false;
       const guarded = result.plan.actions.some(
         (action) => action.op === "skip" && action.reason?.includes("secret-scan"),
       );
-      if (blocked || failed || guarded) process.exitCode = 1;
+      if (blocked || failed || guarded || operationFailed) process.exitCode = 1;
       if (opts.json) {
         console.log(JSON.stringify(result, null, 2));
         return;
       }
 
+      printMutation(result.mutation);
       for (const w of result.plan.warnings) console.warn(`⚠ ${w}`);
       for (const conflict of result.plan.conflicts) {
         console.error(`⛔ ${conflict.code} ${conflict.target} — ${conflict.message}`);

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { discoverySummary, initStore } from "../src/index.js";
+import { discoverySummary } from "../src/index.js";
+import { initStore } from "../src/store/store.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
 describe("discovery summary", () => {

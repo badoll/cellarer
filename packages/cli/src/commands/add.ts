@@ -53,7 +53,7 @@ export function addCommand(): Command {
         });
         if (json) {
           console.log(JSON.stringify(r, null, 2));
-          if (r.rejected.length > 0) process.exitCode = 1;
+          if (r.rejected.length > 0 || r.operation?.ok === false) process.exitCode = 1;
           return;
         }
         printResult(r, opts);
@@ -79,7 +79,10 @@ function printResult(r: AddResult, opts: AddCliOpts): void {
   for (const s of r.skipped) console.log(`- 跳过 ${s.kind}/${s.name}(${s.reason})`);
   for (const j of r.rejected) console.error(`✗ 拒绝 ${j.kind}/${j.name}(${j.reason})`);
   for (const w of r.warnings) console.warn(`⚠ ${w}`);
-  if (r.rejected.length > 0) process.exitCode = 1;
+  if (r.operation?.ok === false) {
+    console.error(`✗ mutation ${r.operation.conflict.code}: ${r.operation.conflict.message}`);
+  }
+  if (r.rejected.length > 0 || r.operation?.ok === false) process.exitCode = 1;
   if (r.imported.length === 0 && r.skipped.length === 0 && r.rejected.length === 0) {
     console.log("未导入任何资源。");
   }

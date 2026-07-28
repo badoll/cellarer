@@ -13,6 +13,24 @@ import type {
   TargetConflict,
   TargetOwnershipEvidence,
 } from "../model/index.js";
+import { canonicalJson, createMutationPlan } from "../protocol/canonical.js";
+import {
+  type AuthorizeOperationAction,
+  executeMutationPlan,
+  type RecordOperationAction,
+  targetState,
+} from "../protocol/execute.js";
+import type {
+  ActionPrecondition,
+  CanonicalJsonObject,
+  MutationPlan,
+  MutationPlanAction,
+  OperationActionReceipt,
+  TargetStateReceipt,
+} from "../protocol/models.js";
+import { mutationPresentation } from "../protocol/presentation.js";
+import { PublicationPostconditionError } from "../protocol/publication.js";
+import { observeAtStableStoreRevision } from "../protocol/store-revision.js";
 import { sha256 } from "../store/checksum.js";
 import {
   duplicateTargetOwnerKeys,
@@ -20,14 +38,30 @@ import {
   loadLedgerForPlanning,
   makeLedger,
   matchesFilter,
-  saveLedger,
-  saveLedgerAfterSelectiveRevert,
+  prepareLedgerAfterSelectiveRevert,
+  serializeLedger,
 } from "../store/ledger.js";
 import { fingerprintTarget, inspectTargetOwnership } from "../target-ownership.js";
-import { decryptTargetSnapshot, restoreTargetSnapshot } from "../target-snapshot.js";
-import { syncGitignore } from "./gitignore-sync.js";
+import {
+  decryptTargetSnapshot,
+  fingerprintTargetSnapshotNodeState,
+  inspectEncryptedTargetSnapshot,
+  readAuthorizedEncryptedTargetSnapshot,
+  restoreTargetSnapshot,
+} from "../target-snapshot.js";
+import {
+  assertGitignoreMutationMatchesLedger,
+  executeGitignoreMutation,
+  planGitignoreMutation,
+  projectTargetsUnder,
+} from "./gitignore-sync.js";
 import type {
+  MutationPlanOptions,
+  PlannedRevertMutation,
+  RevertCallResult,
   RevertFailure,
+  RevertMutationContext,
+  RevertMutationResult,
   RevertOptions,
   RevertPlan,
   RevertPlanTarget,
@@ -53,77 +87,490 @@ export async function planRevert(env: Env, opts: RevertOptions): Promise<RevertP
   return (await buildRevertPlan(env, opts)).plan;
 }
 
-export async function revert(env: Env, opts: RevertOptions): Promise<RevertResult> {
-  const { ledger, plan, duplicateOwnerKeys } = await buildRevertPlan(env, opts);
+export async function revert(env: Env, opts: RevertOptions): Promise<RevertCallResult> {
+  const prepared = await planRevertMutation(env, opts);
+  const eligible = prepared.plan.targets.filter((target) => !target.blocked);
+  if (opts.dryRun) {
+    return {
+      plan: prepared.plan,
+      reverted: eligible.flatMap((target) => target.owners),
+      failures: [],
+      warnings: [...prepared.plan.warnings],
+      mutation: mutationPresentation(prepared.mutationPlan),
+    };
+  }
+  return applyRevertMutationPlan(env, prepared.mutationPlan, {
+    storeRoot: opts.storeRoot,
+    snapshotPassphrase: opts.snapshotPassphrase,
+    keepBackups: opts.keepBackups,
+  });
+}
+
+export async function planRevertMutation(
+  env: Env,
+  opts: RevertOptions,
+  planOptions: MutationPlanOptions = {},
+): Promise<PlannedRevertMutation> {
+  const observed = await observeAtStableStoreRevision(env, opts.storeRoot, async () => {
+    const built = await buildRevertPlan(env, opts);
+    const eligible = built.plan.targets.filter((target) => !target.blocked);
+    const reverted = eligible.flatMap((target) => target.owners);
+    const revertedKeys = new Set(reverted.map(entryKey));
+    const remaining: Ledger = {
+      version: 2,
+      owners: built.ledger.owners.filter((owner) => !revertedKeys.has(entryKey(owner))),
+    };
+    const gitignores = await Promise.all(
+      affectedGitignoreDirs(reverted).map((dir) =>
+        planGitignoreMutation(env, dir, projectTargetsUnder(remaining, dir)),
+      ),
+    );
+    return { built, gitignores };
+  });
+  const { plan } = observed.value.built;
+  const eligible = plan.targets.filter((target) => !target.blocked);
+  const actions: MutationPlanAction[] = eligible.map((target, index) => {
+    const actionId = revertMutationActionId(target, index);
+    return {
+      actionId,
+      kind: target.proposedAction,
+      target: target.target,
+      payload: { revertTarget: jsonObject(target) },
+    };
+  });
+  const targetPreconditions: ActionPrecondition[] = eligible.map((target, index) => ({
+    actionId: revertMutationActionId(target, index),
+    target: target.target,
+    expected:
+      target.ownership.currentFingerprint === null
+        ? ({ state: "absent" } as const)
+        : ({
+            state: "present",
+            fingerprint: target.ownership.currentFingerprint,
+          } as const),
+  }));
+  for (const gitignore of observed.value.gitignores) {
+    actions.push(gitignore.action);
+    targetPreconditions.push(gitignore.precondition);
+  }
+  const normalizedInputs = jsonObject({
+    storeRoot: opts.storeRoot,
+    ...(opts.scope ? { scope: opts.scope } : {}),
+    ...(opts.dir ? { dir: opts.dir } : {}),
+    ...(opts.agents ? { agents: opts.agents } : {}),
+    ...(opts.keepBackups !== undefined ? { keepBackups: opts.keepBackups } : {}),
+    revertPlan: plan,
+  });
+  return {
+    plan,
+    mutationPlan: createMutationPlan({
+      schemaVersion: 1,
+      planId: planOptions.planId ?? `plan-${env.randomId()}`,
+      operation: "revert",
+      baseRevision: observed.revision,
+      normalizedInputs,
+      targetPreconditions,
+      actions,
+      expires: planOptions.expires ?? { policy: "none" },
+    }),
+  };
+}
+
+export async function applyRevertMutationPlan(
+  env: Env,
+  mutationPlan: MutationPlan,
+  context: RevertMutationContext,
+): Promise<RevertMutationResult> {
+  let plan: RevertPlan = { targets: [], conflicts: [], warnings: [] };
+  let revertedResult: RevertResult | undefined;
+  const operation = await executeMutationPlan(
+    env,
+    context.storeRoot,
+    mutationPlan,
+    async (_operationId, recordAction, authorizeAction) => {
+      if (mutationPlan.operation !== "revert") {
+        throw new TypeError(
+          `revert mutation requires a revert plan, got ${mutationPlan.operation}`,
+        );
+      }
+      const decoded = decodeRevertMutation(mutationPlan);
+      if (decoded.opts.storeRoot !== context.storeRoot) {
+        throw new TypeError("revert mutation store does not match its execution context");
+      }
+      plan = decoded.plan;
+      const ledger = await loadLedgerForPlanning(env, decoded.opts.storeRoot);
+      const currentExecutionPlan = bindRevertOwnersToCurrentLedger(decoded.executionPlan, ledger);
+      const executed = await executeRevertPlan(
+        env,
+        {
+          ledger,
+          plan: currentExecutionPlan,
+          duplicateOwnerKeys: duplicateTargetOwnerKeys(ledger.owners),
+        },
+        {
+          ...decoded.opts,
+          snapshotPassphrase: context.snapshotPassphrase,
+          keepBackups: context.keepBackups ?? decoded.opts.keepBackups,
+        },
+        mutationPlan,
+        recordAction,
+        authorizeAction,
+      );
+      revertedResult = executed.result;
+      return {
+        actionReceipts: executed.actionReceipts,
+        failedActionIds: executed.failedActionIds,
+        ...(executed.statePublications ? { statePublications: executed.statePublications } : {}),
+        ...(executed.afterCommit ? { afterCommit: executed.afterCommit } : {}),
+      };
+    },
+  );
+  return {
+    ...(revertedResult ?? { plan, reverted: [], failures: [], warnings: [...plan.warnings] }),
+    plan,
+    operation,
+    mutation: mutationPresentation(mutationPlan, operation),
+  };
+}
+
+function bindRevertOwnersToCurrentLedger(plan: RevertPlan, ledger: Ledger): RevertPlan {
+  return {
+    ...plan,
+    targets: plan.targets.map((target) => ({
+      ...target,
+      owners: target.owners.map((plannedOwner) => {
+        const current = ledger.owners.find(
+          (owner) =>
+            entryKey(owner) === entryKey(plannedOwner) &&
+            canonicalJson(JSON.parse(JSON.stringify(owner))) ===
+              canonicalJson(JSON.parse(JSON.stringify(plannedOwner))),
+        );
+        if (!current) {
+          throw new Error(
+            `ownership state changed after revert planning for ${entryKey(plannedOwner)}`,
+          );
+        }
+        return current;
+      }),
+    })),
+  };
+}
+
+async function executeRevertPlan(
+  env: Env,
+  built: BuiltRevertPlan,
+  opts: RevertOptions,
+  mutationPlan: MutationPlan,
+  recordAction: RecordOperationAction,
+  authorizeAction: AuthorizeOperationAction,
+): Promise<{
+  result: RevertResult;
+  actionReceipts: OperationActionReceipt[];
+  failedActionIds: string[];
+  statePublications?: { path: string; data: string; mode: number }[];
+  afterCommit?: () => Promise<void>;
+}> {
+  const { ledger, plan, duplicateOwnerKeys } = built;
   const warnings = [...plan.warnings];
   const eligible = plan.targets.filter((target) => !target.blocked);
 
-  // Preserve the historical preview field while the complete, structured preview lives in plan.
-  if (opts.dryRun) {
-    return {
-      plan,
-      reverted: eligible.flatMap((target) => target.owners),
-      failures: [],
-      warnings,
-    };
-  }
-
   const reverted: LedgerEntry[] = [];
   const failures: RevertFailure[] = [];
-  const backupsToRemove = new Set<string>();
+  const actionReceipts: OperationActionReceipt[] = [];
+  const failedActionIds: string[] = [];
+  const retainedBackups = new Set<string>();
   const successfulKeys = new Set<string>();
 
-  for (const target of eligible) {
+  for (const [index, target] of eligible.entries()) {
+    const mutationAction = mutationPlan.actions[index];
+    const precondition = mutationPlan.targetPreconditions.find(
+      (candidate) => candidate.actionId === mutationAction?.actionId,
+    );
+    if (!mutationAction || !precondition || mutationAction.target !== target.target) {
+      throw new Error(`revert target ${target.target} is not aligned with its mutation receipt`);
+    }
+    const authorized = await authorizeAction(mutationAction.actionId);
+    if (!authorized.ok) {
+      const failure: RevertFailure = {
+        code: "REVERT_FAILED",
+        target: target.target,
+        message:
+          authorized.receipt.error?.message ??
+          "target changed after the operation journal started executing",
+      };
+      actionReceipts.push(authorized.receipt);
+      failedActionIds.push(mutationAction.actionId);
+      failures.push(failure);
+      break;
+    }
+    let effect: {
+      backup: string | null;
+      expectedAfter:
+        | { kind: "target-state"; receipt: TargetStateReceipt }
+        | { kind: "snapshot-node"; fingerprint: string };
+    };
     try {
-      const backup = await revertOne(env, target, opts.snapshotPassphrase);
-      for (const owner of target.owners) {
-        const key = entryKey(owner);
-        if (successfulKeys.has(key)) continue;
-        successfulKeys.add(key);
-        reverted.push(owner);
-      }
-      if (backup) backupsToRemove.add(backup);
+      effect = await revertOne(env, opts.storeRoot, target, opts.snapshotPassphrase);
     } catch (error) {
-      failures.push({
+      const failure: RevertFailure = {
         code:
           error instanceof SnapshotPassphraseRequiredError
             ? "SNAPSHOT_PASSPHRASE_REQUIRED"
             : "REVERT_FAILED",
         target: target.target,
         message: error instanceof Error ? error.message : String(error),
-      });
+      };
+      const receipt: OperationActionReceipt = {
+        actionId: mutationAction.actionId,
+        target: target.target,
+        outcome: "failed",
+        before: precondition.expected,
+        after: await targetState(env, target.target),
+        recordedAt: env.now().toISOString(),
+        error: {
+          code: error instanceof PublicationPostconditionError ? error.code : failure.code,
+          message: failure.message,
+        },
+      };
+      await recordAction(receipt);
+      actionReceipts.push(receipt);
+      failedActionIds.push(mutationAction.actionId);
+      failures.push(failure);
+      continue;
     }
+    const after = await targetState(env, target.target);
+    const afterMatches =
+      effect.expectedAfter.kind === "target-state"
+        ? sameTargetReceipt(effect.expectedAfter.receipt, after)
+        : (await fingerprintTargetSnapshotNodeState(env, target.target)) ===
+          effect.expectedAfter.fingerprint;
+    if (!afterMatches) {
+      const error = new PublicationPostconditionError(target.target, "revert after-state");
+      const failure: RevertFailure = {
+        code: "REVERT_FAILED",
+        target: target.target,
+        message: error.message,
+      };
+      const receipt: OperationActionReceipt = {
+        actionId: mutationAction.actionId,
+        target: target.target,
+        outcome: "failed",
+        before: precondition.expected,
+        after,
+        recordedAt: env.now().toISOString(),
+        error: { code: error.code, message: error.message },
+      };
+      await recordAction(receipt);
+      actionReceipts.push(receipt);
+      failedActionIds.push(mutationAction.actionId);
+      failures.push(failure);
+      continue;
+    }
+    const receipt: OperationActionReceipt = {
+      actionId: mutationAction.actionId,
+      target: target.target,
+      outcome: sameTargetReceipt(precondition.expected, after) ? "unchanged" : "applied",
+      before: precondition.expected,
+      after,
+      recordedAt: env.now().toISOString(),
+    };
+    await recordAction(receipt);
+    actionReceipts.push(receipt);
+    for (const owner of target.owners) {
+      const key = entryKey(owner);
+      if (successfulKeys.has(key)) continue;
+      successfulKeys.add(key);
+      reverted.push(owner);
+    }
+    if (effect.backup) retainedBackups.add(effect.backup);
   }
 
   let remaining = ledger;
-  if (reverted.length > 0) {
+  let serializedRemaining: string | undefined;
+  if (failures.length === 0 && reverted.length > 0) {
     if (duplicateOwnerKeys.length > 0) {
-      remaining = await saveLedgerAfterSelectiveRevert(env, opts.storeRoot, ledger, reverted);
+      const prepared = await prepareLedgerAfterSelectiveRevert(
+        env,
+        opts.storeRoot,
+        ledger,
+        reverted,
+      );
+      remaining = prepared.ledger;
+      serializedRemaining = prepared.serialized;
     } else {
       remaining = makeLedger(ledger.owners.filter((owner) => !successfulKeys.has(entryKey(owner))));
-      // The save happens after every target in `reverted` succeeded. If save fails, backups remain.
-      await saveLedger(env, opts.storeRoot, remaining);
+      serializedRemaining = serializeLedger(remaining);
     }
-
-    if (!opts.keepBackups) {
-      for (const backup of backupsToRemove) {
-        try {
-          await env.fs.rm(backup, { recursive: true, force: true });
-        } catch (error) {
-          warnings.push(
-            `revert succeeded but recovery snapshot cleanup failed for "${backup}": ${error instanceof Error ? error.message : String(error)}`,
-          );
-        }
-      }
-    }
-
-    await resyncAffectedGitignores(env, reverted, remaining, opts.dir);
   }
 
-  // Preserve the existing activity contract for an explicit non-dry revert, including safe no-ops.
-  await recordRevertActivity(env, opts, reverted, warnings);
+  const gitignoreActions = mutationPlan.actions.slice(eligible.length);
+  if (failures.length === 0) {
+    for (const action of gitignoreActions) {
+      const precondition = mutationPlan.targetPreconditions.find(
+        (candidate) => candidate.actionId === action.actionId,
+      );
+      if (!precondition || action.kind !== "sync-gitignore") {
+        throw new Error(
+          `revert gitignore action ${action.actionId} is not aligned with its receipt`,
+        );
+      }
+      const authorized = await authorizeAction(action.actionId);
+      if (!authorized.ok) {
+        const failure: RevertFailure = {
+          code: "REVERT_FAILED",
+          target: action.target,
+          message:
+            authorized.receipt.error?.message ??
+            "target changed after the operation journal started executing",
+        };
+        actionReceipts.push(authorized.receipt);
+        failedActionIds.push(action.actionId);
+        failures.push(failure);
+        break;
+      }
+      assertGitignoreMutationMatchesLedger(action, remaining);
+      try {
+        await executeGitignoreMutation(env, action);
+      } catch (error) {
+        if (!isControlledActionIoFailure(error)) throw error;
+        const errorCode = actionIoFailureCode(error);
+        const failure: RevertFailure = {
+          code: "REVERT_FAILED",
+          target: action.target,
+          message: `filesystem action failed (${errorCode})`,
+        };
+        const receipt: OperationActionReceipt = {
+          actionId: action.actionId,
+          target: action.target,
+          outcome: "failed",
+          before: precondition.expected,
+          after: await targetState(env, action.target),
+          recordedAt: env.now().toISOString(),
+          error: { code: errorCode, message: failure.message },
+        };
+        await recordAction(receipt);
+        actionReceipts.push(receipt);
+        failedActionIds.push(action.actionId);
+        failures.push(failure);
+        continue;
+      }
+      const after = await targetState(env, action.target);
+      const receipt: OperationActionReceipt = {
+        actionId: action.actionId,
+        target: action.target,
+        outcome: sameTargetReceipt(precondition.expected, after) ? "unchanged" : "applied",
+        before: precondition.expected,
+        after,
+        recordedAt: env.now().toISOString(),
+      };
+      await recordAction(receipt);
+      actionReceipts.push(receipt);
+    }
+  }
 
-  return { plan, reverted, failures, warnings };
+  const afterCommit =
+    failures.length === 0
+      ? async () => {
+          if (reverted.length > 0) {
+            if (opts.keepBackups === false) {
+              for (const backup of retainedBackups) {
+                warnings.push(
+                  `retained encrypted recovery snapshot "${backup}" because automatic snapshot deletion is unsupported`,
+                );
+              }
+            }
+          }
+
+          // Preserve the existing activity contract for an explicit non-dry revert, including safe no-ops.
+          await recordRevertActivity(env, opts, reverted, warnings);
+        }
+      : undefined;
+
+  return {
+    result: { plan, reverted, failures, warnings },
+    actionReceipts,
+    failedActionIds,
+    ...(failures.length === 0 && reverted.length > 0
+      ? {
+          statePublications: [
+            {
+              path: join(opts.storeRoot, "state.json"),
+              data: serializedRemaining ?? serializeLedger(remaining),
+              mode: 0o600,
+            },
+          ],
+          afterCommit,
+        }
+      : failures.length === 0
+        ? { afterCommit }
+        : {}),
+  };
+}
+
+function revertMutationActionId(target: RevertPlanTarget, index: number): string {
+  return sha256(JSON.stringify({ index, action: target.proposedAction, target: target.target }));
+}
+
+function jsonObject(value: unknown): CanonicalJsonObject {
+  return JSON.parse(JSON.stringify(value)) as CanonicalJsonObject;
+}
+
+function decodeRevertMutation(planReceipt: MutationPlan): {
+  opts: RevertOptions;
+  plan: RevertPlan;
+  executionPlan: RevertPlan;
+} {
+  const input = planReceipt.normalizedInputs as Record<string, unknown>;
+  if (
+    typeof input.storeRoot !== "string" ||
+    typeof input.revertPlan !== "object" ||
+    input.revertPlan === null
+  ) {
+    throw new TypeError("revert mutation plan has invalid normalized inputs");
+  }
+  const plan = input.revertPlan as unknown as RevertPlan;
+  const targets = planReceipt.actions
+    .filter((mutationAction) => mutationAction.kind !== "sync-gitignore")
+    .map((mutationAction) => {
+      const target = mutationAction.payload.revertTarget as unknown;
+      if (
+        typeof target !== "object" ||
+        target === null ||
+        typeof (target as RevertPlanTarget).target !== "string" ||
+        typeof (target as RevertPlanTarget).proposedAction !== "string" ||
+        (target as RevertPlanTarget).target !== mutationAction.target ||
+        (target as RevertPlanTarget).proposedAction !== mutationAction.kind
+      ) {
+        throw new TypeError(
+          `revert mutation action ${mutationAction.actionId} has invalid payload`,
+        );
+      }
+      return target as RevertPlanTarget;
+    });
+  return {
+    opts: {
+      storeRoot: input.storeRoot,
+      ...(input.scope === "global" || input.scope === "project" ? { scope: input.scope } : {}),
+      ...(typeof input.dir === "string" ? { dir: input.dir } : {}),
+      ...(Array.isArray(input.agents) && input.agents.every((agent) => typeof agent === "string")
+        ? { agents: input.agents as string[] }
+        : {}),
+      ...(typeof input.keepBackups === "boolean" ? { keepBackups: input.keepBackups } : {}),
+    },
+    plan,
+    executionPlan: { ...plan, targets },
+  };
+}
+
+function sameTargetReceipt(
+  before: { state: "absent" } | { state: "present"; fingerprint: string },
+  after: { state: "absent" } | { state: "present"; fingerprint: string },
+): boolean {
+  return (
+    before.state === after.state &&
+    (before.state === "absent" ||
+      (after.state === "present" && before.fingerprint === after.fingerprint))
+  );
 }
 
 async function buildRevertPlan(env: Env, opts: RevertOptions): Promise<BuiltRevertPlan> {
@@ -171,7 +618,7 @@ async function buildRevertPlan(env: Env, opts: RevertOptions): Promise<BuiltReve
         scope: primary.scope,
         capability: primary.capability,
         target,
-        dir: opts.dir,
+        dir: primary.scope === "project" ? primary.projectRoot : opts.dir,
         owners: ledger.owners,
       });
       ownership = {
@@ -314,7 +761,18 @@ async function snapshotAvailability(
   const stat = await lstatOrNull(env, path);
   if (!stat) return { path, status: "missing", encrypted };
   if (!stat.isFile() || stat.isSymbolicLink()) return { path, status: "invalid", encrypted };
-  return { path, status: "available", encrypted };
+  try {
+    const evidence = await inspectEncryptedTargetSnapshot(env, storeRoot, path);
+    return {
+      path,
+      status: "available",
+      encrypted,
+      digest: evidence.digest,
+      mode: evidence.mode,
+    };
+  } catch {
+    return { path, status: "invalid", encrypted };
+  }
 }
 
 function revertAcknowledgement(
@@ -341,9 +799,15 @@ function revertAcknowledgement(
 
 async function revertOne(
   env: Env,
+  storeRoot: string,
   target: RevertPlanTarget,
   snapshotPassphrase: string | undefined,
-): Promise<string | null> {
+): Promise<{
+  backup: string | null;
+  expectedAfter:
+    | { kind: "target-state"; receipt: TargetStateReceipt }
+    | { kind: "snapshot-node"; fingerprint: string };
+}> {
   // Re-check the exact disk receipt consumed by the plan before the first destructive effect.
   const currentFingerprint = await fingerprintTarget(env, target.target);
   if (currentFingerprint !== target.ownership.currentFingerprint) {
@@ -352,18 +816,31 @@ async function revertOne(
 
   if (target.snapshot.status === "none") {
     await env.fs.rm(target.target, { recursive: true, force: true });
-    return null;
+    return {
+      backup: null,
+      expectedAfter: { kind: "target-state", receipt: { state: "absent" } },
+    };
   }
   if (target.snapshot.status !== "available" || !target.snapshot.path) {
     throw new Error(`recorded recovery snapshot for "${target.target}" is unavailable`);
   }
 
   if (!snapshotPassphrase) throw new SnapshotPassphraseRequiredError(target.target);
+  if (!target.snapshot.digest || target.snapshot.mode === undefined) {
+    throw new Error(`recorded recovery snapshot for "${target.target}" lacks signed evidence`);
+  }
   // The plan only permits managed .age snapshots. Decrypt and fully validate before mutation.
-  const encrypted = await env.fs.readFile(target.snapshot.path);
+  const encrypted = await readAuthorizedEncryptedTargetSnapshot(env, storeRoot, {
+    path: target.snapshot.path,
+    digest: target.snapshot.digest,
+    mode: target.snapshot.mode,
+  });
   const snapshot = await decryptTargetSnapshot(encrypted, snapshotPassphrase);
   await restoreTargetSnapshot(env, target.target, snapshot, target.ownership.currentFingerprint);
-  return target.snapshot.path;
+  return {
+    backup: target.snapshot.path,
+    expectedAfter: { kind: "snapshot-node", fingerprint: snapshot.nodeFingerprint },
+  };
 }
 
 function allowedRevertRoots(env: Env, opts: RevertOptions): string[] {
@@ -372,18 +849,36 @@ function allowedRevertRoots(env: Env, opts: RevertOptions): string[] {
   return roots.map(normalize);
 }
 
-async function resyncAffectedGitignores(
-  env: Env,
-  reverted: LedgerEntry[],
-  remaining: Ledger,
-  optsDir: string | undefined,
-): Promise<void> {
+function affectedGitignoreDirs(reverted: LedgerEntry[]): string[] {
   const dirs = new Set<string>();
-  if (optsDir) dirs.add(optsDir);
   for (const entry of reverted) {
-    if (entry.scope === "project") dirs.add(dirname(entry.target));
+    if (entry.scope !== "project") continue;
+    if (!entry.projectRoot) {
+      throw new Error(`project owner for ${entry.target} is missing its canonical projectRoot`);
+    }
+    dirs.add(entry.projectRoot);
   }
-  for (const dir of dirs) await syncGitignore(env, dir, remaining);
+  return [...dirs].sort();
+}
+
+const CONTROLLED_ACTION_IO_CODES = new Set([
+  "EACCES",
+  "EDQUOT",
+  "EFBIG",
+  "EIO",
+  "ENOSPC",
+  "EPERM",
+  "EROFS",
+  "PUBLICATION_POSTCONDITION_FAILED",
+]);
+
+function actionIoFailureCode(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? code : "UNKNOWN_IO_ERROR";
+}
+
+function isControlledActionIoFailure(error: unknown): boolean {
+  return CONTROLLED_ACTION_IO_CODES.has(actionIoFailureCode(error));
 }
 
 async function recordRevertActivity(
