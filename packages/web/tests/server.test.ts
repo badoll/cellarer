@@ -1,9 +1,8 @@
 import { promises as fs, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRealEnv, type Env } from "@cellarer/core";
+import { createRealEnv, type Env, initializeStore, type MutationAuthority } from "@cellarer/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createApp } from "../src/app.js";
 import { buildServerApp } from "../src/server.js";
 
 // server.ts 组装的完整 app(API + 静态 SPA + 安全加固)的集成测试。
@@ -20,6 +19,7 @@ describe("web server app — page gate / CSP / host", () => {
     const real = createRealEnv();
     const home = join(root, "home");
     env = {
+      ...real,
       fs: real.fs,
       homedir: () => home,
       cwd: () => join(root, "cwd"),
@@ -42,9 +42,53 @@ describe("web server app — page gate / CSP / host", () => {
     return buildServerApp({
       token,
       staticRoot,
-      apiApp: createApp({ env, storeRoot, token }),
+      env,
+      storeRoot,
     });
   }
+
+  it("injects the preloaded authority into the Web app composition", async () => {
+    let seals = 0;
+    const authority: MutationAuthority = {
+      seal: (request) => {
+        seals += 1;
+        return {
+          schemaVersion: 1,
+          domain: request.domain,
+          algorithm: "HMAC-SHA-256",
+          authorityId: "web-injected-authority",
+          authorityEpoch: 1,
+          seal: `hmac-sha256:${"a".repeat(64)}`,
+        };
+      },
+      verify: () => true,
+      isCurrent: async () => true,
+      acquireLease: async () => ({
+        isCurrent: async () => true,
+        release: async () => undefined,
+      }),
+      publishJournalTip: async () => undefined,
+      matchesJournalTip: async () => true,
+    };
+    env.mutationAuthority = authority;
+    await initializeStore(env, storeRoot);
+    seals = 0;
+
+    const app = makeApp();
+    const response = await app.request("/api/settings/collections", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        collections: {
+          default: { description: "default" },
+          secure: { description: "injected" },
+        },
+      }),
+    });
+
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(seals).toBeGreaterThan(0);
+  });
 
   it("serves the SPA with a CSP header (no token)", async () => {
     const app = makeApp();

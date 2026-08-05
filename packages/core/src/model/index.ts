@@ -22,6 +22,9 @@ export interface DesiredTargetEvidence {
   contentFingerprint?: string;
   // Skills compare source state independently from the placement node fingerprint.
   sourceFingerprint?: string;
+  // Opaque no-follow node identity captured with the source fingerprint. Replacing a path with
+  // byte-identical content still invalidates an already prepared apply plan.
+  sourceIdentity?: string;
 }
 
 // Collection:制品的场景标签(default / internal / 自定义)。
@@ -55,9 +58,6 @@ export interface PlanAction {
   reason?: string; // skip / 告警原因
   preview?: { before?: string; after?: string }; // dry-run diff
   secretRefs?: string[]; // 涉及的密钥引用名(不含真值)
-  // 该动作的明文是「故意解析注入」(vault/keychain 模式,§10.2 必须明文的 agent),
-  // 故 global scope 下通用 secret-scan 护栏放行;project(git 跟踪)仍拦。缺省视为不允许明文。
-  allowResolvedPlaintext?: boolean;
   // 结构化字段探测出「意外明文」(库房脏数据:非占位符却命中高置信密钥规则,如按字段名 API_KEY 判定)。
   // 通用文本扫描只认厂商格式,看不到字段名,故由 planner 标记;护栏对其无条件拦截、无逃生通道。
   accidentalPlaintext?: boolean;
@@ -70,9 +70,28 @@ export interface DistributePlan {
   actions: PlanAction[];
   warnings: string[];
   conflicts: TargetConflict[];
+  // Non-disclosing evidence from the final staged-tree secret guard.
+  secretFindings?: SecretGuardFinding[];
+  // Presence-only evidence for required references. It contains provider/name status, never value.
+  secretReferenceFindings?: SecretReferenceFinding[];
   // Duplicate canonical owner keys invalidate the mutation ledger even when no selected action
   // happens to target that key. Apply uses this flag rather than broad action-level conflicts.
   invalidLedger?: true;
+}
+
+export interface SecretReferenceFinding {
+  reference: string;
+  provider: "environment" | "vault" | "keychain";
+  status: "missing" | "unavailable";
+}
+
+export interface SecretGuardFinding {
+  artifact: string;
+  // Store-relative source path when attributable, otherwise the staged target path.
+  source: string;
+  line: number;
+  rule: string;
+  patternVersion?: number;
 }
 
 export interface TargetOwnershipEvidence {

@@ -2,7 +2,7 @@
 // mutate eligible targets once. Ownership is removed only after that target was restored/removed.
 import { dirname, join, normalize, relative, sep } from "node:path";
 import { appendActivity } from "../activity.js";
-import type { Env } from "../env.js";
+import type { Env, MutationAuthorityLease } from "../env.js";
 import { lstatOrNull } from "../fs/probe.js";
 import { isPathInside } from "../fs/safety.js";
 import type {
@@ -13,10 +13,21 @@ import type {
   TargetConflict,
   TargetOwnershipEvidence,
 } from "../model/index.js";
-import { canonicalJson, createMutationPlan } from "../protocol/canonical.js";
+import {
+  acquireCurrentMutationAuthorityLease,
+  assertStrictMutationPlanRuntime,
+  canonicalJson,
+  createAuthorizedMutationPlan,
+  requireMutationAuthority,
+  verifyMutationPlanAuthorization,
+  verifyMutationPlanDigest,
+  withCurrentMutationAuthorityLease,
+} from "../protocol/canonical.js";
 import {
   type AuthorizeOperationAction,
+  assertMutationPlanActionAlignment,
   executeMutationPlan,
+  invalidPlanResult,
   type RecordOperationAction,
   targetState,
 } from "../protocol/execute.js";
@@ -26,6 +37,7 @@ import type {
   MutationPlan,
   MutationPlanAction,
   OperationActionReceipt,
+  OperationResult,
   TargetStateReceipt,
 } from "../protocol/models.js";
 import { mutationPresentation } from "../protocol/presentation.js";
@@ -50,6 +62,7 @@ import {
   restoreTargetSnapshot,
 } from "../target-snapshot.js";
 import {
+  assertExecutableGitignoreMutation,
   assertGitignoreMutationMatchesLedger,
   executeGitignoreMutation,
   planGitignoreMutation,
@@ -88,21 +101,30 @@ export async function planRevert(env: Env, opts: RevertOptions): Promise<RevertP
 }
 
 export async function revert(env: Env, opts: RevertOptions): Promise<RevertCallResult> {
-  const prepared = await planRevertMutation(env, opts);
-  const eligible = prepared.plan.targets.filter((target) => !target.blocked);
-  if (opts.dryRun) {
-    return {
-      plan: prepared.plan,
-      reverted: eligible.flatMap((target) => target.owners),
-      failures: [],
-      warnings: [...prepared.plan.warnings],
-      mutation: mutationPresentation(prepared.mutationPlan),
-    };
-  }
-  return applyRevertMutationPlan(env, prepared.mutationPlan, {
-    storeRoot: opts.storeRoot,
-    snapshotPassphrase: opts.snapshotPassphrase,
-    keepBackups: opts.keepBackups,
+  return withCurrentMutationAuthorityLease(env, async (authorityLease) => {
+    const prepared = await planRevertMutation(env, opts, {}, { authorityLease });
+    const eligible = prepared.plan.targets.filter((target) => !target.blocked);
+    if (opts.dryRun) {
+      return {
+        plan: prepared.plan,
+        reverted: eligible.flatMap((target) => target.owners),
+        failures: [],
+        warnings: [...prepared.plan.warnings],
+        mutation: mutationPresentation(prepared.mutationPlan),
+      };
+    }
+    const { operation: _operation, ...result } = await applyRevertMutationPlan(
+      env,
+      prepared.mutationPlan,
+      {
+        storeRoot: opts.storeRoot,
+        options: opts,
+        snapshotPassphrase: opts.snapshotPassphrase,
+        keepBackups: opts.keepBackups,
+      },
+      { authorityLease },
+    );
+    return result;
   });
 }
 
@@ -110,7 +132,29 @@ export async function planRevertMutation(
   env: Env,
   opts: RevertOptions,
   planOptions: MutationPlanOptions = {},
+  execution: { authorityLease?: MutationAuthorityLease } = {},
 ): Promise<PlannedRevertMutation> {
+  requireMutationAuthority(env);
+  const suppliedLease = execution.authorityLease;
+  const authorityLease =
+    suppliedLease ?? (await acquireCurrentMutationAuthorityLease(env).catch(() => null));
+  if (!authorityLease || !(await authorityLease.isCurrent().catch(() => false))) {
+    if (authorityLease && !suppliedLease) await authorityLease.release().catch(() => undefined);
+    throw new TypeError("mutation authority is not current");
+  }
+  try {
+    return await planRevertMutationWithAuthorityLease(env, opts, planOptions);
+  } finally {
+    if (!suppliedLease) await authorityLease.release();
+  }
+}
+
+async function planRevertMutationWithAuthorityLease(
+  env: Env,
+  opts: RevertOptions,
+  planOptions: MutationPlanOptions,
+): Promise<PlannedRevertMutation> {
+  requireMutationAuthority(env);
   const observed = await observeAtStableStoreRevision(env, opts.storeRoot, async () => {
     const built = await buildRevertPlan(env, opts);
     const eligible = built.plan.targets.filter((target) => !target.blocked);
@@ -158,12 +202,14 @@ export async function planRevertMutation(
     ...(opts.scope ? { scope: opts.scope } : {}),
     ...(opts.dir ? { dir: opts.dir } : {}),
     ...(opts.agents ? { agents: opts.agents } : {}),
+    ...(opts.artifactIds ? { artifactIds: opts.artifactIds } : {}),
+    ...(opts.acknowledgements ? { acknowledgements: opts.acknowledgements } : {}),
     ...(opts.keepBackups !== undefined ? { keepBackups: opts.keepBackups } : {}),
     revertPlan: plan,
   });
-  return {
+  const prepared = {
     plan,
-    mutationPlan: createMutationPlan({
+    mutationPlan: createAuthorizedMutationPlan(env, opts.storeRoot, {
       schemaVersion: 1,
       planId: planOptions.planId ?? `plan-${env.randomId()}`,
       operation: "revert",
@@ -174,32 +220,96 @@ export async function planRevertMutation(
       expires: planOptions.expires ?? { policy: "none" },
     }),
   };
+  return prepared;
 }
 
 export async function applyRevertMutationPlan(
   env: Env,
   mutationPlan: MutationPlan,
   context: RevertMutationContext,
+  execution: { readonly authorityLease?: MutationAuthorityLease } = {},
+): Promise<RevertMutationResult> {
+  try {
+    assertStrictMutationPlanRuntime(mutationPlan, "revert");
+  } catch {
+    return invalidRevertMutationResult();
+  }
+  if (
+    !verifyMutationPlanAuthorization(env, context.storeRoot, mutationPlan) ||
+    !verifyMutationPlanDigest(mutationPlan)
+  ) {
+    return invalidRevertMutationResult();
+  }
+  const suppliedLease = execution.authorityLease;
+  const authorityLease =
+    suppliedLease ?? (await acquireCurrentMutationAuthorityLease(env).catch(() => null));
+  if (!authorityLease) return invalidRevertMutationResult();
+  if (!(await authorityLease.isCurrent().catch(() => false))) {
+    if (!suppliedLease) await authorityLease.release().catch(() => undefined);
+    return invalidRevertMutationResult();
+  }
+  try {
+    return await applyRevertMutationPlanWithAuthorityLease(
+      env,
+      mutationPlan,
+      context,
+      authorityLease,
+    );
+  } finally {
+    if (!suppliedLease) await authorityLease.release();
+  }
+}
+
+async function applyRevertMutationPlanWithAuthorityLease(
+  env: Env,
+  mutationPlan: MutationPlan,
+  context: RevertMutationContext,
+  authorityLease: MutationAuthorityLease,
 ): Promise<RevertMutationResult> {
   let plan: RevertPlan = { targets: [], conflicts: [], warnings: [] };
   let revertedResult: RevertResult | undefined;
+  let decoded: ReturnType<typeof decodeRevertMutation>;
+  try {
+    assertStrictMutationPlanRuntime(mutationPlan, "revert");
+  } catch {
+    return invalidRevertMutationResult();
+  }
+  if (!verifyMutationPlanAuthorization(env, context.storeRoot, mutationPlan)) {
+    return invalidRevertMutationResult();
+  }
+  if (!verifyMutationPlanDigest(mutationPlan)) return invalidRevertDigestMutationResult();
+  let ledger: Ledger;
+  let currentExecutionPlan: RevertPlan;
+  let trustedOptions: RevertOptions;
+  try {
+    assertMutationPlanActionAlignment(mutationPlan);
+    trustedOptions = assertTrustedRevertOptions(context);
+    decoded = decodeRevertMutation(mutationPlan);
+    assertRevertOptionsMatchTrustedContext(decoded.opts, trustedOptions);
+    const reconstructed = await planRevertMutation(
+      env,
+      trustedOptions,
+      {
+        planId: mutationPlan.planId,
+        expires: mutationPlan.expires,
+      },
+      { authorityLease },
+    );
+    if (canonicalJson(reconstructed.mutationPlan) !== canonicalJson(mutationPlan)) {
+      throw new TypeError("revert mutation plan does not match canonical reconstruction");
+    }
+    ledger = await loadLedgerForPlanning(env, context.storeRoot);
+    currentExecutionPlan = bindRevertOwnersToCurrentLedger(decoded.executionPlan, ledger);
+    assertRevertExecutionAuthorization(env, mutationPlan, decoded, currentExecutionPlan, ledger);
+  } catch {
+    return invalidRevertMutationResult();
+  }
+  plan = decoded.plan;
   const operation = await executeMutationPlan(
     env,
     context.storeRoot,
     mutationPlan,
     async (_operationId, recordAction, authorizeAction) => {
-      if (mutationPlan.operation !== "revert") {
-        throw new TypeError(
-          `revert mutation requires a revert plan, got ${mutationPlan.operation}`,
-        );
-      }
-      const decoded = decodeRevertMutation(mutationPlan);
-      if (decoded.opts.storeRoot !== context.storeRoot) {
-        throw new TypeError("revert mutation store does not match its execution context");
-      }
-      plan = decoded.plan;
-      const ledger = await loadLedgerForPlanning(env, decoded.opts.storeRoot);
-      const currentExecutionPlan = bindRevertOwnersToCurrentLedger(decoded.executionPlan, ledger);
       const executed = await executeRevertPlan(
         env,
         {
@@ -209,8 +319,9 @@ export async function applyRevertMutationPlan(
         },
         {
           ...decoded.opts,
-          snapshotPassphrase: context.snapshotPassphrase,
-          keepBackups: context.keepBackups ?? decoded.opts.keepBackups,
+          snapshotPassphrase: context.snapshotPassphrase ?? trustedOptions.snapshotPassphrase,
+          keepBackups:
+            context.keepBackups ?? trustedOptions.keepBackups ?? decoded.opts.keepBackups,
         },
         mutationPlan,
         recordAction,
@@ -224,12 +335,93 @@ export async function applyRevertMutationPlan(
         ...(executed.afterCommit ? { afterCommit: executed.afterCommit } : {}),
       };
     },
+    { authorityLease },
   );
   return {
     ...(revertedResult ?? { plan, reverted: [], failures: [], warnings: [...plan.warnings] }),
     plan,
     operation,
     mutation: mutationPresentation(mutationPlan, operation),
+  };
+}
+
+function assertRevertOptionsMatchTrustedContext(
+  supplied: RevertOptions,
+  trusted: RevertOptions,
+): void {
+  const trustedSignedOptions: RevertOptions = {
+    storeRoot: trusted.storeRoot,
+    ...(trusted.scope ? { scope: trusted.scope } : {}),
+    ...(trusted.dir ? { dir: trusted.dir } : {}),
+    ...(trusted.agents ? { agents: trusted.agents } : {}),
+    ...(trusted.artifactIds ? { artifactIds: trusted.artifactIds } : {}),
+    ...(trusted.acknowledgements ? { acknowledgements: trusted.acknowledgements } : {}),
+    ...(trusted.keepBackups !== undefined ? { keepBackups: trusted.keepBackups } : {}),
+  };
+  if (canonicalJson(jsonObject(supplied)) !== canonicalJson(jsonObject(trustedSignedOptions))) {
+    throw new TypeError("revert mutation options do not match the trusted execution context");
+  }
+}
+
+function assertTrustedRevertOptions(context: RevertMutationContext): RevertOptions {
+  const options = context.options;
+  if (
+    !options ||
+    options.storeRoot !== context.storeRoot ||
+    options.dryRun === true ||
+    (context.keepBackups !== undefined &&
+      options.keepBackups !== undefined &&
+      context.keepBackups !== options.keepBackups)
+  ) {
+    throw new TypeError("revert mutation context does not contain trusted canonical options");
+  }
+  return options;
+}
+
+function invalidRevertMutationResult(): RevertMutationResult {
+  const operation = invalidPlanResult();
+  const plan: RevertPlan = { targets: [], conflicts: [], warnings: [] };
+  return {
+    plan,
+    reverted: [],
+    failures: [],
+    warnings: [],
+    operation,
+    mutation: {
+      planId: "untrusted",
+      planDigest: "untrusted",
+      operation: "revert",
+      baseRevision: 0,
+      result: operation,
+    },
+  };
+}
+
+function invalidRevertDigestMutationResult(): RevertMutationResult {
+  const operation: OperationResult = {
+    ok: false,
+    conflict: {
+      code: "INVALID_PLAN_DIGEST",
+      message: "plan digest does not match its contents",
+      planId: "untrusted",
+      expectedDigest: "untrusted",
+      actualDigest: "invalid",
+    },
+  };
+  const plan: RevertPlan = { targets: [], conflicts: [], warnings: [] };
+  return {
+    plan,
+    reverted: [],
+    failures: [],
+    warnings: [],
+    operation,
+    mutation: {
+      planId: "untrusted",
+      planDigest: "untrusted",
+      operation: "revert",
+      baseRevision: 0,
+      result: operation,
+    },
   };
 }
 
@@ -521,45 +713,205 @@ function decodeRevertMutation(planReceipt: MutationPlan): {
   executionPlan: RevertPlan;
 } {
   const input = planReceipt.normalizedInputs as Record<string, unknown>;
+  const inputKeys = ["revertPlan", "storeRoot"];
+  for (const key of ["scope", "dir", "agents", "artifactIds", "acknowledgements", "keepBackups"]) {
+    if (key in input) inputKeys.push(key);
+  }
   if (
+    !hasExactKeys(input, inputKeys) ||
     typeof input.storeRoot !== "string" ||
     typeof input.revertPlan !== "object" ||
-    input.revertPlan === null
+    input.revertPlan === null ||
+    !hasExactKeys(input.revertPlan, ["conflicts", "targets", "warnings"]) ||
+    !Array.isArray(input.revertPlan.targets) ||
+    !Array.isArray(input.revertPlan.conflicts) ||
+    !Array.isArray(input.revertPlan.warnings) ||
+    !input.revertPlan.warnings.every((warning) => typeof warning === "string")
   ) {
     throw new TypeError("revert mutation plan has invalid normalized inputs");
   }
   const plan = input.revertPlan as unknown as RevertPlan;
-  const targets = planReceipt.actions
-    .filter((mutationAction) => mutationAction.kind !== "sync-gitignore")
-    .map((mutationAction) => {
-      const target = mutationAction.payload.revertTarget as unknown;
+  const targets: RevertPlanTarget[] = [];
+  let reachedGitignore = false;
+  for (const mutationAction of planReceipt.actions) {
+    if (mutationAction.kind === "sync-gitignore") {
+      reachedGitignore = true;
       if (
-        typeof target !== "object" ||
-        target === null ||
-        typeof (target as RevertPlanTarget).target !== "string" ||
-        typeof (target as RevertPlanTarget).proposedAction !== "string" ||
-        (target as RevertPlanTarget).target !== mutationAction.target ||
-        (target as RevertPlanTarget).proposedAction !== mutationAction.kind
+        !hasExactKeys(mutationAction, ["actionId", "kind", "payload", "target"]) ||
+        !hasExactKeys(mutationAction.payload, [
+          "digest",
+          "effect",
+          "mode",
+          "path",
+          "projectDir",
+          "targets",
+        ])
       ) {
-        throw new TypeError(
-          `revert mutation action ${mutationAction.actionId} has invalid payload`,
-        );
+        throw new TypeError("revert mutation plan has an invalid action payload");
       }
-      return target as RevertPlanTarget;
-    });
+      assertExecutableGitignoreMutation(mutationAction);
+      continue;
+    }
+    if (reachedGitignore) throw new TypeError("revert mutation plan has invalid action ordering");
+    if (
+      !hasExactKeys(mutationAction, ["actionId", "kind", "payload", "target"]) ||
+      !hasExactKeys(mutationAction.payload, ["revertTarget"])
+    ) {
+      throw new TypeError("revert mutation plan has an invalid action payload");
+    }
+    const target = mutationAction.payload.revertTarget as unknown;
+    const targetKeys = [
+      "blocked",
+      "driftOverridden",
+      "expectedReceipt",
+      "owners",
+      "ownership",
+      "proposedAction",
+      "snapshot",
+      "target",
+    ];
+    if (typeof target === "object" && target !== null) {
+      if ("blockReason" in target) targetKeys.push("blockReason");
+      if ("acknowledgement" in target) targetKeys.push("acknowledgement");
+    }
+    const candidate = target as unknown as RevertPlanTarget;
+    if (
+      !hasExactKeys(target, targetKeys) ||
+      typeof candidate.target !== "string" ||
+      !["remove-target", "restore-snapshot"].includes(candidate.proposedAction) ||
+      candidate.blocked !== false ||
+      !Array.isArray(candidate.owners) ||
+      candidate.owners.length === 0 ||
+      candidate.target !== mutationAction.target ||
+      candidate.proposedAction !== mutationAction.kind
+    ) {
+      throw new TypeError("revert mutation plan has an invalid action payload");
+    }
+    targets.push(candidate);
+  }
+  const opts: RevertOptions = {
+    storeRoot: input.storeRoot,
+    ...(input.scope === "global" || input.scope === "project" ? { scope: input.scope } : {}),
+    ...(typeof input.dir === "string" ? { dir: input.dir } : {}),
+    ...(Array.isArray(input.agents) && input.agents.every((agent) => typeof agent === "string")
+      ? { agents: input.agents as string[] }
+      : {}),
+    ...(Array.isArray(input.artifactIds) &&
+    input.artifactIds.every((artifact) => typeof artifact === "string")
+      ? { artifactIds: input.artifactIds as string[] }
+      : {}),
+    ...(Array.isArray(input.acknowledgements) &&
+    input.acknowledgements.every((token) => typeof token === "string")
+      ? { acknowledgements: input.acknowledgements as string[] }
+      : {}),
+    ...(typeof input.keepBackups === "boolean" ? { keepBackups: input.keepBackups } : {}),
+  };
+  if (
+    ("scope" in input && opts.scope === undefined) ||
+    ("dir" in input && opts.dir === undefined) ||
+    ("agents" in input && opts.agents === undefined) ||
+    ("artifactIds" in input && opts.artifactIds === undefined) ||
+    ("acknowledgements" in input && opts.acknowledgements === undefined) ||
+    ("keepBackups" in input && opts.keepBackups === undefined) ||
+    new Set(opts.agents ?? []).size !== (opts.agents?.length ?? 0) ||
+    new Set(opts.artifactIds ?? []).size !== (opts.artifactIds?.length ?? 0) ||
+    new Set(opts.acknowledgements ?? []).size !== (opts.acknowledgements?.length ?? 0)
+  ) {
+    throw new TypeError("revert mutation plan has invalid normalized inputs");
+  }
   return {
-    opts: {
-      storeRoot: input.storeRoot,
-      ...(input.scope === "global" || input.scope === "project" ? { scope: input.scope } : {}),
-      ...(typeof input.dir === "string" ? { dir: input.dir } : {}),
-      ...(Array.isArray(input.agents) && input.agents.every((agent) => typeof agent === "string")
-        ? { agents: input.agents as string[] }
-        : {}),
-      ...(typeof input.keepBackups === "boolean" ? { keepBackups: input.keepBackups } : {}),
-    },
+    opts,
     plan,
     executionPlan: { ...plan, targets },
   };
+}
+
+function hasExactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+function assertRevertExecutionAuthorization(
+  env: Env,
+  mutationPlan: MutationPlan,
+  decoded: ReturnType<typeof decodeRevertMutation>,
+  executionPlan: RevertPlan,
+  ledger: Ledger,
+): void {
+  const eligible = decoded.plan.targets.filter((target) => !target.blocked);
+  const productActions = mutationPlan.actions.filter((action) => action.kind !== "sync-gitignore");
+  if (
+    eligible.length !== executionPlan.targets.length ||
+    productActions.length !== executionPlan.targets.length
+  ) {
+    throw new TypeError("revert mutation plan does not match its executable target set");
+  }
+  const roots = allowedRevertRoots(env, decoded.opts);
+  for (const [index, target] of executionPlan.targets.entries()) {
+    const action = productActions[index];
+    const normalizedTarget = eligible[index];
+    const primaryOwner = target.owners[0];
+    const precondition = mutationPlan.targetPreconditions.find(
+      (candidate) => candidate.actionId === action?.actionId,
+    );
+    if (
+      !action ||
+      !normalizedTarget ||
+      canonicalJson(jsonObject(target)) !== canonicalJson(jsonObject(normalizedTarget)) ||
+      action.actionId !== revertMutationActionId(target, index) ||
+      !precondition ||
+      !roots.some((root) => isPathInside(target.target, root)) ||
+      target.ownership.target !== target.target ||
+      !primaryOwner ||
+      target.ownership.key !== entryKey(primaryOwner) ||
+      target.owners.some(
+        (owner) =>
+          owner.target !== target.target ||
+          canonicalJson(jsonObject(owner.receipt)) !==
+            canonicalJson(jsonObject(target.expectedReceipt)),
+      ) ||
+      (target.ownership.currentFingerprint === null
+        ? precondition.expected.state !== "absent"
+        : precondition.expected.state !== "present" ||
+          precondition.expected.fingerprint !== target.ownership.currentFingerprint)
+    ) {
+      throw new TypeError("revert mutation target authorization is invalid");
+    }
+    if (normalizedTarget.ownership.classification !== "owned-drifted") {
+      if (target.acknowledgement !== undefined || target.driftOverridden) {
+        throw new TypeError("revert mutation acknowledgement is unexpected");
+      }
+    } else {
+      if (!target.driftOverridden || target.acknowledgement?.kind !== "revert-drift") {
+        throw new TypeError("revert mutation acknowledgement was not authorized");
+      }
+      if (!decoded.opts.acknowledgements?.includes(target.acknowledgement.token)) {
+        throw new TypeError("revert mutation acknowledgement token was not supplied");
+      }
+    }
+  }
+
+  const reverted = executionPlan.targets.flatMap((target) => target.owners);
+  const revertedKeys = new Set(reverted.map(entryKey));
+  const remaining: Ledger = {
+    version: 2,
+    owners: ledger.owners.filter((owner) => !revertedKeys.has(entryKey(owner))),
+  };
+  const helpers = mutationPlan.actions.slice(productActions.length);
+  const expectedDirs = affectedGitignoreDirs(reverted);
+  const helperDirs = helpers.map((action) => action.payload.projectDir);
+  if (
+    helpers.length !== expectedDirs.length ||
+    expectedDirs.some((dir, index) => helperDirs[index] !== dir)
+  ) {
+    throw new TypeError("revert gitignore actions do not match the affected project set");
+  }
+  for (const helper of helpers) {
+    assertExecutableGitignoreMutation(helper);
+    assertGitignoreMutationMatchesLedger(helper, remaining);
+  }
 }
 
 function sameTargetReceipt(
@@ -897,7 +1249,7 @@ async function recordRevertActivity(
       affectedCount: reverted.length,
       warningsCount: warnings.length,
       summary: `Reverted ${reverted.length} ${reverted.length === 1 ? "target" : "targets"}`,
-      references: {
+      resources: {
         ledgerEntryKeys: reverted.map(entryKey),
         artifactIds: reverted.flatMap((entry) => entry.artifactIds),
       },

@@ -1,7 +1,10 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import type { Env } from "../src/env.js";
 import {
+  canonicalJson,
   canonicalMutationPlan,
+  createAuthorizedMutationPlan,
   createDurableMutationPlan,
   createMutationPlan,
   mutationPlanDigest,
@@ -14,6 +17,7 @@ import type {
   OperationReceipt,
   OperationResult,
 } from "../src/protocol/models.js";
+import { deterministicMutationAuthority } from "./helpers/mutation-authority.js";
 
 interface GoldenFixture {
   canonicalPlan: string;
@@ -161,10 +165,20 @@ describe("transaction protocol v1", () => {
       after: { state: "present" as const, fingerprint: "sha256:after-a" },
       recordedAt: "2026-07-28T10:01:01.000Z",
     };
-    const journal: OperationJournal = {
+    const authority = deterministicMutationAuthority();
+    const storeRoot = "/tmp/cellarer-protocol-fixture";
+    const authorityEnv = { cwd: () => "/", mutationAuthority: authority } as Env;
+    const durablePlan = createDurableMutationPlan(
+      authorityEnv,
+      storeRoot,
+      createAuthorizedMutationPlan(authorityEnv, storeRoot, planInput),
+    );
+    const unsignedJournal = {
       schemaVersion: 1,
       operationId: "operation-0001",
-      plan: createDurableMutationPlan(createMutationPlan(planInput)),
+      sequence: 1,
+      previousJournalSeal: null,
+      plan: durablePlan,
       nextRevision: 8,
       status: "executing",
       startedAt: "2026-07-28T10:01:00.000Z",
@@ -173,6 +187,17 @@ describe("transaction protocol v1", () => {
         { actionId: "action-1", target: "/tmp/a", status: "succeeded", receipt: actionReceipt },
         { actionId: "action-2", target: "/tmp/b", status: "pending" },
       ],
+    };
+    const journal: OperationJournal = {
+      ...unsignedJournal,
+      authorization: authority.seal({
+        schemaVersion: 1,
+        domain: "operation-journal-v1",
+        normalizedStoreRoot: storeRoot,
+        operation: durablePlan.operation,
+        baseRevision: durablePlan.baseRevision,
+        canonicalPayload: canonicalJson(unsignedJournal),
+      }),
     };
     const receipt: OperationReceipt = {
       schemaVersion: 1,
@@ -192,7 +217,14 @@ describe("transaction protocol v1", () => {
     if (!staleConflict) throw new Error("golden stale conflict is missing");
     const failure: OperationResult = { ok: false, conflict: staleConflict };
 
-    expect(journal).toEqual(golden.journal);
+    expect(journal).toMatchObject({
+      schemaVersion: 1,
+      sequence: 1,
+      previousJournalSeal: null,
+      plan: { authorization: { domain: "durable-plan-v1" } },
+      authorization: { domain: "operation-journal-v1" },
+    });
+    expect(JSON.parse(JSON.stringify(journal))).toEqual(journal);
     expect(receipt).toEqual(golden.receipt);
     expect(JSON.parse(JSON.stringify(success))).toEqual({ ok: true, receipt: golden.receipt });
     expect(JSON.parse(JSON.stringify(failure))).toEqual({

@@ -1,10 +1,132 @@
-import { promises as fs, mkdtempSync, realpathSync } from "node:fs";
+import { closeSync, promises as fs, mkdtempSync, openSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { createRealEnv } from "@cellarer/core";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { HEADLESS_MUTATION_AUTHORITY_ENV } from "../src/mutation-authority.js";
+import { serializeCliOutput } from "../src/output.js";
 import { buildProgram } from "../src/program.js";
 
+const TEST_MUTATION_AUTHORITY = `v1:1:${Buffer.alloc(32, 0x19).toString("base64url")}`;
+let previousMutationAuthority: string | undefined;
+
+beforeEach(() => {
+  previousMutationAuthority = process.env[HEADLESS_MUTATION_AUTHORITY_ENV];
+  process.env[HEADLESS_MUTATION_AUTHORITY_ENV] = TEST_MUTATION_AUTHORITY;
+});
+
+afterEach(() => {
+  if (previousMutationAuthority === undefined) {
+    delete process.env[HEADLESS_MUTATION_AUTHORITY_ENV];
+  } else {
+    process.env[HEADLESS_MUTATION_AUTHORITY_ENV] = previousMutationAuthority;
+  }
+});
+
 describe("cli program wiring", () => {
+  it("16.1 redacts nested container scalars at the CLI JSON boundary", () => {
+    const parsed = JSON.parse(
+      serializeCliOutput({
+        AccessToken: ["cli-plaintext", 17, false, null, { nested: "cli-object-plaintext" }],
+      }),
+    );
+
+    expect(parsed).toEqual({
+      AccessToken: [
+        "[REDACTED]",
+        "[REDACTED]",
+        "[REDACTED]",
+        "[REDACTED]",
+        { nested: "[REDACTED]" },
+      ],
+    });
+  });
+
+  it("redacts secret-like values from CLI validation output", async () => {
+    const canary = "ghp_0123456789abcdefghijklmnopqrstuvwx";
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "cellarer-cli-validation-")));
+    const oldError = console.error;
+    const oldExit = process.exitCode;
+    const oldStore = process.env.CELLARER_HOME;
+    const errors: string[] = [];
+    try {
+      process.env.CELLARER_HOME = join(root, "cellarer-home");
+      process.exitCode = undefined;
+      console.error = (message?: unknown) => errors.push(String(message));
+
+      await buildProgram().parseAsync(
+        ["node", "cellarer", "apply", "--agent", "codex", "--secret-mode", canary],
+        { from: "node" },
+      );
+
+      expect(process.exitCode).toBe(1);
+      expect(errors.join("\n")).not.toContain(canary);
+      expect(errors.join("\n")).toContain("[REDACTED]");
+    } finally {
+      console.error = oldError;
+      process.exitCode = oldExit;
+      if (oldStore === undefined) delete process.env.CELLARER_HOME;
+      else process.env.CELLARER_HOME = oldStore;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("redacts a low-entropy active environment value at the real apply JSON boundary", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "cellarer-cli-low-")));
+    const storeRoot = join(root, "store-home");
+    const projectDir = join(root, "project-tiny");
+    const real = createRealEnv();
+    const oldStore = process.env.CELLARER_HOME;
+    const oldSecret = process.env.LOW_CLI;
+    const oldLog = console.log;
+    const oldError = console.error;
+    const oldExit = process.exitCode;
+    const output: string[] = [];
+    try {
+      await fs.mkdir(projectDir, { recursive: true });
+      for (const kind of ["rules", "mcp", "skills"]) {
+        await real.fs.mkdir(join(storeRoot, "store", kind), { recursive: true });
+      }
+      await real.fs.writeFile(
+        join(storeRoot, "store", "mcp", "low.json"),
+        JSON.stringify({ command: "npx", env: { API_KEY: "$" + "{LOW_CLI}" } }),
+      );
+      process.env.CELLARER_HOME = storeRoot;
+      process.env.LOW_CLI = "tiny";
+      process.exitCode = undefined;
+      console.log = (message?: unknown) => output.push(String(message));
+      console.error = (message?: unknown) => output.push(String(message));
+
+      await buildProgram().parseAsync(
+        [
+          "node",
+          "cellarer",
+          "apply",
+          "--agent",
+          "claude-code",
+          "--dir",
+          projectDir,
+          "--mcp",
+          "--dry-run",
+          "--json",
+        ],
+        { from: "node" },
+      );
+
+      expect(output.join("\n")).not.toContain("tiny");
+      expect(output.join("\n")).toContain("[REDACTED]");
+    } finally {
+      console.log = oldLog;
+      console.error = oldError;
+      process.exitCode = oldExit;
+      if (oldStore === undefined) delete process.env.CELLARER_HOME;
+      else process.env.CELLARER_HOME = oldStore;
+      if (oldSecret === undefined) delete process.env.LOW_CLI;
+      else process.env.LOW_CLI = oldSecret;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("registers all commands (M4 + add)", () => {
     const program = buildProgram();
     const names = program.commands.map((c) => c.name()).sort();
@@ -13,6 +135,7 @@ describe("cli program wiring", () => {
         "add",
         "agents",
         "apply",
+        "authority",
         "doctor",
         "init",
         "ls",
@@ -167,7 +290,10 @@ describe("cli program wiring", () => {
     expect(flags).toContain("--secret-mode");
     expect(flags).toContain("--replace-unowned");
     expect(flags).toContain("--override-drift");
-    expect(flags).toContain("--snapshot-passphrase");
+    expect(flags).not.toContain("--vault-passphrase");
+    expect(flags).not.toContain("--snapshot-passphrase");
+    expect(flags).toContain("--vault-passphrase-fd");
+    expect(flags).toContain("--snapshot-passphrase-fd");
     expect(flags).toContain("--json");
   });
 
@@ -183,7 +309,8 @@ describe("cli program wiring", () => {
     const revert = program.commands.find((c) => c.name() === "revert");
     const revertFlags = revert?.options.map((o) => o.long) ?? [];
     expect(revertFlags).toContain("--acknowledge");
-    expect(revertFlags).toContain("--snapshot-passphrase");
+    expect(revertFlags).not.toContain("--snapshot-passphrase");
+    expect(revertFlags).toContain("--snapshot-passphrase-fd");
     expect(revertFlags).toContain("--json");
   });
 
@@ -238,27 +365,34 @@ describe("cli program wiring", () => {
         baseRevision: 0,
       });
       const replacement = blocked.plan.conflicts[0].acknowledgement.token as string;
+      const snapshotPassphrasePath = join(root, "snapshot-passphrase");
+      await fs.writeFile(snapshotPassphrasePath, "cli-snapshot-passphrase\n", "utf8");
 
       logs = [];
       process.exitCode = undefined;
-      await buildProgram().parseAsync(
-        [
-          "node",
-          "cellarer",
-          "apply",
-          "--agent",
-          "claude-code",
-          "--dir",
-          project,
-          "--rules",
-          "--replace-unowned",
-          replacement,
-          "--snapshot-passphrase",
-          "cli-snapshot-passphrase",
-          "--json",
-        ],
-        { from: "node" },
-      );
+      const replacementFd = openSync(snapshotPassphrasePath, "r");
+      try {
+        await buildProgram().parseAsync(
+          [
+            "node",
+            "cellarer",
+            "apply",
+            "--agent",
+            "claude-code",
+            "--dir",
+            project,
+            "--rules",
+            "--replace-unowned",
+            replacement,
+            "--snapshot-passphrase-fd",
+            String(replacementFd),
+            "--json",
+          ],
+          { from: "node" },
+        );
+      } finally {
+        closeSync(replacementFd);
+      }
       expect(process.exitCode).toBeUndefined();
       const applied = JSON.parse(logs.join("\n"));
       expect(applied.entries).toHaveLength(1);
@@ -320,24 +454,29 @@ describe("cli program wiring", () => {
 
       logs = [];
       process.exitCode = undefined;
-      await buildProgram().parseAsync(
-        [
-          "node",
-          "cellarer",
-          "apply",
-          "--agent",
-          "claude-code",
-          "--dir",
-          project,
-          "--rules",
-          "--override-drift",
-          override,
-          "--snapshot-passphrase",
-          "cli-snapshot-passphrase",
-          "--json",
-        ],
-        { from: "node" },
-      );
+      const overrideFd = openSync(snapshotPassphrasePath, "r");
+      try {
+        await buildProgram().parseAsync(
+          [
+            "node",
+            "cellarer",
+            "apply",
+            "--agent",
+            "claude-code",
+            "--dir",
+            project,
+            "--rules",
+            "--override-drift",
+            override,
+            "--snapshot-passphrase-fd",
+            String(overrideFd),
+            "--json",
+          ],
+          { from: "node" },
+        );
+      } finally {
+        closeSync(overrideFd);
+      }
       expect(process.exitCode).toBeUndefined();
       expect(JSON.parse(logs.join("\n")).entries).toHaveLength(1);
     } finally {

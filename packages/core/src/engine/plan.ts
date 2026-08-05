@@ -10,7 +10,7 @@
 //       · skills:op 由 method 推导(symlink→op=symlink,copy→op=copy),故 per-OS method 真正影响落地。
 //   - 实际落地方式(可能因 Windows 回退)记台账的 AppliedMethod,与计划 method 区分。
 
-import { normalize } from "node:path";
+import { join, normalize } from "node:path";
 import { loadRegistry } from "../adapters/registry.js";
 import type { AgentAdapter, RuleFragment } from "../adapters/types.js";
 import type { Env } from "../env.js";
@@ -21,12 +21,24 @@ import type {
   DistributePlan,
   LinkMethod,
   PlanAction,
+  SecretReferenceFinding,
   TargetAcknowledgement,
   TargetConflict,
   TargetOwner,
   TargetOwnershipEvidence,
 } from "../model/index.js";
-import { loadVault } from "../secrets/vault.js";
+import {
+  attachProviderScope,
+  createProviderScope,
+  providerScopeForEnv,
+  withProviderScope,
+} from "../secrets/active-values.js";
+import { missingSecretReferences, verifySecretReferences } from "../secrets/provider.js";
+import {
+  captureSafeRecursiveSource,
+  type SafeRecursiveSnapshot,
+  UnsafeRecursiveSourceError,
+} from "../secrets/safe-tree.js";
 import { sha256 } from "../store/checksum.js";
 import { type CellarerConfig, loadConfig } from "../store/config.js";
 import { duplicateTargetOwnerKeys, loadLedgerForPlanning, targetKey } from "../store/ledger.js";
@@ -39,7 +51,7 @@ import {
 import { inspectTargetOwnership } from "../target-ownership.js";
 import { loadSelectedMcp, planMcp, type RenderedMcp, renderMcp } from "./mcp-plan.js";
 import { dedupeCollisions } from "./plan/collision.js";
-import { applySecretScanGuard } from "./plan/secret-guard.js";
+import { applyRecursiveSecretGuard } from "./plan/secret-guard.js";
 import { planSkills } from "./skills-plan.js";
 import type { DistributeOptions } from "./types.js";
 
@@ -59,7 +71,7 @@ interface PlanContext {
   selectedRules: Artifact[];
   ruleFragments: RuleFragment[];
   selectedMcp: Artifact[];
-  // mcp 密钥渲染与 agent 无关,顶层渲染一次共享(含 vault 单次解密)。
+  // mcp 密钥渲染与 agent 无关,顶层渲染一次共享。
   renderedMcp: RenderedMcp;
   selectedSkills: Artifact[];
 }
@@ -74,10 +86,18 @@ const PLANNERS: Record<Capability, CapabilityPlanner> = {
   skills: planSkillsCapability,
 };
 
-export async function plan(env: Env, opts: DistributeOptions): Promise<DistributePlan> {
+export async function plan(
+  env: Env,
+  opts: DistributeOptions,
+  execution: { providerAccess?: "allowed" | "forbidden" } = {},
+): Promise<DistributePlan> {
   const warnings: string[] = [];
   const actions: PlanAction[] = [];
   const conflicts: TargetConflict[] = [];
+  const requestedCapabilities: Capability[] = opts.capabilities ?? ["rules"];
+  if (requestedCapabilities.includes("skills") && !env.fs.supportsSafeRecursiveSnapshots()) {
+    throw new UnsafeRecursiveSourceError(join(opts.storeRoot, "store", "skills"), "unsupported");
+  }
 
   // 库房配置与制品独立读取并行(config.json / rules / mcp / skills)。
   const [config, registry, ruleArtifacts, mcpArtifacts, skillArtifacts, ledger] = await Promise.all(
@@ -92,12 +112,21 @@ export async function plan(env: Env, opts: DistributeOptions): Promise<Distribut
   );
   warnings.push(...registry.warnings);
 
+  const providerScope =
+    providerScopeForEnv(env) ??
+    createProviderScope({
+      secretMode: opts.secretMode ?? config.defaults.secretMode,
+      vaultPassphrase: opts.vaultPassphrase,
+      keychainService: opts.keychainService,
+    });
+  const operationEnv = providerScopeForEnv(env) ? env : withProviderScope(env, providerScope);
+
   const collections = opts.collections ?? config.defaults.collections;
   // 优先级:CLI --method > 按 OS 覆盖([defaults.os.<platform>]) > 全局默认。
   // (Windows 软链需特权,init 默认写 [defaults.os.win32].method=copy,此处必须实际生效。)
   const osMethod = config.defaults.os?.[env.platform as "win32" | "darwin" | "linux"]?.method;
   const method = opts.method ?? osMethod ?? config.defaults.method;
-  const capabilities: Capability[] = opts.capabilities ?? ["rules"];
+  const capabilities = requestedCapabilities;
 
   // collection 过滤(三类制品共用 inCollections;制品无标签视为命中)。
   const inSel = (id: string) => inCollections(config.artifacts[id]?.collections ?? [], collections);
@@ -105,32 +134,57 @@ export async function plan(env: Env, opts: DistributeOptions): Promise<Distribut
   const selectedMcp = mcpArtifacts.filter((a) => inSel(a.id));
   const selectedSkills = skillArtifacts.filter((a) => inSel(a.id));
 
+  // Capture the original staged source text and establish the provider scope before MCP/frontmatter
+  // decoding can fail. The final plan guard reuses these exact snapshots and the same provider cache.
+  const stagedSources = new Map<string, SafeRecursiveSnapshot>();
+  const sourcePaths: Array<{ capability: Capability; path: string }> = [
+    ...(capabilities.includes("rules")
+      ? selectedRules.map((artifact) => ({
+          capability: "rules" as const,
+          path: join(opts.storeRoot, "store", "rules", `${artifact.name}.md`),
+        }))
+      : []),
+    ...(capabilities.includes("mcp")
+      ? selectedMcp.map((artifact) => ({
+          capability: "mcp" as const,
+          path: join(opts.storeRoot, "store", "mcp", `${artifact.name}.json`),
+        }))
+      : []),
+    ...(capabilities.includes("skills")
+      ? selectedSkills.map((artifact) => ({
+          capability: "skills" as const,
+          path: join(opts.storeRoot, "store", "skills", artifact.name),
+        }))
+      : []),
+  ];
+  for (const source of sourcePaths) {
+    try {
+      stagedSources.set(source.path, await captureSafeRecursiveSource(operationEnv, source.path));
+    } catch (error) {
+      // Skills planning already converts unsafe recursive sources into its established skip action
+      // and warning. Preserve that fail-closed result instead of turning it into a plan exception.
+      if (source.capability === "skills") continue;
+      throw attachPlanScopeToError(error, providerScope);
+    }
+  }
   // 各 agent 共享同一份制品内容,避免按 agent 重复读(N×M → M)。
-  const [ruleFragments, mcpServers] = await Promise.all([
-    Promise.all(selectedRules.map((a) => readRuleArtifact(env, opts.storeRoot, a.id))),
-    loadSelectedMcp(env, opts.storeRoot, selectedMcp),
-  ]);
+  let ruleFragments: RuleFragment[];
+  let mcpServers: Awaited<ReturnType<typeof loadSelectedMcp>>;
+  try {
+    [ruleFragments, mcpServers] = await Promise.all([
+      Promise.all(selectedRules.map((a) => readRuleArtifact(operationEnv, opts.storeRoot, a.id))),
+      loadSelectedMcp(operationEnv, opts.storeRoot, selectedMcp),
+    ]);
+  } catch (error) {
+    throw attachPlanScopeToError(error, providerScope);
+  }
 
-  // vault 单次解密(仅 vault 模式且需要时):传给 mcp 渲染,避免每字段/每 agent 重复 scrypt 解密。
-  const secretMode = opts.secretMode ?? config.defaults.secretMode;
-  const vaultData =
-    secretMode === "vault" && opts.vaultPassphrase && selectedMcp.length > 0
-      ? await loadVault(env, opts.storeRoot, opts.vaultPassphrase)
-      : undefined;
-
-  // mcp 密钥渲染与 agent 无关,顶层渲染一次(含意外/故意明文标记 + 解析失败告警),各 agent 共享。
+  // mcp 密钥渲染与 agent 无关,顶层渲染一次;renderer 只接收引用 token,不接触 secret provider。
   const renderedMcp = await renderMcp({
-    env,
-    storeRoot: opts.storeRoot,
     servers: mcpServers,
-    secretMode,
-    vaultPassphrase: opts.vaultPassphrase,
-    vaultData,
   });
-  warnings.push(...renderedMcp.warnings);
-
   const ctx: PlanContext = {
-    env,
+    env: operationEnv,
     opts,
     config,
     method,
@@ -182,17 +236,69 @@ export async function plan(env: Env, opts: DistributeOptions): Promise<Distribut
   // 所有 capability 共用同一 target ownership 判定与显式授权协议，避免 planner 各自漂移。
   const duplicateOwnerKeys = duplicateTargetOwnerKeys(ledger.owners);
   addDuplicateOwnerConflicts(ledger.owners, duplicateOwnerKeys, conflicts);
-  await classifyPlannedTargets(env, opts, ledger.owners, actions, conflicts);
+  await classifyPlannedTargets(operationEnv, opts, ledger.owners, actions, conflicts);
 
-  // 统一 secret-scan 护栏,覆盖所有能力与所有 scope(pass 抽到 plan/secret-guard.ts)。
-  applySecretScanGuard(actions, opts.scope);
+  const activeMcpActions = actions.filter(
+    (action) => action.capability === "mcp" && action.op !== "skip",
+  );
+  const referenceChecks =
+    activeMcpActions.length === 0 || execution.providerAccess === "forbidden"
+      ? []
+      : await verifySecretReferences(operationEnv, opts.storeRoot, renderedMcp.references, {
+          mode: opts.secretMode ?? config.defaults.secretMode,
+          vaultPassphrase: opts.vaultPassphrase,
+          keychainService: opts.keychainService,
+        });
+  const secretReferenceFindings = missingSecretReferences(referenceChecks);
 
-  return {
+  const distributePlan: DistributePlan = {
     actions,
     warnings,
     conflicts,
     ...(duplicateOwnerKeys.length > 0 ? { invalidLedger: true as const } : {}),
   };
+  // Final read-only staging pass covers generated files and recursive Skill trees. A finding
+  // blocks the complete batch and publishes location/rule evidence only.
+  const secretFindings = await applyRecursiveSecretGuard(operationEnv, distributePlan, opts.scope, {
+    storeRoot: opts.storeRoot,
+    config,
+    secretMode: opts.secretMode,
+    vaultPassphrase: opts.vaultPassphrase,
+    keychainService: opts.keychainService,
+    stagedSources,
+    providerAccess: execution.providerAccess,
+  });
+  if (secretReferenceFindings.length > 0) {
+    blockMissingSecretReferences(distributePlan.actions, secretReferenceFindings);
+  }
+  return attachProviderScope(
+    {
+      ...distributePlan,
+      ...(secretFindings.length > 0 ? { secretFindings } : {}),
+      ...(secretReferenceFindings.length > 0 ? { secretReferenceFindings } : {}),
+    },
+    providerScope,
+  );
+}
+
+function attachPlanScopeToError(
+  error: unknown,
+  scope: ReturnType<typeof createProviderScope>,
+): unknown {
+  return typeof error === "object" && error !== null ? attachProviderScope(error, scope) : error;
+}
+
+function blockMissingSecretReferences(
+  actions: PlanAction[],
+  findings: readonly SecretReferenceFinding[],
+): void {
+  const references = findings.map((finding) => finding.reference).join(", ");
+  for (const action of actions) {
+    if (action.op === "skip" || action.capability !== "mcp") continue;
+    action.op = "skip";
+    action.reason = `secret-reference: required reference unavailable: ${references}`;
+    action.preview = undefined;
+  }
 }
 
 function addDuplicateOwnerConflicts(

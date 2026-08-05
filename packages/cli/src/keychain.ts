@@ -6,7 +6,13 @@
 // 故用 createRequire 懒加载并整体 try/catch —— 顶层静态 import 会让加载失败崩掉整个 CLI,
 // 而不是优雅降级到 vault(tryKeychainStore 返回 null,调用方降级)。
 import { createRequire } from "node:module";
-import type { SecretStore } from "@cellarer/core";
+import {
+  assertMutationAuthorityCredentialTarget,
+  assertOrdinarySecretCredentialTarget,
+  type Env,
+} from "@cellarer/core";
+
+type SecretStore = NonNullable<Env["secretStore"]>;
 
 // @napi-rs/keyring 的 Entry 类型(只取用到的同步方法,避免给 core 引入类型依赖)。
 export interface KeyringEntry {
@@ -23,23 +29,41 @@ const require = createRequire(import.meta.url);
 // 三态不再塌缩成 null,调用方(resolver)据此区分「无条目」与「取不到」并给出不同诊断。
 // 导出以便注入 fake Entry 做映射测试(不依赖真实系统 keychain)。
 export function createKeychainStore(Entry: EntryCtor): SecretStore {
+  return createProtectedKeychainStore(Entry, assertOrdinarySecretCredentialTarget);
+}
+
+export function createAuthorityCredentialStore(Entry: EntryCtor): SecretStore {
+  return createProtectedKeychainStore(Entry, assertMutationAuthorityCredentialTarget);
+}
+
+function createProtectedKeychainStore(
+  Entry: EntryCtor,
+  assertTarget: (service: string, account: string) => void,
+): SecretStore {
   return {
     async get(service, account) {
+      assertTarget(service, account);
       try {
         const pw = new Entry(service, account).getPassword();
         return pw === null ? { found: false } : { found: true, value: pw };
-      } catch (e) {
-        return { error: e instanceof Error ? e.message : String(e) };
+      } catch {
+        return { error: "keychain provider get failed" };
       }
     },
     async set(service, account, secret) {
-      new Entry(service, account).setPassword(secret);
+      assertTarget(service, account);
+      try {
+        new Entry(service, account).setPassword(secret);
+      } catch {
+        throw new Error("keychain provider set failed");
+      }
     },
     async delete(service, account) {
+      assertTarget(service, account);
       try {
         return new Entry(service, account).deleteCredential();
       } catch {
-        return false;
+        throw new Error("keychain provider delete failed");
       }
     },
   };
@@ -51,6 +75,15 @@ export function tryKeychainStore(): SecretStore | null {
     // 懒加载:require 在 try 内,加载失败被捕获,不波及 CLI 其余命令。
     const { Entry } = require("@napi-rs/keyring") as { Entry: EntryCtor };
     return createKeychainStore(Entry);
+  } catch {
+    return null;
+  }
+}
+
+export function tryAuthorityCredentialStore(): SecretStore | null {
+  try {
+    const { Entry } = require("@napi-rs/keyring") as { Entry: EntryCtor };
+    return createAuthorityCredentialStore(Entry);
   } catch {
     return null;
   }

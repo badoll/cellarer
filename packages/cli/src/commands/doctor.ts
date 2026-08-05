@@ -7,6 +7,7 @@ import {
 import { Command } from "commander";
 import { resolveContext } from "../context.js";
 import { printMutationRecovery } from "../mutation-output.js";
+import { safeConsole as console } from "../output.js";
 
 interface DoctorOpts {
   agent?: string;
@@ -21,7 +22,7 @@ export function doctorCommand(): Command {
     .option("--dir <path>", "按 project scope 检查目标路径")
     .option("--json", "JSON 输出")
     .action(async (opts: DoctorOpts) => {
-      const ctx = resolveContext(opts);
+      const ctx = await resolveContext(opts);
       const report = await doctor(ctx.env, {
         storeRoot: ctx.storeRoot,
         scope: ctx.scope,

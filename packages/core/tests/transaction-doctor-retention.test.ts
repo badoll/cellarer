@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { doctor } from "../src/diagnostics.js";
-import { createMutationPlan } from "../src/protocol/canonical.js";
+import { createAuthorizedMutationPlan } from "../src/protocol/canonical.js";
 import { executeMutationPlan } from "../src/protocol/execute.js";
 import { listOperationReceipts, publishOperationReceipt } from "../src/protocol/journal.js";
 import type { OperationReceipt } from "../src/protocol/models.js";
@@ -28,7 +28,7 @@ describe("mutation doctor and retention", () => {
 
   it("adds incomplete journal evidence to the existing Core doctor report", async () => {
     const target = t.path("home", ".agent", "rules.md");
-    const plan = createMutationPlan({
+    const plan = createAuthorizedMutationPlan(t.env, storeRoot, {
       schemaVersion: 1,
       planId: "plan-doctor",
       operation: "apply",

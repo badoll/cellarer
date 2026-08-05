@@ -1,10 +1,13 @@
 import { promises as fs, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMutationPlan, createRealEnv, type Env, readStoreRevision } from "@cellarer/core";
+import { createRealEnv, type Env, readStoreRevision } from "@cellarer/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createAuthorizedMutationPlan } from "../../core/src/protocol/canonical.js";
 import { executeMutationPlan } from "../../core/src/protocol/execute.js";
-import { createApp } from "../src/app.js";
+import { sha256 } from "../../core/src/store/checksum.js";
+import { createApp, redactWebPayload } from "../src/app.js";
+import { deterministicMutationAuthority } from "./helpers/mutation-authority.js";
 
 // web 测试基座:临时库房 + 真实 Env(注入 homedir/cwd 指向临时目录)。
 interface Ctx {
@@ -29,6 +32,7 @@ function makeCtx(envVars: Record<string, string | undefined> = {}): Ctx {
     randomId: real.randomId,
     now: () => new Date("2026-06-30T08:00:00.000Z"),
     env: envVars,
+    mutationAuthority: deterministicMutationAuthority(),
   };
   const storeRoot = join(home, ".cellarer");
   const app = createApp({ env, storeRoot });
@@ -519,10 +523,10 @@ describe("web app — secret safety (red line)", () => {
   });
   afterEach(() => c.cleanup());
 
-  it("plan response never contains a real secret value (env mode forced)", async () => {
+  it("preserves a supported environment reference without returning its value", async () => {
     await c.env.fs.writeFile(
       join(c.storeRoot, "store", "mcp", "ctx.json"),
-      JSON.stringify({ command: "npx", env: { API_KEY: CELLARER_SECRET_REF } }),
+      JSON.stringify({ command: "npx", env: { API_KEY: ENV_SECRET_REF } }),
     );
     const res = await c.app.request("/api/sync/plan", {
       method: "POST",
@@ -534,17 +538,46 @@ describe("web app — secret safety (red line)", () => {
       }),
     });
     const text = await res.text();
-    expect(text).not.toContain(REAL); // 真值绝不出现在响应
-    expect(text).toContain(ENV_SECRET_REF); // env 引用形态
+    expect(text).not.toContain(REAL);
+    expect(text).toContain(ENV_SECRET_REF);
+  });
+
+  it("redacts a low-entropy active value at the real Web plan boundary", async () => {
+    await c.cleanup();
+    c = makeCtx({ C7_KEY: "tiny" });
+    await seedStore(c);
+    const projectDir = join(c.root, "project-tiny");
+    await c.env.fs.mkdir(projectDir, { recursive: true });
+    await c.env.fs.writeFile(
+      join(c.storeRoot, "store", "mcp", "ctx.json"),
+      JSON.stringify({ command: "npx", env: { API_KEY: ENV_SECRET_REF } }),
+    );
+
+    const res = await c.app.request("/api/sync/plan", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agents: ["claude-code"],
+        destination: "project",
+        dir: projectDir,
+        resources: { kinds: ["mcp"] },
+      }),
+    });
+    const text = await res.text();
+
+    expect(res.status).toBe(200);
+    expect(text).not.toContain("tiny");
+    expect(text).toContain("[REDACTED]");
+    expect(text).toContain(ENV_SECRET_REF);
   });
 
   it("secrets endpoint lists only reference names, never values", async () => {
     // 先 apply 一个带 secretRef 的 mcp,使台账记录引用名。
     await c.env.fs.writeFile(
       join(c.storeRoot, "store", "mcp", "ctx.json"),
-      JSON.stringify({ command: "npx", env: { API_KEY: CELLARER_SECRET_REF } }),
+      JSON.stringify({ command: "npx", env: { API_KEY: ENV_SECRET_REF } }),
     );
-    await c.app.request("/api/sync/apply", {
+    const applied = await c.app.request("/api/sync/apply", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -553,11 +586,41 @@ describe("web app — secret safety (red line)", () => {
         resources: { kinds: ["mcp"] },
       }),
     });
+    expect(applied.status).toBe(200);
+    expect(await applied.text()).not.toContain(REAL);
     const res = await c.app.request("/api/secrets");
     const body = await res.json();
     expect(body.names).toContain("C7_KEY");
     expect(body.refs).toContainEqual({ name: "C7_KEY", ledgerEntryCount: 1 });
     expect(JSON.stringify(body)).not.toContain(REAL);
+    const activity = await c.app.request("/api/activity");
+    expect(await activity.text()).not.toContain(REAL);
+  });
+
+  it("returns a non-disclosing blocked response for an incompatible reference", async () => {
+    await c.env.fs.writeFile(
+      join(c.storeRoot, "store", "mcp", "ctx.json"),
+      JSON.stringify({ command: "npx", env: { API_KEY: CELLARER_SECRET_REF } }),
+    );
+
+    const res = await c.app.request("/api/sync/apply", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agents: ["claude-code"],
+        destination: "user",
+        resources: { kinds: ["mcp"] },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).not.toContain(REAL);
+    expect(text).toContain("incompatible with reference-only secrets");
+    expect(text).toContain(CELLARER_SECRET_REF);
+    expect(await c.env.fs.readFile(join(c.storeRoot, "store", "mcp", "ctx.json"))).not.toContain(
+      REAL,
+    );
   });
 });
 
@@ -611,6 +674,74 @@ describe("web app — scan import", () => {
     expect(managedNames(rules)).toContain("claude-code");
     expect(managedNames(mcp)).not.toContain("ctx");
     expect(discoveredNames(mcp)).toContain("ctx");
+  });
+
+  it("11.1 forces Web scan/import to environment mode without credential access", async () => {
+    let credentialCalls = 0;
+    c.env.secretStore = {
+      async get() {
+        credentialCalls += 1;
+        return { found: false };
+      },
+      async set() {
+        credentialCalls += 1;
+      },
+      async delete() {
+        credentialCalls += 1;
+        return false;
+      },
+    };
+    c.app = createApp({ env: c.env, storeRoot: c.storeRoot });
+    await c.env.fs.writeFile(
+      join(c.storeRoot, "config.json"),
+      `${JSON.stringify(
+        {
+          version: 1,
+          defaults: { method: "symlink", collections: ["default"], secretMode: "keychain" },
+          collections: { default: { description: "Default" } },
+          artifacts: {},
+          agents: {},
+          adapters: {},
+        },
+        null,
+        2,
+      )}\n`,
+      { mode: 0o600 },
+    );
+    await c.env.fs.mkdir(join(c.root, "home", ".claude"), { recursive: true });
+    await c.env.fs.writeFile(join(c.root, "home", ".claude", "CLAUDE.md"), "# Team rules");
+
+    for (const route of ["/api/import/plan", "/api/import/apply", "/api/scan", "/api/scan/apply"]) {
+      const response = await c.app.request(route, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ agent: "claude-code", capabilities: ["rules"] }),
+      });
+      expect(response.status, `${route}: ${await response.clone().text()}`).toBe(200);
+    }
+    expect(credentialCalls).toBe(0);
+  });
+
+  it("11.1 allows authorityless Web scan planning but still rejects executable import", async () => {
+    delete c.env.mutationAuthority;
+    c.app = createApp({ env: c.env, storeRoot: c.storeRoot });
+    await c.env.fs.mkdir(join(c.root, "home", ".claude"), { recursive: true });
+    await c.env.fs.writeFile(join(c.root, "home", ".claude", "CLAUDE.md"), "# Team rules");
+
+    const preview = await c.app.request("/api/import/plan", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent: "claude-code", capabilities: ["rules"] }),
+    });
+    expect(preview.status, await preview.clone().text()).toBe(200);
+
+    const applied = await c.app.request("/api/import/apply", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent: "claude-code", capabilities: ["rules"] }),
+    });
+    expect(applied.status).toBe(400);
+    expect(await applied.text()).toContain("mutation authority is unavailable");
   });
 
   it("imports scan candidates and refreshes the artifact inventory", async () => {
@@ -697,9 +828,10 @@ describe("web app — scan import", () => {
       }),
     });
     const text = await res.text();
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(400);
     expect(text).not.toContain(REAL);
     expect(text).toContain("MCP_CTX_API_KEY");
+    await expect(c.env.fs.lstat(join(c.storeRoot, "store", "mcp", "ctx.json"))).rejects.toThrow();
   });
 });
 
@@ -749,16 +881,26 @@ describe("web app — diagnostics and revert", () => {
     expect(JSON.stringify(body)).not.toContain("Error:");
   });
 
-  it("surfaces typed incomplete-operation recovery evidence without journal payloads", async () => {
-    const target = join(c.root, "home", ".agent", "rules.md");
-    const mutationPlan = createMutationPlan({
+  it("surfaces typed manual recovery evidence for an unprovable store import", async () => {
+    const target = join(c.storeRoot, "store", "rules", "interrupted.md");
+    const content = "interrupted fixture";
+    const actionId = sha256(JSON.stringify({ kind: "rules", name: "interrupted", target }));
+    const mutationPlan = createAuthorizedMutationPlan(c.env, c.storeRoot, {
       schemaVersion: 1,
       planId: "plan-web-interrupted",
-      operation: "apply",
+      operation: "store-import",
       baseRevision: 0,
-      normalizedInputs: {},
-      targetPreconditions: [{ actionId: "action-1", target, expected: { state: "absent" } }],
-      actions: [{ actionId: "action-1", kind: "write", target, payload: {} }],
+      normalizedInputs: { mutationKind: "add" },
+      targetPreconditions: [{ actionId, target, expected: { state: "absent" } }],
+      actions: [
+        {
+          actionId,
+          kind: "add-rules",
+          target,
+          payload: { contentDigest: sha256(content) },
+          postcondition: { state: "present", fingerprint: sha256(content) },
+        },
+      ],
       expires: { policy: "none" },
     });
     await expect(
@@ -775,10 +917,10 @@ describe("web app — diagnostics and revert", () => {
     const body = await res.json();
 
     expect(body.mutationRecovery).toMatchObject({
-      status: "incomplete",
+      status: "manual-recovery-required",
       planId: "plan-web-interrupted",
       baseRevision: 0,
-      error: { code: "INTERRUPTED_OPERATION", journalStatus: "executing" },
+      error: { code: "MANUAL_RECOVERY_REQUIRED" },
     });
     expect(JSON.stringify(body.mutationRecovery)).not.toContain("statePublications");
   });
@@ -997,6 +1139,32 @@ describe("web app — input validation", () => {
     await seedStore(c);
   });
   afterEach(() => c.cleanup());
+
+  it("16.1 redacts nested container scalars at the Web JSON boundary", () => {
+    expect(
+      redactWebPayload({
+        AccessToken: ["web-plaintext", 17, false, null, { nested: "web-object-plaintext" }],
+      }),
+    ).toEqual({
+      AccessToken: [
+        "[REDACTED]",
+        "[REDACTED]",
+        "[REDACTED]",
+        "[REDACTED]",
+        { nested: "[REDACTED]" },
+      ],
+    });
+  });
+
+  it("redacts secret-like values from Web error responses", async () => {
+    const canary = "ghp_0123456789abcdefghijklmnopqrstuvwx";
+    const res = await c.app.request(`/api/resources/rules?destination=${canary}`);
+
+    expect(res.status).toBe(400);
+    const text = await res.text();
+    expect(text).not.toContain(canary);
+    expect(text).toContain("[REDACTED]");
+  });
 
   it("rejects project-scope apply without a dir (would write into server cwd)", async () => {
     const res = await c.app.request("/api/sync/plan", {

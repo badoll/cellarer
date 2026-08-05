@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { apply } from "../src/engine/apply.js";
 import { verify } from "../src/engine/verification.js";
-import { createMutationPlan } from "../src/protocol/canonical.js";
+import { createAuthorizedMutationPlan } from "../src/protocol/canonical.js";
 import { executeMutationPlan } from "../src/protocol/execute.js";
-import { publishOperationJournal, readOperationJournal } from "../src/protocol/journal.js";
+import { readOperationJournal } from "../src/protocol/journal.js";
+import { sha256 } from "../src/store/checksum.js";
 import { loadLedger, saveLedger } from "../src/store/ledger.js";
 import {
   importSkillArtifact,
@@ -264,16 +265,26 @@ describe("transaction verification axes", () => {
     expect(report.healthy).toBe(false);
   });
 
-  it("includes an incomplete journal as a typed verification health failure", async () => {
-    const target = t.path("home", ".agent", "rules.md");
-    const mutationPlan = createMutationPlan({
+  it("includes an unprovable store-import journal as a typed manual recovery failure", async () => {
+    const target = t.path("home", ".cellarer", "store", "rules", "interrupted.md");
+    const content = "interrupted fixture";
+    const actionId = sha256(JSON.stringify({ kind: "rules", name: "interrupted", target }));
+    const mutationPlan = createAuthorizedMutationPlan(t.env, storeRoot, {
       schemaVersion: 1,
       planId: "plan-incomplete",
-      operation: "apply",
+      operation: "store-import",
       baseRevision: 0,
-      normalizedInputs: {},
-      targetPreconditions: [{ actionId: "action-1", target, expected: { state: "absent" } }],
-      actions: [{ actionId: "action-1", kind: "write", target, payload: {} }],
+      normalizedInputs: { mutationKind: "add" },
+      targetPreconditions: [{ actionId, target, expected: { state: "absent" } }],
+      actions: [
+        {
+          actionId,
+          kind: "add-rules",
+          target,
+          payload: { contentDigest: sha256(content) },
+          postcondition: { state: "present", fingerprint: sha256(content) },
+        },
+      ],
       expires: { policy: "none" },
     });
     await expect(
@@ -283,27 +294,17 @@ describe("transaction verification axes", () => {
     ).rejects.toThrow("interrupt verification fixture");
     const journal = await readOperationJournal(t.env, storeRoot);
     if (!journal) throw new Error("missing interrupted test journal");
-    await publishOperationJournal(t.env, storeRoot, {
-      ...journal,
-      statePublications: [
-        {
-          path: t.path("home", ".cellarer", "state.json"),
-          digest: "sha256:redacted-fixture",
-        },
-      ],
-    });
 
     const report = await verify(t.env, options());
 
     expect(report.recovery).toMatchObject({
-      status: "incomplete",
+      status: "manual-recovery-required",
       operationId: "operation-verification",
       planId: "plan-incomplete",
       baseRevision: 0,
       error: {
-        code: "INTERRUPTED_OPERATION",
+        code: "MANUAL_RECOVERY_REQUIRED",
         operationId: "operation-verification",
-        journalStatus: "executing",
       },
     });
     expect(JSON.stringify(report.recovery)).not.toContain("statePublications");

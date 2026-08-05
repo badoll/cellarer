@@ -96,6 +96,24 @@ describe("adapters/config defaults", () => {
       expect(adapters["agents-md"]!.capabilities.mcp).toEqual([]);
       expect(adapters["agents-md"]!.capabilities.rules).toEqual(["global", "project"]);
     });
+
+    it("declares environment support only for built-ins that consume the exact current token", () => {
+      expect(
+        Object.fromEntries(
+          ["claude-code", "gemini-cli", "codex", "cursor", "opencode", "windsurf"].map((id) => [
+            id,
+            adapters[id]?.mcp?.supportedSecretReferences,
+          ]),
+        ),
+      ).toEqual({
+        "claude-code": ["environment"],
+        "gemini-cli": ["environment"],
+        codex: [],
+        cursor: [],
+        opencode: [],
+        windsurf: [],
+      });
+    });
   });
 
   describe("detect", () => {
@@ -233,6 +251,7 @@ describe("adapters/registry (built-ins + key-based config)", () => {
             global: "~/.quirky/mcp.json",
             format: "json",
             serversKey: "mcp",
+            supportedSecretReferences: ["environment"],
             dialect: { commandStyle: "array", envKey: "environment" },
           },
         },
@@ -248,6 +267,19 @@ describe("adapters/registry (built-ins + key-based config)", () => {
     const parsed = JSON.parse(content);
     expect(parsed.mcp.s.command).toEqual(["npx", "x"]);
     expect(parsed.mcp.s.environment).toEqual({ K: "v" });
+    expect(reg.get("quirky")?.mcp?.supportedSecretReferences).toEqual(["environment"]);
+  });
+
+  it("rejects a custom mcp adapter that omits reference resolution", async () => {
+    const storeRoot = await writeConfig(t, {
+      version: 1,
+      adapters: {
+        legacy: {
+          mcp: { global: "~/.legacy/mcp.json", format: "json" },
+        },
+      },
+    });
+    await expect(loadRegistry(t.env, storeRoot)).rejects.toThrow(/supportedSecretReferences/);
   });
 
   describe("path traversal guard (§6.6 分享场景越界防护)", () => {

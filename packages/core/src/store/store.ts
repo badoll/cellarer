@@ -7,6 +7,9 @@ import { linkOrCopy } from "../fs/linkOrCopy.js";
 import { lstatOrNull, readdirOrEmpty, readFileOrNull } from "../fs/probe.js";
 import { type McpServer, serverFromRaw, serverToRaw } from "../mcp/model.js";
 import type { Artifact } from "../model/index.js";
+import { assertFinalSerializedSecretBytes } from "../secrets/final-bytes.js";
+import { observableKnownValues } from "../secrets/observable.js";
+import { captureSafeRecursiveSource, UnsafeRecursiveSourceError } from "../secrets/safe-tree.js";
 import { CONFIG_FILENAME, initialConfigText } from "./config.js";
 
 // 库房根:CELLARER_HOME 覆盖,否则 ~/.cellarer。
@@ -76,7 +79,11 @@ export async function readRuleArtifact(
 ): Promise<RuleFragment> {
   const name = artifactId.replace(/^rules\//, "");
   const abs = join(rulesDir(storeRoot), `${name}.md`);
-  const content = await env.fs.readFile(abs);
+  const snapshot = await captureSafeRecursiveSource(env, abs);
+  if (snapshot.kind !== "file" || snapshot.files.length !== 1) {
+    throw new UnsafeRecursiveSourceError(abs, "non-regular");
+  }
+  const content = snapshot.files[0]?.content ?? "";
   return { relPath: `rules/${name}.md`, content };
 }
 
@@ -106,7 +113,11 @@ export async function readMcpArtifact(
 ): Promise<{ name: string; server: McpServer }> {
   const name = artifactId.replace(/^mcp\//, "");
   const abs = join(mcpDir(storeRoot), `${name}.json`);
-  const content = await env.fs.readFile(abs);
+  const snapshot = await captureSafeRecursiveSource(env, abs);
+  if (snapshot.kind !== "file" || snapshot.files.length !== 1) {
+    throw new UnsafeRecursiveSourceError(abs, "non-regular");
+  }
+  const content = snapshot.files[0]?.content ?? "";
   let raw: unknown;
   try {
     raw = JSON.parse(content);
@@ -164,6 +175,7 @@ export async function writeRuleArtifact(
 ): Promise<string> {
   assertSafeName(name);
   const abs = join(rulesDir(storeRoot), `${name}.md`);
+  assertFinalSerializedSecretBytes(content, observableKnownValues(env), abs);
   await atomicWrite(env, abs, content);
   return abs;
 }
@@ -177,7 +189,9 @@ export async function writeMcpArtifact(
 ): Promise<string> {
   assertSafeName(name);
   const abs = join(mcpDir(storeRoot), `${name}.json`);
-  await atomicWrite(env, abs, `${JSON.stringify(serverToRaw(server), null, 2)}\n`);
+  const serialized = `${JSON.stringify(serverToRaw(server), null, 2)}\n`;
+  assertFinalSerializedSecretBytes(serialized, observableKnownValues(env), abs);
+  await atomicWrite(env, abs, serialized);
   return abs;
 }
 
@@ -212,7 +226,9 @@ export async function writeSkillProvenance(
   provenance: unknown,
 ): Promise<string> {
   const abs = skillProvenancePath(storeRoot, name);
+  const serialized = `${JSON.stringify(provenance, null, 2)}\n`;
+  assertFinalSerializedSecretBytes(serialized, observableKnownValues(env), abs);
   await env.fs.mkdir(skillMetadataDir(storeRoot), { recursive: true });
-  await atomicWrite(env, abs, `${JSON.stringify(provenance, null, 2)}\n`);
+  await atomicWrite(env, abs, serialized);
   return abs;
 }

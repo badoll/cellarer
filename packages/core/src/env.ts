@@ -2,6 +2,12 @@
 // core 内一切 fs / home / cwd / platform / now / 环境变量 / keychain 都从这里取,
 // 严禁在 core 直接 import "node:fs" 或读 process/os —— 这是可测性与跨平台的支点。
 
+import type {
+  MutationAuthorizationDomain,
+  MutationAuthorizationEnvelope,
+  MutationOperation,
+} from "./protocol/models.js";
+
 export type Platform = "darwin" | "linux" | "win32" | (string & {});
 
 export type ProcessLiveness = "alive" | "dead" | "unknown";
@@ -16,10 +22,35 @@ export interface FileStat {
   isSymbolicLink(): boolean;
 }
 
+export interface FileTreeSnapshotNode {
+  readonly relativePath: string;
+  readonly kind: "file" | "directory";
+  readonly mode: number;
+  readonly identity: string;
+  readonly data?: Uint8Array;
+}
+
+export interface FileTreeSnapshot {
+  readonly rootPath: string;
+  readonly nodes: readonly FileTreeSnapshotNode[];
+}
+
 // fs 抽象:只暴露引擎实际用到的最小集合,full real 实现见 createRealEnv。
 export interface FsLike {
   readFile(path: string): Promise<string>;
   readFileBytes(path: string): Promise<Uint8Array>;
+  // Portable regular-file capture. Implementations use a no-follow open plus lstat/fstat
+  // pre/post identity checks and must not depend on recursive traversal support.
+  snapshotFileNoFollow(path: string): Promise<FileTreeSnapshot>;
+  verifyFileSnapshot(snapshot: FileTreeSnapshot): Promise<boolean>;
+  // Capability-only query used before enumerating any recursive source directory.
+  supportsSafeRecursiveSnapshots(): boolean;
+  // Capture every node without following links. File kind, mode, identity, and bytes come from
+  // one anchored recursive traversal. Implementations must fail closed before reading directory
+  // content when handle-relative safety or stable identity cannot be established.
+  snapshotTreeNoFollow(path: string): Promise<FileTreeSnapshot>;
+  // Identity-only revalidation for an already captured snapshot. This never re-reads content.
+  verifyTreeSnapshot(snapshot: FileTreeSnapshot): Promise<boolean>;
   writeFile(path: string, data: string, opts?: { mode?: number }): Promise<void>;
   writeFileBytes(path: string, data: Uint8Array, opts?: { mode?: number }): Promise<void>;
   // Publish fully-written owner evidence only when path does not already exist.
@@ -58,6 +89,71 @@ export interface SecretStore {
   delete(service: string, account: string): Promise<boolean>;
 }
 
+export interface CurrentUserOnlyPermissions {
+  supported(platform: Platform): boolean;
+  set(path: string): Promise<void>;
+  verify(path: string): Promise<boolean>;
+}
+
+export interface MutationAuthorityRequest<
+  Domain extends MutationAuthorizationDomain = MutationAuthorizationDomain,
+> {
+  readonly schemaVersion: 1;
+  readonly domain: Domain;
+  readonly normalizedStoreRoot: string;
+  readonly operation: MutationOperation;
+  readonly baseRevision: number;
+  readonly canonicalPayload: string;
+}
+
+// An authority is an in-memory capability, not data. Implementations expose only scoped
+// authorization, lifecycle-currentness, and protected-tip operations; key bytes, signing
+// primitives, and general credential access never cross this boundary.
+export interface MutationAuthority {
+  seal<Domain extends MutationAuthorizationDomain>(
+    request: MutationAuthorityRequest<Domain>,
+  ): MutationAuthorizationEnvelope<Domain>;
+  verify<Domain extends MutationAuthorizationDomain>(
+    request: MutationAuthorityRequest<Domain>,
+    envelope: MutationAuthorizationEnvelope<Domain>,
+  ): boolean;
+  // Currentness consults only the protected authority backend. It must not inspect product Store
+  // state, and failures are reported as false rather than exposing provider details.
+  isCurrent(): Promise<boolean>;
+  // The lease serializes authority lifecycle changes with mutation/recovery execution. Holding it
+  // never grants access to raw credential material.
+  acquireLease(): Promise<MutationAuthorityLease>;
+  // The latest journal publication is anchored outside the product Store. Implementations backed
+  // by a credential manager persist and verify it there; explicit headless authorities keep it
+  // only in the current process. The tip contains authorization metadata, never raw authority or
+  // secret material.
+  publishJournalTip(tip: ProtectedJournalTip): Promise<void>;
+  matchesJournalTip(tip: ProtectedJournalTip): Promise<boolean>;
+}
+
+export interface ProtectedJournalTip {
+  readonly operationId: string;
+  readonly sequence: number;
+  readonly seal: string;
+}
+
+export interface MutationAuthorityLease {
+  isCurrent(): Promise<boolean>;
+  release(): Promise<void>;
+}
+
+// Headless authority composition needs one owner for the lifetime of the process, but product
+// Store bytes are replayable and cannot prove process liveness. This injected capability must be
+// backed by a kernel-owned local resource whose ownership disappears automatically at process
+// exit. It never connects to an incumbent owner and never exposes authority key material.
+export interface HeadlessLifetimeLease {
+  isCurrent(): Promise<boolean>;
+}
+
+export interface HeadlessLifetimeOwner {
+  acquire(normalizedStoreRoot: string): Promise<HeadlessLifetimeLease>;
+}
+
 export interface Env {
   fs: FsLike;
   homedir(): string;
@@ -76,4 +172,12 @@ export interface Env {
   // 读环境变量(密钥解析用);非 process.env 直读,测试可注入。
   env: Record<string, string | undefined>;
   secretStore?: SecretStore;
+  currentUserOnlyPermissions?: CurrentUserOnlyPermissions;
+  // Required only when the protected headless authority environment channel is used. Absence or
+  // local kernel-resource contention fails closed; read-only and keychain composition do not use
+  // this capability.
+  headlessLifetimeOwner?: HeadlessLifetimeOwner;
+  // Composition must inject this before any executable mutation is planned or accepted. It stays
+  // optional at the type boundary so read-only Core services remain usable when authority is absent.
+  mutationAuthority?: MutationAuthority;
 }

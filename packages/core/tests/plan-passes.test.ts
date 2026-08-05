@@ -70,16 +70,14 @@ describe("engine/plan secret-scan guard", () => {
     expect(actions[0]?.reason).toMatch(/store contains a plaintext secret/);
   });
 
-  it("allows resolved plaintext only in global scope (escape hatch)", () => {
+  it("blocks plaintext in every scope with no global escape hatch", () => {
     const secret = "token = ghp_0123456789abcdefghijklmnopqrstuvwx";
-    const global = [writeAction({ allowResolvedPlaintext: true, preview: { after: secret } })];
+    const global = [writeAction({ preview: { after: secret } })];
     applySecretScanGuard(global, "global");
-    expect(global[0]?.op).toBe("write"); // 放行(global 非版本库)
+    expect(global[0]?.op).toBe("skip");
 
-    const project = [
-      writeAction({ scope: "project", allowResolvedPlaintext: true, preview: { after: secret } }),
-    ];
+    const project = [writeAction({ scope: "project", preview: { after: secret } })];
     applySecretScanGuard(project, "project");
-    expect(project[0]?.op).toBe("skip"); // project(git 跟踪)一律拦
+    expect(project[0]?.op).toBe("skip");
   });
 });

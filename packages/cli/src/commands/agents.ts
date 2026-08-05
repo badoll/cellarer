@@ -1,6 +1,7 @@
 import { type AgentInspection, type Capability, inspectAgents } from "@cellarer/core";
 import { Command } from "commander";
 import { resolveContext } from "../context.js";
+import { safeConsole as console } from "../output.js";
 
 interface AgentsOpts {
   agent?: string;
@@ -15,7 +16,7 @@ export function agentsCommand(): Command {
     .option("--dir <path>", "按 project scope 展示目标路径")
     .option("--json", "JSON 输出")
     .action(async (opts: AgentsOpts) => {
-      const ctx = resolveContext(opts);
+      const ctx = await resolveContext(opts);
       const report = await inspectAgents(ctx.env, {
         storeRoot: ctx.storeRoot,
         scope: ctx.scope,

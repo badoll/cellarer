@@ -5,7 +5,11 @@ import { z } from "zod";
 import type { Env } from "./env.js";
 import { readFileOrNull } from "./fs/probe.js";
 import type { Capability, Scope } from "./model/index.js";
-import { scanTextForSecrets } from "./secrets/detector.js";
+import {
+  observableOptionsForEnv,
+  redactObservableText,
+  serializeObservable,
+} from "./secrets/observable.js";
 
 export type ActivityAction = "apply" | "scan-import" | "revert";
 export type ActivityActor = "you" | "system";
@@ -15,7 +19,7 @@ const actorSchema = z.enum(["you", "system"]);
 const capabilitySchema = z.enum(["rules", "mcp", "skills"]);
 const scopeSchema = z.enum(["global", "project"]);
 
-const referencesSchema = z
+const resourcesSchema = z
   .object({
     ledgerEntryKeys: z.array(z.string()).default([]),
     artifactIds: z.array(z.string()).default([]),
@@ -36,7 +40,7 @@ const activityEventSchema = z
     affectedCount: z.number().int().nonnegative(),
     warningsCount: z.number().int().nonnegative().default(0),
     summary: z.string(),
-    references: referencesSchema.optional(),
+    resources: resourcesSchema.optional(),
     secretRefs: z.array(z.string()).default([]),
   })
   .strict();
@@ -53,7 +57,7 @@ export interface ActivityInput {
   affectedCount: number;
   warningsCount?: number;
   summary: string;
-  references?: {
+  resources?: {
     ledgerEntryKeys?: string[];
     artifactIds?: string[];
   };
@@ -86,31 +90,36 @@ export async function appendActivity(
   activityCounter += 1;
   const time = env.now().toISOString();
   const event = activityEventSchema.parse(
-    sanitizeEvent({
-      version: 1,
-      id: `${time}-${activityCounter}`,
-      time,
-      actor: input.actor ?? "you",
-      action: input.action,
-      scope: input.scope,
-      projectDir: input.projectDir,
-      agents: unique(input.agents ?? []),
-      capabilities: unique(input.capabilities ?? []),
-      affectedCount: input.affectedCount,
-      warningsCount: input.warningsCount ?? 0,
-      summary: input.summary,
-      references: input.references
-        ? {
-            ledgerEntryKeys: unique(input.references.ledgerEntryKeys ?? []),
-            artifactIds: unique(input.references.artifactIds ?? []),
-          }
-        : undefined,
-      secretRefs: unique(input.secretRefs ?? []),
-    }),
+    sanitizeEvent(
+      {
+        version: 1,
+        id: `${time}-${activityCounter}`,
+        time,
+        actor: input.actor ?? "you",
+        action: input.action,
+        scope: input.scope,
+        projectDir: input.projectDir,
+        agents: unique(input.agents ?? []),
+        capabilities: unique(input.capabilities ?? []),
+        affectedCount: input.affectedCount,
+        warningsCount: input.warningsCount ?? 0,
+        summary: input.summary,
+        resources: input.resources
+          ? {
+              ledgerEntryKeys: unique(input.resources.ledgerEntryKeys ?? []),
+              artifactIds: unique(input.resources.artifactIds ?? []),
+            }
+          : undefined,
+        secretRefs: unique(input.secretRefs ?? []),
+      },
+      env,
+    ),
   );
   await env.fs.mkdir(storeRoot, { recursive: true });
-  await env.fs.appendFile(activityPath(storeRoot), `${JSON.stringify(event)}\n`);
-  return event;
+  const serialized = serializeObservable("activity", event, observableOptionsForEnv(env));
+  const published = activityEventSchema.parse(JSON.parse(serialized));
+  await env.fs.appendFile(activityPath(storeRoot), `${serialized}\n`);
+  return published;
 }
 
 export async function listActivity(
@@ -128,10 +137,10 @@ export async function listActivity(
     const line = lines[i]?.trim();
     if (!line) continue;
     try {
-      const parsed = sanitizeEvent(activityEventSchema.parse(JSON.parse(line)));
+      const parsed = sanitizeEvent(activityEventSchema.parse(JSON.parse(line)), env);
       if (matchesFilter(parsed, filter)) events.push(parsed);
     } catch (err) {
-      const msg = cleanString(err instanceof Error ? err.message : String(err));
+      const msg = cleanString(err instanceof Error ? err.message : String(err), env);
       warnings.push(`activity.jsonl line ${i + 1} skipped: ${msg}`);
     }
   }
@@ -160,28 +169,28 @@ function matchesFilter(event: ActivityEvent, filter: ActivityFilter): boolean {
   return true;
 }
 
-function sanitizeEvent(event: ActivityEvent): ActivityEvent {
+function sanitizeEvent(event: ActivityEvent, env: Env): ActivityEvent {
   return {
     ...event,
-    projectDir: cleanOptionalString(event.projectDir),
-    agents: event.agents.map(cleanString),
-    summary: cleanString(event.summary),
-    references: event.references
+    projectDir: cleanOptionalString(event.projectDir, env),
+    agents: event.agents.map((value) => cleanString(value, env)),
+    summary: cleanString(event.summary, env),
+    resources: event.resources
       ? {
-          ledgerEntryKeys: event.references.ledgerEntryKeys.map(cleanString),
-          artifactIds: event.references.artifactIds.map(cleanString),
+          ledgerEntryKeys: event.resources.ledgerEntryKeys.map((value) => cleanString(value, env)),
+          artifactIds: event.resources.artifactIds.map((value) => cleanString(value, env)),
         }
       : undefined,
-    secretRefs: event.secretRefs.map(cleanString),
+    secretRefs: event.secretRefs.map((value) => cleanString(value, env)),
   };
 }
 
-function cleanOptionalString(value: string | undefined): string | undefined {
-  return value === undefined ? undefined : cleanString(value);
+function cleanOptionalString(value: string | undefined, env: Env): string | undefined {
+  return value === undefined ? undefined : cleanString(value, env);
 }
 
-function cleanString(value: string): string {
-  return scanTextForSecrets(value).length > 0 ? "[redacted secret]" : value;
+function cleanString(value: string, env: Env): string {
+  return redactObservableText(value, observableOptionsForEnv(env));
 }
 
 function unique<T>(values: T[]): T[] {

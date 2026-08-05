@@ -4,8 +4,8 @@
 import { join } from "node:path";
 import type { AgentAdapter } from "../adapters/types.js";
 import type { Env } from "../env.js";
-import { hashDir } from "../fs/hashDir.js";
 import type { Artifact, LinkMethod, PlanAction } from "../model/index.js";
+import { captureSafeRecursiveSource, UnsafeRecursiveSourceError } from "../secrets/safe-tree.js";
 
 export interface SkillsPlanContext {
   env: Env;
@@ -25,21 +25,28 @@ export async function planSkills(
 
   const op = ctx.method === "copy" ? "copy" : "symlink";
   return Promise.all(
-    ctx.selectedSkills.map(async (skill) => ({
-      artifact: skill.id,
-      artifactIds: [skill.id],
-      agent: adapter.id,
-      scope: ctx.scope,
-      capability: "skills" as const,
-      target: join(skillsDir, skill.name),
-      source: skill.sourcePath, // 库房真源目录(软链/拷贝来源)
-      method: ctx.method,
-      op,
-      reason: skill.id,
-      desiredEvidence: {
+    ctx.selectedSkills.map(async (skill) => {
+      const snapshot = await captureSafeRecursiveSource(ctx.env, skill.sourcePath);
+      if (snapshot.kind !== "directory") {
+        throw new UnsafeRecursiveSourceError(skill.sourcePath, "non-regular");
+      }
+      return {
+        artifact: skill.id,
+        artifactIds: [skill.id],
+        agent: adapter.id,
+        scope: ctx.scope,
+        capability: "skills" as const,
+        target: join(skillsDir, skill.name),
+        source: skill.sourcePath, // 库房真源目录(软链/拷贝来源)
         method: ctx.method,
-        sourceFingerprint: await hashDir(ctx.env, skill.sourcePath),
-      },
-    })),
+        op,
+        reason: skill.id,
+        desiredEvidence: {
+          method: ctx.method,
+          sourceFingerprint: snapshot.fingerprint,
+          sourceIdentity: snapshot.identity,
+        },
+      };
+    }),
   );
 }

@@ -103,7 +103,7 @@ export async function resourceCatalog(
 
   const lastActivityByArtifact = new Map<string, string>();
   for (const event of activity.events) {
-    for (const artifactIdentity of event.references?.artifactIds ?? []) {
+    for (const artifactIdentity of event.resources?.artifactIds ?? []) {
       for (const artifactId of expandConcreteArtifactIdentities(artifactIdentity)) {
         if (!lastActivityByArtifact.has(artifactId))
           lastActivityByArtifact.set(artifactId, event.time);

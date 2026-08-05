@@ -1,14 +1,26 @@
-import type { Env } from "../env.js";
-import { assertSafeAtomicPublicationPath } from "../fs/safety.js";
+import { join } from "node:path";
+import type { Env, MutationAuthorityLease } from "../env.js";
+import { emptyDirectoryFingerprint } from "../fs/hashDir.js";
+import { assertSafeAtomicPublicationPath, isPathInside } from "../fs/safety.js";
+import { keychainMetadataPath, serializeKeychainMetadata } from "../secrets/keychain-metadata.js";
+import { cellarerSecretReference } from "../secrets/reference.js";
+import { vaultPath } from "../secrets/vault.js";
+import { sha256 } from "../store/checksum.js";
+import { CONFIG_FILENAME } from "../store/config.js";
 import {
   decryptTargetSnapshot,
   readAuthorizedEncryptedTargetSnapshot,
   restoreTargetSnapshot,
 } from "../target-snapshot.js";
-import { canonicalJson } from "./canonical.js";
+import {
+  acquireCurrentMutationAuthorityLease,
+  canonicalJson,
+  withCurrentMutationAuthorityLease,
+} from "./canonical.js";
 import { targetState } from "./execute.js";
 import {
   DEFAULT_OPERATION_RECEIPT_RETENTION,
+  matchesProtectedJournalTip,
   publishOperationJournal,
   publishOperationReceipt,
   readOperationJournal,
@@ -84,8 +96,45 @@ export async function diagnoseMutationRecovery(
   env: Env,
   storeRoot: string,
 ): Promise<MutationRecoveryDiagnosis> {
-  const [journal, lockOwner, recoveryLockOwner] = await Promise.all([
-    readOperationJournal(env, storeRoot),
+  return withCurrentMutationAuthorityLease(env, (authorityLease) =>
+    diagnoseMutationRecoveryWithAuthorityLease(env, storeRoot, authorityLease),
+  );
+}
+
+async function diagnoseMutationRecoveryWithAuthorityLease(
+  env: Env,
+  storeRoot: string,
+  authorityLease: MutationAuthorityLease,
+): Promise<MutationRecoveryDiagnosis> {
+  if (!(await authorityLease.isCurrent().catch(() => false))) {
+    throw new TypeError("mutation authority is not current");
+  }
+  const journalResult = await readOperationJournal(env, storeRoot).then(
+    (journal) => ({ ok: true as const, journal }),
+    () => ({ ok: false as const }),
+  );
+  if (!journalResult.ok) {
+    return {
+      status: "manual-recovery-required",
+      journal: null,
+      lockOwner: null,
+      recoveryLockOwner: null,
+      receipt: null,
+      message: "durable operation journal is invalid and cannot authorize recovery",
+    };
+  }
+  const journal = journalResult.journal;
+  if (journal && !(await matchesProtectedJournalTip(env, journal))) {
+    return {
+      status: "manual-recovery-required",
+      journal,
+      lockOwner: null,
+      recoveryLockOwner: null,
+      receipt: null,
+      message: "protected journal tip is missing, unavailable, or does not match exactly",
+    };
+  }
+  const [lockOwner, recoveryLockOwner] = await Promise.all([
     readStoreMutationLockOwner(env, storeRoot),
     readStoreRecoveryLockOwner(env, storeRoot),
   ]);
@@ -107,6 +156,16 @@ export async function diagnoseMutationRecovery(
       recoveryLockOwner,
       receipt: null,
       message: "mutation or recovery lock has no matching durable journal",
+    };
+  }
+  if (!(await isDurableRecoveryAuthorized(env, storeRoot, journal))) {
+    return {
+      status: "manual-recovery-required",
+      journal,
+      lockOwner,
+      recoveryLockOwner,
+      receipt: null,
+      message: "durable operation cannot be authorized from current trusted store state",
     };
   }
   const receipt = await readOperationReceipt(env, storeRoot, journal.operationId);
@@ -139,6 +198,20 @@ export async function diagnoseMutationRecovery(
       message: "mutation lock and journal identify different operations",
     };
   }
+  if (
+    !lockOwner &&
+    (journal.status === "prepared" || journal.actions.some((action) => action.status === "pending"))
+  ) {
+    return {
+      status: "manual-recovery-required",
+      journal,
+      lockOwner: null,
+      recoveryLockOwner: null,
+      receipt,
+      message:
+        "journal sequence is ambiguous without its matching mutation owner; automatic recovery is refused",
+    };
+  }
   if (journal.status === "completed") {
     return {
       status: "completed-pending-cleanup",
@@ -159,12 +232,335 @@ export async function diagnoseMutationRecovery(
   };
 }
 
+async function isDurableRecoveryAuthorized(
+  _env: Env,
+  storeRoot: string,
+  journal: OperationJournal,
+): Promise<boolean> {
+  const allowedByOperation: Record<OperationJournal["plan"]["operation"], readonly string[]> = {
+    initialize: ["mkdir", "preserve-file", "publish-file"],
+    apply: ["copy", "merge", "overwrite", "sync-gitignore", "symlink", "write"],
+    revert: ["remove-target", "restore-snapshot", "sync-gitignore"],
+    settings: ["publish-file"],
+    "secret-metadata": ["keychain-secret-delete", "keychain-secret-set", "publish-file"],
+    "store-import": [
+      "add-mcp",
+      "add-rules",
+      "add-skill-provenance",
+      "add-skills",
+      "publish-file",
+      "scan-mcp",
+      "scan-rules",
+      "scan-skills",
+    ],
+  };
+  if (
+    journal.plan.actions.some(
+      (action) => !allowedByOperation[journal.plan.operation].includes(action.kind),
+    ) ||
+    (journal.statePublications ?? []).some(
+      (publication) => !isPathInside(publication.path, storeRoot),
+    )
+  ) {
+    return false;
+  }
+  if (journal.plan.operation === "store-import") {
+    // Store imports currently have no durable provenance outside the journal that can prove the
+    // originating add/scan request, selected target, or payload. A self-consistent journal is
+    // integrity evidence only, so interrupted imports remain manual-only before recovery claims,
+    // target observation, providers, or effects.
+    return false;
+  }
+  if (journal.plan.operation === "settings") {
+    return isSettingsRecoveryAuthorized(storeRoot, journal);
+  }
+  if (journal.plan.operation === "initialize") {
+    return isInitializeRecoveryAuthorized(storeRoot, journal);
+  }
+  if (journal.plan.operation === "secret-metadata") {
+    if (
+      journal.plan.actions.some((action) =>
+        ["keychain-secret-set", "keychain-secret-delete"].includes(action.kind),
+      )
+    ) {
+      // A keychain journal contains only attacker-recomputable identities and digests. Until an
+      // independent durable authority binds the originating provider mutation, it cannot authorize
+      // claims, provider access, target observation, or recovery effects.
+      return false;
+    }
+    return isSecretMetadataRecoveryAuthorized(storeRoot, journal);
+  }
+  // Apply/revert durable actions intentionally omit the executable payload and canonical options.
+  // Their origin and helper derivation therefore cannot be independently proven after a crash.
+  return false;
+}
+
+function isSettingsRecoveryAuthorized(storeRoot: string, journal: OperationJournal): boolean {
+  const mutationKind = durableMutationKind(journal, [
+    "collections",
+    "defaults",
+    "agent-enabled",
+    "adapter-upsert",
+    "adapter-delete",
+  ]);
+  const action = journal.plan.actions[0];
+  const precondition = journal.plan.targetPreconditions[0];
+  const post = action?.postcondition;
+  if (
+    !mutationKind ||
+    (journal.statePublications?.length ?? 0) !== 0 ||
+    journal.plan.actions.length !== 1 ||
+    !action ||
+    action.kind !== "publish-file" ||
+    action.target !== join(storeRoot, CONFIG_FILENAME) ||
+    !precondition ||
+    precondition.expected.state !== "present" ||
+    precondition.target !== action.target ||
+    !post ||
+    post.state !== "present"
+  ) {
+    return false;
+  }
+  const payload = { path: action.target, digest: post.fingerprint, mode: 0o600 };
+  return (
+    action.payloadDigest === sha256(canonicalJson(payload)) &&
+    action.actionId ===
+      recoveryPublicationActionId(mutationKind, action.target, post.fingerprint, 0o600, 0)
+  );
+}
+
+function isInitializeRecoveryAuthorized(storeRoot: string, journal: OperationJournal): boolean {
+  if (
+    durableMutationKind(journal, ["initialize-store"]) !== "initialize-store" ||
+    journal.plan.actions.length !== 5 ||
+    (journal.statePublications?.length ?? 0) !== 0
+  ) {
+    return false;
+  }
+  const configPath = join(storeRoot, CONFIG_FILENAME);
+  const configAction = journal.plan.actions[0];
+  const configPrecondition = journal.plan.targetPreconditions[0];
+  const configPostcondition = configAction?.postcondition;
+  const configKind =
+    configPrecondition?.expected.state === "absent" ? "publish-file" : "preserve-file";
+  if (
+    !configAction ||
+    !configPrecondition ||
+    configAction.kind !== configKind ||
+    configAction.target !== configPath ||
+    configPrecondition.target !== configPath ||
+    !configPostcondition ||
+    configPostcondition.state !== "present"
+  ) {
+    return false;
+  }
+  const configPayload = {
+    path: configPath,
+    digest: configPostcondition.fingerprint,
+    mode: 0o600,
+  };
+  if (
+    configAction.payloadDigest !== sha256(canonicalJson(configPayload)) ||
+    configAction.actionId !==
+      sha256(
+        JSON.stringify({
+          mutationKind: "initialize-store",
+          index: 0,
+          kind: configKind,
+          path: configPath,
+          digest: configPostcondition.fingerprint,
+          mode: 0o600,
+        }),
+      )
+  ) {
+    return false;
+  }
+  const layoutPaths = [
+    join(storeRoot, "store", "rules"),
+    join(storeRoot, "store", "mcp"),
+    join(storeRoot, "store", "skills"),
+    join(storeRoot, "store", "metadata", "skills"),
+  ];
+  return layoutPaths.every((path, index) => {
+    const action = journal.plan.actions[index + 1];
+    const precondition = journal.plan.targetPreconditions[index + 1];
+    const postcondition = action?.postcondition;
+    if (
+      !action ||
+      !precondition ||
+      action.kind !== "mkdir" ||
+      action.target !== path ||
+      precondition.target !== path ||
+      !postcondition ||
+      postcondition.state !== "present"
+    ) {
+      return false;
+    }
+    if (
+      precondition.expected.state === "absent" &&
+      postcondition.fingerprint !== emptyDirectoryFingerprint(0o700)
+    ) {
+      return false;
+    }
+    return (
+      action.payloadDigest === sha256(canonicalJson({ path })) &&
+      action.actionId ===
+        sha256(
+          JSON.stringify({
+            mutationKind: "initialize-store",
+            index: index + 1,
+            kind: "mkdir",
+            path,
+          }),
+        )
+    );
+  });
+}
+
+function isSecretMetadataRecoveryAuthorized(storeRoot: string, journal: OperationJournal): boolean {
+  const mutationKind = durableMutationKind(journal, [
+    "vault-secret-set",
+    "vault-secret-delete",
+    "keychain-secret-set",
+    "keychain-secret-delete",
+  ]);
+  const action = journal.plan.actions[0];
+  const precondition = journal.plan.targetPreconditions[0];
+  const postcondition = action?.postcondition;
+  if (
+    !mutationKind ||
+    journal.plan.actions.length !== 1 ||
+    (journal.statePublications?.length ?? 0) !== 0 ||
+    !action ||
+    !precondition ||
+    precondition.target !== action.target ||
+    !postcondition ||
+    postcondition.state !== "present"
+  ) {
+    return false;
+  }
+  if (mutationKind === "vault-secret-set" || mutationKind === "vault-secret-delete") {
+    const target = vaultPath(storeRoot);
+    const payload = {
+      path: target,
+      digest: postcondition.fingerprint,
+      mode: 0o600,
+      currentUserOnly: true,
+    };
+    return (
+      action.kind === "publish-file" &&
+      action.target === target &&
+      action.payloadDigest === sha256(canonicalJson(payload)) &&
+      action.actionId ===
+        recoveryPublicationActionId(mutationKind, target, postcondition.fingerprint, 0o600, 0, true)
+    );
+  }
+  const payload = action.payload;
+  if (
+    !hasExactRuntimeKeys(payload, ["name", "provider", "service"]) ||
+    payload.provider !== "keychain" ||
+    typeof payload.service !== "string" ||
+    payload.service.length === 0 ||
+    typeof payload.name !== "string"
+  ) {
+    return false;
+  }
+  try {
+    cellarerSecretReference(payload.name);
+  } catch {
+    return false;
+  }
+  const operation = mutationKind === "keychain-secret-set" ? "set" : "delete";
+  const target = keychainMetadataPath(storeRoot, payload.service, payload.name);
+  const metadata = serializeKeychainMetadata(payload.service, payload.name, operation === "set");
+  return (
+    action.kind === `keychain-secret-${operation}` &&
+    action.target === target &&
+    action.payloadDigest === sha256(canonicalJson(payload)) &&
+    postcondition.fingerprint === sha256(metadata) &&
+    action.actionId ===
+      sha256(
+        JSON.stringify({
+          kind: `keychain-secret-${operation}`,
+          service: payload.service,
+          name: payload.name,
+        }),
+      )
+  );
+}
+
+function durableMutationKind(
+  journal: OperationJournal,
+  candidates: readonly string[],
+): string | null {
+  return (
+    candidates.find(
+      (candidate) =>
+        journal.plan.normalizedInputsDigest === sha256(canonicalJson({ mutationKind: candidate })),
+    ) ?? null
+  );
+}
+
+function recoveryPublicationActionId(
+  mutationKind: string,
+  path: string,
+  digest: string,
+  mode: number,
+  index: number,
+  currentUserOnly = false,
+): string {
+  return sha256(
+    JSON.stringify({
+      mutationKind,
+      index,
+      kind: "publish-file",
+      path,
+      digest,
+      mode,
+      currentUserOnly,
+    }),
+  );
+}
+
+function hasExactRuntimeKeys(
+  value: unknown,
+  expectedKeys: readonly string[],
+): value is Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).sort().join("\u0000") === [...expectedKeys].sort().join("\u0000")
+  );
+}
+
 export async function recoverInterruptedOperation(
   env: Env,
   storeRoot: string,
   opts: RecoverInterruptedOperationOptions,
 ): Promise<OperationResult> {
-  const diagnosis = await diagnoseMutationRecovery(env, storeRoot);
+  const authorityLease = await acquireCurrentMutationAuthorityLease(env).catch(() => null);
+  if (!authorityLease) {
+    return manualRecovery(opts.operationId, [], "mutation authority is not current");
+  }
+  try {
+    return await recoverInterruptedOperationWithProviderState(env, storeRoot, opts, authorityLease);
+  } finally {
+    await authorityLease.release();
+  }
+}
+
+async function recoverInterruptedOperationWithProviderState(
+  env: Env,
+  storeRoot: string,
+  opts: RecoverInterruptedOperationOptions,
+  authorityLease: MutationAuthorityLease,
+): Promise<OperationResult> {
+  const diagnosis = await diagnoseMutationRecoveryWithAuthorityLease(
+    env,
+    storeRoot,
+    authorityLease,
+  );
   const journal = diagnosis.journal;
   if (!journal) {
     return manualRecovery(opts.operationId, [], diagnosis.message);
@@ -177,9 +573,16 @@ export async function recoverInterruptedOperation(
       journal,
     );
   }
+  if (diagnosis.status === "manual-recovery-required") {
+    return manualRecovery(journal.operationId, [], diagnosis.message);
+  }
   const acquired = await acquireRecoveryClaim(env, storeRoot, journal, diagnosis);
   if (!acquired.ok) return { ok: false, conflict: acquired.conflict, journal };
   const claim = acquired.claim;
+  if (!(await authorityLease.isCurrent().catch(() => false))) {
+    await claim.lock.release();
+    return manualRecovery(journal.operationId, [], "mutation authority is not current", journal);
+  }
 
   // Once the claim is durable, re-read the authorization and durable result. A recovery that
   // throws unexpectedly intentionally leaves this claim behind so a later process cannot guess
@@ -187,6 +590,15 @@ export async function recoverInterruptedOperation(
   const claimedJournal = await readOperationJournal(env, storeRoot);
   if (!claimedJournal || claimedJournal.operationId !== journal.operationId) {
     throw new Error("operation journal changed while acquiring the recovery claim");
+  }
+  if (!(await matchesProtectedJournalTip(env, claimedJournal))) {
+    await claim.lock.release();
+    return manualRecovery(
+      claimedJournal.operationId,
+      [],
+      "protected journal tip changed while acquiring the recovery claim",
+      claimedJournal,
+    );
   }
   const claimedReceipt = await readOperationReceipt(env, storeRoot, claimedJournal.operationId);
   let result: OperationResult;
@@ -201,16 +613,16 @@ export async function recoverInterruptedOperation(
     );
   } catch (error) {
     if (!(error instanceof PublicationPostconditionError)) throw error;
-    const recoveryJournal: OperationJournal =
-      claimedJournal.status === "completed"
-        ? claimedJournal
-        : {
-            ...claimedJournal,
-            status: "recovery-required",
-            updatedAt: env.now().toISOString(),
-          };
-    if (recoveryJournal.status !== "completed") {
-      await publishOperationJournal(env, storeRoot, recoveryJournal).catch(() => {});
+    let recoveryJournal = claimedJournal;
+    if (claimedJournal.status !== "completed") {
+      const recoveryRequired: OperationJournal = {
+        ...claimedJournal,
+        status: "recovery-required",
+        updatedAt: env.now().toISOString(),
+      };
+      recoveryJournal = await publishOperationJournal(env, storeRoot, recoveryRequired).catch(
+        () => claimedJournal,
+      );
     }
     result = manualRecovery(
       claimedJournal.operationId,
@@ -344,6 +756,19 @@ async function recoverClaimedOperation(
     return { ok: true, receipt };
   }
 
+  const keychainActions = journal.plan.actions.filter((action) =>
+    ["keychain-secret-set", "keychain-secret-delete"].includes(action.kind),
+  );
+  if (keychainActions.length > 0) {
+    return persistManualRecovery(
+      env,
+      storeRoot,
+      journal,
+      keychainActions.map((action) => action.target),
+      "keychain mutation outcome requires provider-specific manual reconciliation; prior provider values are never inferred or restored automatically",
+    );
+  }
+
   const observations = await Promise.all(
     journal.actions.map(async (action) => ({
       action,
@@ -403,9 +828,9 @@ async function recoverClaimedOperation(
     }
     const receipt = buildReceipt(journal, "committed", journal.nextRevision, env.now());
     const completed = completedJournal(journal, receipt);
-    await publishOperationJournal(env, storeRoot, completed);
+    const publishedCompleted = await publishOperationJournal(env, storeRoot, completed);
     await publishOperationReceipt(env, storeRoot, receipt);
-    await cleanupRecoveredOperation(env, storeRoot, completed, originalMutationOwner);
+    await cleanupRecoveredOperation(env, storeRoot, publishedCompleted, originalMutationOwner);
     return { ok: true, receipt };
   }
 
@@ -508,9 +933,9 @@ async function recoverClaimedOperation(
     actionReceipts: compensatedReceipts,
   };
   const completed = completedJournal(compensatedJournal, receipt);
-  await publishOperationJournal(env, storeRoot, completed);
+  const publishedCompleted = await publishOperationJournal(env, storeRoot, completed);
   await publishOperationReceipt(env, storeRoot, receipt);
-  await cleanupRecoveredOperation(env, storeRoot, completed, originalMutationOwner);
+  await cleanupRecoveredOperation(env, storeRoot, publishedCompleted, originalMutationOwner);
   return { ok: true, receipt };
 }
 
@@ -519,6 +944,20 @@ export async function pruneOperationRecoveryArtifacts(
   storeRoot: string,
   opts: OperationRecoveryRetentionOptions = {},
 ): Promise<OperationRecoveryRetentionResult> {
+  return withCurrentMutationAuthorityLease(env, (authorityLease) =>
+    pruneOperationRecoveryArtifactsWithAuthorityLease(env, storeRoot, opts, authorityLease),
+  );
+}
+
+async function pruneOperationRecoveryArtifactsWithAuthorityLease(
+  env: Env,
+  storeRoot: string,
+  opts: OperationRecoveryRetentionOptions,
+  authorityLease: MutationAuthorityLease,
+): Promise<OperationRecoveryRetentionResult> {
+  if (!(await authorityLease.isCurrent().catch(() => false))) {
+    throw new TypeError("mutation authority is not current");
+  }
   const retainReceipts = opts.retainReceipts ?? DEFAULT_OPERATION_RECEIPT_RETENTION;
   if (!Number.isSafeInteger(retainReceipts) || retainReceipts < 0) {
     throw new TypeError(
@@ -657,8 +1096,8 @@ async function persistManualRecovery(
     status: "recovery-required",
     updatedAt: env.now().toISOString(),
   };
-  await publishOperationJournal(env, storeRoot, recoveryRequired);
-  return manualRecovery(journal.operationId, targets, guidance, recoveryRequired);
+  const publishedRecoveryRequired = await publishOperationJournal(env, storeRoot, recoveryRequired);
+  return manualRecovery(journal.operationId, targets, guidance, publishedRecoveryRequired);
 }
 
 function manualRecovery(

@@ -1,21 +1,25 @@
 import type { MutationPresentation, MutationRecoveryPresentation } from "@cellarer/core";
+import { safeConsole as console } from "./output.js";
 
-export function printMutation(mutation: MutationPresentation): void {
-  console.log(
+export function printMutation(
+  mutation: MutationPresentation,
+  output: Pick<Console, "log" | "error"> = console,
+): void {
+  output.log(
     `plan ${mutation.planId} (${mutation.operation}) base revision ${mutation.baseRevision}`,
   );
   if (!mutation.result) return;
   if (!mutation.result.ok) {
-    console.error(`⛔ ${mutation.result.conflict.code} — ${mutation.result.conflict.message}`);
+    output.error(`⛔ ${mutation.result.conflict.code} — ${mutation.result.conflict.message}`);
     return;
   }
 
   const receipt = mutation.result.receipt;
-  console.log(
+  output.log(
     `operation ${receipt.operationId} ${receipt.outcome}: revision ${receipt.baseRevision} → ${receipt.resultingRevision}`,
   );
   for (const action of receipt.actionReceipts) {
-    console.log(`  ${action.outcome} ${action.actionId} → ${action.target}`);
+    output.log(`  ${action.outcome} ${action.actionId} → ${action.target}`);
   }
 }
 

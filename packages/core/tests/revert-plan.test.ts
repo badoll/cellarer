@@ -421,10 +421,11 @@ describe("drift-aware revert", () => {
 
   it("rejects replacement by another valid snapshot after revert planning", async () => {
     const { target, snapshotPath, managedFingerprint } = await applySkillOverExistingTarget();
-    const prepared = await planRevertMutation(t.env, {
+    const revertOptions = {
       storeRoot,
       agents: ["claude-code"],
-    });
+    };
+    const prepared = await planRevertMutation(t.env, revertOptions);
     const alternateTarget = t.path("home", ".claude", "alternate-before");
     await t.env.fs.mkdir(alternateTarget, { recursive: true });
     await t.env.fs.writeFile(join(alternateTarget, "alternate.txt"), "alternate");
@@ -445,21 +446,23 @@ describe("drift-aware revert", () => {
 
     const result = await applyRevertMutationPlan(t.env, prepared.mutationPlan, {
       storeRoot,
+      options: revertOptions,
       snapshotPassphrase: SNAPSHOT_PASSPHRASE,
     });
 
-    expect(result.operation).toMatchObject({ ok: false, conflict: { code: "PARTIAL_FAILURE" } });
+    expect(result.operation).toMatchObject({ ok: false, conflict: { code: "INVALID_PLAN" } });
     await expect(fingerprintTarget(t.env, target)).resolves.toBe(managedFingerprint);
     await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(1);
     expect((await loadLedger(t.env, storeRoot)).owners).toHaveLength(1);
   });
 
   it("restores the signed bytes read before a snapshot path swap and never deletes the replacement", async () => {
-    const { target, snapshotPath } = await applySkillOverExistingTarget();
-    const prepared = await planRevertMutation(t.env, {
+    const { target, snapshotPath, managedFingerprint } = await applySkillOverExistingTarget();
+    const revertOptions = {
       storeRoot,
       agents: ["claude-code"],
-    });
+    };
+    const prepared = await planRevertMutation(t.env, revertOptions);
     const alternateTarget = t.path("home", ".claude", "alternate-read-swap");
     await t.env.fs.mkdir(alternateTarget, { recursive: true });
     await t.env.fs.writeFile(join(alternateTarget, "alternate.txt"), "alternate");
@@ -498,15 +501,16 @@ describe("drift-aware revert", () => {
 
     const result = await applyRevertMutationPlan(env, prepared.mutationPlan, {
       storeRoot,
+      options: revertOptions,
       snapshotPassphrase: SNAPSHOT_PASSPHRASE,
       keepBackups: false,
     });
 
-    expect(result.operation).toMatchObject({ ok: true, receipt: { outcome: "committed" } });
-    await expect(t.env.fs.readFile(join(target, "original.txt"))).resolves.toBe("original");
-    await expect(t.env.fs.lstat(join(target, "alternate.txt"))).rejects.toThrow();
+    expect(result.operation).toMatchObject({ ok: false });
+    await expect(fingerprintTarget(t.env, target)).resolves.toBe(managedFingerprint);
     await expect(t.env.fs.readFile(snapshotPath)).resolves.toBe(alternateBytes);
     expect(snapshotRmCalls).toBe(0);
+    await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(1);
   });
 
   it("keeps the current target, owner, and snapshot when restore build fails", async () => {

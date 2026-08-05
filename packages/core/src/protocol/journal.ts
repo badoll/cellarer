@@ -1,12 +1,24 @@
-import { join } from "node:path";
-import type { Env } from "../env.js";
+import { join, resolve } from "node:path";
+import type { Env, ProtectedJournalTip } from "../env.js";
 import { assertSafeAtomicPublicationPath } from "../fs/safety.js";
+import {
+  observableOptionsForEnv,
+  redactObservable,
+  serializeObservable,
+} from "../secrets/observable.js";
+import { sha256 } from "../store/checksum.js";
 import {
   assertSupportedMutationPlanRuntime,
   canonicalJson,
+  isStrictMutationAuthorizationEnvelope,
+  MUTATION_ACTION_KINDS,
+  MUTATION_OPERATIONS,
+  requireMutationAuthority,
+  verifyDurableMutationPlanAuthorization,
   verifyDurableMutationPlanDigest,
 } from "./canonical.js";
 import type { OperationJournal, OperationReceipt } from "./models.js";
+import { MUTATION_AUTHORIZATION_SCHEMA_VERSION, OPERATION_JOURNAL_DOMAIN } from "./models.js";
 import { publishVerifiedStoreFile, verifyAbsentPublication } from "./publication.js";
 
 const OPERATIONS_DIRECTORY = "operations";
@@ -14,6 +26,12 @@ const ACTIVE_JOURNAL = "active.json";
 const RECEIPTS_DIRECTORY = "receipts";
 
 export const DEFAULT_OPERATION_RECEIPT_RETENTION = 100;
+
+export type OperationJournalInput = Omit<
+  OperationJournal,
+  "authorization" | "previousJournalSeal" | "sequence"
+> &
+  Partial<Pick<OperationJournal, "authorization" | "previousJournalSeal" | "sequence">>;
 
 export function operationJournalPath(storeRoot: string): string {
   return join(storeRoot, OPERATIONS_DIRECTORY, ACTIVE_JOURNAL);
@@ -37,7 +55,7 @@ export async function readOperationJournal(
   if (text === null) return null;
   try {
     const value: unknown = JSON.parse(text);
-    assertOperationJournal(value);
+    assertOperationJournal(env, storeRoot, value);
     return value;
   } catch (error) {
     throw new Error(
@@ -49,18 +67,66 @@ export async function readOperationJournal(
 export async function publishOperationJournal(
   env: Env,
   storeRoot: string,
-  journal: OperationJournal,
-): Promise<void> {
-  assertOperationJournal(journal);
+  journal: OperationJournalInput,
+): Promise<OperationJournal> {
+  const sealedJournal = sealNextOperationJournal(env, storeRoot, journal);
+  assertOperationJournal(env, storeRoot, sealedJournal);
   const path = operationJournalPath(storeRoot);
+  const serialized = serializeAuthorizedOperationJournal(sealedJournal, {
+    ...observableOptionsForEnv(env),
+    pretty: true,
+  });
+  const published: unknown = JSON.parse(serialized);
+  assertOperationJournal(env, storeRoot, published);
   await publishVerifiedStoreFile(
     env,
     storeRoot,
     path,
-    `${JSON.stringify(journal, null, 2)}\n`,
+    `${serialized}\n`,
     0o600,
     "operation journal",
   );
+  const authority = requireMutationAuthority(env);
+  await authority.publishJournalTip(operationJournalTip(sealedJournal)).catch(() => {
+    throw new Error("protected journal tip publication failed");
+  });
+  return sealedJournal;
+}
+
+function serializeAuthorizedOperationJournal(
+  journal: OperationJournal,
+  options: ReturnType<typeof observableOptionsForEnv> & { readonly pretty: true },
+): string {
+  const redacted = redactObservable("journal", journal, options) as Record<string, unknown>;
+  const redactedPlan = redacted.plan as Record<string, unknown>;
+  // Authorization envelopes are exact-key validated, independently sealed protocol metadata, not
+  // secret values. Preserve only those already-validated envelopes after the generic observable
+  // pass; an arbitrary object under an `authorization` field remains recursively redacted.
+  const publishable = {
+    ...redacted,
+    plan: { ...redactedPlan, authorization: journal.plan.authorization },
+    authorization: journal.authorization,
+  };
+  return JSON.stringify(publishable, null, 2);
+}
+
+export function operationJournalTip(journal: OperationJournal): ProtectedJournalTip {
+  return {
+    operationId: journal.operationId,
+    sequence: journal.sequence,
+    seal: journal.authorization.seal,
+  };
+}
+
+export async function matchesProtectedJournalTip(
+  env: Env,
+  journal: OperationJournal,
+): Promise<boolean> {
+  try {
+    return await requireMutationAuthority(env).matchesJournalTip(operationJournalTip(journal));
+  } catch {
+    return false;
+  }
 }
 
 export async function removeOperationJournal(env: Env, storeRoot: string): Promise<void> {
@@ -96,11 +162,17 @@ export async function publishOperationReceipt(
 ): Promise<void> {
   assertOperationReceipt(receipt);
   const path = operationReceiptPath(storeRoot, receipt.operationId);
+  const serialized = serializeObservable("receipt", receipt, {
+    ...observableOptionsForEnv(env),
+    pretty: true,
+  });
+  const published: unknown = JSON.parse(serialized);
+  assertOperationReceipt(published);
   await publishVerifiedStoreFile(
     env,
     storeRoot,
     path,
-    `${JSON.stringify(receipt, null, 2)}\n`,
+    `${serialized}\n`,
     0o600,
     "operation receipt",
   );
@@ -142,17 +214,44 @@ function assertSafeOperationId(operationId: string): void {
   }
 }
 
-function assertOperationJournal(value: unknown): asserts value is OperationJournal {
+function assertOperationJournal(
+  env: Env,
+  storeRoot: string,
+  value: unknown,
+): asserts value is OperationJournal {
   const journal = value as OperationJournal;
+  const journalKeys = [
+    "actions",
+    "authorization",
+    "nextRevision",
+    "operationId",
+    "plan",
+    "previousJournalSeal",
+    "schemaVersion",
+    "sequence",
+    "startedAt",
+    "status",
+    "updatedAt",
+  ];
+  if (typeof value === "object" && value !== null) {
+    if ("statePublications" in value) journalKeys.push("statePublications");
+    if ("completedReceipt" in value) journalKeys.push("completedReceipt");
+  }
   if (
-    typeof value !== "object" ||
-    value === null ||
+    !hasExactKeys(value, journalKeys) ||
     journal.schemaVersion !== 1 ||
     typeof journal.operationId !== "string" ||
     typeof journal.plan !== "object" ||
     journal.plan === null ||
     !Number.isSafeInteger(journal.nextRevision) ||
     journal.nextRevision < 0 ||
+    !Number.isSafeInteger(journal.sequence) ||
+    journal.sequence < 1 ||
+    (journal.sequence === 1
+      ? journal.previousJournalSeal !== null
+      : typeof journal.previousJournalSeal !== "string" ||
+        !/^hmac-sha256:[0-9a-f]{64}$/.test(journal.previousJournalSeal)) ||
+    !isStrictMutationAuthorizationEnvelope(journal.authorization, OPERATION_JOURNAL_DOMAIN) ||
     !["prepared", "executing", "publishing-state", "completed", "recovery-required"].includes(
       journal.status,
     ) ||
@@ -164,8 +263,36 @@ function assertOperationJournal(value: unknown): asserts value is OperationJourn
   }
   assertSafeOperationId(journal.operationId);
   assertSupportedMutationPlanRuntime(journal.plan);
+  if (
+    !hasExactKeys(journal.plan, [
+      "actions",
+      "authorization",
+      "baseRevision",
+      "digest",
+      "durableDigest",
+      "expires",
+      "normalizedInputsDigest",
+      "operation",
+      "planId",
+      "schemaVersion",
+      "targetPreconditions",
+    ]) ||
+    !MUTATION_OPERATIONS.includes(journal.plan.operation) ||
+    typeof journal.plan.planId !== "string" ||
+    typeof journal.plan.normalizedInputsDigest !== "string" ||
+    !Array.isArray(journal.plan.actions) ||
+    !Array.isArray(journal.plan.targetPreconditions)
+  ) {
+    throw new Error("operation journal durable plan has an invalid runtime schema");
+  }
   if (!verifyDurableMutationPlanDigest(journal.plan)) {
     throw new Error("operation journal durable plan digest is invalid");
+  }
+  if (!verifyDurableMutationPlanAuthorization(env, storeRoot, journal.plan)) {
+    throw new Error("operation journal durable plan authorization is invalid");
+  }
+  if (!verifyOperationJournalAuthorization(env, storeRoot, journal)) {
+    throw new Error("operation journal authorization is invalid");
   }
   if (journal.nextRevision !== journal.plan.baseRevision + 1) {
     throw new Error("operation journal next revision does not follow its signed plan");
@@ -183,12 +310,43 @@ function assertOperationJournal(value: unknown): asserts value is OperationJourn
     throw new Error("operation journal plan evidence is not one-to-one");
   }
 
+  for (const planned of journal.plan.actions) {
+    const plannedKeys = ["actionId", "kind", "payloadDigest", "target"];
+    if (planned.payload !== undefined) plannedKeys.push("payload");
+    if (planned.postcondition !== undefined) plannedKeys.push("postcondition");
+    if (
+      !hasExactKeys(planned, plannedKeys) ||
+      typeof planned.actionId !== "string" ||
+      planned.actionId.length === 0 ||
+      !MUTATION_ACTION_KINDS.includes(planned.kind as (typeof MUTATION_ACTION_KINDS)[number]) ||
+      typeof planned.target !== "string" ||
+      planned.target.length === 0 ||
+      typeof planned.payloadDigest !== "string"
+    ) {
+      throw new Error("operation journal durable action has an invalid runtime schema");
+    }
+  }
+  for (const precondition of journal.plan.targetPreconditions) {
+    if (
+      !hasExactKeys(precondition, ["actionId", "expected", "target"]) ||
+      typeof precondition.actionId !== "string" ||
+      typeof precondition.target !== "string" ||
+      !isTargetStateReceipt(precondition.expected)
+    ) {
+      throw new Error("operation journal precondition has an invalid runtime schema");
+    }
+  }
+
   for (const [index, action] of journal.actions.entries()) {
     const planned = journal.plan.actions[index];
     const precondition = planned ? preconditions.get(planned.actionId) : undefined;
     if (
-      typeof action !== "object" ||
-      action === null ||
+      !hasExactKeys(
+        action,
+        action && typeof action === "object" && "receipt" in action
+          ? ["actionId", "receipt", "status", "target"]
+          : ["actionId", "status", "target"],
+      ) ||
       typeof action.actionId !== "string" ||
       typeof action.target !== "string" ||
       !["pending", "succeeded", "failed"].includes(action.status)
@@ -207,6 +365,18 @@ function assertOperationJournal(value: unknown): asserts value is OperationJourn
     if (planned.postcondition !== undefined && !isTargetStateReceipt(planned.postcondition)) {
       throw new Error("operation journal action has an invalid signed postcondition");
     }
+    const isKeychainAction = ["keychain-secret-set", "keychain-secret-delete"].includes(
+      planned.kind,
+    );
+    if (
+      (isKeychainAction &&
+        (typeof planned.payload !== "object" ||
+          planned.payload === null ||
+          sha256(canonicalJson(planned.payload)) !== planned.payloadDigest)) ||
+      (!isKeychainAction && planned.payload !== undefined)
+    ) {
+      throw new Error("operation journal action has invalid durable provider authorization");
+    }
     if (action.status !== "pending") {
       assertOperationActionReceipt(action.receipt);
       if (action.receipt.actionId !== action.actionId || action.receipt.target !== action.target) {
@@ -218,11 +388,23 @@ function assertOperationJournal(value: unknown): asserts value is OperationJourn
       if (
         action.status === "succeeded" &&
         planned.postcondition !== undefined &&
-        !sameTargetState(planned.postcondition, action.receipt.after)
+        !sameTargetState(planned.postcondition, action.receipt.after) &&
+        !(
+          journal.status === "completed" &&
+          journal.completedReceipt?.outcome === "compensated" &&
+          action.receipt.outcome === "compensated" &&
+          sameTargetState(action.receipt.before, action.receipt.after)
+        )
       ) {
         throw new Error(
           "operation journal action after-state does not match its signed postcondition",
         );
+      }
+      if (
+        (action.status === "failed" && action.receipt.outcome !== "failed") ||
+        (action.status === "succeeded" && action.receipt.outcome === "failed")
+      ) {
+        throw new Error("operation journal action status does not match its receipt outcome");
       }
     }
   }
@@ -231,6 +413,12 @@ function assertOperationJournal(value: unknown): asserts value is OperationJourn
       !Array.isArray(journal.statePublications) ||
       journal.statePublications.some(
         (publication) =>
+          !hasExactKeys(
+            publication,
+            publication && typeof publication === "object" && "mode" in publication
+              ? ["digest", "mode", "path"]
+              : ["digest", "path"],
+          ) ||
           typeof publication.path !== "string" ||
           typeof publication.digest !== "string" ||
           (publication.mode !== undefined && !Number.isInteger(publication.mode)),
@@ -238,6 +426,15 @@ function assertOperationJournal(value: unknown): asserts value is OperationJourn
     ) {
       throw new Error("invalid journal state publication");
     }
+  }
+  if (
+    (journal.status === "prepared" &&
+      journal.actions.some((action) => action.status !== "pending")) ||
+    (journal.status === "publishing-state" &&
+      journal.actions.some((action) => action.status !== "succeeded")) ||
+    (["prepared", "executing"].includes(journal.status) && journal.statePublications !== undefined)
+  ) {
+    throw new Error("operation journal status does not match its durable action receipts");
   }
   if (journal.status === "completed" && journal.completedReceipt === undefined) {
     throw new Error("completed operation journal is missing its exact receipt");
@@ -269,6 +466,84 @@ function assertOperationJournal(value: unknown): asserts value is OperationJourn
   }
 }
 
+function sealNextOperationJournal(
+  env: Env,
+  storeRoot: string,
+  journal: OperationJournalInput,
+): OperationJournal {
+  const hasPriorAuthorization = journal.authorization !== undefined;
+  if (
+    hasPriorAuthorization !== (journal.sequence !== undefined) ||
+    hasPriorAuthorization !== (journal.previousJournalSeal !== undefined)
+  ) {
+    throw new TypeError("operation journal chain metadata is incomplete");
+  }
+  if (
+    hasPriorAuthorization &&
+    (!Number.isSafeInteger(journal.sequence) ||
+      (journal.sequence ?? 0) < 1 ||
+      !isStrictMutationAuthorizationEnvelope(journal.authorization, OPERATION_JOURNAL_DOMAIN))
+  ) {
+    throw new TypeError("operation journal prior authorization is invalid");
+  }
+  const {
+    authorization: priorAuthorization,
+    previousJournalSeal: _previousJournalSeal,
+    sequence: priorSequence,
+    ...payload
+  } = journal;
+  const unsigned = {
+    ...payload,
+    sequence: (priorSequence ?? 0) + 1,
+    previousJournalSeal: priorAuthorization?.seal ?? null,
+  };
+  const authority = requireMutationAuthority(env);
+  const request = operationJournalAuthorityRequest(env, storeRoot, unsigned);
+  const authorization = authority.seal(request);
+  if (!isStrictMutationAuthorizationEnvelope(authorization, OPERATION_JOURNAL_DOMAIN)) {
+    throw new TypeError("mutation authority returned an invalid journal authorization envelope");
+  }
+  if (!authority.verify(request, authorization)) {
+    throw new TypeError("mutation authority could not verify its journal authorization envelope");
+  }
+  return { ...unsigned, authorization };
+}
+
+function verifyOperationJournalAuthorization(
+  env: Env,
+  storeRoot: string,
+  journal: OperationJournal,
+): boolean {
+  try {
+    const authority = requireMutationAuthority(env);
+    if (!isStrictMutationAuthorizationEnvelope(journal.authorization, OPERATION_JOURNAL_DOMAIN)) {
+      return false;
+    }
+    return authority.verify(
+      operationJournalAuthorityRequest(env, storeRoot, journal),
+      journal.authorization,
+    );
+  } catch {
+    return false;
+  }
+}
+
+function operationJournalAuthorityRequest(
+  env: Env,
+  storeRoot: string,
+  journal: Omit<OperationJournal, "authorization"> | OperationJournal,
+) {
+  const { authorization: _authorization, ...canonicalPayload } = journal as OperationJournal;
+  return {
+    schemaVersion: MUTATION_AUTHORIZATION_SCHEMA_VERSION,
+    domain: OPERATION_JOURNAL_DOMAIN,
+    normalizedStoreRoot: resolve(env.cwd(), storeRoot),
+    operation: journal.plan.operation,
+    baseRevision: journal.plan.baseRevision,
+    canonicalPayload: canonicalJson(canonicalPayload),
+  } as const;
+}
+
 function sameAuthorizedBeforeState(
   expected: OperationJournal["plan"]["targetPreconditions"][number]["expected"],
   actual: OperationReceipt["actionReceipts"][number]["before"],
@@ -298,9 +573,10 @@ function sameTargetState(
 }
 
 function assertOperationActionReceipt(value: OperationReceipt["actionReceipts"][number]): void {
+  const keys = ["actionId", "after", "before", "outcome", "recordedAt", "target"];
+  if (typeof value === "object" && value !== null && "error" in value) keys.push("error");
   if (
-    typeof value !== "object" ||
-    value === null ||
+    !hasExactKeys(value, keys) ||
     typeof value.actionId !== "string" ||
     typeof value.target !== "string" ||
     !["applied", "unchanged", "compensated", "failed"].includes(value.outcome) ||
@@ -310,10 +586,18 @@ function assertOperationActionReceipt(value: OperationReceipt["actionReceipts"][
   ) {
     throw new Error("invalid operation action receipt");
   }
+  if (
+    value.error !== undefined &&
+    (!hasExactKeys(value.error, ["code", "message"]) ||
+      typeof value.error.code !== "string" ||
+      typeof value.error.message !== "string")
+  ) {
+    throw new Error("invalid operation action receipt");
+  }
 }
 
 function isTargetStateReceipt(value: unknown): boolean {
-  if (typeof value !== "object" || value === null) return false;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const state = value as {
     state?: unknown;
     fingerprint?: unknown;
@@ -321,27 +605,51 @@ function isTargetStateReceipt(value: unknown): boolean {
     recoverySnapshotDigest?: unknown;
     recoverySnapshotMode?: unknown;
   };
-  if (state.state === "absent") return true;
+  if (state.state === "absent") return hasExactKeys(value, ["state"]);
   const hasSnapshot = state.recoverySnapshot !== undefined;
-  return (
+  const valid =
     state.state === "present" &&
     typeof state.fingerprint === "string" &&
     (hasSnapshot
       ? typeof state.recoverySnapshot === "string" &&
         typeof state.recoverySnapshotDigest === "string" &&
         Number.isInteger(state.recoverySnapshotMode)
-      : state.recoverySnapshotDigest === undefined && state.recoverySnapshotMode === undefined)
+      : state.recoverySnapshotDigest === undefined && state.recoverySnapshotMode === undefined);
+  if (!valid) return false;
+  return hasExactKeys(
+    value,
+    hasSnapshot
+      ? [
+          "fingerprint",
+          "recoverySnapshot",
+          "recoverySnapshotDigest",
+          "recoverySnapshotMode",
+          "state",
+        ]
+      : ["fingerprint", "state"],
   );
 }
 
 function assertOperationReceipt(value: unknown): asserts value is OperationReceipt {
   if (
-    typeof value !== "object" ||
-    value === null ||
+    !hasExactKeys(value, [
+      "actionReceipts",
+      "baseRevision",
+      "completedAt",
+      "operation",
+      "operationId",
+      "outcome",
+      "planDigest",
+      "planId",
+      "resultingRevision",
+      "schemaVersion",
+      "startedAt",
+    ]) ||
     (value as OperationReceipt).schemaVersion !== 1 ||
     typeof (value as OperationReceipt).operationId !== "string" ||
     typeof (value as OperationReceipt).planId !== "string" ||
     typeof (value as OperationReceipt).planDigest !== "string" ||
+    !MUTATION_OPERATIONS.includes((value as OperationReceipt).operation) ||
     !Number.isSafeInteger((value as OperationReceipt).baseRevision) ||
     !Number.isSafeInteger((value as OperationReceipt).resultingRevision) ||
     !["committed", "compensated", "manual-recovery-required"].includes(
@@ -362,4 +670,11 @@ function assertOperationReceipt(value: unknown): asserts value is OperationRecei
     throw new Error("invalid operation receipt");
   }
   assertSafeOperationId((value as OperationReceipt).operationId);
+}
+
+function hasExactKeys(value: unknown, keys: readonly string[]): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }

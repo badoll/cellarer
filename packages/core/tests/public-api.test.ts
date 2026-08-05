@@ -18,5 +18,26 @@ describe("@cellarer/core package root", () => {
     expect(core).not.toHaveProperty("releaseStoreRecoveryLock");
     expect(core).not.toHaveProperty("publishStoreRevision");
     expect(core).not.toHaveProperty("appendActivity");
+    expect(core).toHaveProperty("createMutationPlan");
+    expect(core).not.toHaveProperty("mutationPlanDigest");
+    expect(core).not.toHaveProperty("verifyMutationPlanDigest");
+  });
+
+  it("narrows the public integrity helper so it cannot mint executable authority", () => {
+    const plan = core.createMutationPlan({
+      schemaVersion: 1,
+      planId: "public-integrity-only",
+      operation: "apply",
+      baseRevision: 0,
+      normalizedInputs: {},
+      targetPreconditions: [],
+      actions: [],
+      expires: { policy: "none" },
+    });
+
+    expect(plan.authorization).toMatchObject({
+      authorityId: "unsealed",
+      authorityEpoch: 0,
+    });
   });
 });

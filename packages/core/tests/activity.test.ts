@@ -66,7 +66,26 @@ describe("activity store", () => {
 
     const text = await t.env.fs.readFile(activityPath(storeRoot));
     expect(text).not.toContain(REAL);
-    expect(text).toContain("[redacted secret]");
+    expect(text).toContain("[REDACTED]");
+  });
+
+  it("keeps non-secret resource links while redacting plaintext secretRefs", async () => {
+    const event = await appendActivity(t.env, storeRoot, {
+      action: "apply",
+      affectedCount: 1,
+      summary: "Linked resource metadata",
+      resources: { artifactIds: ["mcp/context"], ledgerEntryKeys: ["owner-key"] },
+      secretRefs: ["tiny", "${ENV_VAR}"],
+    });
+
+    expect(event.resources).toEqual({
+      artifactIds: ["mcp/context"],
+      ledgerEntryKeys: ["owner-key"],
+    });
+    expect(event.secretRefs).toEqual(["[REDACTED]", "${ENV_VAR}"]);
+    const text = await t.env.fs.readFile(activityPath(storeRoot));
+    expect(text).not.toContain("tiny");
+    expect(text).toContain("mcp/context");
   });
 
   it("redacts secret-like text from events loaded from disk", async () => {
@@ -86,7 +105,7 @@ describe("activity store", () => {
     const listed = await listActivity(t.env, storeRoot);
 
     expect(JSON.stringify(listed)).not.toContain(REAL);
-    expect(listed.events[0]?.summary).toBe("[redacted secret]");
+    expect(listed.events[0]?.summary).toBe("[REDACTED]");
   });
 
   it("does not fail apply when activity append fails", async () => {
@@ -100,19 +119,20 @@ describe("activity store", () => {
       },
     };
 
-    const prepared = await planApplyMutation(t.env, {
+    const options = {
       storeRoot,
-      scope: "global",
+      scope: "global" as const,
       agents: ["claude-code"],
-      capabilities: ["rules"],
-    });
+      capabilities: ["rules" as const],
+    };
+    const prepared = await planApplyMutation(t.env, options);
     const signedDisplayPlan = prepared.mutationPlan.normalizedInputs.distributePlan as {
       warnings: readonly string[];
     };
     const originalDigest = prepared.mutationPlan.digest;
     expect(Object.isFrozen(signedDisplayPlan)).toBe(true);
 
-    const result = await applyMutationPlan(env, prepared.mutationPlan, { storeRoot });
+    const result = await applyMutationPlan(env, prepared.mutationPlan, { storeRoot, options });
 
     expect(result.entries).toHaveLength(1);
     expect(result.plan.warnings.some((warning) => warning.includes("activity log failed"))).toBe(

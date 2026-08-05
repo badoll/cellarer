@@ -810,8 +810,11 @@ describe("safe target planning and placement", () => {
       ...t.env,
       fs: {
         ...t.env.fs,
-        cp: async () => {
-          throw new Error("injected staged copy failure");
+        writeFileBytes: async (path: string, data: Uint8Array, options?: { mode?: number }) => {
+          if (path.includes(".cellarer-snapshot-")) {
+            throw new Error("injected staged copy failure");
+          }
+          await t.env.fs.writeFileBytes(path, data, options);
         },
       },
     };
@@ -893,7 +896,7 @@ describe("safe target planning and placement", () => {
         ...baseFs,
         rename: async (oldPath: string, newPath: string) => {
           await baseFs.rename(oldPath, newPath);
-          if (newPath === target && oldPath.includes(".cellarer-stage-")) swapped = true;
+          if (newPath === target && oldPath.includes(".cellarer-snapshot-")) swapped = true;
         },
         readFileBytes: async (path: string) => {
           if (swapped && path.startsWith(source)) {

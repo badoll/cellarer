@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { applyMutationPlan, planApplyMutation } from "../src/engine/apply.js";
 import { applyRevertMutationPlan, planRevertMutation } from "../src/engine/revert.js";
+import type { Env } from "../src/env.js";
+import type { PlanAction } from "../src/model/index.js";
 import {
+  createAuthorizedMutationPlan,
   createMutationPlan,
   mutationPlanDigest,
   verifyMutationPlanDigest,
@@ -19,6 +22,14 @@ import {
   readStoreRevision,
   storeRevisionPath,
 } from "../src/protocol/store-revision.js";
+import {
+  createProviderScope,
+  resolveActiveSecretValues,
+  withProviderScope,
+} from "../src/secrets/active-values.js";
+import { observableKnownValues, serializeObservable } from "../src/secrets/observable.js";
+import { environmentSecretReference } from "../src/secrets/reference.js";
+import { sha256 } from "../src/store/checksum.js";
 import { initStore, writeRuleArtifact } from "../src/store/store.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
@@ -43,9 +54,12 @@ describe("exclusive planned apply and revert", () => {
   });
   const target = () => t.path("home", ".claude", "CLAUDE.md");
   const applyReceipt = (mutationPlan: Parameters<typeof applyMutationPlan>[1]) =>
-    applyMutationPlan(t.env, mutationPlan, { storeRoot });
+    applyMutationPlan(t.env, mutationPlan, { storeRoot, options: options() });
   const revertReceipt = (mutationPlan: Parameters<typeof applyRevertMutationPlan>[1]) =>
-    applyRevertMutationPlan(t.env, mutationPlan, { storeRoot });
+    applyRevertMutationPlan(t.env, mutationPlan, {
+      storeRoot,
+      options: { storeRoot, agents: ["claude-code"] },
+    });
 
   it("rejects a tampered plan digest before target mutation", async () => {
     const prepared = await planApplyMutation(t.env, options());
@@ -55,16 +69,556 @@ describe("exclusive planned apply and revert", () => {
 
     expect(result.operation).toMatchObject({
       ok: false,
-      conflict: { code: "INVALID_PLAN_DIGEST", planId: prepared.mutationPlan.planId },
+      conflict: { code: "INVALID_PLAN" },
     });
     await expect(t.env.fs.lstat(target())).rejects.toThrow();
+  });
+
+  it("attaches one redaction scope to runtime, digest, and decode failures", async () => {
+    const secret = "tiny-early-scope";
+    const scope = createProviderScope({ secretMode: "env" });
+    const operationEnv = withProviderScope(
+      { ...t.env, env: { ...t.env.env, EARLY_SCOPE_SECRET: secret } },
+      scope,
+    );
+    await resolveActiveSecretValues(
+      operationEnv,
+      storeRoot,
+      [environmentSecretReference("EARLY_SCOPE_SECRET")],
+      { secretMode: "env" },
+    );
+    const prepared = await planApplyMutation(t.env, options());
+    const runtimeInvalid = {
+      ...prepared.mutationPlan,
+      schemaVersion: secret,
+    } as unknown as MutationPlan;
+    const digestInvalid = {
+      ...prepared.mutationPlan,
+      baseRevision: prepared.mutationPlan.baseRevision + 1,
+    } as MutationPlan;
+    const action = prepared.mutationPlan.actions[0];
+    if (!action) throw new Error("expected an apply action");
+    const decodeInvalid = createMutationPlan({
+      ...prepared.mutationPlan,
+      actions: [
+        {
+          ...action,
+          actionId: `invalid-${secret}`,
+          payload: { planAction: "malformed" },
+        },
+      ],
+    });
+
+    for (const invalid of [runtimeInvalid, decodeInvalid]) {
+      const rejected = await applyMutationPlan(operationEnv, invalid, {
+        storeRoot,
+        options: options(),
+      });
+      expect(rejected.operation).toMatchObject({
+        ok: false,
+        conflict: { code: "INVALID_PLAN" },
+      });
+      expect(observableKnownValues(rejected)).toBe(scope.knownValues);
+      expect(
+        serializeObservable("error", rejected, {
+          knownValues: observableKnownValues(rejected),
+        }),
+      ).not.toContain(secret);
+    }
+
+    const rejected = await applyMutationPlan(operationEnv, digestInvalid, {
+      storeRoot,
+      options: options(),
+    });
+    expect(rejected.operation).toMatchObject({
+      ok: false,
+      conflict: { code: "INVALID_PLAN" },
+    });
+    expect(observableKnownValues(rejected)).toBe(scope.knownValues);
+    expect(
+      serializeObservable("cli", rejected, {
+        knownValues: observableKnownValues(rejected),
+      }),
+    ).not.toContain(secret);
+  });
+
+  it("rejects untrusted early apply plans without provider reads, lock effects, or raw-value echoes", async () => {
+    const secret = "tiny-raw-plan";
+    await writeRuleArtifact(
+      t.env,
+      storeRoot,
+      "style",
+      "use $" + "{CELLARER_SECRET:EARLY_PLAN_SECRET}",
+    );
+    const prepared = await planApplyMutation(t.env, options());
+    const action = prepared.mutationPlan.actions[0];
+    if (!action) throw new Error("expected an apply action");
+    const rawPlanAction = action.payload.planAction;
+    if (typeof rawPlanAction !== "object" || rawPlanAction === null) {
+      throw new Error("expected an executable plan action");
+    }
+    const invalidPlans: MutationPlan[] = [
+      {
+        ...prepared.mutationPlan,
+        schemaVersion: secret,
+      } as unknown as MutationPlan,
+      {
+        ...prepared.mutationPlan,
+        planId: secret,
+        digest: secret,
+      },
+      createMutationPlan({
+        ...prepared.mutationPlan,
+        actions: [{ ...action, actionId: secret, payload: { planAction: "malformed" } }],
+      }),
+      createMutationPlan({
+        ...prepared.mutationPlan,
+        operation: secret,
+      } as Parameters<typeof createMutationPlan>[0]),
+      createMutationPlan({
+        ...prepared.mutationPlan,
+        actions: [
+          {
+            ...action,
+            kind: secret,
+            payload: { planAction: { ...rawPlanAction, op: secret } },
+          },
+        ],
+      } as Parameters<typeof createMutationPlan>[0]),
+    ];
+    let providerReads = 0;
+    let lockAttempts = 0;
+    const writeFileExclusive = t.env.fs.writeFileExclusive;
+    const env: Env = {
+      ...t.env,
+      secretStore: {
+        async get() {
+          providerReads += 1;
+          return { found: true, value: secret };
+        },
+        async set() {},
+        async delete() {
+          return false;
+        },
+      },
+      fs: {
+        ...t.env.fs,
+        async writeFileExclusive(path, data, opts) {
+          lockAttempts += 1;
+          return writeFileExclusive(path, data, opts);
+        },
+      },
+    };
+
+    for (const invalid of invalidPlans) {
+      let observed: unknown;
+      try {
+        observed = await applyMutationPlan(env, invalid, {
+          storeRoot,
+          options: options(),
+          secretMode: "keychain",
+        });
+      } catch (error) {
+        observed = error;
+      }
+      expect(observed).toBeDefined();
+      expect(JSON.stringify(observed)).not.toContain(secret);
+      if (observed instanceof Error) expect(observed.message).not.toContain(secret);
+    }
+
+    expect(providerReads).toBe(0);
+    expect(lockAttempts).toBe(0);
+    await expect(readOperationJournal(t.env, storeRoot)).resolves.toBeNull();
+  });
+
+  it("rejects every malformed executable apply op before provider, lock, journal, or target effects", async () => {
+    const prepared = await planApplyMutation(t.env, options());
+    const originalAction = prepared.mutationPlan.actions[0];
+    if (!originalAction) throw new Error("expected an apply action");
+    const targetRoot = t.path("home", ".strict-actions");
+    const fingerprint = (character: string) => `sha256:${character.repeat(64)}`;
+    const ownership = (
+      agent: string,
+      scope: PlanAction["scope"],
+      capability: PlanAction["capability"],
+      actionTarget: string,
+    ) => ({
+      key: JSON.stringify([agent, scope, capability, actionTarget]),
+      classification: "absent" as const,
+      target: actionTarget,
+      currentFingerprint: null,
+      expectedReceipt: null,
+    });
+    const common = (
+      capability: PlanAction["capability"],
+      name: string,
+    ): Pick<PlanAction, "agent" | "scope" | "capability" | "target" | "ownership" | "reason"> => {
+      const actionTarget = t.path("home", ".strict-actions", name);
+      return {
+        agent: "claude-code",
+        scope: "global",
+        capability,
+        target: actionTarget,
+        ownership: ownership("claude-code", "global", capability, actionTarget),
+        reason: `${capability}/${name}`,
+      };
+    };
+    const fixtures: PlanAction[] = [
+      {
+        ...common("rules", "write"),
+        artifact: "rules/*",
+        artifactIds: ["rules/style"],
+        reason: "rules/style",
+        method: "symlink",
+        op: "write",
+        preview: { after: "strict write" },
+        desiredEvidence: {
+          method: "write",
+          contentFingerprint: sha256("strict write"),
+        },
+      },
+      ...(["merge", "overwrite"] as const).map((op) => ({
+        ...common("mcp", op),
+        artifact: "mcp/context",
+        artifactIds: ["mcp/context"],
+        reason: "mcp/context",
+        method: "copy" as const,
+        op,
+        preview: { after: "{}" },
+        desiredEvidence: { method: "write" as const, contentFingerprint: fingerprint("a") },
+        secretRefs: [],
+        accidentalPlaintext: false,
+      })),
+      ...(["symlink", "copy"] as const).map((op) => ({
+        ...common("skills", op),
+        artifact: "skills/demo",
+        artifactIds: ["skills/demo"],
+        reason: "skills/demo",
+        source: t.path("home", ".cellarer", "store", "skills", "demo"),
+        method: op,
+        op,
+        desiredEvidence: {
+          method: op,
+          sourceFingerprint: fingerprint("b"),
+          sourceIdentity: fingerprint("c"),
+        },
+      })),
+    ];
+    const forgedOutsideTarget = t.path("outside-managed-root", "forged-target");
+    const mutations: Array<{
+      name: string;
+      alter(action: Record<string, unknown>): void;
+    }> = [
+      {
+        name: "missing agent",
+        alter: (action) => {
+          delete action.agent;
+        },
+      },
+      {
+        name: "wrong agent type",
+        alter: (action) => {
+          action.agent = 42;
+        },
+      },
+      {
+        name: "forged agent",
+        alter: (action) => {
+          action.agent = "attacker";
+        },
+      },
+      {
+        name: "unknown scope",
+        alter: (action) => {
+          action.scope = "workspace";
+        },
+      },
+      {
+        name: "inconsistent capability",
+        alter: (action) => {
+          action.capability = action.capability === "rules" ? "mcp" : "rules";
+        },
+      },
+      {
+        name: "inconsistent method",
+        alter: (action) => {
+          action.method =
+            action.op === "write" ? "write" : action.method === "copy" ? "symlink" : "copy";
+        },
+      },
+      {
+        name: "forged artifact ids",
+        alter: (action) => {
+          action.artifactIds = ["rules/forged"];
+        },
+      },
+      {
+        name: "forged target outside the managed root",
+        alter: (action) => {
+          action.target = forgedOutsideTarget;
+          action.ownership = ownership(
+            String(action.agent),
+            action.scope as PlanAction["scope"],
+            action.capability as PlanAction["capability"],
+            forgedOutsideTarget,
+          );
+        },
+      },
+      {
+        name: "forged source outside the store",
+        alter: (action) => {
+          action.source = t.path("outside-store", "source");
+        },
+      },
+      {
+        name: "invalid preview",
+        alter: (action) => {
+          action.preview = action.capability === "skills" ? { after: "forged" } : "not-an-object";
+        },
+      },
+      {
+        name: "invalid desired evidence",
+        alter: (action) => {
+          action.desiredEvidence =
+            action.capability === "skills"
+              ? { method: action.method, sourceFingerprint: 7, sourceIdentity: fingerprint("c") }
+              : action.capability === "mcp"
+                ? { method: "copy", contentFingerprint: fingerprint("d") }
+                : { method: "write", contentFingerprint: fingerprint("d") };
+        },
+      },
+      {
+        name: "unknown field",
+        alter: (action) => {
+          action.untrusted = true;
+        },
+      },
+    ];
+    const normalizedInputs = JSON.parse(
+      JSON.stringify(prepared.mutationPlan.normalizedInputs),
+    ) as Record<string, unknown>;
+    normalizedInputs.capabilities = ["rules", "mcp", "skills"];
+    let providerReads = 0;
+    let lockAttempts = 0;
+    let journalWrites = 0;
+    let targetEffects = 0;
+    const targets = new Set([...fixtures.map((action) => action.target), forgedOutsideTarget]);
+    const originalFs = t.env.fs;
+    const env: Env = {
+      ...t.env,
+      secretStore: {
+        async get() {
+          providerReads += 1;
+          return { found: false };
+        },
+        async set() {},
+        async delete() {
+          return false;
+        },
+      },
+      fs: {
+        ...originalFs,
+        async writeFileExclusive(path, data, opts) {
+          lockAttempts += 1;
+          return originalFs.writeFileExclusive(path, data, opts);
+        },
+        async publishFileAtomically(path, data, opts) {
+          if (path === operationJournalPath(storeRoot)) journalWrites += 1;
+          if (targets.has(path)) targetEffects += 1;
+          return originalFs.publishFileAtomically(path, data, opts);
+        },
+        async writeFile(path, data, opts) {
+          if (targets.has(path)) targetEffects += 1;
+          return originalFs.writeFile(path, data, opts);
+        },
+        async symlink(source, path, type) {
+          if (targets.has(path)) targetEffects += 1;
+          return originalFs.symlink(source, path, type);
+        },
+        async cp(source, path, opts) {
+          if (targets.has(path)) targetEffects += 1;
+          return originalFs.cp(source, path, opts);
+        },
+      },
+    };
+
+    for (const fixture of fixtures) {
+      for (const mutation of mutations) {
+        const action = JSON.parse(JSON.stringify(fixture)) as Record<string, unknown>;
+        mutation.alter(action);
+        const mutationAction = {
+          ...originalAction,
+          actionId: `action-${fixture.op}-${mutation.name}`,
+          kind: fixture.op,
+          target: String(action.target),
+          payload: { planAction: action },
+        };
+        const invalidPlan = createMutationPlan({
+          ...prepared.mutationPlan,
+          normalizedInputs: normalizedInputs as CanonicalJsonObject,
+          actions: [mutationAction],
+          targetPreconditions: [
+            {
+              actionId: mutationAction.actionId,
+              target: mutationAction.target,
+              expected: { state: "absent" },
+            },
+          ],
+        });
+
+        const result = await applyMutationPlan(env, invalidPlan, {
+          storeRoot,
+          options: options(),
+          secretMode: "keychain",
+        });
+        expect(result.operation, `${fixture.op}: ${mutation.name}`).toMatchObject({
+          ok: false,
+          conflict: { code: "INVALID_PLAN" },
+        });
+      }
+    }
+
+    expect(providerReads).toBe(0);
+    expect(lockAttempts).toBe(0);
+    expect(journalWrites).toBe(0);
+    expect(targetEffects).toBe(0);
+    await expect(readOperationJournal(t.env, storeRoot)).resolves.toBeNull();
+    await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(0);
+    await expect(t.env.fs.lstat(targetRoot)).rejects.toThrow();
+  });
+
+  it("rejects malformed sync-gitignore actions before provider, lock, journal, or target effects", async () => {
+    const projectOptions = {
+      ...options(),
+      scope: "project" as const,
+      dir: t.env.cwd(),
+    };
+    const prepared = await planApplyMutation(t.env, projectOptions);
+    const gitignoreIndex = prepared.mutationPlan.actions.findIndex(
+      (action) => action.kind === "sync-gitignore",
+    );
+    const signedGitignore = prepared.mutationPlan.actions[gitignoreIndex];
+    if (!signedGitignore) throw new Error("expected a sync-gitignore action");
+    const cases: Array<{
+      name: string;
+      alter(action: Record<string, unknown>): void;
+    }> = [
+      {
+        name: "unknown envelope field",
+        alter: (action) => {
+          action.extra = true;
+        },
+      },
+      {
+        name: "missing payload field",
+        alter: (action) => {
+          delete (action.payload as Record<string, unknown>).projectDir;
+        },
+      },
+      {
+        name: "wrong payload type",
+        alter: (action) => {
+          (action.payload as Record<string, unknown>).mode = "0644";
+        },
+      },
+      {
+        name: "unknown effect enum",
+        alter: (action) => {
+          (action.payload as Record<string, unknown>).effect = "append";
+        },
+      },
+      {
+        name: "forged semantic digest",
+        alter: (action) => {
+          (action.payload as Record<string, unknown>).digest = `sha256:${"f".repeat(64)}`;
+        },
+      },
+      {
+        name: "forged action id",
+        alter: (action) => {
+          action.actionId = "forged";
+        },
+      },
+    ];
+    let providerReads = 0;
+    let lockAttempts = 0;
+    let journalWrites = 0;
+    let targetEffects = 0;
+    const originalFs = t.env.fs;
+    const productTarget = prepared.mutationPlan.actions[0]?.target;
+    const targets = new Set([productTarget, signedGitignore.target]);
+    const env: Env = {
+      ...t.env,
+      secretStore: {
+        async get() {
+          providerReads += 1;
+          return { found: false };
+        },
+        async set() {},
+        async delete() {
+          return false;
+        },
+      },
+      fs: {
+        ...originalFs,
+        async writeFileExclusive(path, data, opts) {
+          lockAttempts += 1;
+          return originalFs.writeFileExclusive(path, data, opts);
+        },
+        async publishFileAtomically(path, data, opts) {
+          if (path === operationJournalPath(storeRoot)) journalWrites += 1;
+          if (targets.has(path)) targetEffects += 1;
+          return originalFs.publishFileAtomically(path, data, opts);
+        },
+        async writeFile(path, data, opts) {
+          if (targets.has(path)) targetEffects += 1;
+          return originalFs.writeFile(path, data, opts);
+        },
+      },
+    };
+
+    for (const testCase of cases) {
+      const altered = JSON.parse(JSON.stringify(signedGitignore)) as Record<string, unknown>;
+      testCase.alter(altered);
+      const actions = [...prepared.mutationPlan.actions];
+      actions[gitignoreIndex] = altered as unknown as (typeof actions)[number];
+      const actionId = String(altered.actionId);
+      const target = String(altered.target);
+      const targetPreconditions = prepared.mutationPlan.targetPreconditions.map((precondition) =>
+        precondition.actionId === signedGitignore.actionId
+          ? { ...precondition, actionId, target }
+          : precondition,
+      );
+      const invalidPlan = createMutationPlan({
+        ...prepared.mutationPlan,
+        actions,
+        targetPreconditions,
+      });
+
+      const result = await applyMutationPlan(env, invalidPlan, {
+        storeRoot,
+        options: projectOptions,
+        secretMode: "keychain",
+      });
+      expect(result.operation, testCase.name).toMatchObject({
+        ok: false,
+        conflict: { code: "INVALID_PLAN" },
+      });
+    }
+
+    expect(providerReads).toBe(0);
+    expect(lockAttempts).toBe(0);
+    expect(journalWrites).toBe(0);
+    expect(targetEffects).toBe(0);
+    await expect(readOperationJournal(t.env, storeRoot)).resolves.toBeNull();
+    await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(0);
   });
 
   it.each([
     {
       name: "future schema version",
       alter: (plan: MutationPlan) => ({ ...plan, schemaVersion: 2 }),
-      diagnostic: /unsupported mutation plan schema version 2/i,
+      diagnostic: /unsupported mutation plan schema version; supported version is 1/i,
     },
     {
       name: "unknown expiry policy",
@@ -72,7 +626,7 @@ describe("exclusive planned apply and revert", () => {
         ...plan,
         expires: { policy: "after-approval" },
       }),
-      diagnostic: /unsupported mutation plan expiry policy "after-approval"/i,
+      diagnostic: /unsupported mutation plan expiry policy; supported policies/i,
     },
     {
       name: "an invalid expires-at calendar date",
@@ -108,9 +662,14 @@ describe("exclusive planned apply and revert", () => {
       },
     };
 
-    await expect(applyMutationPlan(env, unsupported, { storeRoot })).rejects.toThrow(
-      testCase.diagnostic,
-    );
+    const result = await applyMutationPlan(env, unsupported, {
+      storeRoot,
+      options: options(),
+    });
+    expect(result.operation).toMatchObject({
+      ok: false,
+      conflict: { code: "INVALID_PLAN" },
+    });
 
     expect(lockAttempts).toBe(0);
     await expect(t.env.fs.lstat(target())).rejects.toThrow();
@@ -121,7 +680,7 @@ describe("exclusive planned apply and revert", () => {
 
   it("accepts a canonical leap-day expires-at timestamp", async () => {
     const prepared = await planApplyMutation(t.env, options());
-    const leapDayPlan = createMutationPlan({
+    const leapDayPlan = createAuthorizedMutationPlan(t.env, storeRoot, {
       ...prepared.mutationPlan,
       expires: { policy: "expires-at", expiresAt: "2028-02-29T00:00:00.000Z" },
     });
@@ -132,7 +691,7 @@ describe("exclusive planned apply and revert", () => {
     await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(1);
   });
 
-  it("validates the digest under the lock before decoding malformed apply payloads", async () => {
+  it("validates authority before the lock and before decoding malformed apply payloads", async () => {
     const prepared = await planApplyMutation(t.env, options());
     const malformedInputs = {
       ...prepared.mutationPlan,
@@ -149,7 +708,7 @@ describe("exclusive planned apply and revert", () => {
       const result = await applyReceipt(tampered);
       expect(result.operation).toMatchObject({
         ok: false,
-        conflict: { code: "INVALID_PLAN_DIGEST" },
+        conflict: { code: "INVALID_PLAN" },
       });
       await expect(t.env.fs.lstat(target())).rejects.toThrow();
       await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(0);
@@ -157,38 +716,23 @@ describe("exclusive planned apply and revert", () => {
     }
   });
 
-  it("rejects stale revisions and executes the exact planned actions without replanning", async () => {
+  it("rejects plans whose canonical Store inputs changed after planning", async () => {
     const first = await planApplyMutation(t.env, options());
     const stale = await planApplyMutation(t.env, options());
     await writeRuleArtifact(t.env, storeRoot, "style", "changed after planning");
-    const normalizedInputs = JSON.parse(
-      JSON.stringify(first.mutationPlan.normalizedInputs),
-    ) as Record<string, unknown>;
-    const displayPlan = normalizedInputs.distributePlan as {
-      actions: Array<{ preview?: { after?: string } }>;
-    };
-    if (displayPlan.actions[0]?.preview) {
-      displayPlan.actions[0].preview.after = "unlisted display-plan mutation";
-    }
-    const exactReceipt = createMutationPlan({
-      ...first.mutationPlan,
-      normalizedInputs: normalizedInputs as CanonicalJsonObject,
-    });
-
-    const committed = await applyReceipt(exactReceipt);
+    const committed = await applyReceipt(first.mutationPlan);
     const rejected = await applyReceipt(stale.mutationPlan);
 
-    expect(committed.operation.ok).toBe(true);
+    expect(committed.operation).toMatchObject({
+      ok: false,
+      conflict: { code: "INVALID_PLAN" },
+    });
     expect(rejected.operation).toMatchObject({
       ok: false,
-      conflict: { code: "STALE_REVISION", expectedRevision: 0, actualRevision: 1 },
+      conflict: { code: "INVALID_PLAN" },
     });
-    await expect(t.env.fs.readFile(target())).resolves.toContain("planned content");
-    await expect(t.env.fs.readFile(target())).resolves.not.toContain("changed after planning");
-    await expect(t.env.fs.readFile(target())).resolves.not.toContain(
-      "unlisted display-plan mutation",
-    );
-    await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(1);
+    await expect(t.env.fs.lstat(target())).rejects.toThrow();
+    await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(0);
   });
 
   it("retries apply planning when the revision changes across observed inputs", async () => {
@@ -224,7 +768,7 @@ describe("exclusive planned apply and revert", () => {
 
   it("rejects expired plans and changed target preconditions under the lock", async () => {
     const prepared = await planApplyMutation(t.env, options());
-    const expired = createMutationPlan({
+    const expired = createAuthorizedMutationPlan(t.env, storeRoot, {
       ...prepared.mutationPlan,
       expires: { policy: "expires-at", expiresAt: "2020-01-01T00:00:00.000Z" },
     });
@@ -239,7 +783,7 @@ describe("exclusive planned apply and revert", () => {
     const drifted = await applyReceipt(prepared.mutationPlan);
     expect(drifted.operation).toMatchObject({
       ok: false,
-      conflict: { code: "TARGET_PRECONDITION_CONFLICT", target: target() },
+      conflict: { code: "INVALID_PLAN" },
     });
     await expect(t.env.fs.readFile(target())).resolves.toBe("external change");
   });
@@ -266,7 +810,10 @@ describe("exclusive planned apply and revert", () => {
       },
     };
 
-    const result = await applyMutationPlan(env, prepared.mutationPlan, { storeRoot });
+    const result = await applyMutationPlan(env, prepared.mutationPlan, {
+      storeRoot,
+      options: options(),
+    });
 
     expect(result.operation).toMatchObject({
       ok: false,
@@ -313,7 +860,10 @@ describe("exclusive planned apply and revert", () => {
       },
     };
 
-    const result = await applyRevertMutationPlan(env, prepared.mutationPlan, { storeRoot });
+    const result = await applyRevertMutationPlan(env, prepared.mutationPlan, {
+      storeRoot,
+      options: { storeRoot, scope: "global", agents: ["claude-code"] },
+    });
 
     expect(result.operation).toMatchObject({
       ok: false,
@@ -371,18 +921,22 @@ describe("exclusive planned apply and revert", () => {
     const drifted = await revertReceipt(preparedRevert.mutationPlan);
     expect(drifted.operation).toMatchObject({
       ok: false,
-      conflict: { code: "TARGET_PRECONDITION_CONFLICT", target: target() },
+      conflict: { code: "INVALID_PLAN" },
     });
 
-    const currentRevert = await planRevertMutation(t.env, {
+    const currentRevertOptions = {
       storeRoot,
       agents: ["claude-code"],
       acknowledgements: [
         (await planRevertMutation(t.env, { storeRoot, agents: ["claude-code"] })).plan.targets[0]
           ?.acknowledgement?.token ?? "",
       ],
+    };
+    const currentRevert = await planRevertMutation(t.env, currentRevertOptions);
+    const reverted = await applyRevertMutationPlan(t.env, currentRevert.mutationPlan, {
+      storeRoot,
+      options: currentRevertOptions,
     });
-    const reverted = await revertReceipt(currentRevert.mutationPlan);
     expect(reverted.operation.ok).toBe(true);
     await expect(t.env.fs.lstat(target())).rejects.toThrow();
     await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(2);
@@ -420,7 +974,7 @@ describe("exclusive planned apply and revert", () => {
     expect(targetObservations).toBeGreaterThanOrEqual(2);
   });
 
-  it("validates the digest under the lock before decoding malformed revert payloads", async () => {
+  it("validates authority before the lock and before decoding malformed revert payloads", async () => {
     const applyPlan = await planApplyMutation(t.env, options());
     expect((await applyReceipt(applyPlan.mutationPlan)).operation.ok).toBe(true);
     const prepared = await planRevertMutation(t.env, { storeRoot, agents: ["claude-code"] });
@@ -439,7 +993,7 @@ describe("exclusive planned apply and revert", () => {
       const result = await revertReceipt(tampered);
       expect(result.operation).toMatchObject({
         ok: false,
-        conflict: { code: "INVALID_PLAN_DIGEST" },
+        conflict: { code: "INVALID_PLAN" },
       });
       await expect(t.env.fs.lstat(target())).resolves.toBeDefined();
       await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(1);
@@ -448,10 +1002,11 @@ describe("exclusive planned apply and revert", () => {
   });
 
   it("returns PARTIAL_FAILURE when the second ordinary apply action hits an I/O error", async () => {
-    const prepared = await planApplyMutation(t.env, {
+    const applyOptions = {
       ...options(),
       agents: ["claude-code", "codex"],
-    });
+    };
+    const prepared = await planApplyMutation(t.env, applyOptions);
     const originalWriteFile = t.env.fs.writeFile;
     const env = {
       ...t.env,
@@ -470,7 +1025,10 @@ describe("exclusive planned apply and revert", () => {
       },
     };
 
-    const result = await applyMutationPlan(env, prepared.mutationPlan, { storeRoot });
+    const result = await applyMutationPlan(env, prepared.mutationPlan, {
+      storeRoot,
+      options: applyOptions,
+    });
 
     expect(result.operation).toMatchObject({
       ok: false,
@@ -499,7 +1057,10 @@ describe("exclusive planned apply and revert", () => {
       },
     };
 
-    const result = await applyMutationPlan(env, prepared.mutationPlan, { storeRoot });
+    const result = await applyMutationPlan(env, prepared.mutationPlan, {
+      storeRoot,
+      options: options(),
+    });
 
     expect(result.operation).toMatchObject({
       ok: false,
@@ -521,11 +1082,12 @@ describe("exclusive planned apply and revert", () => {
     const projectDir = t.path("project");
     const gitignorePath = t.path("project", ".gitignore");
     await t.env.fs.mkdir(projectDir, { recursive: true });
-    const prepared = await planApplyMutation(t.env, {
+    const projectOptions = {
       ...options(),
-      scope: "project",
+      scope: "project" as const,
       dir: projectDir,
-    });
+    };
+    const prepared = await planApplyMutation(t.env, projectOptions);
     const originalPublish = t.env.fs.publishFileAtomically;
     const env = {
       ...t.env,
@@ -540,7 +1102,10 @@ describe("exclusive planned apply and revert", () => {
       },
     };
 
-    const result = await applyMutationPlan(env, prepared.mutationPlan, { storeRoot });
+    const result = await applyMutationPlan(env, prepared.mutationPlan, {
+      storeRoot,
+      options: projectOptions,
+    });
 
     expect(result.operation).toMatchObject({
       ok: false,
@@ -579,7 +1144,10 @@ describe("exclusive planned apply and revert", () => {
       },
     };
 
-    const result = await applyMutationPlan(env, prepared.mutationPlan, { storeRoot });
+    const result = await applyMutationPlan(env, prepared.mutationPlan, {
+      storeRoot,
+      options: options(),
+    });
 
     expect(result.operation).toMatchObject({
       ok: false,
@@ -608,7 +1176,10 @@ describe("exclusive planned apply and revert", () => {
       },
     };
 
-    const result = await applyMutationPlan(env, prepared.mutationPlan, { storeRoot });
+    const result = await applyMutationPlan(env, prepared.mutationPlan, {
+      storeRoot,
+      options: options(),
+    });
 
     expect(result.operation).toMatchObject({
       ok: false,
@@ -633,7 +1204,10 @@ describe("exclusive planned apply and revert", () => {
       },
     };
 
-    const result = await applyMutationPlan(env, prepared.mutationPlan, { storeRoot });
+    const result = await applyMutationPlan(env, prepared.mutationPlan, {
+      storeRoot,
+      options: options(),
+    });
 
     expect(result.operation).toMatchObject({
       ok: false,
@@ -664,7 +1238,10 @@ describe("exclusive planned apply and revert", () => {
       },
     };
 
-    const result = await applyMutationPlan(env, prepared.mutationPlan, { storeRoot });
+    const result = await applyMutationPlan(env, prepared.mutationPlan, {
+      storeRoot,
+      options: options(),
+    });
 
     expect(result.operation).toMatchObject({
       ok: false,
@@ -694,7 +1271,10 @@ describe("exclusive planned apply and revert", () => {
       },
     };
 
-    const result = await applyMutationPlan(env, prepared.mutationPlan, { storeRoot });
+    const result = await applyMutationPlan(env, prepared.mutationPlan, {
+      storeRoot,
+      options: options(),
+    });
 
     expect(result.operation).toMatchObject({
       ok: false,
@@ -728,7 +1308,10 @@ describe("exclusive planned apply and revert", () => {
       },
     };
 
-    const result = await applyRevertMutationPlan(env, prepared.mutationPlan, { storeRoot });
+    const result = await applyRevertMutationPlan(env, prepared.mutationPlan, {
+      storeRoot,
+      options: { storeRoot, agents: ["claude-code"] },
+    });
 
     expect(result.operation).toMatchObject({
       ok: false,
@@ -747,11 +1330,12 @@ describe("exclusive planned apply and revert", () => {
   it("signs project gitignore as the final apply action and receipts it before revision commit", async () => {
     const projectDir = t.path("project");
     await t.env.fs.mkdir(projectDir, { recursive: true });
-    const prepared = await planApplyMutation(t.env, {
+    const projectOptions = {
       ...options(),
-      scope: "project",
+      scope: "project" as const,
       dir: projectDir,
-    });
+    };
+    const prepared = await planApplyMutation(t.env, projectOptions);
     const gitignorePath = t.path("project", ".gitignore");
 
     expect(prepared.mutationPlan.actions.at(-1)).toMatchObject({
@@ -768,7 +1352,10 @@ describe("exclusive planned apply and revert", () => {
       expected: { state: "absent" },
     });
 
-    const result = await applyMutationPlan(t.env, prepared.mutationPlan, { storeRoot });
+    const result = await applyMutationPlan(t.env, prepared.mutationPlan, {
+      storeRoot,
+      options: projectOptions,
+    });
 
     expect(result.operation).toMatchObject({
       ok: true,
@@ -784,11 +1371,12 @@ describe("exclusive planned apply and revert", () => {
     const projectDir = t.path("project");
     const gitignorePath = t.path("project", ".gitignore");
     await t.env.fs.mkdir(projectDir, { recursive: true });
-    const prepared = await planApplyMutation(t.env, {
+    const projectOptions = {
       ...options(),
-      scope: "project",
+      scope: "project" as const,
       dir: projectDir,
-    });
+    };
+    const prepared = await planApplyMutation(t.env, projectOptions);
     const env = {
       ...t.env,
       fs: {
@@ -804,7 +1392,10 @@ describe("exclusive planned apply and revert", () => {
       },
     };
 
-    const result = await applyMutationPlan(env, prepared.mutationPlan, { storeRoot });
+    const result = await applyMutationPlan(env, prepared.mutationPlan, {
+      storeRoot,
+      options: projectOptions,
+    });
 
     expect(result.operation).toMatchObject({
       ok: false,
@@ -823,11 +1414,12 @@ describe("exclusive planned apply and revert", () => {
     const gitignorePath = t.path("project", ".gitignore");
     const statePath = t.path("home", ".cellarer", "state.json");
     await t.env.fs.mkdir(projectDir, { recursive: true });
-    const prepared = await planApplyMutation(t.env, {
+    const projectOptions = {
       ...options(),
-      scope: "project",
+      scope: "project" as const,
       dir: projectDir,
-    });
+    };
+    const prepared = await planApplyMutation(t.env, projectOptions);
     const env = {
       ...t.env,
       fs: {
@@ -839,9 +1431,9 @@ describe("exclusive planned apply and revert", () => {
       },
     };
 
-    await expect(applyMutationPlan(env, prepared.mutationPlan, { storeRoot })).rejects.toThrow(
-      "crash-before-state-publication",
-    );
+    await expect(
+      applyMutationPlan(env, prepared.mutationPlan, { storeRoot, options: projectOptions }),
+    ).rejects.toThrow("crash-before-state-publication");
 
     await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(0);
     await expect(t.env.fs.readFile(gitignorePath)).resolves.toContain("/CLAUDE.md");
@@ -859,13 +1451,19 @@ describe("exclusive planned apply and revert", () => {
     const projectDir = t.path("project");
     const gitignorePath = t.path("project", ".gitignore");
     await t.env.fs.mkdir(projectDir, { recursive: true });
-    const applyPlan = await planApplyMutation(t.env, {
+    const projectOptions = {
       ...options(),
-      scope: "project",
+      scope: "project" as const,
       dir: projectDir,
-    });
+    };
+    const applyPlan = await planApplyMutation(t.env, projectOptions);
     expect(
-      (await applyMutationPlan(t.env, applyPlan.mutationPlan, { storeRoot })).operation.ok,
+      (
+        await applyMutationPlan(t.env, applyPlan.mutationPlan, {
+          storeRoot,
+          options: projectOptions,
+        })
+      ).operation.ok,
     ).toBe(true);
     const prepared = await planRevertMutation(t.env, {
       storeRoot,
@@ -894,7 +1492,15 @@ describe("exclusive planned apply and revert", () => {
       },
     };
 
-    const result = await applyRevertMutationPlan(env, prepared.mutationPlan, { storeRoot });
+    const result = await applyRevertMutationPlan(env, prepared.mutationPlan, {
+      storeRoot,
+      options: {
+        storeRoot,
+        scope: "project",
+        dir: projectDir,
+        agents: ["claude-code"],
+      },
+    });
 
     expect(result.operation).toMatchObject({
       ok: false,

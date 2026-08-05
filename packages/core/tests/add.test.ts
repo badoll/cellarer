@@ -37,23 +37,58 @@ describe("engine/add — local source import", () => {
     ).toContain("use tabs");
   });
 
+  it("fails closed when a regular source is replaced by a symlink between inspection and read", async () => {
+    const src = t.path("raced-rule.md");
+    const outside = t.path("outside-rule.md");
+    const target = t.path("home", ".cellarer", "store", "rules", "raced-rule.md");
+    await t.env.fs.writeFile(src, "# original");
+    await t.env.fs.writeFile(outside, "# replacement");
+    const snapshotFileNoFollow = t.env.fs.snapshotFileNoFollow;
+    let replaced = false;
+    const env: Env = {
+      ...t.env,
+      fs: {
+        ...t.env.fs,
+        snapshotFileNoFollow: async (path) => {
+          const snapshot = await snapshotFileNoFollow(path);
+          if (path === src && !replaced) {
+            replaced = true;
+            await t.env.fs.rm(src, { force: true });
+            await t.env.fs.symlink(outside, src, "file");
+          }
+          return snapshot;
+        },
+      },
+    };
+
+    const result = await add(env, { storeRoot, source: src });
+
+    expect(result.imported).toEqual([]);
+    expect(result.operation).toMatchObject({ ok: false, conflict: { code: "PARTIAL_FAILURE" } });
+    await expect(t.env.fs.lstat(target)).rejects.toThrow();
+  });
+
   it("advances revision and makes an older apply plan stale after a rules add", async () => {
-    const prepared = await planApplyMutation(t.env, {
+    const options = {
       storeRoot,
-      scope: "global",
+      scope: "global" as const,
       agents: ["claude-code"],
-      capabilities: ["rules"],
-    });
+      capabilities: ["rules" as const],
+    };
+    const prepared = await planApplyMutation(t.env, options);
     const src = t.path("revision-rule.md");
     await t.env.fs.writeFile(src, "# revision rule");
 
     const added = await add(t.env, { storeRoot, source: src });
-    const stale = await applyMutationPlan(t.env, prepared.mutationPlan, { storeRoot });
+    const stale = await applyMutationPlan(t.env, prepared.mutationPlan, {
+      storeRoot,
+      options,
+    });
 
     expect(added.operation).toMatchObject({ ok: true, receipt: { resultingRevision: 1 } });
     expect(stale.operation).toMatchObject({
       ok: false,
-      conflict: { code: "STALE_REVISION", expectedRevision: 0, actualRevision: 1 },
+      conflict: { code: "INVALID_PLAN" },
     });
   });
 
@@ -102,7 +137,7 @@ describe("engine/add — local source import", () => {
       imported: [],
       operation: {
         ok: false,
-        conflict: { code: "TARGET_PRECONDITION_CONFLICT", target: configPath },
+        conflict: { code: "TARGET_PRECONDITION_CONFLICT", target: "untrusted" },
       },
     });
     await expect(t.env.fs.readFile(configPath)).resolves.toBe(external);
@@ -209,20 +244,16 @@ describe("engine/add — local source import", () => {
       name: "wrong-skill",
       description: "Signed directory output",
     });
-    const target = t.path("home", ".cellarer", "store", "skills", "wrong-skill");
     const provenance = skillProvenancePath(storeRoot, "wrong-skill");
-    const cp = t.env.fs.cp;
+    const writeFileBytes = t.env.fs.writeFileBytes;
     const env: Env = {
       ...t.env,
       fs: {
         ...t.env.fs,
-        cp: async (source, destination, opts) => {
-          await cp(source, destination, opts);
-          if (destination === target) {
-            await t.env.fs.writeFile(
-              t.path("home", ".cellarer", "store", "skills", "wrong-skill", "SKILL.md"),
-              "wrong",
-            );
+        writeFileBytes: async (path, data, opts) => {
+          await writeFileBytes(path, data, opts);
+          if (path.includes(".wrong-skill.cellarer-snapshot-") && path.endsWith("SKILL.md")) {
+            await t.env.fs.writeFile(path, "wrong");
           }
         },
       },
@@ -236,7 +267,7 @@ describe("engine/add — local source import", () => {
       journal: {
         status: "recovery-required",
         actions: [
-          { status: "failed", receipt: { error: { code: "ACTION_POSTCONDITION_FAILED" } } },
+          { status: "failed", receipt: { error: { code: "ESTALE" } } },
           { status: "pending" },
         ],
       },
@@ -488,6 +519,20 @@ describe("engine/add — local source import", () => {
     ).rejects.toThrow();
   });
 
+  it("blocks a low-entropy active environment value before writing the Store", async () => {
+    const src = t.path("low-entropy.md");
+    const target = t.path("home", ".cellarer", "store", "rules", "low-entropy.md");
+    await t.env.fs.writeFile(src, "reference=$" + "{LOW_ENTROPY}\nactual=tiny\n");
+    const env: Env = { ...t.env, env: { LOW_ENTROPY: "tiny" } };
+
+    const result = await add(env, { storeRoot, source: src });
+
+    expect(result.imported).toEqual([]);
+    expect(result.rejected[0]?.reason).toMatch(/known secret value/i);
+    expect(JSON.stringify(result)).not.toContain("tiny");
+    await expect(t.env.fs.lstat(target)).rejects.toThrow();
+  });
+
   it("rejects a skill dir containing a plaintext secret in any file", async () => {
     await writeSkill(t, "bad-skill", {
       name: "bad-skill",
@@ -526,6 +571,45 @@ describe("engine/add — local source import", () => {
     expect(r.rejected[0]?.reason).toMatch(/mcp field/);
   });
 
+  it.each([
+    ["number", 17],
+    ["boolean", false],
+    ["null", null],
+    ["array", ["tiny"]],
+    ["object", { nested: "tiny" }],
+  ] as const)("17.1 rejects a raw MCP %s value after a secret flag before normalization", async (label, value) => {
+    const src = t.path(`raw-secret-flag-${label}.json`);
+    await t.env.fs.writeFile(
+      src,
+      JSON.stringify({ command: "mcp-server", args: ["--password", value] }),
+    );
+
+    const result = await add(t.env, { storeRoot, source: src });
+
+    expect(result.imported).toEqual([]);
+    expect(result.rejected[0]?.reason).toMatch(/structured mcp|command-secret-argument/i);
+    await expect(readOperationJournal(t.env, storeRoot)).resolves.toBeNull();
+    await expect(
+      t.env.fs.lstat(t.path("home", ".cellarer", "store", "mcp", `raw-secret-flag-${label}.json`)),
+    ).rejects.toThrow();
+  });
+
+  it.each([
+    ["reference", "tiny"],
+    ["references", ["${ENV_VAR}", "tiny"]],
+    ["secretRefs", { nested: "tiny" }],
+  ] as const)("17.1 rejects plaintext descendants in MCP %s before Store publication", async (field, value) => {
+    const src = t.path(`reference-shaped-${field}.json`);
+    await t.env.fs.writeFile(src, JSON.stringify({ command: "mcp-server", [field]: value }));
+
+    const result = await add(t.env, { storeRoot, source: src });
+
+    expect(result.imported).toEqual([]);
+    expect(result.rejected[0]?.reason).toMatch(/structured mcp|sensitive-field/i);
+    await expect(readOperationJournal(t.env, storeRoot)).resolves.toBeNull();
+    expect(JSON.stringify(result)).not.toContain("tiny");
+  });
+
   it("rejects a name-only secret nested in a custom mcp config", async () => {
     const src = t.path("custom.json");
     await t.env.fs.writeFile(
@@ -543,8 +627,116 @@ describe("engine/add — local source import", () => {
       src,
       JSON.stringify({ command: "npx", env: { API_KEY: "$" + "{CELLARER_SECRET:API_KEY}" } }),
     );
-    const r = await add(t.env, { storeRoot, source: src });
+    const env: Env = {
+      ...t.env,
+      secretStore: {
+        async get(_service, account) {
+          return account === "API_KEY" ? { found: true, value: "tiny" } : { found: false };
+        },
+        async set() {},
+        async delete() {
+          return false;
+        },
+      },
+    };
+    const r = await add(env, { storeRoot, source: src, secretMode: "keychain" });
     expect(r.imported[0]?.kind).toBe("mcp");
+  });
+
+  it("does not read a provider before a local MCP source passes JSON and structural validation", async () => {
+    const src = t.path("malformed.json");
+    await t.env.fs.writeFile(src, '{"command":"$' + '{CELLARER_SECRET:UNTRUSTED_MCP}",');
+    let reads = 0;
+    const env: Env = {
+      ...t.env,
+      secretStore: {
+        async get() {
+          reads += 1;
+          return { found: true, value: "tiny" };
+        },
+        async set() {},
+        async delete() {
+          return false;
+        },
+      },
+    };
+
+    await expect(add(env, { storeRoot, source: src, secretMode: "keychain" })).rejects.toThrow(
+      /invalid mcp source/i,
+    );
+    expect(reads).toBe(0);
+  });
+
+  it("keeps list, rejected, unselected, and existing Skill candidates provider-free", async () => {
+    await writeSkill(t, "repo/skills/selected", {
+      name: "selected",
+      description: "Selected $" + "{CELLARER_SECRET:SELECTED}",
+    });
+    await writeSkill(t, "repo/skills/unselected", {
+      name: "unselected",
+      description: "Unselected $" + "{CELLARER_SECRET:UNSELECTED}",
+    });
+    await t.env.fs.mkdir(t.path("repo", "skills", "rejected"), { recursive: true });
+    await t.env.fs.writeFile(
+      t.path("repo", "skills", "rejected", "SKILL.md"),
+      "missing frontmatter $" + "{CELLARER_SECRET:REJECTED}",
+    );
+    const reads: string[] = [];
+    const env: Env = {
+      ...t.env,
+      secretStore: {
+        async get(_service, account) {
+          reads.push(account);
+          return { found: true, value: "tiny" };
+        },
+        async set() {},
+        async delete() {
+          return false;
+        },
+      },
+    };
+
+    await add(env, { storeRoot, source: t.path("repo"), list: true, secretMode: "keychain" });
+    expect(reads).toEqual([]);
+
+    const selected = await add(env, {
+      storeRoot,
+      source: t.path("repo"),
+      skills: ["selected"],
+      secretMode: "keychain",
+    });
+    expect(selected.operation).toMatchObject({ ok: true });
+    expect(selected.imported).toEqual([expect.objectContaining({ name: "selected" })]);
+    expect(selected.rejected).toEqual([]);
+    expect(selected.skipped).toEqual([]);
+    expect(reads).toEqual(["SELECTED"]);
+
+    reads.length = 0;
+    const skipped = await add(env, {
+      storeRoot,
+      source: t.path("repo"),
+      skills: ["selected"],
+      secretMode: "keychain",
+    });
+    expect(skipped.skipped).toEqual([
+      expect.objectContaining({
+        name: "selected",
+        reason: expect.stringMatching(/already exists/),
+      }),
+    ]);
+    expect(reads).toEqual([]);
+  });
+
+  it("fails before Store or journal writes when an imported reference is unavailable", async () => {
+    const src = t.path("missing-reference.md");
+    const target = t.path("home", ".cellarer", "store", "rules", "missing-reference.md");
+    await t.env.fs.writeFile(src, "use ${CELLARER_SECRET:MISSING}\n");
+
+    await expect(add(t.env, { storeRoot, source: src })).rejects.toMatchObject({
+      code: "SECRET_PROVIDER_SCOPE_UNAVAILABLE",
+    });
+    await expect(t.env.fs.lstat(target)).rejects.toThrow();
+    await expect(readOperationJournal(t.env, storeRoot)).resolves.toBeNull();
   });
 
   it("rejects a skill dir containing a symlink", async () => {
@@ -560,6 +752,181 @@ describe("engine/add — local source import", () => {
     expect(r.rejected[0]?.reason).toMatch(/symlink/);
     await expect(
       t.env.fs.stat(t.path("home", ".cellarer", "store", "skills", "link-skill")),
+    ).rejects.toThrow();
+  });
+
+  it.each([
+    ["json", "nested/config.json", '{"outer":{"password":"tiny"}}\n'],
+    ["jsonc", "nested/config.jsonc", '{\n  // local only\n  "outer": { "token": "tiny" },\n}\n'],
+    ["yaml", "nested/config.yaml", "outer:\n  secret: tiny\n"],
+    ["toml", "nested/config.toml", '[outer]\npassword = "tiny"\n'],
+  ])("13.1 blocks low-entropy sensitive fields in nested Skill %s", async (_format, file, content) => {
+    await writeSkill(t, "structured-skill", {
+      name: "structured-skill",
+      description: "Structured guard fixture",
+    });
+    await t.env.fs.mkdir(t.path("structured-skill", "nested"), { recursive: true });
+    await t.env.fs.writeFile(t.path("structured-skill", ...file.split("/")), content);
+
+    const result = await add(t.env, { storeRoot, source: t.path("structured-skill") });
+
+    expect(result.imported).toEqual([]);
+    expect(result.rejected).toEqual([
+      expect.objectContaining({
+        kind: "skills",
+        name: "structured-skill",
+        reason: expect.stringMatching(/structured|sensitive-field/i),
+      }),
+    ]);
+    expect(JSON.stringify(result)).not.toContain("tiny");
+    await expect(
+      t.env.fs.lstat(t.path("home", ".cellarer", "store", "skills", "structured-skill")),
+    ).rejects.toThrow();
+  });
+
+  it("16.1 rejects the Skill shape matrix before Store or protocol publication", async () => {
+    await writeSkill(t, "shape-matrix", {
+      name: "shape-matrix",
+      description: "Sensitive field shape matrix",
+    });
+    await t.env.fs.writeFile(
+      t.path("shape-matrix", "config.json"),
+      JSON.stringify({
+        accessToken: ["tiny", 17, false, null, { nested: "tiny-object" }],
+        AccessToken: "tiny-pascal",
+        refreshToken: "tiny-refresh",
+      }),
+    );
+
+    const result = await add(t.env, { storeRoot, source: t.path("shape-matrix") });
+
+    expect(result.imported).toEqual([]);
+    expect(result.rejected[0]?.reason).toMatch(/structured|sensitive-field/i);
+    await expect(
+      t.env.fs.lstat(t.path("home", ".cellarer", "store", "skills", "shape-matrix")),
+    ).rejects.toThrow();
+    await expect(readOperationJournal(t.env, storeRoot)).resolves.toBeNull();
+    const observable = JSON.stringify(result);
+    for (const plaintext of ["tiny", "tiny-object", "tiny-pascal"]) {
+      expect(observable).not.toContain(plaintext);
+    }
+  });
+
+  it("14.1 fails a malformed multiline structured Skill import closed", async () => {
+    await writeSkill(t, "malformed-structured-skill", {
+      name: "malformed-structured-skill",
+      description: "Malformed structured guard fixture",
+    });
+    await t.env.fs.writeFile(
+      t.path("malformed-structured-skill", "config.yaml"),
+      'outer:\n  password: "unterminated\n  continuation\n',
+    );
+
+    const result = await add(t.env, {
+      storeRoot,
+      source: t.path("malformed-structured-skill"),
+    });
+
+    expect(result.imported).toEqual([]);
+    expect(result.rejected[0]?.reason).toMatch(/structured-parse-error/i);
+    await expect(
+      t.env.fs.lstat(t.path("home", ".cellarer", "store", "skills", "malformed-structured-skill")),
+    ).rejects.toThrow();
+  });
+
+  it.each([
+    ["rules", "portable.md", "# portable rule\n"],
+    ["mcp", "portable.json", '{"command":"npx"}\n'],
+  ])("14.1 keeps Windows single-file %s import on the portable snapshot path", async (_kind, file, content) => {
+    const src = t.path(file);
+    await t.env.fs.writeFile(src, content);
+    let recursiveCalls = 0;
+    const env: Env = {
+      ...t.env,
+      platform: "win32",
+      fs: {
+        ...t.env.fs,
+        snapshotTreeNoFollow: async (path) => {
+          recursiveCalls += 1;
+          throw Object.assign(new Error("recursive traversal unsupported"), {
+            code: "CELLARER_SNAPSHOT_UNSUPPORTED",
+            path,
+          });
+        },
+      },
+    };
+
+    const result = await add(env, { storeRoot, source: src });
+
+    expect(result.imported).toHaveLength(1);
+    expect(result.rejected).toEqual([]);
+    expect(recursiveCalls).toBe(0);
+  });
+
+  it("14.4 rejects an unsupported recursive Skill before reading directory content", async () => {
+    await writeSkill(t, "unsupported-recursive", {
+      name: "unsupported-recursive",
+      description: "Must fail before traversal",
+    });
+    const source = t.path("unsupported-recursive");
+    const calls = { readdir: 0, readFile: 0, snapshot: 0 };
+    const env: Env = {
+      ...t.env,
+      platform: "win32",
+      fs: {
+        ...t.env.fs,
+        supportsSafeRecursiveSnapshots: () => false,
+        readdir: async (path) => {
+          if (path.startsWith(source)) calls.readdir += 1;
+          return t.env.fs.readdir(path);
+        },
+        readFile: async (path) => {
+          if (path.startsWith(source)) calls.readFile += 1;
+          return t.env.fs.readFile(path);
+        },
+        snapshotTreeNoFollow: async (path) => {
+          if (path.startsWith(source)) calls.snapshot += 1;
+          return t.env.fs.snapshotTreeNoFollow(path);
+        },
+      },
+    };
+
+    await expect(add(env, { storeRoot, source })).rejects.toMatchObject({
+      code: "UNSAFE_RECURSIVE_SOURCE",
+      reason: "unsupported",
+    });
+    expect(calls).toEqual({ readdir: 0, readFile: 0, snapshot: 0 });
+  });
+
+  it("fails closed when a nested Skill file becomes unreadable", async () => {
+    await writeSkill(t, "unreadable-skill", {
+      name: "unreadable-skill",
+      description: "Unreadable skill",
+    });
+    const nested = t.path("unreadable-skill", "nested.txt");
+    await t.env.fs.writeFile(nested, "safe");
+    const snapshotTreeNoFollow = t.env.fs.snapshotTreeNoFollow;
+    const env: Env = {
+      ...t.env,
+      fs: {
+        ...t.env.fs,
+        snapshotTreeNoFollow: async (path) => {
+          if (path === t.path("unreadable-skill")) {
+            throw Object.assign(new Error("raw secret-bearing error"), {
+              code: "EACCES",
+              path: nested,
+            });
+          }
+          return snapshotTreeNoFollow(path);
+        },
+      },
+    };
+
+    const result = await add(env, { storeRoot, source: t.path("unreadable-skill") });
+    expect(result.imported).toEqual([]);
+    expect(result.rejected[0]?.reason).toMatch(/unreadable/);
+    await expect(
+      t.env.fs.lstat(t.path("home", ".cellarer", "store", "skills", "unreadable-skill")),
     ).rejects.toThrow();
   });
 

@@ -42,7 +42,30 @@ const defaultsSchema = z
   .strict();
 
 const collectionSchema = z.object({ description: z.string().optional() }).strict();
-const artifactSchema = z.object({ collections: z.array(z.string()).default([]) }).strict();
+const secretPatternSuppressionSchema = z
+  .object({
+    source: z
+      .string()
+      .min(1)
+      .refine(
+        (value) =>
+          !value.startsWith("/") &&
+          !value.includes("\\") &&
+          value
+            .split("/")
+            .every((segment) => segment.length > 0 && segment !== "." && segment !== ".."),
+        "source must be a normalized store-relative file path",
+      ),
+    rule: z.string().min(1),
+    patternVersion: z.number().int().positive(),
+  })
+  .strict();
+const artifactSchema = z
+  .object({
+    collections: z.array(z.string()).default([]),
+    secretPatternSuppressions: z.array(secretPatternSuppressionSchema).optional(),
+  })
+  .strict();
 const agentMcpSchema = z.object({ mergeStrategy: mergeStrategySchema.optional() }).strict();
 const agentSchema = z
   .object({
@@ -92,6 +115,7 @@ const adapterFields = {
       format: z.enum(["json", "toml"]).optional(),
       serversKey: z.string().optional(),
       mergeStrategy: mergeStrategySchema.optional(),
+      supportedSecretReferences: z.array(z.enum(["environment", "cellarer"])).optional(),
       dialect: dialectSchema.optional(),
     })
     .optional(),
@@ -101,9 +125,14 @@ const adapterFields = {
 
 const adapterPatchSchema = z.object(adapterFields).strict();
 
-const adapterBodySchema = adapterPatchSchema.refine((d) => d.rules || d.mcp || d.skills, {
-  message: "adapter must declare at least one of rules/mcp/skills",
-});
+const adapterBodySchema = adapterPatchSchema
+  .refine((d) => d.rules || d.mcp || d.skills, {
+    message: "adapter must declare at least one of rules/mcp/skills",
+  })
+  .refine((d) => !d.mcp || d.mcp.supportedSecretReferences !== undefined, {
+    message: "mcp adapter must declare supportedSecretReferences",
+    path: ["mcp", "supportedSecretReferences"],
+  });
 
 const baseConfigShape = {
   version: z.literal(1).default(1),
@@ -184,6 +213,16 @@ export function parseAdapterPatchConfig(adapter: unknown): AdapterPatchConfig {
   return adapterPatchSchema.parse(adapter);
 }
 
+function adapterSupportedSecretReferences(
+  id: string,
+  mcp: AdapterBodyConfig["mcp"],
+): ("environment" | "cellarer")[] {
+  if (!mcp?.supportedSecretReferences) {
+    throw new Error(`mcp adapter "${id}" must declare supportedSecretReferences`);
+  }
+  return mcp.supportedSecretReferences;
+}
+
 function adapterToSpec(id: string, a: AdapterBodyConfig): AgentSpec {
   return {
     id,
@@ -193,6 +232,7 @@ function adapterToSpec(id: string, a: AdapterBodyConfig): AgentSpec {
     mcp: a.mcp
       ? {
           ...a.mcp,
+          supportedSecretReferences: adapterSupportedSecretReferences(id, a.mcp),
           dialect: a.mcp.dialect as McpDialect | undefined,
         }
       : undefined,

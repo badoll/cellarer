@@ -27,6 +27,7 @@ export interface AgentSpec {
     format?: "json" | "toml";
     serversKey?: string;
     mergeStrategy?: MergeStrategy;
+    supportedSecretReferences: ("environment" | "cellarer")[];
     // 字段方言(opencode command[]/environment、windsurf serverUrl);缺省 standard。
     dialect?: McpDialect;
   };
@@ -82,6 +83,7 @@ function buildMcp(spec: AgentSpec): AdapterMcp | undefined {
     codec: mcpCodecFor(format, spec.mcp.dialect),
     serversKey: spec.mcp.serversKey ?? (format === "toml" ? "mcp_servers" : "mcpServers"),
     defaultStrategy: spec.mcp.mergeStrategy ?? "merge",
+    supportedSecretReferences: spec.mcp.supportedSecretReferences,
   };
 }
 

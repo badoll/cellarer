@@ -5,7 +5,7 @@ import {
   executeStorePublicationMutation,
   unwrapStorePublicationMutation,
 } from "./protocol/store-mutation.js";
-import type { SecretMode } from "./secrets/resolver.js";
+import type { SecretMode } from "./secrets/types.js";
 import {
   type AdapterBodyConfig,
   type AdapterPatchConfig,

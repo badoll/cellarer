@@ -3,9 +3,7 @@
 //   ${ENV_VAR}                —— 下发默认(metamcp 风格),真值留环境变量,不落盘。
 //   ${CELLARER_SECRET:<name>} —— 库房内引用,真值存 vault/keychain,绝不入库。
 import { detectSecret, isPlaceholderValue } from "./detector.js";
-
-const SECRET_REF_RE = /^\$\{CELLARER_SECRET:([^}]+)\}$/;
-const ENV_REF_RE = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
+import { parseSecretReference } from "./reference.js";
 
 export type SecretRefKind = "env" | "vault";
 
@@ -24,12 +22,12 @@ export function secretPlaceholder(name: string): string {
 
 // 解析整值占位符;非占位符返回 null(整值匹配,避免对内嵌子串误判,metamcp 风格)。
 export function parseSecretRef(value: string): SecretRef | null {
-  const v = value.trim();
-  const sec = SECRET_REF_RE.exec(v);
-  if (sec) return { kind: "vault", name: sec[1] as string };
-  const env = ENV_REF_RE.exec(v);
-  if (env) return { kind: "env", name: env[1] as string };
-  return null;
+  const reference = parseSecretReference(value);
+  if (!reference) return null;
+  return {
+    kind: reference.kind === "environment" ? "env" : "vault",
+    name: reference.name,
+  };
 }
 
 export interface RedactResult {

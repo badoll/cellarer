@@ -2,19 +2,17 @@
 // 安全约束:解析只在「必须明文」的 agent 落地路径上发生;默认下发保留 ${ENV_VAR} 不解析(零落盘)。
 // 日志/错误绝不回显真值(用 [REDACTED] / 引用名)。
 import type { Env } from "../env.js";
+import { getKeychainSecret } from "./keychain-provider.js";
+import { createSecretValue, type SecretValue } from "./observable.js";
 import { parseSecretRef, type SecretRef } from "./redactor.js";
+import type { SecretMode } from "./types.js";
 import { loadVault } from "./vault.js";
-
-export type SecretMode = "env" | "vault" | "keychain";
 
 // 解析所需的密钥来源(按 mode 注入,避免下发期总是要口令)。
 export interface SecretSources {
   mode: SecretMode;
   // vault 模式:解密口令(经此注入,不从 process.env 直读)。
   vaultPassphrase?: string;
-  // 预加载的 vault 明文(name → 真值);批量解析时由调用方解密一次后透传,
-  // 避免「每字段/每 agent 重复 scrypt 解密同一文件」。提供后忽略 vaultPassphrase。
-  vaultData?: Record<string, string>;
   // keychain 服务名(SecretStore.get 的 service 参数)。
   keychainService?: string;
 }
@@ -22,7 +20,7 @@ export interface SecretSources {
 // 解析结果:成功带真值;失败带原因(供护栏/CLI 决策,绝不含真值)。
 export interface ResolveOutcome {
   resolved: boolean;
-  value?: string;
+  value?: SecretValue;
   reason?: string;
 }
 
@@ -37,14 +35,14 @@ export async function resolveSecretValue(
   sources: SecretSources,
 ): Promise<ResolveOutcome> {
   const ref = parseSecretRef(value);
-  if (!ref) return { resolved: true, value }; // 非占位符,原样
+  if (!ref) return { resolved: true, value: createSecretValue(value) };
 
   if (ref.kind === "env") {
     const real = env.env[ref.name];
     if (real === undefined || real.length === 0) {
       return { resolved: false, reason: `env var "${ref.name}" not set` };
     }
-    return { resolved: true, value: real };
+    return { resolved: true, value: createSecretValue(real) };
   }
 
   // vault 引用:按 mode 决定来源。
@@ -62,10 +60,11 @@ async function resolveVaultRef(
       return { resolved: false, reason: "keychain unavailable (no SecretStore injected)" };
     }
     const service = sources.keychainService ?? "cellarer";
-    const got = await env.secretStore.get(service, ref.name);
-    // 判别式三态:错误(锁定/瞬态故障)与「无此条目」给出不同 reason,便于诊断(reason 不含真值)。
-    if ("error" in got) {
-      return { resolved: false, reason: `keychain error for "${ref.name}": ${got.error}` };
+    let got: Awaited<ReturnType<typeof getKeychainSecret>>;
+    try {
+      got = await getKeychainSecret(env.secretStore, service, ref.name);
+    } catch {
+      return { resolved: false, reason: `keychain provider unavailable for "${ref.name}"` };
     }
     if (!got.found) {
       return { resolved: false, reason: `keychain has no entry for "${ref.name}"` };
@@ -74,11 +73,9 @@ async function resolveVaultRef(
   }
 
   // 默认走 vault(mode env 也允许显式 vault 引用解密)。
-  // 优先用预加载的 vaultData(解密一次复用);否则按口令现解(单值场景)。
+  // 每个 operation 的调用方在更外层 provider scope 中负责去重加载。
   let vault: Record<string, string>;
-  if (sources.vaultData) {
-    vault = sources.vaultData;
-  } else if (sources.vaultPassphrase) {
+  if (sources.vaultPassphrase) {
     vault = await loadVault(env, storeRoot, sources.vaultPassphrase);
   } else {
     return { resolved: false, reason: "vault passphrase not provided" };
@@ -86,7 +83,7 @@ async function resolveVaultRef(
   const real = vault[ref.name];
   if (real === undefined)
     return { resolved: false, reason: `vault has no entry for "${ref.name}"` };
-  return { resolved: true, value: real };
+  return { resolved: true, value: createSecretValue(real) };
 }
 
 // 批量解析一组字段(mcp 的 env/headers)。任一解析失败 → unresolved 收集,调用方决定降级或中止。
@@ -95,8 +92,11 @@ export async function resolveFields(
   storeRoot: string,
   fields: Record<string, string>,
   sources: SecretSources,
-): Promise<{ resolved: Record<string, string>; unresolved: { field: string; reason: string }[] }> {
-  const resolved: Record<string, string> = {};
+): Promise<{
+  resolved: Record<string, string | SecretValue>;
+  unresolved: { field: string; reason: string }[];
+}> {
+  const resolved: Record<string, string | SecretValue> = {};
   const unresolved: { field: string; reason: string }[] = [];
   for (const [field, value] of Object.entries(fields)) {
     const outcome = await resolveSecretValue(env, storeRoot, value, sources);

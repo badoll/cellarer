@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { activityPath } from "../src/activity.js";
 import { applyScan, scanPlan } from "../src/engine/scan.js";
 import type { Env } from "../src/env.js";
 import { readOperationJournal } from "../src/protocol/journal.js";
 import { readStoreRevision } from "../src/protocol/store-revision.js";
+import { observableKnownValues, serializeObservable } from "../src/secrets/observable.js";
+import { initialConfigText, parseConfig } from "../src/store/config.js";
 import {
   listMcpArtifacts,
   listRuleArtifacts,
@@ -38,6 +41,27 @@ describe("engine/scan — rules", () => {
     expect(r.imported.map((i) => i.kind)).toContain("rules");
     const rules = await listRuleArtifacts(t.env, storeRoot);
     expect(rules.map((a) => a.name)).toContain("claude-code");
+  });
+
+  it("rejects a top-level Rules symlink without reading or writing through it", async () => {
+    const storeRoot = await emptyStore(t);
+    const source = t.path("home", ".claude", "CLAUDE.md");
+    const outside = t.path("outside-rules.md");
+    const target = t.path("home", ".cellarer", "store", "rules", "claude-code.md");
+    await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
+    await t.env.fs.writeFile(outside, "# outside");
+    await t.env.fs.symlink(outside, source, "file");
+
+    const result = await applyScan(t.env, {
+      storeRoot,
+      agent: "claude-code",
+      scope: "global",
+      capabilities: ["rules"],
+    });
+
+    expect(result.imported).toEqual([]);
+    expect(result.plan.warnings.join("\n")).toMatch(/unsafe|symbolic-link|symlink/i);
+    await expect(t.env.fs.lstat(target)).rejects.toThrow();
   });
 
   it("rejects silently wrong scan output and retains signed recovery evidence", async () => {
@@ -106,13 +130,169 @@ describe("engine/scan — rules", () => {
       t.path("home", ".claude", "CLAUDE.md"),
       `# Rules\nexport GITHUB_TOKEN=${REAL_TOKEN}\n`,
     );
-    const r = await applyScan(t.env, { storeRoot, agent: "claude-code", scope: "global" });
+    const env: Env = {
+      ...t.env,
+      secretStore: {
+        async get() {
+          return { found: true, value: REAL_TOKEN };
+        },
+        async set() {},
+        async delete() {
+          return false;
+        },
+      },
+    };
+    const r = await applyScan(env, {
+      storeRoot,
+      agent: "claude-code",
+      scope: "global",
+      secretMode: "keychain",
+    });
     // 自由文本无法自动脱敏 → 拒绝入库 + 告警。
     expect(r.imported.find((i) => i.kind === "rules")).toBeUndefined();
     expect(r.plan.warnings.some((w) => w.includes("secret-scan"))).toBe(true);
     // 库房没有该制品(零明文)。
     const rules = await listRuleArtifacts(t.env, storeRoot);
     expect(rules.map((a) => a.name)).not.toContain("claude-code");
+  });
+
+  it("queries only an active keychain reference and blocks its low-entropy value", async () => {
+    const storeRoot = await emptyStore(t);
+    const config = parseConfig(await initialConfigText(t.env));
+    config.defaults.secretMode = "keychain";
+    await t.env.fs.writeFile(
+      t.path("home", ".cellarer", "config.json"),
+      `${JSON.stringify(config, null, 2)}\n`,
+    );
+    await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
+    await t.env.fs.writeFile(
+      t.path("home", ".claude", "CLAUDE.md"),
+      "reference=$" + "{CELLARER_SECRET:ACTIVE}\nactual=tiny\n",
+    );
+    const gets: string[] = [];
+    const env: Env = {
+      ...t.env,
+      secretStore: {
+        get: async (service, account) => {
+          gets.push(`${service}/${account}`);
+          return account === "ACTIVE" ? { found: true, value: "tiny" } : { found: false };
+        },
+        set: async () => {},
+        delete: async () => false,
+      },
+    };
+
+    const result = await applyScan(env, {
+      storeRoot,
+      agent: "claude-code",
+      scope: "global",
+      capabilities: ["rules"],
+    });
+
+    expect(gets).toEqual(["cellarer/ACTIVE"]);
+    expect(result.imported).toEqual([]);
+    expect(result.plan.warnings.join("\n")).toMatch(/known secret value/i);
+    expect(JSON.stringify(result)).not.toContain("tiny");
+    await expect(
+      t.env.fs.lstat(t.path("home", ".cellarer", "store", "rules", "claude-code.md")),
+    ).rejects.toThrow();
+  });
+
+  it("keeps one provider scope through scan afterCommit warnings", async () => {
+    const storeRoot = await emptyStore(t);
+    await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
+    await t.env.fs.writeFile(
+      t.path("home", ".claude", "CLAUDE.md"),
+      "token=$" + "{CELLARER_SECRET:ACTIVE}\n",
+    );
+    let gets = 0;
+    const appendFile = t.env.fs.appendFile;
+    const env: Env = {
+      ...t.env,
+      secretStore: {
+        async get() {
+          gets += 1;
+          return { found: true, value: "tiny" };
+        },
+        async set() {},
+        async delete() {
+          return false;
+        },
+      },
+      fs: {
+        ...t.env.fs,
+        appendFile: async (path, data) => {
+          if (path === activityPath(storeRoot)) throw new Error("scan activity failed around tiny");
+          await appendFile(path, data);
+        },
+      },
+    };
+
+    const result = await applyScan(env, {
+      storeRoot,
+      agent: "claude-code",
+      scope: "global",
+      capabilities: ["rules"],
+      secretMode: "keychain",
+    });
+
+    expect(result.imported).toEqual([expect.objectContaining({ kind: "rules" })]);
+    expect(gets).toBe(1);
+    expect(result.plan.warnings.join("\n")).toContain("tiny");
+    expect(
+      serializeObservable("cli", result, { knownValues: observableKnownValues(result) }),
+    ).not.toContain("tiny");
+  });
+
+  it("deduplicates concurrent reads of one rotating provider token within a scan", async () => {
+    const storeRoot = await emptyStore(t);
+    await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
+    await t.env.fs.writeFile(
+      t.path("home", ".claude", "CLAUDE.md"),
+      "rules=$" + "{CELLARER_SECRET:SHARED}",
+    );
+    await t.env.fs.writeFile(
+      t.path("home", ".claude", "mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          shared: {
+            command: "npx",
+            env: { TOKEN: "$" + "{CELLARER_SECRET:SHARED}" },
+          },
+        },
+      }),
+    );
+    let reads = 0;
+    const env: Env = {
+      ...t.env,
+      secretStore: {
+        async get() {
+          reads += 1;
+          await Promise.resolve();
+          return { found: true, value: reads === 1 ? "tiny" : `rotated-${reads}` };
+        },
+        async set() {},
+        async delete() {
+          return false;
+        },
+      },
+    };
+
+    const result = await scanPlan(env, {
+      storeRoot,
+      agent: "claude-code",
+      scope: "global",
+      capabilities: ["rules", "mcp"],
+      secretMode: "keychain",
+    });
+
+    expect(result.items.filter((item) => item.action === "import")).toHaveLength(2);
+    expect(reads).toBe(1);
+    expect(
+      serializeObservable("cli", new Error("tiny rotated-2"), {
+        knownValues: observableKnownValues(result),
+      }),
+    ).toContain("rotated-2");
   });
 });
 
@@ -134,7 +314,24 @@ describe("engine/scan — mcp secret redaction (red line)", () => {
         mcpServers: { ctx: { command: "npx", env: { API_KEY: REAL_TOKEN } } },
       }),
     );
-    const r = await applyScan(t.env, { storeRoot, agent: "claude-code", scope: "global" });
+    const env: Env = {
+      ...t.env,
+      secretStore: {
+        async get() {
+          return { found: true, value: REAL_TOKEN };
+        },
+        async set() {},
+        async delete() {
+          return false;
+        },
+      },
+    };
+    const r = await applyScan(env, {
+      storeRoot,
+      agent: "claude-code",
+      scope: "global",
+      secretMode: "keychain",
+    });
     expect(r.imported.find((i) => i.kind === "mcp")?.name).toBe("ctx");
     // 落盘断言:库房 mcp 制品文件绝无明文真值。
     const storeFile = await t.env.fs.readFile(
@@ -151,6 +348,24 @@ describe("engine/scan — mcp secret redaction (red line)", () => {
     const item = r.imported.find((i) => i.kind === "mcp");
     expect(item?.secretRefs?.length).toBeGreaterThan(0);
     expect(JSON.stringify(r.plan)).not.toContain(REAL_TOKEN);
+  });
+
+  it("fails before Store or journal writes when a generated reference has no provider entry", async () => {
+    const storeRoot = await emptyStore(t);
+    const target = t.path("home", ".cellarer", "store", "mcp", "ctx.json");
+    await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
+    await t.env.fs.writeFile(
+      t.path("home", ".claude", "mcp.json"),
+      JSON.stringify({
+        mcpServers: { ctx: { command: "npx", env: { API_KEY: REAL_TOKEN } } },
+      }),
+    );
+
+    await expect(
+      applyScan(t.env, { storeRoot, agent: "claude-code", scope: "global" }),
+    ).rejects.toMatchObject({ code: "SECRET_PROVIDER_SCOPE_UNAVAILABLE" });
+    await expect(t.env.fs.lstat(target)).rejects.toThrow();
+    await expect(readOperationJournal(t.env, storeRoot)).resolves.toBeNull();
   });
 
   it("imports codex TOML mcp servers (decode via adapter codec)", async () => {
@@ -171,7 +386,7 @@ describe("engine/scan — mcp secret redaction (red line)", () => {
     expect(mcp.map((a) => a.name)).toContain("gh");
   });
 
-  it("redacts a secret passed via args (not just env/headers)", async () => {
+  it("blocks a raw plaintext secret passed after an args flag before provider or protocol access", async () => {
     const storeRoot = await emptyStore(t);
     await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
     await t.env.fs.writeFile(
@@ -180,17 +395,35 @@ describe("engine/scan — mcp secret redaction (red line)", () => {
         mcpServers: { s: { command: "npx", args: ["mcp", "--token", REAL_TOKEN] } },
       }),
     );
-    await applyScan(t.env, {
+    let providerReads = 0;
+    const env: Env = {
+      ...t.env,
+      secretStore: {
+        async get() {
+          providerReads += 1;
+          return { found: true, value: REAL_TOKEN };
+        },
+        async set() {},
+        async delete() {
+          return false;
+        },
+      },
+    };
+    const result = await applyScan(env, {
       storeRoot,
       agent: "claude-code",
       scope: "global",
       capabilities: ["mcp"],
+      secretMode: "keychain",
     });
-    const storeFile = await t.env.fs.readFile(
-      t.path("home", ".cellarer", "store", "mcp", "s.json"),
-    );
-    expect(storeFile).not.toContain(REAL_TOKEN); // args 里的真值已脱敏
-    expect(storeFile).toContain("${CELLARER_SECRET:");
+    expect(result.imported).toEqual([]);
+    expect(result.plan.warnings.join("\n")).toMatch(/raw structured mcp source/i);
+    expect(JSON.stringify(result)).not.toContain(REAL_TOKEN);
+    expect(providerReads).toBe(0);
+    await expect(
+      t.env.fs.lstat(t.path("home", ".cellarer", "store", "mcp", "s.json")),
+    ).rejects.toThrow();
+    await expect(readOperationJournal(t.env, storeRoot)).resolves.toBeNull();
   });
 
   it("refuses to import a custom-kind server whose config embeds a plaintext secret", async () => {
@@ -211,6 +444,132 @@ describe("engine/scan — mcp secret redaction (red line)", () => {
     expect(r.plan.warnings.some((w) => w.includes("secret-scan"))).toBe(true);
     const mcp = await listMcpArtifacts(t.env, storeRoot);
     expect(mcp.map((a) => a.name)).not.toContain("weird");
+  });
+
+  it("15.1 blocks low-entropy MCP source before durable-plan or journal publication", async () => {
+    const storeRoot = await emptyStore(t);
+    const source = t.path("home", ".claude", "mcp.json");
+    await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
+    await t.env.fs.writeFile(
+      source,
+      JSON.stringify({ mcpServers: { weird: { extension: { token: "tiny" } } } }),
+    );
+    let journalPublications = 0;
+    const publishFileAtomically = t.env.fs.publishFileAtomically;
+    const env: Env = {
+      ...t.env,
+      fs: {
+        ...t.env.fs,
+        publishFileAtomically: async (path, data, options) => {
+          if (path.endsWith("operations/active.json")) journalPublications += 1;
+          return publishFileAtomically(path, data, options);
+        },
+      },
+    };
+
+    const result = await applyScan(env, {
+      storeRoot,
+      agent: "claude-code",
+      scope: "global",
+      capabilities: ["mcp"],
+    });
+
+    expect(result.imported).toEqual([]);
+    expect(result.plan.warnings.join("\n")).toMatch(/structured|sensitive-field/i);
+    expect(journalPublications).toBe(0);
+    await expect(readOperationJournal(t.env, storeRoot)).resolves.toBeNull();
+    expect(JSON.stringify(result)).not.toContain("tiny");
+  });
+
+  it("16.1 blocks the MCP shape matrix before durable-plan or journal publication", async () => {
+    const storeRoot = await emptyStore(t);
+    const source = t.path("home", ".claude", "mcp.json");
+    await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
+    await t.env.fs.writeFile(
+      source,
+      JSON.stringify({
+        mcpServers: {
+          shaped: {
+            extension: {
+              accessToken: ["tiny", 17, false, null, { nested: "tiny-object" }],
+              AccessToken: "tiny-pascal",
+              refreshToken: "tiny-refresh",
+            },
+          },
+        },
+      }),
+    );
+    let journalPublications = 0;
+    const publishFileAtomically = t.env.fs.publishFileAtomically;
+    const env: Env = {
+      ...t.env,
+      fs: {
+        ...t.env.fs,
+        publishFileAtomically: async (path, data, options) => {
+          if (path.endsWith("operations/active.json")) journalPublications += 1;
+          return publishFileAtomically(path, data, options);
+        },
+      },
+    };
+
+    const result = await applyScan(env, {
+      storeRoot,
+      agent: "claude-code",
+      scope: "global",
+      capabilities: ["mcp"],
+    });
+
+    expect(result.imported).toEqual([]);
+    expect(result.plan.warnings.join("\n")).toMatch(/structured|sensitive-field/i);
+    expect(journalPublications).toBe(0);
+    await expect(readOperationJournal(t.env, storeRoot)).resolves.toBeNull();
+    const observable = JSON.stringify(result);
+    for (const plaintext of ["tiny", "tiny-object", "tiny-pascal"]) {
+      expect(observable).not.toContain(plaintext);
+    }
+  });
+
+  it.each([
+    ["number", 17],
+    ["boolean", false],
+    ["null", null],
+    ["array", ["tiny"]],
+    ["object", { nested: "tiny" }],
+  ] as const)("17.1 blocks a raw MCP %s after a secret flag before decode or journal publication", async (_label, value) => {
+    const storeRoot = await emptyStore(t);
+    const source = t.path("home", ".claude", "mcp.json");
+    await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
+    await t.env.fs.writeFile(
+      source,
+      JSON.stringify({ mcpServers: { shaped: { command: "mcp", args: ["--password", value] } } }),
+    );
+    let journalPublications = 0;
+    const publishFileAtomically = t.env.fs.publishFileAtomically;
+    const env: Env = {
+      ...t.env,
+      fs: {
+        ...t.env.fs,
+        publishFileAtomically: async (path, data, options) => {
+          if (path.endsWith("operations/active.json")) journalPublications += 1;
+          return publishFileAtomically(path, data, options);
+        },
+      },
+    };
+
+    const result = await applyScan(env, {
+      storeRoot,
+      agent: "claude-code",
+      scope: "global",
+      capabilities: ["mcp"],
+    });
+
+    expect(result.imported).toEqual([]);
+    expect(result.plan.warnings.join("\n")).toMatch(
+      /raw structured mcp source.*command-secret-argument/i,
+    );
+    expect(journalPublications).toBe(0);
+    await expect(readOperationJournal(t.env, storeRoot)).resolves.toBeNull();
+    expect(JSON.stringify(result)).not.toContain("tiny");
   });
 
   it("--into-collection tags imported artifacts in config.json", async () => {
@@ -257,7 +616,7 @@ describe("engine/scan — mcp secret redaction (red line)", () => {
       imported: [],
       operation: {
         ok: false,
-        conflict: { code: "TARGET_PRECONDITION_CONFLICT", target: configPath },
+        conflict: { code: "TARGET_PRECONDITION_CONFLICT", target: "untrusted" },
       },
     });
     await expect(t.env.fs.readFile(configPath)).resolves.toBe(external);
@@ -324,6 +683,72 @@ describe("engine/scan — skills", () => {
       ),
     ).toBe("# Real");
   });
+
+  it("refuses a scanned Skill whose nested tree contains plaintext", async () => {
+    const storeRoot = await emptyStore(t);
+    const source = t.path("home", ".claude", "skills", "leaky");
+    await t.env.fs.mkdir(source, { recursive: true });
+    await t.env.fs.writeFile(`${source}/SKILL.md`, "# Leaky");
+    await t.env.fs.writeFile(`${source}/nested.txt`, REAL_TOKEN);
+
+    const result = await applyScan(t.env, {
+      storeRoot,
+      agent: "claude-code",
+      scope: "global",
+      capabilities: ["skills"],
+    });
+
+    expect(result.imported).toEqual([]);
+    expect(result.plan.warnings.join("\n")).toMatch(/secret-scan/);
+    await expect(
+      t.env.fs.lstat(t.path("home", ".cellarer", "store", "skills", "leaky")),
+    ).rejects.toThrow();
+  });
+
+  it.each([
+    ["json", "config.json", '{"outer":{"password":"tiny"}}\n'],
+    ["jsonc", "config.jsonc", '{\n  // local only\n  "outer": { "token": "tiny" },\n}\n'],
+    ["yaml", "config.yaml", "outer:\n  secret: tiny\n"],
+    ["toml", "config.toml", '[outer]\npassword = "tiny"\n'],
+  ])("13.1 refuses low-entropy sensitive fields in scanned Skill %s", async (_format, file, content) => {
+    const storeRoot = await emptyStore(t);
+    const source = t.path("home", ".claude", "skills", "structured");
+    await t.env.fs.mkdir(source, { recursive: true });
+    await t.env.fs.writeFile(`${source}/SKILL.md`, "# Structured\n");
+    await t.env.fs.writeFile(`${source}/${file}`, content);
+
+    const result = await applyScan(t.env, {
+      storeRoot,
+      agent: "claude-code",
+      scope: "global",
+      capabilities: ["skills"],
+    });
+
+    expect(result.imported).toEqual([]);
+    expect(result.plan.warnings.join("\n")).toMatch(/structured|sensitive-field/i);
+    expect(JSON.stringify(result)).not.toContain("tiny");
+    await expect(
+      t.env.fs.lstat(t.path("home", ".cellarer", "store", "skills", "structured")),
+    ).rejects.toThrow();
+  });
+
+  it("fails closed instead of importing a scanned Skill with a nested symlink", async () => {
+    const storeRoot = await emptyStore(t);
+    const source = t.path("home", ".claude", "skills", "linked");
+    await t.env.fs.mkdir(source, { recursive: true });
+    await t.env.fs.writeFile(`${source}/SKILL.md`, "# Linked");
+    await t.env.fs.symlink(t.path("outside"), `${source}/nested-link`, "file");
+
+    const result = await applyScan(t.env, {
+      storeRoot,
+      agent: "claude-code",
+      scope: "global",
+      capabilities: ["skills"],
+    });
+
+    expect(result.imported).toEqual([]);
+    expect(result.plan.warnings.join("\n")).toMatch(/symbolic-link/);
+  });
 });
 
 describe("engine/scan — conflict strategy + non-interactive", () => {
@@ -361,6 +786,46 @@ describe("engine/scan — conflict strategy + non-interactive", () => {
     expect(r.imported).toHaveLength(0);
     const { server } = await readMcpArtifact(t.env, storeRoot, "mcp/dup");
     if (server.kind === "stdio") expect(server.command).toBe("old-cmd"); // 库房未被覆盖
+  });
+
+  it("does not read a provider for a conflict-skipped MCP candidate", async () => {
+    const storeRoot = await seedAgentMcp(t);
+    await t.env.fs.writeFile(
+      t.path("home", ".claude", "mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          dup: { command: "new-cmd", env: { TOKEN: "$" + "{CELLARER_SECRET:SKIPPED}" } },
+        },
+      }),
+    );
+    let reads = 0;
+    const env: Env = {
+      ...t.env,
+      secretStore: {
+        async get() {
+          reads += 1;
+          return { found: true, value: "must-not-be-read" };
+        },
+        async set() {},
+        async delete() {
+          return false;
+        },
+      },
+    };
+
+    const result = await scanPlan(env, {
+      storeRoot,
+      agent: "claude-code",
+      scope: "global",
+      capabilities: ["mcp"],
+      conflict: "keep-mine",
+      secretMode: "keychain",
+    });
+
+    expect(result.items).toEqual([
+      expect.objectContaining({ kind: "mcp", name: "dup", action: "skip" }),
+    ]);
+    expect(reads).toBe(0);
   });
 
   it("keep-theirs (default): overwrites the store artifact", async () => {
@@ -431,5 +896,56 @@ describe("engine/scan — conflict strategy + non-interactive", () => {
     expect((await listMcpArtifacts(t.env, storeRoot)).map((a) => a.name)).not.toContain(
       "claude-code",
     );
+  });
+
+  it("does not read a provider for an unselected MCP candidate", async () => {
+    const storeRoot = await emptyStore(t);
+    await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
+    await t.env.fs.writeFile(t.path("home", ".claude", "CLAUDE.md"), "# Selected rules");
+    await t.env.fs.writeFile(
+      t.path("home", ".claude", "mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          skipped: {
+            command: "npx",
+            env: { TOKEN: "$" + "{CELLARER_SECRET:UNSELECTED}" },
+          },
+        },
+      }),
+    );
+    let reads = 0;
+    const env: Env = {
+      ...t.env,
+      secretStore: {
+        async get() {
+          reads += 1;
+          return { found: true, value: "must-not-be-read" };
+        },
+        async set() {},
+        async delete() {
+          return false;
+        },
+      },
+    };
+
+    const result = await scanPlan(env, {
+      storeRoot,
+      agent: "claude-code",
+      scope: "global",
+      capabilities: ["rules", "mcp"],
+      selectItems: [
+        {
+          kind: "rules",
+          name: "claude-code",
+          source: t.path("home", ".claude", "CLAUDE.md"),
+        },
+      ],
+      secretMode: "keychain",
+    });
+
+    expect(result.items).toEqual([
+      expect.objectContaining({ kind: "rules", name: "claude-code", action: "import" }),
+    ]);
+    expect(reads).toBe(0);
   });
 });

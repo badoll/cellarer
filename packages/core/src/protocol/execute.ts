@@ -1,13 +1,16 @@
-import type { Env } from "../env.js";
+import type { Env, MutationAuthorityLease } from "../env.js";
 import { assertSafeAtomicPublicationPath } from "../fs/safety.js";
+import { containsObservableKnownValue, observableKnownValues } from "../secrets/observable.js";
 import { sha256 } from "../store/checksum.js";
 import { fingerprintTarget } from "../target-ownership.js";
 import {
-  assertSupportedMutationPlanRuntime,
+  acquireCurrentMutationAuthorityLease,
+  assertStrictMutationPlanRuntime,
   createDurableMutationPlan,
-  mutationPlanDigest,
+  verifyMutationPlanAuthorization,
   verifyMutationPlanDigest,
 } from "./canonical.js";
+import type { OperationJournalInput } from "./journal.js";
 import {
   publishOperationJournal,
   publishOperationReceipt,
@@ -58,12 +61,46 @@ export async function executeMutationPlan(
     recordAction: RecordOperationAction,
     authorizeAction: AuthorizeOperationAction,
   ) => Promise<MutationExecution>,
+  options: {
+    readonly validateUnderLock?: () => Promise<void>;
+    readonly authorityLease?: MutationAuthorityLease;
+  } = {},
 ): Promise<OperationResult> {
-  assertSupportedMutationPlanRuntime(plan);
+  try {
+    assertStrictMutationPlanRuntime(plan);
+  } catch {
+    return invalidPlanResult();
+  }
+  if (!verifyMutationPlanAuthorization(env, storeRoot, plan)) return invalidPlanResult();
+  const suppliedAuthorityLease = options.authorityLease;
+  const authorityLease =
+    suppliedAuthorityLease ?? (await acquireCurrentMutationAuthorityLease(env).catch(() => null));
+  if (!authorityLease) return invalidPlanResult();
+  if (!(await authorityLease.isCurrent().catch(() => false))) {
+    if (!suppliedAuthorityLease) await authorityLease.release().catch(() => undefined);
+    return invalidPlanResult();
+  }
+  const knownValues = observableKnownValues(env);
+  if (containsObservableKnownValue(JSON.stringify(plan), knownValues)) {
+    if (!suppliedAuthorityLease) await authorityLease.release();
+    throw new TypeError("active secret value is not allowed in signed mutation metadata");
+  }
+  const preflight = validatePlanIntegrity(plan);
+  if (preflight) {
+    if (!suppliedAuthorityLease) await authorityLease.release();
+    return preflight;
+  }
   const activeRecovery = await readStoreRecoveryLockOwner(env, storeRoot);
-  if (activeRecovery) return recoveryLockConflict(activeRecovery);
+  if (activeRecovery) {
+    if (!suppliedAuthorityLease) await authorityLease.release();
+    return recoveryLockConflict(activeRecovery);
+  }
 
   const operationId = `operation-${env.randomId()}`;
+  if (containsObservableKnownValue(operationId, knownValues)) {
+    if (!suppliedAuthorityLease) await authorityLease.release();
+    throw new TypeError("active secret value is not allowed in an operation identity");
+  }
   const owner: LockOwnerEvidence = {
     operationId,
     processId: env.processId(),
@@ -71,10 +108,19 @@ export async function executeMutationPlan(
     acquiredAt: env.now().toISOString(),
   };
   const acquired = await acquireStoreMutationLock(env, storeRoot, owner);
-  if (!acquired.ok) return { ok: false, conflict: acquired.conflict };
+  if (!acquired.ok) {
+    if (!suppliedAuthorityLease) await authorityLease.release();
+    return { ok: false, conflict: acquired.conflict };
+  }
+  if (!(await authorityLease.isCurrent().catch(() => false))) {
+    await acquired.lock.release();
+    if (!suppliedAuthorityLease) await authorityLease.release().catch(() => undefined);
+    return invalidPlanResult();
+  }
   const recoveryAfterAcquire = await readStoreRecoveryLockOwner(env, storeRoot);
   if (recoveryAfterAcquire) {
     await acquired.lock.release();
+    if (!suppliedAuthorityLease) await authorityLease.release();
     return recoveryLockConflict(recoveryAfterAcquire);
   }
 
@@ -98,13 +144,14 @@ export async function executeMutationPlan(
 
     const validation = await validatePlanUnderLock(env, storeRoot, plan);
     if (validation) return validation;
+    await options.validateUnderLock?.();
 
     const currentRevision = await readStoreRevision(env, storeRoot);
     const resultingRevision = currentRevision + 1;
-    journal = {
+    const initialJournal: OperationJournalInput = {
       schemaVersion: 1,
       operationId,
-      plan: createDurableMutationPlan(plan),
+      plan: createDurableMutationPlan(env, storeRoot, plan),
       nextRevision: resultingRevision,
       status: "prepared",
       startedAt,
@@ -115,9 +162,9 @@ export async function executeMutationPlan(
         status: "pending",
       })),
     };
-    await publishOperationJournal(env, storeRoot, journal);
+    journal = await publishOperationJournal(env, storeRoot, initialJournal);
     journal = withJournalStatus(journal, "executing", env.now().toISOString());
-    await publishOperationJournal(env, storeRoot, journal);
+    journal = await publishOperationJournal(env, storeRoot, journal);
 
     const recordAction: RecordOperationAction = async (receipt) => {
       if (!journal) throw new Error("operation journal is not initialized");
@@ -148,8 +195,7 @@ export async function executeMutationPlan(
         updatedAt: env.now().toISOString(),
         actions,
       };
-      await publishOperationJournal(env, storeRoot, nextJournal);
-      journal = nextJournal;
+      journal = await publishOperationJournal(env, storeRoot, nextJournal);
     };
 
     const authorizeAction: AuthorizeOperationAction = async (actionId) => {
@@ -234,7 +280,7 @@ export async function executeMutationPlan(
           ...withJournalStatus(journal, "completed", completedAt),
           completedReceipt: receipt,
         };
-        await publishOperationJournal(env, storeRoot, journal);
+        journal = await publishOperationJournal(env, storeRoot, journal);
         await publishOperationReceipt(env, storeRoot, receipt);
         releaseAttempted = true;
         await acquired.lock.release();
@@ -242,7 +288,7 @@ export async function executeMutationPlan(
         return { ok: false, conflict };
       }
       journal = withJournalStatus(journal, "recovery-required", env.now().toISOString());
-      await publishOperationJournal(env, storeRoot, journal);
+      journal = await publishOperationJournal(env, storeRoot, journal);
       return {
         ok: false,
         conflict,
@@ -273,7 +319,7 @@ export async function executeMutationPlan(
       ...withJournalStatus(journal, "publishing-state", env.now().toISOString()),
       ...(statePublications.length > 0 ? { statePublications } : {}),
     };
-    await publishOperationJournal(env, storeRoot, journal);
+    journal = await publishOperationJournal(env, storeRoot, journal);
     for (const [index, publication] of statePublicationInputs.entries()) {
       await env.fs.publishFileAtomically(publication.path, publication.data, {
         mode: publication.mode,
@@ -290,7 +336,7 @@ export async function executeMutationPlan(
         );
       } catch {
         journal = withJournalStatus(journal, "recovery-required", env.now().toISOString());
-        await publishOperationJournal(env, storeRoot, journal);
+        journal = await publishOperationJournal(env, storeRoot, journal);
         return {
           ok: false,
           conflict: {
@@ -324,20 +370,24 @@ export async function executeMutationPlan(
       ...withJournalStatus(journal, "completed", receipt.completedAt),
       completedReceipt: receipt,
     };
-    await publishOperationJournal(env, storeRoot, journal);
+    journal = await publishOperationJournal(env, storeRoot, journal);
     await publishOperationReceipt(env, storeRoot, receipt);
     releaseAttempted = true;
     await acquired.lock.release();
     await removeOperationJournal(env, storeRoot);
     return { ok: true, receipt };
   } catch (error) {
-    if (error instanceof PublicationPostconditionError && journal) {
-      const recoveryJournal =
-        journal.status === "completed"
-          ? journal
-          : withJournalStatus(journal, "recovery-required", env.now().toISOString());
-      if (recoveryJournal.status !== "completed") {
-        await publishOperationJournal(env, storeRoot, recoveryJournal).catch(() => {});
+    if (error instanceof PublicationPostconditionError) {
+      let recoveryJournal = journal;
+      if (journal && journal.status !== "completed") {
+        const recoveryRequired = withJournalStatus(
+          journal,
+          "recovery-required",
+          env.now().toISOString(),
+        );
+        recoveryJournal = await publishOperationJournal(env, storeRoot, recoveryRequired).catch(
+          () => journal,
+        );
       }
       return {
         ok: false,
@@ -349,12 +399,13 @@ export async function executeMutationPlan(
           guidance:
             "protocol metadata publication did not match its signed digest or mode; no later protocol boundary was trusted",
         },
-        journal: recoveryJournal,
+        ...(recoveryJournal ? { journal: recoveryJournal } : {}),
       };
     }
     throw error;
   } finally {
     if (!releaseAttempted) await acquired.lock.release();
+    if (!suppliedAuthorityLease) await authorityLease.release();
   }
 }
 
@@ -382,39 +433,9 @@ async function validatePlanUnderLock(
   storeRoot: string,
   plan: MutationPlan,
 ): Promise<OperationResult | null> {
-  if (!verifyMutationPlanDigest(plan)) {
-    let actualDigest = "invalid";
-    try {
-      actualDigest = mutationPlanDigest(plan);
-    } catch {
-      // Keep the typed invalid-digest result even when canonicalization itself fails.
-    }
-    return {
-      ok: false,
-      conflict: {
-        code: "INVALID_PLAN_DIGEST",
-        message: "plan digest does not match its contents",
-        planId: typeof plan.planId === "string" ? plan.planId : "unknown",
-        expectedDigest: typeof plan.digest === "string" ? plan.digest : "invalid",
-        actualDigest,
-      },
-    };
-  }
-
-  const actionIds = new Set(plan.actions.map((action) => action.actionId));
-  const preconditionsByAction = new Map(
-    plan.targetPreconditions.map((precondition) => [precondition.actionId, precondition]),
-  );
-  if (
-    actionIds.size !== plan.actions.length ||
-    preconditionsByAction.size !== plan.targetPreconditions.length ||
-    plan.actions.length !== plan.targetPreconditions.length ||
-    plan.actions.some(
-      (action) => preconditionsByAction.get(action.actionId)?.target !== action.target,
-    )
-  ) {
-    throw new TypeError("mutation plan actions and target preconditions are not one-to-one");
-  }
+  const integrity = validatePlanIntegrity(plan);
+  if (integrity) return integrity;
+  assertMutationPlanActionAlignment(plan);
 
   if (
     plan.expires.policy === "expires-at" &&
@@ -425,8 +446,8 @@ async function validatePlanUnderLock(
       conflict: {
         code: "EXPIRED_PLAN",
         message: "plan expired",
-        planId: plan.planId,
-        expiredAt: plan.expires.expiresAt,
+        planId: "untrusted",
+        expiredAt: "untrusted",
       },
     };
   }
@@ -438,7 +459,7 @@ async function validatePlanUnderLock(
       conflict: {
         code: "STALE_REVISION",
         message: "store revision changed; replan required",
-        planId: plan.planId,
+        planId: "untrusted",
         expectedRevision: plan.baseRevision,
         actualRevision,
         replanRequired: true,
@@ -454,9 +475,9 @@ async function validatePlanUnderLock(
         conflict: {
           code: "TARGET_PRECONDITION_CONFLICT",
           message: "target changed after planning",
-          planId: plan.planId,
-          actionId: precondition.actionId,
-          target: precondition.target,
+          planId: "untrusted",
+          actionId: "untrusted",
+          target: "untrusted",
           expected: precondition.expected,
           actual,
         },
@@ -464,6 +485,78 @@ async function validatePlanUnderLock(
     }
   }
   return null;
+}
+
+function validatePlanIntegrity(plan: MutationPlan): OperationResult | null {
+  if (!verifyMutationPlanDigest(plan)) return invalidPlanDigestResult();
+  assertMutationPlanActionAlignment(plan);
+  return null;
+}
+
+function invalidPlanDigestResult(): OperationResult {
+  return {
+    ok: false,
+    conflict: {
+      code: "INVALID_PLAN_DIGEST",
+      message: "plan digest does not match its contents",
+      planId: "untrusted",
+      expectedDigest: "untrusted",
+      actualDigest: "invalid",
+    },
+  };
+}
+
+export function invalidPlanResult(): OperationResult {
+  return {
+    ok: false,
+    conflict: {
+      code: "INVALID_PLAN",
+      message: "mutation plan is invalid",
+    },
+  };
+}
+
+export function assertMutationPlanActionAlignment(plan: MutationPlan): void {
+  if (!Array.isArray(plan.actions) || !Array.isArray(plan.targetPreconditions)) {
+    throw new TypeError("mutation plan has invalid action authorization structure");
+  }
+  if (
+    !plan.actions.every(
+      (action) =>
+        typeof action === "object" &&
+        action !== null &&
+        typeof action.actionId === "string" &&
+        typeof action.kind === "string" &&
+        typeof action.target === "string" &&
+        typeof action.payload === "object" &&
+        action.payload !== null,
+    ) ||
+    !plan.targetPreconditions.every(
+      (precondition) =>
+        typeof precondition === "object" &&
+        precondition !== null &&
+        typeof precondition.actionId === "string" &&
+        typeof precondition.target === "string" &&
+        typeof precondition.expected === "object" &&
+        precondition.expected !== null,
+    )
+  ) {
+    throw new TypeError("mutation plan has invalid action authorization structure");
+  }
+  const actionIds = new Set(plan.actions.map((action) => action.actionId));
+  const preconditionsByAction = new Map(
+    plan.targetPreconditions.map((precondition) => [precondition.actionId, precondition]),
+  );
+  if (
+    actionIds.size !== plan.actions.length ||
+    preconditionsByAction.size !== plan.targetPreconditions.length ||
+    plan.actions.length !== plan.targetPreconditions.length ||
+    plan.actions.some(
+      (action) => preconditionsByAction.get(action.actionId)?.target !== action.target,
+    )
+  ) {
+    throw new TypeError("mutation plan actions and target preconditions are not one-to-one");
+  }
 }
 
 export async function targetState(env: Env, target: string): Promise<TargetStateReceipt> {

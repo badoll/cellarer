@@ -65,7 +65,7 @@ describe("settings and agent config writes", () => {
 
     await expect(saveDefaults(driftEnv, storeRoot, { method: "copy" })).rejects.toMatchObject({
       code: "TARGET_PRECONDITION_CONFLICT",
-      conflict: { code: "TARGET_PRECONDITION_CONFLICT", target: configPath },
+      conflict: { code: "TARGET_PRECONDITION_CONFLICT", target: "untrusted" },
     });
     await expect(t.env.fs.readFile(configPath)).resolves.toBe(external);
   });

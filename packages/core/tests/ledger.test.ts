@@ -8,6 +8,7 @@ import {
   loadLedgerForPlanning,
   saveLedger,
   saveLedgerAfterSelectiveRevert,
+  serializeLedger,
   targetKey,
 } from "../src/store/ledger.js";
 import { ensureBaseDirs, FIXED_NOW, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
@@ -64,6 +65,34 @@ describe("store/ledger", () => {
     await saveLedger(t.env, storeRoot, led);
     const loaded = await loadLedger(t.env, storeRoot);
     expect(loaded.owners).toEqual([sampleOwner()]);
+  });
+
+  it("preserves secretRefs only through the exact validated durable-ledger serializer", () => {
+    const ledger = addOwners(emptyLedger(), [sampleOwner({ secretRefs: ["API_KEY"] })]);
+
+    expect(JSON.parse(serializeLedger(ledger))).toEqual(ledger);
+  });
+
+  it.each([
+    [
+      "near-miss secretRefs type",
+      { version: 2, owners: [{ ...sampleOwner(), secretRefs: "tiny" }] },
+    ],
+    ["extra root key", { version: 2, owners: [sampleOwner()], extra: true }],
+    ["extra owner key", { version: 2, owners: [{ ...sampleOwner(), extra: true }] }],
+    [
+      "extra receipt key",
+      {
+        version: 2,
+        owners: [
+          sampleOwner({
+            receipt: { ...sampleOwner().receipt, secretRefs: ["NOT_ALLOWED"] } as never,
+          }),
+        ],
+      },
+    ],
+  ])("rejects %s instead of broadening the durable secretRefs exception", (_label, value) => {
+    expect(() => serializeLedger(value as never)).toThrow();
   });
 
   it("keys current ownership by normalized physical target rather than artifact", () => {

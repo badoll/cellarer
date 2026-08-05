@@ -17,6 +17,7 @@
         "project": "{dir}/.acme/mcp.json",
         "format": "json",
         "serversKey": "mcpServers",
+        "supportedSecretReferences": ["environment", "cellarer"],
         "mergeStrategy": "merge"
       },
       "skills": {

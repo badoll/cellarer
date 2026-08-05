@@ -223,7 +223,7 @@ describe("resource catalog", () => {
       scope: "global",
       affectedCount: 1,
       summary: "update MCP collection",
-      references: {
+      resources: {
         artifactIds: ["mcp/alpha, mcp/beta", "mcp/*"],
       },
     });

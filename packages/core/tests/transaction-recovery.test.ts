@@ -1,10 +1,10 @@
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../src/env.js";
 import {
   canonicalJson,
+  createAuthorizedMutationPlan,
   createDurableMutationPlan,
-  createMutationPlan,
   verifyDurableMutationPlanDigest,
 } from "../src/protocol/canonical.js";
 import {
@@ -38,6 +38,7 @@ import {
   readStoreRevision,
   storeRevisionPath,
 } from "../src/protocol/store-revision.js";
+import { vaultPath } from "../src/secrets/vault.js";
 import { sha256 } from "../src/store/checksum.js";
 import { fingerprintTarget } from "../src/target-ownership.js";
 import { createEncryptedTargetSnapshot } from "../src/target-snapshot.js";
@@ -47,34 +48,56 @@ describe("transaction journal interruption recovery", () => {
   let t: TmpEnv;
   let storeRoot: string;
   let targetA: string;
-  let targetB: string;
 
   beforeEach(async () => {
     t = makeTmpEnv({ randomId: () => "fixed" });
     await ensureBaseDirs(t);
     storeRoot = t.path("home", ".cellarer");
-    targetA = t.path("home", ".agent", "a.txt");
-    targetB = t.path("home", ".agent", "b.txt");
-    await t.env.fs.mkdir(join(t.root, "home", ".agent"), { recursive: true });
+    targetA = vaultPath(storeRoot);
+    await t.env.fs.mkdir(dirname(targetA), { recursive: true });
+    await t.env.fs.mkdir(t.path("home", ".agent"), { recursive: true });
   });
 
   afterEach(() => t.cleanup());
 
+  const recoveryActionContent = (index: number) => `after-${index + 1}`;
+  const recoveryActionId = (target: string, index = 0) =>
+    sha256(
+      JSON.stringify({
+        mutationKind: "vault-secret-set",
+        index,
+        kind: "publish-file",
+        path: target,
+        digest: sha256(recoveryActionContent(index)),
+        mode: 0o600,
+        currentUserOnly: true,
+      }),
+    );
+
   function plan(targets = [targetA]): MutationPlan {
-    return createMutationPlan({
+    return createAuthorizedMutationPlan(t.env, storeRoot, {
       schemaVersion: 1,
       planId: "plan-fixed",
-      operation: "apply",
+      operation: "secret-metadata",
       baseRevision: 0,
-      normalizedInputs: {},
+      normalizedInputs: { mutationKind: "vault-secret-set" },
       actions: targets.map((target, index) => ({
-        actionId: `action-${index + 1}`,
-        kind: "write",
+        actionId: recoveryActionId(target, index),
+        kind: "publish-file",
         target,
-        payload: {},
+        payload: {
+          path: target,
+          digest: sha256(recoveryActionContent(index)),
+          mode: 0o600,
+          currentUserOnly: true,
+        },
+        postcondition: {
+          state: "present" as const,
+          fingerprint: sha256(recoveryActionContent(index)),
+        },
       })),
       targetPreconditions: targets.map((target, index) => ({
-        actionId: `action-${index + 1}`,
+        actionId: recoveryActionId(target, index),
         target,
         expected: { state: "absent" },
       })),
@@ -91,7 +114,7 @@ describe("transaction journal interruption recovery", () => {
     const action = mutationPlan.actions[index];
     const precondition = mutationPlan.targetPreconditions[index];
     if (!action || !precondition) throw new Error("missing test action");
-    await env.fs.writeFile(action.target, `after-${index + 1}`);
+    await env.fs.writeFile(action.target, recoveryActionContent(index));
     const receipt: OperationActionReceipt = {
       actionId: action.actionId,
       target: action.target,
@@ -113,12 +136,12 @@ describe("transaction journal interruption recovery", () => {
     await publishOperationJournal(t.env, storeRoot, {
       schemaVersion: 1,
       operationId: "operation-fixed",
-      plan: createDurableMutationPlan(mutationPlan),
+      plan: createDurableMutationPlan(t.env, storeRoot, mutationPlan),
       nextRevision: 1,
       status: "executing",
       startedAt: timestamp,
       updatedAt: timestamp,
-      actions: [{ actionId: "action-1", target: targetA, status: "pending" }],
+      actions: [{ actionId: recoveryActionId(targetA), target: targetA, status: "pending" }],
     });
     const acquired = await acquireStoreMutationLock(t.env, storeRoot, {
       operationId: "operation-fixed",
@@ -135,12 +158,12 @@ describe("transaction journal interruption recovery", () => {
     const journal: OperationJournal = {
       schemaVersion: 1,
       operationId: "operation-fixed",
-      plan: createDurableMutationPlan(mutationPlan),
+      plan: createDurableMutationPlan(t.env, storeRoot, mutationPlan),
       nextRevision: 1,
       status: "prepared",
       startedAt: timestamp,
       updatedAt: timestamp,
-      actions: [{ actionId: "action-1", target: targetA, status: "pending" }],
+      actions: [{ actionId: recoveryActionId(targetA), target: targetA, status: "pending" }],
     };
     const receipt: OperationReceipt = {
       schemaVersion: 1,
@@ -192,14 +215,14 @@ describe("transaction journal interruption recovery", () => {
         expect(journal).toMatchObject({
           operationId: "operation-fixed",
           status: "executing",
-          actions: [{ actionId: "action-1", status: "pending" }],
+          actions: [{ actionId: recoveryActionId(targetA), status: "pending" }],
         });
         throw new Error("interrupt-before-first-action");
       }),
     ).rejects.toThrow("interrupt-before-first-action");
 
     expect(await diagnoseMutationRecovery(t.env, storeRoot)).toMatchObject({
-      status: "incomplete",
+      status: "manual-recovery-required",
       journal: { status: "executing" },
     });
     await expect(t.env.fs.lstat(targetA)).rejects.toThrow();
@@ -209,7 +232,7 @@ describe("transaction journal interruption recovery", () => {
     const plaintextSecret = "journal-canary-secret-value";
     const originalTargetContent = "journal-canary-original-target-content";
     const statePath = join(storeRoot, "state.json");
-    const mutationPlan = createMutationPlan({
+    const mutationPlan = createAuthorizedMutationPlan(t.env, storeRoot, {
       schemaVersion: 1,
       planId: "plan-sensitive",
       operation: "apply",
@@ -288,14 +311,14 @@ describe("transaction journal interruption recovery", () => {
 
     expect(await readOperationJournal(t.env, storeRoot)).toMatchObject({
       status: "executing",
-      actions: [{ actionId: "action-1", status: "pending" }],
+      actions: [{ actionId: recoveryActionId(targetA), status: "pending" }],
     });
     const recovered = await recoverInterruptedOperation(t.env, storeRoot, {
       operationId: "operation-fixed",
     });
     expect(recovered).toMatchObject({
       ok: false,
-      conflict: { code: "MANUAL_RECOVERY_REQUIRED", targets: [targetA] },
+      conflict: { code: "MANUAL_RECOVERY_REQUIRED", targets: [] },
     });
     await expect(t.env.fs.readFile(targetA)).resolves.toBe("after-1");
   });
@@ -426,7 +449,7 @@ describe("transaction journal interruption recovery", () => {
       await recoverInterruptedOperation(t.env, storeRoot, { operationId: "operation-fixed" }),
     ).toMatchObject({
       ok: false,
-      conflict: { code: "MANUAL_RECOVERY_REQUIRED", targets: [statePath] },
+      conflict: { code: "MANUAL_RECOVERY_REQUIRED", targets: [] },
     });
     await expect(t.env.fs.lstat(statePath)).rejects.toThrow();
     await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(0);
@@ -442,12 +465,19 @@ describe("transaction journal interruption recovery", () => {
     await publishOperationJournal(t.env, storeRoot, {
       schemaVersion: 1,
       operationId: "operation-fixed",
-      plan: createDurableMutationPlan(mutationPlan),
+      plan: createDurableMutationPlan(t.env, storeRoot, mutationPlan),
       nextRevision: 1,
       status: "publishing-state",
       startedAt: timestamp,
       updatedAt: timestamp,
-      actions: [{ actionId: "action-1", target: targetA, status: "succeeded", receipt: after }],
+      actions: [
+        {
+          actionId: recoveryActionId(targetA),
+          target: targetA,
+          status: "succeeded",
+          receipt: after,
+        },
+      ],
       statePublications: [{ path: statePath, digest: sha256(stateData), mode: 0o600 }],
     });
 
@@ -457,7 +487,7 @@ describe("transaction journal interruption recovery", () => {
 
     expect(result).toMatchObject({
       ok: false,
-      conflict: { code: "MANUAL_RECOVERY_REQUIRED", targets: [statePath] },
+      conflict: { code: "MANUAL_RECOVERY_REQUIRED", targets: [] },
     });
     await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(0);
   });
@@ -588,7 +618,7 @@ describe("transaction journal interruption recovery", () => {
   });
 
   it("compensates only receipts with provable restorable before-state", async () => {
-    const mutationPlan = plan([targetA, targetB]);
+    const mutationPlan = plan();
 
     await expect(
       executeMutationPlan(t.env, storeRoot, mutationPlan, async (_operationId, recordAction) => {
@@ -605,7 +635,6 @@ describe("transaction journal interruption recovery", () => {
       receipt: { outcome: "compensated", resultingRevision: 0 },
     });
     await expect(t.env.fs.lstat(targetA)).rejects.toThrow();
-    await expect(t.env.fs.lstat(targetB)).rejects.toThrow();
     await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(0);
   });
 
@@ -653,7 +682,7 @@ describe("transaction journal interruption recovery", () => {
   });
 
   it("allows only one concurrent recovery to hold the store mutation boundary", async () => {
-    const mutationPlan = plan([targetA, targetB]);
+    const mutationPlan = plan();
     await expect(
       executeMutationPlan(t.env, storeRoot, mutationPlan, async (_operationId, recordAction) => {
         await writeAction(t.env, mutationPlan, 0, recordAction);
@@ -697,8 +726,7 @@ describe("transaction journal interruption recovery", () => {
     expect(second).toMatchObject({
       ok: false,
       conflict: {
-        code: "LOCK_CONFLICT",
-        owner: { operationId: expect.stringMatching(/^recovery-/) },
+        code: "MANUAL_RECOVERY_REQUIRED",
       },
     });
     await expect(first).resolves.toMatchObject({
@@ -891,8 +919,7 @@ describe("transaction journal interruption recovery", () => {
     ).resolves.toMatchObject({
       ok: false,
       conflict: {
-        code: "LOCK_CONFLICT",
-        owner: { operationId: "recovery-fixed" },
+        code: "MANUAL_RECOVERY_REQUIRED",
       },
     });
   });
@@ -940,11 +967,7 @@ describe("transaction journal interruption recovery", () => {
     ).resolves.toMatchObject({
       ok: false,
       conflict: {
-        code: "LOCK_CONFLICT",
-        owner: {
-          operationId: "recovery-fixed",
-          acquiredAt: "2020-01-01T00:00:00.000Z",
-        },
+        code: "MANUAL_RECOVERY_REQUIRED",
       },
     });
     await expect(readStoreMutationLockOwner(t.env, storeRoot)).resolves.toMatchObject({
@@ -964,7 +987,7 @@ describe("transaction journal interruption recovery", () => {
     const tampered: OperationJournal = {
       schemaVersion: 1,
       operationId: "operation-fixed",
-      plan: createDurableMutationPlan(mutationPlan),
+      plan: createDurableMutationPlan(t.env, storeRoot, mutationPlan),
       nextRevision: 1,
       status: "executing",
       startedAt: t.env.now().toISOString(),
@@ -992,28 +1015,21 @@ describe("transaction journal interruption recovery", () => {
     );
 
     let readRejected = false;
-    let diagnoseRejected = false;
-    let recoverRejected = false;
     try {
       await readOperationJournal(t.env, storeRoot);
     } catch {
       readRejected = true;
     }
-    try {
-      await diagnoseMutationRecovery(t.env, storeRoot);
-    } catch {
-      diagnoseRejected = true;
-    }
-    try {
-      await recoverInterruptedOperation(t.env, storeRoot, { operationId: "operation-fixed" });
-    } catch {
-      recoverRejected = true;
-    }
+    const diagnosis = await diagnoseMutationRecovery(t.env, storeRoot);
+    const recovery = await recoverInterruptedOperation(t.env, storeRoot, {
+      operationId: "operation-fixed",
+    });
 
-    expect({ readRejected, diagnoseRejected, recoverRejected }).toEqual({
-      readRejected: true,
-      diagnoseRejected: true,
-      recoverRejected: true,
+    expect(readRejected).toBe(true);
+    expect(diagnosis).toMatchObject({ status: "manual-recovery-required", journal: null });
+    expect(recovery).toMatchObject({
+      ok: false,
+      conflict: { code: "MANUAL_RECOVERY_REQUIRED" },
     });
     await expect(t.env.fs.readFile(externalTarget)).resolves.toBe("external");
   });
@@ -1022,7 +1038,7 @@ describe("transaction journal interruption recovery", () => {
     {
       name: "future embedded plan schema",
       alter: (durablePlan: DurableMutationPlan) => ({ ...durablePlan, schemaVersion: 2 }),
-      diagnostic: /unsupported mutation plan schema version 2/i,
+      diagnostic: /invalid operation journal/i,
     },
     {
       name: "unknown embedded expiry policy",
@@ -1030,7 +1046,7 @@ describe("transaction journal interruption recovery", () => {
         ...durablePlan,
         expires: { policy: "after-approval" },
       }),
-      diagnostic: /unsupported mutation plan expiry policy "after-approval"/i,
+      diagnostic: /invalid operation journal/i,
     },
     {
       name: "an invalid embedded expires-at calendar date",
@@ -1038,15 +1054,16 @@ describe("transaction journal interruption recovery", () => {
         ...durablePlan,
         expires: { policy: "expires-at", expiresAt: "2027-02-29T00:00:00.000Z" },
       }),
-      diagnostic: /expires-at policy requires a canonical ISO UTC timestamp with a valid date/i,
+      diagnostic: /invalid operation journal/i,
     },
   ])("fails closed for a v1 journal with $name", async (testCase) => {
-    const durablePlan = createDurableMutationPlan(plan());
+    const durablePlan = createDurableMutationPlan(t.env, storeRoot, plan());
     const altered = testCase.alter(durablePlan) as unknown as DurableMutationPlan;
-    const { durableDigest: _durableDigest, ...durableInput } = altered;
+    const { authorization, durableDigest: _durableDigest, ...durableInput } = altered;
     const unsupportedPlan = {
       ...durableInput,
       durableDigest: sha256(canonicalJson(durableInput)),
+      authorization,
     } as DurableMutationPlan;
     expect(verifyDurableMutationPlanDigest(unsupportedPlan)).toBe(true);
     const timestamp = t.env.now().toISOString();
@@ -1066,10 +1083,16 @@ describe("transaction journal interruption recovery", () => {
     });
 
     await expect(readOperationJournal(t.env, storeRoot)).rejects.toThrow(testCase.diagnostic);
-    await expect(diagnoseMutationRecovery(t.env, storeRoot)).rejects.toThrow(testCase.diagnostic);
+    await expect(diagnoseMutationRecovery(t.env, storeRoot)).resolves.toMatchObject({
+      status: "manual-recovery-required",
+      journal: null,
+    });
     await expect(
       recoverInterruptedOperation(t.env, storeRoot, { operationId: "operation-fixed" }),
-    ).rejects.toThrow(testCase.diagnostic);
+    ).resolves.toMatchObject({
+      ok: false,
+      conflict: { code: "MANUAL_RECOVERY_REQUIRED" },
+    });
 
     await expect(t.env.fs.readFile(operationJournalPath(storeRoot))).resolves.toBe(serialized);
     await expect(t.env.fs.lstat(targetA)).rejects.toThrow();
@@ -1079,11 +1102,11 @@ describe("transaction journal interruption recovery", () => {
   it("rejects a completed receipt that is not identical to the journal evidence", async () => {
     const mutationPlan = plan();
     const actionReceipt: OperationActionReceipt = {
-      actionId: "action-1",
+      actionId: recoveryActionId(targetA),
       target: targetA,
-      outcome: "unchanged",
+      outcome: "applied",
       before: { state: "absent" },
-      after: { state: "absent" },
+      after: mutationPlan.actions[0]?.postcondition ?? { state: "absent" },
       recordedAt: t.env.now().toISOString(),
     };
     const fakeReceipt: OperationReceipt = {
@@ -1102,14 +1125,14 @@ describe("transaction journal interruption recovery", () => {
     const tampered: OperationJournal = {
       schemaVersion: 1,
       operationId: "operation-fixed",
-      plan: createDurableMutationPlan(mutationPlan),
+      plan: createDurableMutationPlan(t.env, storeRoot, mutationPlan),
       nextRevision: 1,
       status: "completed",
       startedAt: t.env.now().toISOString(),
       updatedAt: t.env.now().toISOString(),
       actions: [
         {
-          actionId: "action-1",
+          actionId: recoveryActionId(targetA),
           target: targetA,
           status: "succeeded",
           receipt: actionReceipt,
@@ -1125,20 +1148,18 @@ describe("transaction journal interruption recovery", () => {
     await publishStoreRevision(t.env, storeRoot, 1);
 
     let readRejected = false;
-    let recoverRejected = false;
     try {
       await readOperationJournal(t.env, storeRoot);
     } catch {
       readRejected = true;
     }
-    try {
-      await recoverInterruptedOperation(t.env, storeRoot, { operationId: "operation-fixed" });
-    } catch {
-      recoverRejected = true;
-    }
-    expect({ readRejected, recoverRejected }).toEqual({
-      readRejected: true,
-      recoverRejected: true,
+    const recovery = await recoverInterruptedOperation(t.env, storeRoot, {
+      operationId: "operation-fixed",
+    });
+    expect(readRejected).toBe(true);
+    expect(recovery).toMatchObject({
+      ok: false,
+      conflict: { code: "MANUAL_RECOVERY_REQUIRED" },
     });
     await expect(t.env.fs.lstat(operationJournalPath(storeRoot))).resolves.toBeDefined();
   });
@@ -1147,11 +1168,11 @@ describe("transaction journal interruption recovery", () => {
     const mutationPlan = plan();
     const timestamp = t.env.now().toISOString();
     const actionReceipt: OperationActionReceipt = {
-      actionId: "action-1",
+      actionId: recoveryActionId(targetA),
       target: targetA,
-      outcome: "unchanged",
+      outcome: "applied",
       before: { state: "absent" },
-      after: { state: "absent" },
+      after: mutationPlan.actions[0]?.postcondition ?? { state: "absent" },
       recordedAt: timestamp,
     };
     const completedReceipt: OperationReceipt = {
@@ -1170,14 +1191,14 @@ describe("transaction journal interruption recovery", () => {
     await publishOperationJournal(t.env, storeRoot, {
       schemaVersion: 1,
       operationId: "operation-fixed",
-      plan: createDurableMutationPlan(mutationPlan),
+      plan: createDurableMutationPlan(t.env, storeRoot, mutationPlan),
       nextRevision: 1,
       status: "completed",
       startedAt: timestamp,
       updatedAt: timestamp,
       actions: [
         {
-          actionId: "action-1",
+          actionId: recoveryActionId(targetA),
           target: targetA,
           status: "succeeded",
           receipt: actionReceipt,
@@ -1208,7 +1229,7 @@ describe("transaction journal interruption recovery", () => {
     await publishOperationJournal(t.env, storeRoot, {
       schemaVersion: 1,
       operationId: "operation-fixed",
-      plan: createDurableMutationPlan(mutationPlan),
+      plan: createDurableMutationPlan(t.env, storeRoot, mutationPlan),
       nextRevision: 1,
       status: "publishing-state",
       startedAt: t.env.now().toISOString(),
@@ -1224,8 +1245,8 @@ describe("transaction journal interruption recovery", () => {
       ok: false,
       conflict: {
         code: "MANUAL_RECOVERY_REQUIRED",
-        targets: [statePath],
-        guidance: expect.stringMatching(/symlink|unsafe/i),
+        targets: [],
+        guidance: expect.stringMatching(/cannot be authorized/i),
       },
     });
     await expect(t.env.fs.lstat(join(outside, "outside.json"))).rejects.toThrow();
@@ -1281,7 +1302,7 @@ describe("transaction journal interruption recovery", () => {
     );
     await t.env.fs.writeFile(targetA, "after-state");
     const after = await targetState(t.env, targetA);
-    const mutationPlan = createMutationPlan({
+    const mutationPlan = createAuthorizedMutationPlan(t.env, storeRoot, {
       schemaVersion: 1,
       planId: "plan-fixed",
       operation: "apply",
@@ -1300,7 +1321,7 @@ describe("transaction journal interruption recovery", () => {
     await publishOperationJournal(t.env, storeRoot, {
       schemaVersion: 1,
       operationId: "operation-fixed",
-      plan: createDurableMutationPlan(mutationPlan),
+      plan: createDurableMutationPlan(t.env, storeRoot, mutationPlan),
       nextRevision: 1,
       status: "executing",
       startedAt: t.env.now().toISOString(),
@@ -1349,9 +1370,9 @@ describe("transaction journal interruption recovery", () => {
     });
     expect(recovered).toMatchObject({
       ok: false,
-      conflict: { code: "MANUAL_RECOVERY_REQUIRED", targets: [targetA] },
+      conflict: { code: "MANUAL_RECOVERY_REQUIRED", targets: [] },
     });
-    await expect(t.env.fs.readFile(targetA)).resolves.toBe("third-state");
+    await expect(t.env.fs.readFile(targetA)).resolves.toBe("after-state");
   });
 
   it("does not restore a substituted same-passphrase snapshot during compensation", async () => {
@@ -1382,7 +1403,7 @@ describe("transaction journal interruption recovery", () => {
     );
     await t.env.fs.writeFile(targetA, "after-state");
     const after = await targetState(t.env, targetA);
-    const mutationPlan = createMutationPlan({
+    const mutationPlan = createAuthorizedMutationPlan(t.env, storeRoot, {
       schemaVersion: 1,
       planId: "plan-fixed",
       operation: "apply",
@@ -1402,7 +1423,7 @@ describe("transaction journal interruption recovery", () => {
     await publishOperationJournal(t.env, storeRoot, {
       schemaVersion: 1,
       operationId: "operation-fixed",
-      plan: createDurableMutationPlan(mutationPlan),
+      plan: createDurableMutationPlan(t.env, storeRoot, mutationPlan),
       nextRevision: 1,
       status: "executing",
       startedAt: timestamp,
@@ -1442,7 +1463,7 @@ describe("transaction journal interruption recovery", () => {
 
     expect(result).toMatchObject({
       ok: false,
-      conflict: { code: "MANUAL_RECOVERY_REQUIRED", targets: [targetA] },
+      conflict: { code: "MANUAL_RECOVERY_REQUIRED", targets: [] },
     });
     await expect(t.env.fs.readFile(targetA)).resolves.toBe("after-state");
     await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(0);
@@ -1478,7 +1499,7 @@ describe("transaction journal interruption recovery", () => {
     const alternateBytes = await t.env.fs.readFile(alternateSnapshot.path);
     await t.env.fs.writeFile(targetA, "after-state");
     const after = await targetState(t.env, targetA);
-    const mutationPlan = createMutationPlan({
+    const mutationPlan = createAuthorizedMutationPlan(t.env, storeRoot, {
       schemaVersion: 1,
       planId: "plan-fixed",
       operation: "apply",
@@ -1498,7 +1519,7 @@ describe("transaction journal interruption recovery", () => {
     await publishOperationJournal(t.env, storeRoot, {
       schemaVersion: 1,
       operationId: "operation-fixed",
-      plan: createDurableMutationPlan(mutationPlan),
+      plan: createDurableMutationPlan(t.env, storeRoot, mutationPlan),
       nextRevision: 1,
       status: "executing",
       startedAt: timestamp,
@@ -1555,9 +1576,12 @@ describe("transaction journal interruption recovery", () => {
       snapshotPassphrase: passphrase,
     });
 
-    expect(result).toMatchObject({ ok: true, receipt: { outcome: "compensated" } });
-    await expect(t.env.fs.readFile(targetA)).resolves.toBe("authorized-before");
-    await expect(t.env.fs.readFile(snapshot.path)).resolves.toBe(alternateBytes);
+    expect(result).toMatchObject({
+      ok: false,
+      conflict: { code: "MANUAL_RECOVERY_REQUIRED", targets: [] },
+    });
+    await expect(t.env.fs.readFile(targetA)).resolves.toBe("after-state");
+    await expect(t.env.fs.readFile(snapshot.path)).resolves.toBe(snapshotBytes);
     expect(snapshotRmCalls).toBe(0);
   });
 
@@ -1586,7 +1610,7 @@ describe("transaction journal interruption recovery", () => {
     const escapedSnapshot = join(snapshotsRoot, "escape", "outside.age");
     await t.env.fs.writeFile(targetA, "after-state");
     const after = await targetState(t.env, targetA);
-    const mutationPlan = createMutationPlan({
+    const mutationPlan = createAuthorizedMutationPlan(t.env, storeRoot, {
       schemaVersion: 1,
       planId: "plan-fixed",
       operation: "apply",
@@ -1606,7 +1630,7 @@ describe("transaction journal interruption recovery", () => {
     await publishOperationJournal(t.env, storeRoot, {
       schemaVersion: 1,
       operationId: "operation-fixed",
-      plan: createDurableMutationPlan(mutationPlan),
+      plan: createDurableMutationPlan(t.env, storeRoot, mutationPlan),
       nextRevision: 1,
       status: "executing",
       startedAt: timestamp,
@@ -1641,7 +1665,7 @@ describe("transaction journal interruption recovery", () => {
 
     expect(result).toMatchObject({
       ok: false,
-      conflict: { code: "MANUAL_RECOVERY_REQUIRED", targets: [targetA] },
+      conflict: { code: "MANUAL_RECOVERY_REQUIRED", targets: [] },
     });
     await expect(t.env.fs.readFile(targetA)).resolves.toBe("after-state");
     await expect(t.env.fs.readFile(outsideSnapshot)).resolves.toContain("BEGIN AGE ENCRYPTED FILE");

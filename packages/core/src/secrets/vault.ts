@@ -4,7 +4,7 @@
 // 文件读写仍走 Env(armor 文本形态,适配 Env 的 string-only fs)。
 import { join } from "node:path";
 import { armor, Decrypter, Encrypter } from "age-encryption";
-import type { Env } from "../env.js";
+import type { Env, FileStat } from "../env.js";
 import { readFileOrNull } from "../fs/probe.js";
 import {
   executeStorePublicationMutation,
@@ -13,6 +13,15 @@ import {
 
 // vault 解密后的明文结构:引用名 → 真值。
 type VaultData = Record<string, string>;
+
+export class VaultSecurityError extends Error {
+  readonly code = "INSECURE_VAULT_PERMISSIONS" as const;
+
+  constructor(readonly path: string) {
+    super(`vault security policy rejected ${path}: current-user-only access is required`);
+    this.name = "VaultSecurityError";
+  }
+}
 
 export function vaultPath(storeRoot: string): string {
   return join(storeRoot, "secrets", "vault.age");
@@ -51,6 +60,7 @@ export async function loadVault(
   passphrase: string,
 ): Promise<VaultData> {
   const path = vaultPath(storeRoot);
+  await assertVaultSecurity(env, path);
   const armored = await readFileOrNull(env, path);
   if (armored === null) return {};
   try {
@@ -68,21 +78,55 @@ export async function saveVault(
   data: VaultData,
   passphrase: string,
 ): Promise<void> {
+  assertCurrentUserOnlyCapability(env, vaultPath(storeRoot));
   const result = await executeStorePublicationMutation(
     env,
     storeRoot,
     "secret-metadata",
     "vault-update",
-    async () => ({
-      value: undefined,
-      publications: [
-        {
-          path: vaultPath(storeRoot),
-          data: await encryptVault(data, passphrase),
-          mode: 0o600,
-        },
-      ],
-    }),
+    async () => {
+      const path = vaultPath(storeRoot);
+      await assertVaultSecurity(env, path);
+      return {
+        value: undefined,
+        publications: [
+          {
+            path,
+            data: await encryptVault(data, passphrase),
+            mode: 0o600,
+            currentUserOnly: true,
+          },
+        ],
+      };
+    },
   );
   unwrapStorePublicationMutation(result);
+}
+
+async function assertVaultSecurity(env: Env, path: string): Promise<void> {
+  let stat: FileStat;
+  try {
+    stat = await env.fs.lstat(path);
+  } catch (error) {
+    if ((error as { code?: unknown } | null)?.code === "ENOENT") {
+      if (env.platform === "win32") assertCurrentUserOnlyCapability(env, path);
+      return;
+    }
+    throw error;
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new VaultSecurityError(path);
+  if (env.platform === "win32") {
+    const permissions = env.currentUserOnlyPermissions;
+    if (!permissions?.supported(env.platform) || !(await permissions.verify(path))) {
+      throw new VaultSecurityError(path);
+    }
+    return;
+  }
+  if ((stat.mode & 0o077) !== 0) throw new VaultSecurityError(path);
+}
+
+function assertCurrentUserOnlyCapability(env: Env, path: string): void {
+  if (env.platform === "win32" && !env.currentUserOnlyPermissions?.supported(env.platform)) {
+    throw new VaultSecurityError(path);
+  }
 }

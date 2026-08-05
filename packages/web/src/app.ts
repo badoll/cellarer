@@ -13,7 +13,6 @@ import {
   type ConflictStrategy,
   collectLedgerSecretRefStats,
   collectLedgerSecretRefs,
-  createRealEnv,
   type Destination,
   type DiffIdentity,
   dashboardSummary,
@@ -32,7 +31,6 @@ import {
   loadRegistry,
   mutationPresentation,
   planApplyMutation,
-  resolveStoreRoot,
   resourceCatalog,
   revert,
   type ScanSelection,
@@ -41,6 +39,8 @@ import {
   saveCollections,
   saveDefaults,
   scanPlan,
+  serializeSafeObservable,
+  serializeSafeWebObservable,
   setAgentEnabled,
   settingsSummary,
   status,
@@ -204,6 +204,7 @@ function scanOpts(deps: AppDeps, b: ScanBody) {
     select: b.select,
     selectItems: b.selectItems,
     intoCollection: b.intoCollection,
+    secretMode: "env" as const,
   };
 }
 
@@ -219,6 +220,7 @@ function importOpts(deps: AppDeps, b: ImportBody) {
     select: b.select,
     selectItems: b.selectItems,
     intoCollection: b.intoCollection,
+    secretMode: "env" as const,
   };
 }
 
@@ -313,20 +315,51 @@ function activityFilter(query: (name: string) => string | undefined) {
   };
 }
 
-export function createApp(deps: AppDeps) {
+export function createApp(inputDeps: AppDeps) {
+  const { secretStore: _secretStore, ...webEnv } = inputDeps.env;
+  const deps: AppDeps = { ...inputDeps, env: webEnv };
   const app = new Hono();
+  const responseKnownValueSources = new WeakMap<Response, object>();
 
   // 统一错误处理:HTTPException 按其状态码;其余(如 JSON 解析失败、core 抛错)→ 400 JSON,不裸 500/栈。
   app.onError((err, c) => {
-    if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
-    if (err instanceof StoreMutationConflictError) {
-      return c.json({ error: err.message, conflict: err.conflict }, 409);
+    if (err instanceof HTTPException) {
+      return c.json(redactWebPayload({ error: err.message }, [err]), err.status);
     }
-    return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    if (err instanceof StoreMutationConflictError) {
+      return c.json(redactWebPayload({ error: err.message, conflict: err.conflict }, [err]), 409);
+    }
+    return c.json(
+      redactWebPayload({ error: err instanceof Error ? err.message : String(err) }, [err]),
+      400,
+    );
   });
 
   // Host 白名单(纵深防御:阻止 DNS rebinding —— 攻击者域名解析到 127.0.0.1 借浏览器打本地 API)。
   app.use("*", hostGuard);
+
+  // One response boundary protects every current and future API route, including thin-shell
+  // callers that accidentally return a sensitive field from Core.
+  app.use("/api/*", async (c, next) => {
+    await next();
+    if (!c.res.headers.get("content-type")?.includes("application/json")) return;
+    const payload = await c.res
+      .clone()
+      .json()
+      .catch(() => undefined);
+    if (payload === undefined) return;
+    const headers = new Headers(c.res.headers);
+    const serialized = await serializeSafeWebObservable(deps.env, deps.storeRoot, payload, {
+      knownValueSources: [responseKnownValueSources.get(c.res)].filter(
+        (source): source is object => source !== undefined,
+      ),
+    });
+    c.res = new Response(serialized, {
+      status: c.res.status,
+      statusText: c.res.statusText,
+      headers,
+    });
+  });
 
   // 访问 token 中间件(设置了才校验);仅保护 /api。用常量时间比较消除时序侧信道。
   app.use("/api/*", async (c, next) => {
@@ -452,46 +485,67 @@ export function createApp(deps: AppDeps) {
     .post("/api/plan", async (c) => {
       const body = await c.req.json<DistributeBody>();
       const prepared = await planApplyMutation(deps.env, distributeOpts(deps, body));
-      return c.json({
+      const response = c.json({
         ...prepared.plan,
         mutation: mutationPresentation(prepared.mutationPlan),
       });
+      responseKnownValueSources.set(response, prepared);
+      return response;
     })
     // 执行下发。
     .post("/api/apply", async (c) => {
       const body = await c.req.json<DistributeBody>();
       const r = await apply(deps.env, distributeOpts(deps, body));
-      return c.json(r);
+      const response = c.json(r);
+      responseKnownValueSources.set(response, r);
+      return response;
     })
     .post("/api/import/plan", async (c) => {
       const body = await c.req.json<ImportBody>();
-      return c.json(await scanPlan(deps.env, importOpts(deps, body)));
+      const result = await scanPlan(deps.env, importOpts(deps, body));
+      const response = c.json(result);
+      responseKnownValueSources.set(response, result);
+      return response;
     })
     .post("/api/import/apply", async (c) => {
       const body = await c.req.json<ImportBody>();
-      return c.json(await applyScan(deps.env, importOpts(deps, body)));
+      const result = await applyScan(deps.env, importOpts(deps, body));
+      const response = c.json(result);
+      responseKnownValueSources.set(response, result);
+      return response;
     })
     .post("/api/sync/plan", async (c) => {
       const body = await c.req.json<SyncBody>();
       const prepared = await planApplyMutation(deps.env, syncOpts(deps, body));
-      return c.json({
+      const response = c.json({
         ...prepared.plan,
         mutation: mutationPresentation(prepared.mutationPlan),
       });
+      responseKnownValueSources.set(response, prepared);
+      return response;
     })
     .post("/api/sync/apply", async (c) => {
       const body = await c.req.json<SyncBody>();
-      return c.json(await apply(deps.env, syncOpts(deps, body)));
+      const result = await apply(deps.env, syncOpts(deps, body));
+      const response = c.json(result);
+      responseKnownValueSources.set(response, result);
+      return response;
     })
     // 扫描预览(只读;ScanItem 不含真值,secretRefs 只列名)。
     .post("/api/scan", async (c) => {
       const body = await c.req.json<ScanBody>();
-      return c.json(await scanPlan(deps.env, scanOpts(deps, body)));
+      const result = await scanPlan(deps.env, scanOpts(deps, body));
+      const response = c.json(result);
+      responseKnownValueSources.set(response, result);
+      return response;
     })
     // 扫描导入:仍由 core 负责脱敏、冲突裁决、写前护栏与 collection 打标。
     .post("/api/scan/apply", async (c) => {
       const body = await c.req.json<ScanBody>();
-      return c.json(await applyScan(deps.env, scanOpts(deps, body)));
+      const result = await applyScan(deps.env, scanOpts(deps, body));
+      const response = c.json(result);
+      responseKnownValueSources.set(response, result);
+      return response;
     })
     // 台账回滚:前端要求 dry-run-first;core 负责受管根安全检查。
     .post("/api/revert", async (c) => {
@@ -587,11 +641,12 @@ export function createApp(deps: AppDeps) {
   return api;
 }
 
+export function redactWebPayload(
+  value: unknown,
+  knownValueSources: readonly unknown[] = [value],
+): never {
+  return JSON.parse(serializeSafeObservable("web", value, { knownValueSources })) as never;
+}
+
 // RPC 类型导出:前端 `hc<AppType>(...)` 拿端到端类型。
 export type AppType = ReturnType<typeof createApp>;
-
-// 用真实 Env 构造默认 app(server 入口用)。
-export function createDefaultApp(token?: string) {
-  const env = createRealEnv();
-  return createApp({ env, storeRoot: resolveStoreRoot(env), token });
-}

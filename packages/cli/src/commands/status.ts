@@ -2,6 +2,7 @@ import { status, verify } from "@cellarer/core";
 import { Command } from "commander";
 import { resolveContext } from "../context.js";
 import { printMutationRecovery } from "../mutation-output.js";
+import { safeConsole as console } from "../output.js";
 
 const ICON: Record<string, string> = {
   ok: "✓",
@@ -18,7 +19,7 @@ export function statusCommand(): Command {
     .option("--dir <path>", "指定工程目录")
     .option("--json", "JSON 输出(CI 漂移检查用)")
     .action(async (opts: { agent?: string; dir?: string; json?: boolean }) => {
-      const ctx = resolveContext(opts);
+      const ctx = await resolveContext(opts);
       const verification =
         ctx.agents.length > 0
           ? await verify(ctx.env, {

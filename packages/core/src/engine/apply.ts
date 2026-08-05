@@ -7,18 +7,30 @@
 //   故复用既有台账条目的 backup;内容未变时保留 appliedAt 并跳过重写(避免 mtime 抖动)。
 
 import { dirname, isAbsolute, join, normalize } from "node:path";
+import { z } from "zod";
 import { appendActivity } from "../activity.js";
-import type { Env } from "../env.js";
+import type { Env, MutationAuthorityLease } from "../env.js";
 import { atomicWrite } from "../fs/atomicWrite.js";
 import { hashDir } from "../fs/hashDir.js";
 import { linkOrCopy } from "../fs/linkOrCopy.js";
 import { lstatOrNull } from "../fs/probe.js";
-import { assertNotSymbolicLink } from "../fs/safety.js";
+import { assertNotSymbolicLink, isWithinRoot } from "../fs/safety.js";
 import type { DistributePlan, Ledger, LedgerEntry, PlanAction } from "../model/index.js";
-import { createMutationPlan } from "../protocol/canonical.js";
+import {
+  acquireCurrentMutationAuthorityLease,
+  assertStrictMutationPlanRuntime,
+  canonicalJson,
+  createAuthorizedMutationPlan,
+  requireMutationAuthority,
+  verifyMutationPlanAuthorization,
+  verifyMutationPlanDigest,
+  withCurrentMutationAuthorityLease,
+} from "../protocol/canonical.js";
 import {
   type AuthorizeOperationAction,
+  assertMutationPlanActionAlignment,
   executeMutationPlan,
+  invalidPlanResult,
   type RecordOperationAction,
   targetState,
 } from "../protocol/execute.js";
@@ -28,12 +40,30 @@ import type {
   MutationPlan,
   MutationPlanAction,
   OperationActionReceipt,
+  OperationResult,
   TargetStateReceipt,
 } from "../protocol/models.js";
 import { mutationPresentation } from "../protocol/presentation.js";
 import { PublicationPostconditionError } from "../protocol/publication.js";
 import { observeAtStableStoreRevision } from "../protocol/store-revision.js";
+import {
+  attachProviderScope,
+  configureProviderScope,
+  createProviderScope,
+  type ProviderScope,
+  providerScopeForEnv,
+  withProviderScope,
+} from "../secrets/active-values.js";
+import { attachObservableKnownValues, observableKnownValues } from "../secrets/observable.js";
+import {
+  assertSafeRecursiveSnapshotCurrent,
+  captureSafeRecursiveSource,
+  installSafeRecursiveSnapshot,
+  type SafeRecursiveSnapshot,
+  UnsafeRecursiveSourceError,
+} from "../secrets/safe-tree.js";
 import { sha256 } from "../store/checksum.js";
+import { loadConfig } from "../store/config.js";
 import {
   addEntries,
   entryKey,
@@ -48,11 +78,16 @@ import {
   SnapshotCreationError,
 } from "../target-snapshot.js";
 import {
+  assertExecutableGitignoreMutation,
   assertGitignoreMutationMatchesLedger,
   executeGitignoreMutation,
   planGitignoreMutation,
   projectTargetsUnder,
 } from "./gitignore-sync.js";
+import {
+  assertRecursiveSecretGuard,
+  discoverActiveSecretValuesForActions,
+} from "./plan/secret-guard.js";
 import { plan } from "./plan.js";
 import type {
   ApplyCallResult,
@@ -72,6 +107,7 @@ type OpHandler = (
   prior: LedgerEntry | undefined,
   snapshotPath: string | undefined,
   projectRoot: string | undefined,
+  sourceSnapshot: SafeRecursiveSnapshot | undefined,
 ) => Promise<LedgerEntry>;
 
 interface ApplyContext {
@@ -95,25 +131,174 @@ const OP_HANDLERS: Partial<Record<PlanAction["op"], OpHandler>> = {
   copy: applyLink, // skills:目录级拷贝(或软链回退)
 };
 
+const signedFingerprintSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
+const artifactIdSchema = z.string().regex(/^(rules|mcp|skills)\/[^/*,\s]+$/);
+const artifactIdsSchema = z
+  .array(artifactIdSchema)
+  .min(1)
+  .refine((ids) => new Set(ids).size === ids.length);
+const secretRefsSchema = z
+  .array(
+    z
+      .string()
+      .min(1)
+      .refine((name) => name.trim() === name && !/[{}\r\n]/.test(name)),
+  )
+  .refine((names) => new Set(names).size === names.length);
+const appliedReceiptSchema = z
+  .object({
+    method: z.enum(["write", "symlink", "junction", "copy"]),
+    fingerprint: signedFingerprintSchema,
+    contentFingerprint: signedFingerprintSchema.optional(),
+    sourceFingerprint: signedFingerprintSchema.optional(),
+    backup: z.string().nullable(),
+    generated: z.boolean(),
+    appliedAt: z.string(),
+  })
+  .strict();
+const ownershipSchema = z
+  .object({
+    key: z.string().min(1),
+    classification: z.enum(["absent", "owned-current", "owned-drifted", "unowned-existing"]),
+    target: z.string().refine(isAbsolute),
+    currentFingerprint: signedFingerprintSchema.nullable(),
+    expectedReceipt: appliedReceiptSchema.nullable(),
+  })
+  .strict();
+const replacementSchema = z
+  .object({
+    acknowledgement: z
+      .object({
+        kind: z.enum(["replace-unowned", "override-drift"]),
+        token: signedFingerprintSchema,
+      })
+      .strict(),
+    snapshotRequired: z.literal(true),
+  })
+  .strict();
+const generatedPreviewSchema = z
+  .object({ before: z.string().optional(), after: z.string() })
+  .strict();
+const writeEvidenceSchema = z
+  .object({
+    method: z.literal("write"),
+    contentFingerprint: signedFingerprintSchema,
+    sourceFingerprint: z.never().optional(),
+    sourceIdentity: z.never().optional(),
+  })
+  .strict();
+const recursiveSourceEvidenceSchema = (method: "symlink" | "copy") =>
+  z
+    .object({
+      method: z.literal(method),
+      contentFingerprint: z.never().optional(),
+      sourceFingerprint: signedFingerprintSchema,
+      sourceIdentity: signedFingerprintSchema,
+    })
+    .strict();
+const executableActionBase = {
+  artifact: z.string().min(1),
+  artifactIds: artifactIdsSchema,
+  agent: z.string().min(1),
+  scope: z.enum(["global", "project"]),
+  target: z.string().refine(isAbsolute),
+  reason: z.string().min(1),
+  ownership: ownershipSchema,
+  replacement: replacementSchema.optional(),
+};
+const executableApplyActionSchema = z.discriminatedUnion("op", [
+  z
+    .object({
+      ...executableActionBase,
+      artifact: z.literal("rules/*"),
+      capability: z.literal("rules"),
+      source: z.never().optional(),
+      method: z.enum(["symlink", "copy"]),
+      op: z.literal("write"),
+      preview: generatedPreviewSchema,
+      secretRefs: z.never().optional(),
+      accidentalPlaintext: z.never().optional(),
+      desiredEvidence: writeEvidenceSchema,
+    })
+    .strict(),
+  ...(["merge", "overwrite"] as const).map((op) =>
+    z
+      .object({
+        ...executableActionBase,
+        capability: z.literal("mcp"),
+        source: z.never().optional(),
+        method: z.literal("copy"),
+        op: z.literal(op),
+        preview: generatedPreviewSchema,
+        secretRefs: secretRefsSchema,
+        accidentalPlaintext: z.literal(false),
+        desiredEvidence: writeEvidenceSchema,
+      })
+      .strict(),
+  ),
+  ...(["symlink", "copy"] as const).map((op) =>
+    z
+      .object({
+        ...executableActionBase,
+        capability: z.literal("skills"),
+        source: z.string().refine(isAbsolute),
+        method: z.literal(op),
+        op: z.literal(op),
+        preview: z.never().optional(),
+        secretRefs: z.never().optional(),
+        accidentalPlaintext: z.never().optional(),
+        desiredEvidence: recursiveSourceEvidenceSchema(op),
+      })
+      .strict(),
+  ),
+]);
+
 export async function apply(env: Env, opts: DistributeOptions): Promise<ApplyCallResult> {
-  const prepared = await planApplyMutation(env, opts);
-  const distributePlan = prepared.plan;
+  return withCurrentMutationAuthorityLease(env, async (authorityLease) => {
+    const config = await loadConfig(env, opts.storeRoot);
+    const scope = createProviderScope({
+      secretMode: opts.secretMode ?? config.defaults.secretMode,
+      vaultPassphrase: opts.vaultPassphrase,
+      keychainService: opts.keychainService,
+    });
+    const operationEnv = withProviderScope(env, scope);
+    const prepared = await planApplyMutation(operationEnv, opts, {}, { authorityLease });
+    const distributePlan = prepared.plan;
 
-  // Duplicate physical owners make the ledger globally unsafe to update. Planning already exposes
-  // the target-keyed conflict, so non-dry apply returns the same blocked result without reopening
-  // the ledger through the strict mutation path or performing any effect.
-  if (opts.dryRun || distributePlan.invalidLedger) {
-    return {
-      plan: distributePlan,
-      entries: [],
-      failures: [],
-      mutation: mutationPresentation(prepared.mutationPlan),
-    };
-  }
+    // Duplicate physical owners make the ledger globally unsafe to update. Planning already exposes
+    // the target-keyed conflict, so non-dry apply returns the same blocked result without reopening
+    // the ledger through the strict mutation path or performing any effect.
+    if (
+      opts.dryRun ||
+      distributePlan.invalidLedger ||
+      distributePlan.secretFindings?.length ||
+      distributePlan.secretReferenceFindings?.length
+    ) {
+      return attachProviderScope(
+        {
+          plan: distributePlan,
+          entries: [],
+          failures: [],
+          mutation: mutationPresentation(prepared.mutationPlan),
+        },
+        scope,
+      );
+    }
 
-  return applyMutationPlan(env, prepared.mutationPlan, {
-    storeRoot: opts.storeRoot,
-    snapshotPassphrase: opts.snapshotPassphrase,
+    const { operation: _operation, ...result } = await applyMutationPlan(
+      operationEnv,
+      prepared.mutationPlan,
+      {
+        storeRoot: opts.storeRoot,
+        options: opts,
+        snapshotPassphrase: opts.snapshotPassphrase,
+        secretMode: opts.secretMode,
+        vaultPassphrase: opts.vaultPassphrase,
+        keychainService: opts.keychainService,
+      },
+      { authorityLease },
+    );
+    return attachProviderScope(result, scope);
   });
 }
 
@@ -121,20 +306,60 @@ export async function planApplyMutation(
   env: Env,
   opts: DistributeOptions,
   planOptions: MutationPlanOptions = {},
+  execution: {
+    providerAccess?: "allowed" | "forbidden";
+    authorityLease?: MutationAuthorityLease;
+  } = {},
 ): Promise<PlannedApplyMutation> {
-  const observed = await observeAtStableStoreRevision(env, opts.storeRoot, async () => {
-    const distributePlan = await plan(env, opts);
+  requireMutationAuthority(env);
+  const suppliedLease = execution.authorityLease;
+  const authorityLease =
+    suppliedLease ?? (await acquireCurrentMutationAuthorityLease(env).catch(() => null));
+  if (!authorityLease || !(await authorityLease.isCurrent().catch(() => false))) {
+    if (authorityLease && !suppliedLease) await authorityLease.release().catch(() => undefined);
+    throw new TypeError("mutation authority is not current");
+  }
+  try {
+    return await planApplyMutationWithAuthorityLease(env, opts, planOptions, execution);
+  } finally {
+    if (!suppliedLease) await authorityLease.release();
+  }
+}
+
+async function planApplyMutationWithAuthorityLease(
+  env: Env,
+  opts: DistributeOptions,
+  planOptions: MutationPlanOptions,
+  execution: { providerAccess?: "allowed" | "forbidden" },
+): Promise<PlannedApplyMutation> {
+  requireMutationAuthority(env);
+  const config = await loadConfig(env, opts.storeRoot);
+  const scope =
+    providerScopeForEnv(env) ??
+    createProviderScope({
+      secretMode: opts.secretMode ?? config.defaults.secretMode,
+      vaultPassphrase: opts.vaultPassphrase,
+      keychainService: opts.keychainService,
+    });
+  const operationEnv = providerScopeForEnv(env) ? env : withProviderScope(env, scope);
+  const observed = await observeAtStableStoreRevision(operationEnv, opts.storeRoot, async () => {
+    const distributePlan = await plan(operationEnv, opts, execution);
     const executable = distributePlan.actions.filter((action) => action.op !== "skip");
     const gitignore =
       opts.scope === "project" && opts.dir
-        ? await planGitignoreMutation(env, opts.dir, [
-            ...projectTargetsUnder(await loadLedgerForPlanning(env, opts.storeRoot), opts.dir),
+        ? await planGitignoreMutation(operationEnv, opts.dir, [
+            ...projectTargetsUnder(
+              await loadLedgerForPlanning(operationEnv, opts.storeRoot),
+              opts.dir,
+            ),
             ...executable.map((action) => action.target),
           ])
         : undefined;
     return { distributePlan, gitignore };
   });
   const { distributePlan, gitignore } = observed.value;
+  const effectiveSecretMode = opts.secretMode ?? config.defaults.secretMode;
+  const effectiveKeychainService = opts.keychainService ?? "cellarer";
   const executable = distributePlan.actions.filter((action) => action.op !== "skip");
   const actions: MutationPlanAction[] = executable.map((action, index) => {
     const actionId = mutationActionId(action, index);
@@ -165,11 +390,11 @@ export async function planApplyMutation(
     ...(opts.capabilities ? { capabilities: opts.capabilities } : {}),
     distributePlan,
   });
-  return {
+  const prepared = {
     plan: distributePlan,
-    mutationPlan: createMutationPlan({
+    mutationPlan: createAuthorizedMutationPlan(operationEnv, opts.storeRoot, {
       schemaVersion: 1,
-      planId: planOptions.planId ?? `plan-${env.randomId()}`,
+      planId: planOptions.planId ?? `plan-${operationEnv.randomId()}`,
       operation: "apply",
       baseRevision: observed.revision,
       normalizedInputs,
@@ -178,55 +403,279 @@ export async function planApplyMutation(
       expires: planOptions.expires ?? { policy: "none" },
     }),
   };
+  const activeValues =
+    execution.providerAccess === "forbidden"
+      ? []
+      : await discoverActiveSecretValuesForActions(operationEnv, distributePlan.actions, {
+          storeRoot: opts.storeRoot,
+          config,
+          secretMode: effectiveSecretMode,
+          vaultPassphrase: opts.vaultPassphrase,
+          keychainService: effectiveKeychainService,
+        });
+  const knownValues = activeValues.map((active) => active.value);
+  attachObservableKnownValues(distributePlan, knownValues);
+  attachProviderScope(distributePlan, scope);
+  return attachProviderScope(attachObservableKnownValues(prepared, knownValues), scope);
 }
 
 export async function applyMutationPlan(
   env: Env,
   mutationPlan: MutationPlan,
   context: ApplyMutationContext,
+  execution: { readonly authorityLease?: MutationAuthorityLease } = {},
 ): Promise<ApplyMutationResult> {
-  let distributePlan: DistributePlan = { actions: [], warnings: [], conflicts: [] };
-  let applied: ApplyResult | undefined;
-  const operation = await executeMutationPlan(
-    env,
-    context.storeRoot,
-    mutationPlan,
-    async (_operationId, recordAction, authorizeAction) => {
-      if (mutationPlan.operation !== "apply") {
-        throw new TypeError(`apply mutation requires an apply plan, got ${mutationPlan.operation}`);
+  const scope =
+    providerScopeForEnv(env) ??
+    createProviderScope({
+      secretMode: context.secretMode ?? "env",
+      vaultPassphrase: context.vaultPassphrase,
+      keychainService: context.keychainService,
+    });
+  const operationEnv = providerScopeForEnv(env) ? env : withProviderScope(env, scope);
+  try {
+    let distributePlan: DistributePlan = { actions: [], warnings: [], conflicts: [] };
+    let applied: ApplyResult | undefined;
+    let stagedSources = new Map<string, SafeRecursiveSnapshot>();
+    let decoded: ReturnType<typeof decodeApplyMutation>;
+    let trustedOptions: DistributeOptions;
+    try {
+      assertStrictMutationPlanRuntime(mutationPlan, "apply");
+    } catch {
+      return invalidApplyMutationResult(scope);
+    }
+    if (!verifyMutationPlanAuthorization(operationEnv, context.storeRoot, mutationPlan)) {
+      return invalidApplyMutationResult(scope);
+    }
+    if (!verifyMutationPlanDigest(mutationPlan)) return invalidApplyDigestMutationResult(scope);
+    const suppliedLease = execution.authorityLease;
+    const authorityLease =
+      suppliedLease ?? (await acquireCurrentMutationAuthorityLease(operationEnv).catch(() => null));
+    if (!authorityLease) return invalidApplyMutationResult(scope);
+    if (!(await authorityLease.isCurrent().catch(() => false))) {
+      if (!suppliedLease) await authorityLease.release().catch(() => undefined);
+      return invalidApplyMutationResult(scope);
+    }
+    try {
+      try {
+        assertMutationPlanActionAlignment(mutationPlan);
+        trustedOptions = assertTrustedApplyOptions(context);
+        decoded = decodeApplyMutation(operationEnv, mutationPlan);
+        assertApplyOptionsMatchTrustedContext(decoded.opts, trustedOptions);
+        const reconstructed = await planApplyMutation(
+          operationEnv,
+          trustedOptions,
+          { planId: mutationPlan.planId, expires: mutationPlan.expires },
+          { providerAccess: "forbidden", authorityLease },
+        );
+        if (canonicalJson(reconstructed.mutationPlan) !== canonicalJson(mutationPlan)) {
+          throw new TypeError("apply mutation plan does not match canonical reconstruction");
+        }
+      } catch {
+        return invalidApplyMutationResult(scope);
       }
-      const decoded = decodeApplyMutation(mutationPlan);
-      if (decoded.opts.storeRoot !== context.storeRoot) {
-        throw new TypeError("apply mutation store does not match its execution context");
-      }
-      distributePlan = decoded.distributePlan;
-      const executed = await executeApplyPlan(
-        env,
-        decoded.opts,
-        decoded.executionPlan,
-        context.snapshotPassphrase,
+      const config = await loadConfig(operationEnv, context.storeRoot);
+      const secretMode =
+        context.secretMode ?? trustedOptions.secretMode ?? config.defaults.secretMode;
+      const keychainService =
+        context.keychainService ?? trustedOptions.keychainService ?? "cellarer";
+      configureProviderScope(scope, {
+        secretMode,
+        vaultPassphrase: context.vaultPassphrase ?? trustedOptions.vaultPassphrase,
+        keychainService,
+      });
+      await discoverActiveSecretValuesForActions(operationEnv, decoded.executionPlan.actions, {
+        storeRoot: context.storeRoot,
+        config,
+        secretMode,
+        vaultPassphrase: context.vaultPassphrase ?? trustedOptions.vaultPassphrase,
+        keychainService,
+        requireAvailableReferences: true,
+      });
+      const operation = await executeMutationPlan(
+        operationEnv,
+        context.storeRoot,
         mutationPlan,
-        recordAction,
-        authorizeAction,
+        async (_operationId, recordAction, authorizeAction) => {
+          if (mutationPlan.operation !== "apply") {
+            throw new TypeError("apply mutation requires an apply plan");
+          }
+          distributePlan = decoded.distributePlan;
+          const executed = await executeApplyPlan(
+            operationEnv,
+            decoded.opts,
+            decoded.executionPlan,
+            context.snapshotPassphrase ?? trustedOptions.snapshotPassphrase,
+            mutationPlan,
+            recordAction,
+            authorizeAction,
+            stagedSources,
+          );
+          applied = executed.result;
+          return {
+            actionReceipts: executed.actionReceipts,
+            failedActionIds: executed.failedActionIds,
+            ...(executed.statePublications
+              ? { statePublications: executed.statePublications }
+              : {}),
+            ...(executed.afterCommit ? { afterCommit: executed.afterCommit } : {}),
+          };
+        },
+        {
+          authorityLease,
+          validateUnderLock: async () => {
+            const config = await loadConfig(operationEnv, context.storeRoot);
+            stagedSources = await captureSignedApplySources(
+              operationEnv,
+              decoded.executionPlan.actions,
+            );
+            await assertRecursiveSecretGuard(operationEnv, decoded.executionPlan.actions, {
+              storeRoot: context.storeRoot,
+              config,
+              secretMode,
+              vaultPassphrase: context.vaultPassphrase ?? trustedOptions.vaultPassphrase,
+              keychainService,
+              requireAvailableReferences: true,
+              stagedSources,
+            });
+          },
+        },
       );
-      applied = executed.result;
-      return {
-        actionReceipts: executed.actionReceipts,
-        failedActionIds: executed.failedActionIds,
-        ...(executed.statePublications ? { statePublications: executed.statePublications } : {}),
-        ...(executed.afterCommit ? { afterCommit: executed.afterCommit } : {}),
-      };
-    },
-  );
-  const returnedPlan = applied
-    ? { ...distributePlan, warnings: [...applied.plan.warnings] }
-    : distributePlan;
-  return {
-    ...(applied ?? { plan: distributePlan, entries: [], failures: [] }),
-    plan: returnedPlan,
-    operation,
-    mutation: mutationPresentation(mutationPlan, operation),
+      const returnedPlan = applied
+        ? { ...distributePlan, warnings: [...applied.plan.warnings] }
+        : distributePlan;
+      return attachProviderScope(
+        {
+          ...(applied ?? { plan: distributePlan, entries: [], failures: [] }),
+          plan: returnedPlan,
+          operation,
+          mutation: mutationPresentation(mutationPlan, operation),
+        },
+        scope,
+      );
+    } finally {
+      if (!suppliedLease) await authorityLease.release();
+    }
+  } catch (error) {
+    throw typeof error === "object" && error !== null ? attachProviderScope(error, scope) : error;
+  }
+}
+
+function assertApplyOptionsMatchTrustedContext(
+  supplied: DistributeOptions,
+  trusted: DistributeOptions,
+): void {
+  const trustedSignedOptions: DistributeOptions = {
+    storeRoot: trusted.storeRoot,
+    scope: trusted.scope,
+    agents: trusted.agents,
+    ...(trusted.dir ? { dir: trusted.dir } : {}),
+    ...(trusted.capabilities ? { capabilities: trusted.capabilities } : {}),
   };
+  if (canonicalJson(jsonObject(supplied)) !== canonicalJson(jsonObject(trustedSignedOptions))) {
+    throw new TypeError("apply mutation options do not match the trusted execution context");
+  }
+}
+
+function assertTrustedApplyOptions(context: ApplyMutationContext): DistributeOptions {
+  const options = context.options;
+  if (
+    !options ||
+    options.storeRoot !== context.storeRoot ||
+    options.dryRun === true ||
+    (context.secretMode !== undefined &&
+      options.secretMode !== undefined &&
+      context.secretMode !== options.secretMode) ||
+    (context.keychainService !== undefined &&
+      options.keychainService !== undefined &&
+      context.keychainService !== options.keychainService)
+  ) {
+    throw new TypeError("apply mutation context does not contain trusted canonical options");
+  }
+  return options;
+}
+
+function invalidApplyPlanDigestResult(): OperationResult {
+  return {
+    ok: false,
+    conflict: {
+      code: "INVALID_PLAN_DIGEST",
+      message: "plan digest does not match its contents",
+      planId: "untrusted",
+      expectedDigest: "untrusted",
+      actualDigest: "invalid",
+    },
+  };
+}
+
+function invalidApplyMutationResult(scope: ProviderScope): ApplyMutationResult {
+  const operation = invalidPlanResult();
+  return attachProviderScope(
+    {
+      plan: { actions: [], warnings: [], conflicts: [] },
+      entries: [],
+      failures: [],
+      operation,
+      mutation: {
+        planId: "untrusted",
+        planDigest: "untrusted",
+        operation: "apply",
+        baseRevision: 0,
+        result: operation,
+      },
+    },
+    scope,
+  );
+}
+
+function invalidApplyDigestMutationResult(scope: ProviderScope): ApplyMutationResult {
+  const operation = invalidApplyPlanDigestResult();
+  return attachProviderScope(
+    {
+      plan: { actions: [], warnings: [], conflicts: [] },
+      entries: [],
+      failures: [],
+      operation,
+      mutation: {
+        planId: "untrusted",
+        planDigest: "untrusted",
+        operation: "apply",
+        baseRevision: 0,
+        result: operation,
+      },
+    },
+    scope,
+  );
+}
+
+async function captureSignedApplySources(
+  env: Env,
+  actions: readonly PlanAction[],
+): Promise<Map<string, SafeRecursiveSnapshot>> {
+  const snapshots = new Map<string, SafeRecursiveSnapshot>();
+  for (const action of actions) {
+    if (action.op === "skip" || !action.source) continue;
+    if (snapshots.has(action.source)) continue;
+    const expected = action.desiredEvidence?.sourceFingerprint;
+    const expectedIdentity = action.desiredEvidence?.sourceIdentity;
+    const snapshot = await captureSafeRecursiveSource(env, action.source);
+    if (
+      snapshot.kind === "directory" &&
+      expected &&
+      snapshot.fingerprint === expected &&
+      expectedIdentity &&
+      snapshot.identity === expectedIdentity
+    ) {
+      snapshots.set(action.source, snapshot);
+      continue;
+    }
+    const error = new Error(`apply source changed after planning: ${action.source}`) as Error & {
+      code: string;
+    };
+    error.code = "ESTALE";
+    throw error;
+  }
+  return snapshots;
 }
 
 async function executeApplyPlan(
@@ -237,6 +686,7 @@ async function executeApplyPlan(
   mutationPlan: MutationPlan,
   recordAction: RecordOperationAction,
   authorizeAction: AuthorizeOperationAction,
+  stagedSources: ReadonlyMap<string, SafeRecursiveSnapshot>,
 ): Promise<{
   result: ApplyResult;
   actionReceipts: OperationActionReceipt[];
@@ -287,11 +737,17 @@ async function executeApplyPlan(
     const prior = findEntry(ledger, action);
     let appliedAction: AppliedAction;
     try {
-      appliedAction = await applyAction(env, action, prior, {
-        storeRoot: opts.storeRoot,
-        snapshotPassphrase,
-        projectRoot,
-      });
+      appliedAction = await applyAction(
+        env,
+        action,
+        prior,
+        {
+          storeRoot: opts.storeRoot,
+          snapshotPassphrase,
+          projectRoot,
+        },
+        action.source ? stagedSources.get(action.source) : undefined,
+      );
     } catch (error) {
       if (!(error instanceof SnapshotCreationError) && !isControlledActionIoFailure(error)) {
         throw error;
@@ -463,7 +919,7 @@ async function executeApplyPlan(
               affectedCount: entries.length,
               warningsCount: resultPlan.warnings.length,
               summary: `Applied ${entries.length} ${entries.length === 1 ? "target" : "targets"}`,
-              references: {
+              resources: {
                 ledgerEntryKeys: entries.map(entryKey),
                 artifactIds: entries.flatMap((entry) => entry.artifactIds),
               },
@@ -486,7 +942,7 @@ async function executeApplyPlan(
           statePublications: [
             {
               path: join(opts.storeRoot, "state.json"),
-              data: serializeLedger(nextLedger),
+              data: serializeLedger(nextLedger, observableKnownValues(env)),
               mode: 0o600,
             },
           ],
@@ -504,6 +960,7 @@ const CONTROLLED_ACTION_IO_CODES = new Set([
   "ENOSPC",
   "EPERM",
   "EROFS",
+  "ESTALE",
   "PUBLICATION_POSTCONDITION_FAILED",
 ]);
 
@@ -524,19 +981,32 @@ function jsonObject(value: unknown): CanonicalJsonObject {
   return JSON.parse(JSON.stringify(value)) as CanonicalJsonObject;
 }
 
-function decodeApplyMutation(planReceipt: MutationPlan): {
+function decodeApplyMutation(
+  env: Env,
+  planReceipt: MutationPlan,
+): {
   opts: DistributeOptions;
   distributePlan: DistributePlan;
   executionPlan: DistributePlan;
 } {
+  if (planReceipt.operation !== "apply") {
+    throw new TypeError("apply mutation requires an apply plan");
+  }
   const input = planReceipt.normalizedInputs as Record<string, unknown>;
+  const inputKeys = ["agents", "distributePlan", "scope", "storeRoot"];
+  if ("dir" in input) inputKeys.push("dir");
+  if ("capabilities" in input) inputKeys.push("capabilities");
   if (
+    !hasExactKeys(input, inputKeys) ||
     typeof input.storeRoot !== "string" ||
     (input.scope !== "global" && input.scope !== "project") ||
     !Array.isArray(input.agents) ||
     !input.agents.every((agent) => typeof agent === "string") ||
     typeof input.distributePlan !== "object" ||
-    input.distributePlan === null
+    input.distributePlan === null ||
+    !Array.isArray((input.distributePlan as DistributePlan).actions) ||
+    !Array.isArray((input.distributePlan as DistributePlan).warnings) ||
+    !Array.isArray((input.distributePlan as DistributePlan).conflicts)
   ) {
     throw new TypeError("apply mutation plan has invalid normalized inputs");
   }
@@ -549,28 +1019,187 @@ function decodeApplyMutation(planReceipt: MutationPlan): {
       ? { capabilities: input.capabilities as DistributeOptions["capabilities"] }
       : {}),
   };
+  if (
+    new Set(opts.agents).size !== opts.agents.length ||
+    opts.agents.some((agent) => agent.length === 0) ||
+    (opts.capabilities &&
+      !opts.capabilities.every((capability) => ["rules", "mcp", "skills"].includes(capability)))
+  ) {
+    throw new TypeError("apply mutation plan has invalid normalized inputs");
+  }
   const distributePlan = input.distributePlan as unknown as DistributePlan;
-  const actions = planReceipt.actions
-    .filter((mutationAction) => mutationAction.kind !== "sync-gitignore")
-    .map((mutationAction) => {
-      const action = mutationAction.payload.planAction as unknown;
+  const actions: PlanAction[] = [];
+  const gitignoreActions: MutationPlanAction[] = [];
+  let reachedGitignoreActions = false;
+  for (const mutationAction of planReceipt.actions) {
+    if (mutationAction.kind === "sync-gitignore") {
+      reachedGitignoreActions = true;
       if (
-        typeof action !== "object" ||
-        action === null ||
-        typeof (action as PlanAction).target !== "string" ||
-        typeof (action as PlanAction).op !== "string" ||
-        (action as PlanAction).target !== mutationAction.target ||
-        (action as PlanAction).op !== mutationAction.kind
+        !hasExactKeys(mutationAction, ["actionId", "kind", "payload", "target"]) ||
+        !hasExactKeys(mutationAction.payload, [
+          "digest",
+          "effect",
+          "mode",
+          "path",
+          "projectDir",
+          "targets",
+        ])
       ) {
-        throw new TypeError(`apply mutation action ${mutationAction.actionId} has invalid payload`);
+        throw new TypeError("apply mutation plan has an invalid action payload");
       }
-      return action as PlanAction;
-    });
+      assertExecutableGitignoreMutation(mutationAction);
+      gitignoreActions.push(mutationAction);
+      continue;
+    }
+    if (reachedGitignoreActions) {
+      throw new TypeError("apply mutation plan has invalid action ordering");
+    }
+    if (
+      !hasExactKeys(mutationAction, ["actionId", "kind", "payload", "target"]) ||
+      typeof mutationAction.actionId !== "string" ||
+      mutationAction.actionId.length === 0 ||
+      !hasExactKeys(mutationAction.payload, ["planAction"])
+    ) {
+      throw new TypeError("apply mutation plan has an invalid action payload");
+    }
+    const parsed = executableApplyActionSchema.safeParse(mutationAction.payload.planAction);
+    if (!parsed.success) {
+      throw new TypeError("apply mutation plan has an invalid action payload");
+    }
+    const action = parsed.data as PlanAction;
+    const precondition = planReceipt.targetPreconditions.find(
+      (candidate) => candidate.actionId === mutationAction.actionId,
+    );
+    if (
+      action.target !== mutationAction.target ||
+      action.op !== mutationAction.kind ||
+      !OP_HANDLERS[action.op] ||
+      !precondition ||
+      !isExecutableApplyActionSemanticallyValid(env, action, opts, precondition.expected)
+    ) {
+      throw new TypeError("apply mutation plan has an invalid action payload");
+    }
+    actions.push(action);
+  }
+  const plannedExecutable = distributePlan.actions.filter((action) => action.op !== "skip");
+  const projectRoot =
+    opts.scope === "project" && opts.dir ? canonicalProjectRoot(env, opts.dir) : null;
+  const helper = gitignoreActions[0];
+  if (
+    plannedExecutable.length !== actions.length ||
+    plannedExecutable.some(
+      (action, index) => canonicalJson(action) !== canonicalJson(actions[index]),
+    ) ||
+    (opts.scope === "global" && gitignoreActions.length !== 0) ||
+    (opts.scope === "project" &&
+      (!projectRoot ||
+        gitignoreActions.length !== 1 ||
+        helper?.payload.projectDir !== projectRoot ||
+        actions.some(
+          (action) => !(helper?.payload.targets as unknown[] | undefined)?.includes(action.target),
+        )))
+  ) {
+    throw new TypeError("apply mutation plan is not bound to its canonical execution context");
+  }
   return {
     opts,
     distributePlan,
     executionPlan: { ...distributePlan, actions },
   };
+}
+
+function hasExactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+function isExecutableApplyActionSemanticallyValid(
+  env: Env,
+  action: PlanAction,
+  opts: DistributeOptions,
+  expected: TargetStateReceipt,
+): boolean {
+  const requestedCapabilities = opts.capabilities ?? ["rules"];
+  const rawManagedRoot = opts.scope === "global" ? env.homedir() : (opts.dir ?? env.cwd());
+  const managedRoot = normalize(
+    isAbsolute(rawManagedRoot) ? rawManagedRoot : join(env.cwd(), rawManagedRoot),
+  );
+  if (
+    !isAbsolute(managedRoot) ||
+    !opts.agents.includes(action.agent) ||
+    action.scope !== opts.scope ||
+    !requestedCapabilities.includes(action.capability) ||
+    normalize(action.target) !== action.target ||
+    !isWithinRoot(managedRoot, action.target) ||
+    action.artifactIds?.some((id) => !id.startsWith(`${action.capability}/`)) ||
+    action.ownership?.target !== action.target ||
+    action.ownership.key !== entryKey(action)
+  ) {
+    return false;
+  }
+  const artifactIds = action.artifactIds ?? [];
+  if (
+    (action.capability === "rules" && action.reason !== artifactIds.join(", ")) ||
+    (action.capability === "mcp" &&
+      (action.artifact !== artifactIds.join(", ") || action.reason !== action.artifact)) ||
+    (action.capability === "skills" &&
+      (artifactIds.length !== 1 ||
+        action.artifact !== artifactIds[0] ||
+        action.reason !== artifactIds[0] ||
+        normalize(action.source ?? "") !== action.source ||
+        action.source !== join(opts.storeRoot, "store", artifactIds[0] ?? "")))
+  ) {
+    return false;
+  }
+  if (
+    action.op === "write" &&
+    action.desiredEvidence?.contentFingerprint !== sha256(action.preview?.after ?? "")
+  ) {
+    return false;
+  }
+  const ownership = action.ownership;
+  if (!ownership) return false;
+  if (
+    (ownership.classification === "absent" && ownership.currentFingerprint !== null) ||
+    (ownership.classification === "unowned-existing" && ownership.expectedReceipt !== null) ||
+    (ownership.classification === "owned-current" &&
+      (!ownership.expectedReceipt ||
+        ownership.currentFingerprint !== ownership.expectedReceipt.fingerprint)) ||
+    (ownership.classification === "owned-drifted" &&
+      (!ownership.expectedReceipt ||
+        ownership.currentFingerprint === ownership.expectedReceipt.fingerprint))
+  ) {
+    return false;
+  }
+  const expectedFromOwnership: TargetStateReceipt = ownership.currentFingerprint
+    ? { state: "present", fingerprint: ownership.currentFingerprint }
+    : { state: "absent" };
+  if (!sameTargetReceipt(expectedFromOwnership, expected)) return false;
+
+  const replacementKind =
+    ownership.classification === "unowned-existing"
+      ? "replace-unowned"
+      : ownership.classification === "owned-drifted"
+        ? "override-drift"
+        : undefined;
+  if (!replacementKind) return action.replacement === undefined;
+  if (action.replacement?.acknowledgement.kind !== replacementKind) return false;
+  return (
+    action.replacement.acknowledgement.token ===
+    sha256(
+      JSON.stringify({
+        version: 1,
+        kind: replacementKind,
+        key: ownership.key,
+        classification: ownership.classification,
+        currentFingerprint: ownership.currentFingerprint,
+        expectedReceipt: ownership.expectedReceipt,
+        artifactIds,
+      }),
+    )
+  );
 }
 
 function sameTargetReceipt(
@@ -590,6 +1219,7 @@ async function applyAction(
   action: PlanAction,
   prior: LedgerEntry | undefined,
   context: ApplyContext,
+  sourceSnapshot: SafeRecursiveSnapshot | undefined,
 ): Promise<AppliedAction> {
   const handler = OP_HANDLERS[action.op];
   if (!handler) {
@@ -613,7 +1243,14 @@ async function applyAction(
     snapshotPath = snapshot.path;
     snapshotEvidence = snapshot;
   }
-  const entry = await handler(env, action, prior, snapshotPath, context.projectRoot);
+  const entry = await handler(
+    env,
+    action,
+    prior,
+    snapshotPath,
+    context.projectRoot,
+    sourceSnapshot,
+  );
   return {
     entry,
     ...(snapshotEvidence ? { snapshot: snapshotEvidence } : {}),
@@ -699,6 +1336,7 @@ async function applyContentWrite(
   prior: LedgerEntry | undefined,
   snapshotPath: string | undefined,
   projectRoot: string | undefined,
+  _sourceSnapshot: SafeRecursiveSnapshot | undefined,
 ): Promise<LedgerEntry> {
   const content = action.preview?.after ?? "";
   const checksum = sha256(content);
@@ -757,22 +1395,20 @@ async function applyLink(
   prior: LedgerEntry | undefined,
   snapshotPath: string | undefined,
   projectRoot: string | undefined,
+  sourceSnapshot: SafeRecursiveSnapshot | undefined,
 ): Promise<LedgerEntry> {
   if (!action.source) {
     throw new Error(`apply: skills action for "${action.agent}" missing source path`);
   }
   const source = action.source;
+  if (sourceSnapshot?.kind !== "directory") {
+    throw new UnsafeRecursiveSourceError(source, "stale");
+  }
+  await assertSafeRecursiveSnapshotCurrent(env, sourceSnapshot);
 
   // 源目录指纹只供 copy 幂等判定；最终 receipt 统一从完整 staged target 计算。
   // symlink 幂等短路不读源目录，copy 路径则 memoize，避免重复遍历。
-  let sourceHashCache: string | undefined;
-  const getSourceHash = async (): Promise<string> => {
-    if (sourceHashCache === undefined) sourceHashCache = await hashDir(env, source);
-    return sourceHashCache;
-  };
-  // Source evidence is part of the static receipt preparation. Finish this fallible read before
-  // linkOrCopy can swap a staged placement over the current target.
-  const sourceFingerprint = await getSourceHash();
+  const sourceFingerprint = sourceSnapshot.fingerprint;
 
   // copy 幂等 + 自愈:仅当「源未变且 target 仍是内容等于源的目录」才跳过重拷(避免 churn appliedAt);
   // target 缺失/被换成文件/被手改 → 落到 linkOrCopy 重拷,顺带修复漂移。
@@ -804,18 +1440,32 @@ async function applyLink(
   const appliedAt = env.now().toISOString();
   let receiptFingerprint: string | undefined;
 
-  const result = await linkOrCopy(env, source, action.target, {
-    method: action.method,
-    kind: "dir",
-    replaceExisting: prior !== undefined || snapshotPath !== undefined,
-    preparePlaced: async (placedTarget) => {
-      const fingerprint = await fingerprintTarget(env, placedTarget);
-      if (!fingerprint) {
-        throw new Error(`apply: placed Skill cannot be fingerprinted: "${action.target}"`);
-      }
-      receiptFingerprint = fingerprint;
-    },
-  });
+  const result =
+    action.method === "copy"
+      ? await (async () => {
+          await assertSafeRecursiveSnapshotCurrent(env, sourceSnapshot);
+          await installSafeRecursiveSnapshot(
+            env,
+            sourceSnapshot,
+            action.target,
+            prior !== undefined || snapshotPath !== undefined,
+          );
+          receiptFingerprint = sourceFingerprint;
+          return { method: "copy" as const, skipped: false };
+        })()
+      : await linkOrCopy(env, source, action.target, {
+          method: action.method,
+          kind: "dir",
+          replaceExisting: prior !== undefined || snapshotPath !== undefined,
+          preparePlaced: async (placedTarget) => {
+            await assertSafeRecursiveSnapshotCurrent(env, sourceSnapshot);
+            const fingerprint = await fingerprintTarget(env, placedTarget);
+            if (!fingerprint) {
+              throw new Error(`apply: placed Skill cannot be fingerprinted: "${action.target}"`);
+            }
+            receiptFingerprint = fingerprint;
+          },
+        });
 
   if (!receiptFingerprint) {
     throw new Error(`apply: placed Skill receipt is missing: "${action.target}"`);

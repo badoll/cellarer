@@ -1,7 +1,7 @@
 // .gitignore 与台账同步:project 工程的 managed block 始终从「当前台账中该目录下的
 // 全部 project-scope 落地目标」整体重建,而非某次 apply/revert 的局部 targets。
 // 这样多 agent 分批 apply、或 partial revert 后,block 仍与实际生成物一致。
-import { normalize } from "node:path";
+import { isAbsolute, join, normalize } from "node:path";
 import type { Env } from "../env.js";
 import {
   gitignorePath,
@@ -114,6 +114,10 @@ export function assertGitignoreMutationMatchesLedger(
   }
 }
 
+export function assertExecutableGitignoreMutation(action: MutationPlanAction): void {
+  gitignorePayload(action);
+}
+
 function gitignorePayload(action: MutationPlanAction): {
   projectDir: string;
   targets: string[];
@@ -124,15 +128,38 @@ function gitignorePayload(action: MutationPlanAction): {
   const payload = action.payload as CanonicalJsonObject;
   if (
     action.kind !== "sync-gitignore" ||
+    typeof action.actionId !== "string" ||
+    action.actionId.length === 0 ||
+    !isAbsolute(action.target) ||
+    normalize(action.target) !== action.target ||
     payload.path !== action.target ||
     typeof payload.projectDir !== "string" ||
+    !isAbsolute(payload.projectDir) ||
+    normalize(payload.projectDir) !== payload.projectDir ||
+    action.target !== join(payload.projectDir, ".gitignore") ||
     !Array.isArray(payload.targets) ||
-    !payload.targets.every((target) => typeof target === "string") ||
+    !payload.targets.every(
+      (target) => typeof target === "string" && isAbsolute(target) && normalize(target) === target,
+    ) ||
+    new Set(payload.targets).size !== payload.targets.length ||
     (payload.effect !== "publish" && payload.effect !== "remove") ||
     typeof payload.digest !== "string" ||
-    typeof payload.mode !== "number"
+    !/^sha256:[0-9a-f]{64}$/.test(payload.digest) ||
+    payload.mode !== 0o644 ||
+    action.actionId !==
+      sha256(
+        JSON.stringify({
+          kind: "sync-gitignore",
+          target: action.target,
+          projectDir: payload.projectDir,
+          normalizedTargets: payload.targets,
+          effect: payload.effect,
+          digest: payload.digest,
+          mode: payload.mode,
+        }),
+      )
   ) {
-    throw new TypeError(`gitignore action ${action.actionId} has invalid signed payload`);
+    throw new TypeError("gitignore action has an invalid signed payload");
   }
   return {
     projectDir: payload.projectDir,

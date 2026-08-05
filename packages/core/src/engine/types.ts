@@ -13,7 +13,7 @@ import type {
 } from "../model/index.js";
 import type { MutationPlan, OperationResult, PlanExpiry } from "../protocol/models.js";
 import type { MutationPresentation } from "../protocol/presentation.js";
-import type { SecretMode } from "../secrets/resolver.js";
+import type { SecretMode } from "../secrets/types.js";
 
 export interface DistributeOptions {
   storeRoot: string;
@@ -28,6 +28,7 @@ export interface DistributeOptions {
   // 密钥来源:缺省 env(零落盘);vault/keychain 需配套口令/store。
   secretMode?: SecretMode;
   vaultPassphrase?: string;
+  keychainService?: string;
   // 精确 token 来自 plan.conflicts；两类破坏性授权不能互换。
   replaceUnowned?: string[];
   overrideDrift?: string[];
@@ -64,7 +65,12 @@ export interface PlannedApplyMutation {
 
 export interface ApplyMutationContext {
   storeRoot: string;
+  /** Caller-owned canonical options; executable authority is never reconstructed from the plan. */
+  options: DistributeOptions;
   snapshotPassphrase?: string;
+  secretMode?: SecretMode;
+  vaultPassphrase?: string;
+  keychainService?: string;
 }
 
 export interface ApplyMutationResult extends ApplyCallResult {
@@ -141,6 +147,8 @@ export interface PlannedRevertMutation {
 
 export interface RevertMutationContext {
   storeRoot: string;
+  /** Caller-owned canonical options; executable authority is never reconstructed from the plan. */
+  options: RevertOptions;
   snapshotPassphrase?: string;
   keepBackups?: boolean;
 }

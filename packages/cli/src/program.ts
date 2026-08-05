@@ -2,6 +2,7 @@ import { Command } from "commander";
 import { addCommand } from "./commands/add.js";
 import { agentsCommand } from "./commands/agents.js";
 import { applyCommand } from "./commands/apply.js";
+import { authorityCommand } from "./commands/authority.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { initCommand } from "./commands/init.js";
 import { lsCommand } from "./commands/ls.js";
@@ -26,6 +27,7 @@ export function buildProgram(): Command {
   program.addCommand(agentsCommand());
   program.addCommand(lsCommand());
   program.addCommand(applyCommand());
+  program.addCommand(authorityCommand());
   program.addCommand(scanCommand());
   program.addCommand(revertCommand());
   program.addCommand(statusCommand());

@@ -1,7 +1,19 @@
-import type { Env } from "../env.js";
+import type { Env, MutationAuthorityLease } from "../env.js";
 import { assertSafeAtomicPublicationPath } from "../fs/safety.js";
+import {
+  createProviderScope,
+  inventoryActiveSecretValues,
+  providerScopeForEnv,
+  withProviderScope,
+} from "../secrets/active-values.js";
+import { assertFinalSerializedSecretBytes } from "../secrets/final-bytes.js";
 import { sha256 } from "../store/checksum.js";
-import { createMutationPlan } from "./canonical.js";
+import { loadConfig } from "../store/config.js";
+import {
+  acquireCurrentMutationAuthorityLease,
+  createAuthorizedMutationPlan,
+  requireMutationAuthority,
+} from "./canonical.js";
 import { executeMutationPlan, targetState } from "./execute.js";
 import type {
   CanonicalJsonObject,
@@ -18,6 +30,7 @@ export interface StorePublicationInput {
   readonly path: string;
   readonly data: string;
   readonly mode: number;
+  readonly currentUserOnly?: boolean;
 }
 
 export interface PreparedStorePublicationMutation<T> {
@@ -84,10 +97,52 @@ export async function executeStoreActionMutation<T>(
   operation: MutationOperation,
   mutationKind: string,
   prepare: () => Promise<PreparedStoreActionMutation<T>>,
+  execution: { readonly authorityLease?: MutationAuthorityLease } = {},
 ): Promise<StorePublicationMutationResult<T>> {
+  requireMutationAuthority(env);
+  const suppliedLease = execution.authorityLease;
+  const authorityLease =
+    suppliedLease ?? (await acquireCurrentMutationAuthorityLease(env).catch(() => null));
+  if (!authorityLease) throw new TypeError("mutation authority is not current");
+  if (!(await authorityLease.isCurrent().catch(() => false))) {
+    if (!suppliedLease) await authorityLease.release().catch(() => undefined);
+    throw new TypeError("mutation authority is not current");
+  }
+  try {
+    return await executeStoreActionMutationWithAuthorityLease(
+      env,
+      storeRoot,
+      operation,
+      mutationKind,
+      prepare,
+      authorityLease,
+    );
+  } finally {
+    if (!suppliedLease) await authorityLease.release();
+  }
+}
+
+async function executeStoreActionMutationWithAuthorityLease<T>(
+  env: Env,
+  storeRoot: string,
+  operation: MutationOperation,
+  mutationKind: string,
+  prepare: () => Promise<PreparedStoreActionMutation<T>>,
+  authorityLease: MutationAuthorityLease,
+): Promise<StorePublicationMutationResult<T>> {
+  requireMutationAuthority(env);
+  let operationEnv = env;
   const observed = await observeAtStableStoreRevision(env, storeRoot, async () => {
     const prepared = await prepare();
     const publications = normalizePublications(prepared.publications ?? []);
+    if (publications.length > 0 && operation !== "secret-metadata") {
+      operationEnv = await finalStorePublicationEnv(env, storeRoot);
+      const scope = providerScopeForEnv(operationEnv);
+      if (!scope) throw new TypeError("final Store publication has no provider inventory");
+      for (const publication of publications) {
+        assertFinalSerializedSecretBytes(publication.data, scope.knownValues, publication.path);
+      }
+    }
     const publicationActions = publications.map((publication, index) => ({
       actionId: publicationActionId(mutationKind, publication, index),
       kind: "publish-file",
@@ -96,6 +151,7 @@ export async function executeStoreActionMutation<T>(
         path: publication.path,
         digest: publication.digest,
         mode: publication.mode,
+        ...(publication.currentUserOnly ? { currentUserOnly: true } : {}),
       },
       postcondition: { state: "present" as const, fingerprint: publication.digest },
     }));
@@ -104,7 +160,7 @@ export async function executeStoreActionMutation<T>(
       plannedActions.map(async (action) => ({
         actionId: action.actionId,
         target: action.target,
-        expected: await targetState(env, action.target),
+        expected: await targetState(operationEnv, action.target),
       })),
     );
     return { prepared, preconditions, publications, publicationActions, plannedActions };
@@ -114,7 +170,7 @@ export async function executeStoreActionMutation<T>(
   if (actionIds.size !== observed.value.plannedActions.length) {
     throw new TypeError("store mutation action ids must be unique");
   }
-  const plan = createMutationPlan({
+  const plan = createAuthorizedMutationPlan(operationEnv, storeRoot, {
     schemaVersion: 1,
     planId: `plan-${env.randomId()}`,
     operation,
@@ -133,7 +189,7 @@ export async function executeStoreActionMutation<T>(
     expires: { policy: "none" },
   });
   const result = await executeMutationPlan(
-    env,
+    operationEnv,
     storeRoot,
     plan,
     async (_operationId, record, authorizeAction) => {
@@ -159,7 +215,7 @@ export async function executeStoreActionMutation<T>(
             ...action,
             execute: async () => {
               await assertSafeAtomicPublicationPath(
-                env,
+                operationEnv,
                 signedAction.target,
                 storeRoot,
                 "store publication",
@@ -174,7 +230,20 @@ export async function executeStoreActionMutation<T>(
               if (typeof mode !== "number") {
                 throw new TypeError("publication mode is invalid");
               }
-              await env.fs.publishFileAtomically(signedAction.target, data, { mode });
+              await operationEnv.fs.publishFileAtomically(signedAction.target, data, { mode });
+              if (
+                signedAction.payload.currentUserOnly === true &&
+                operationEnv.platform === "win32"
+              ) {
+                const permissions = operationEnv.currentUserOnlyPermissions;
+                if (!permissions?.supported(operationEnv.platform)) {
+                  throw insecurePermissionsError();
+                }
+                await permissions.set(signedAction.target);
+                if (!(await permissions.verify(signedAction.target))) {
+                  throw insecurePermissionsError();
+                }
+              }
             },
           };
         }),
@@ -203,9 +272,9 @@ export async function executeStoreActionMutation<T>(
         try {
           await action.execute();
           if (action.kind === "publish-file") {
-            await verifySignedFilePublication(env, signedAction);
+            await verifySignedFilePublication(operationEnv, signedAction);
           } else {
-            await verifySignedActionPostcondition(env, signedAction);
+            await verifySignedActionPostcondition(operationEnv, signedAction);
           }
         } catch (error) {
           const code = actionIoFailureCode(error);
@@ -213,14 +282,14 @@ export async function executeStoreActionMutation<T>(
           failure = { code, message: `filesystem action failed (${code})` };
           failedActionIds.push(action.actionId);
         }
-        const after = await targetState(env, action.target);
+        const after = await targetState(operationEnv, action.target);
         const receipt: OperationActionReceipt = {
           actionId: action.actionId,
           target: action.target,
           outcome: failure ? "failed" : sameTargetState(before, after) ? "unchanged" : "applied",
           before,
           after,
-          recordedAt: env.now().toISOString(),
+          recordedAt: operationEnv.now().toISOString(),
           ...(failure ? { error: failure } : {}),
         };
         await record(receipt);
@@ -233,8 +302,26 @@ export async function executeStoreActionMutation<T>(
         ...(prepared.afterCommit ? { afterCommit: prepared.afterCommit } : {}),
       };
     },
+    { authorityLease },
   );
   return { value: prepared.value, operation: result };
+}
+
+async function finalStorePublicationEnv(env: Env, storeRoot: string): Promise<Env> {
+  const existing = providerScopeForEnv(env);
+  const config = existing ? undefined : await loadConfig(env, storeRoot);
+  const scope =
+    existing ??
+    createProviderScope({
+      secretMode: config?.defaults.secretMode ?? "env",
+    });
+  const operationEnv = existing ? env : withProviderScope(env, scope);
+  await inventoryActiveSecretValues(operationEnv, storeRoot, {
+    secretMode: scope.mode,
+    keychainService: scope.service,
+    requireAvailable: true,
+  });
+  return operationEnv;
 }
 
 interface NormalizedPublication extends StorePublicationInput {
@@ -245,7 +332,7 @@ function normalizePublications(
   publications: readonly StorePublicationInput[],
 ): NormalizedPublication[] {
   const seen = new Set<string>();
-  return publications.map(({ path, data, mode }) => {
+  return publications.map(({ path, data, mode, currentUserOnly }) => {
     if (seen.has(path)) throw new TypeError(`duplicate store publication target: ${path}`);
     if (!Number.isInteger(mode) || mode < 0) {
       throw new TypeError(`invalid store publication mode for ${path}: ${mode}`);
@@ -256,6 +343,7 @@ function normalizePublications(
       data,
       digest: sha256(data),
       mode,
+      ...(currentUserOnly ? { currentUserOnly: true } : {}),
     };
   });
 }
@@ -273,6 +361,7 @@ function publicationActionId(
       path: publication.path,
       digest: publication.digest,
       mode: publication.mode,
+      currentUserOnly: publication.currentUserOnly === true,
     }),
   );
 }
@@ -288,6 +377,7 @@ const CONTROLLED_ACTION_IO_CODES = new Set([
   "ESTALE",
   "PUBLICATION_POSTCONDITION_FAILED",
   "ACTION_POSTCONDITION_FAILED",
+  "INSECURE_VAULT_PERMISSIONS",
 ]);
 
 async function verifySignedActionPostcondition(
@@ -326,6 +416,20 @@ async function verifySignedFilePublication(env: Env, action: MutationPlanAction)
     error.code = "PUBLICATION_POSTCONDITION_FAILED";
     throw error;
   }
+  if (action.payload.currentUserOnly === true && env.platform === "win32") {
+    const permissions = env.currentUserOnlyPermissions;
+    if (!permissions?.supported(env.platform) || !(await permissions.verify(action.target))) {
+      throw insecurePermissionsError();
+    }
+  }
+}
+
+function insecurePermissionsError(): Error & { code: string } {
+  const error = new Error("current-user-only file permissions are required") as Error & {
+    code: string;
+  };
+  error.code = "INSECURE_VAULT_PERMISSIONS";
+  return error;
 }
 
 function actionIoFailureCode(error: unknown): string {

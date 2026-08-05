@@ -43,6 +43,18 @@ async function seedStore(
   return storeRoot;
 }
 
+function addReferenceNativeAdapter(config: CellarerConfig): void {
+  config.adapters["reference-native"] = {
+    displayName: "Reference Native",
+    mcp: {
+      global: "~/.reference-native/mcp.json",
+      project: "{dir}/.reference-native/mcp.json",
+      format: "json",
+      supportedSecretReferences: ["environment", "cellarer"],
+    },
+  };
+}
+
 async function applyReplacingUnowned(t: TmpEnv, opts: DistributeOptions) {
   const conflict = (await plan(t.env, opts)).conflicts.find(
     (item) => item.code === "UNOWNED_TARGET",
@@ -118,8 +130,9 @@ describe("engine mcp distribution", () => {
   });
 
   it("is idempotent: re-apply yields identical disk + ledger", async () => {
+    t.env.env.MY_VAR = "configured";
     const storeRoot = await seedStore(t, {
-      mcp: { x: { command: "npx", env: { K: "${MY_VAR}" } } },
+      mcp: { x: { command: "npx", env: { K: "$" + "{MY_VAR}" } } },
     });
     const opts = {
       storeRoot,
@@ -166,62 +179,251 @@ describe("engine mcp — secret handling (red line)", () => {
   });
   afterEach(() => t.cleanup());
 
-  it("env mode (default): CELLARER_SECRET ref renders as ${ENV} — NO plaintext on disk", async () => {
+  it("preserves a CELLARER_SECRET reference token exactly", async () => {
     const storeRoot = await seedStore(t, {
       mcp: { c7: { command: "npx", env: { CONTEXT7_API_KEY: "${CELLARER_SECRET:C7_KEY}" } } },
+      configure: addReferenceNativeAdapter,
     });
-    await apply(t.env, {
-      storeRoot,
-      scope: "global",
-      agents: ["claude-code"],
-      capabilities: ["mcp"],
-    });
-    const content = await t.env.fs.readFile(t.path("home", ".claude", "mcp.json"));
-    // 落盘断言:env 引用,无真值。
-    expect(content).toContain("${C7_KEY}");
-    expect(content).not.toContain("CELLARER_SECRET");
-    const led = await loadLedger(t.env, storeRoot);
-    expect(led.owners[0]?.secretRefs).toContain("C7_KEY");
-  });
-
-  it("env mode also rewrites a CELLARER_SECRET ref inside args (not just env/headers)", async () => {
-    const storeRoot = await seedStore(t, {
-      mcp: { c7: { command: "npx", args: ["--token", "${CELLARER_SECRET:ARG_KEY}"] } },
-    });
-    await apply(t.env, {
-      storeRoot,
-      scope: "global",
-      agents: ["claude-code"],
-      capabilities: ["mcp"],
-    });
-    const content = await t.env.fs.readFile(t.path("home", ".claude", "mcp.json"));
-    expect(content).toContain("${ARG_KEY}"); // args 里的引用也被降级,不残留内部字面量
-    expect(content).not.toContain("CELLARER_SECRET");
-  });
-
-  it("vault mode: unresolved secret downgrades to ${ENV} ref + emits a warning (never the internal literal)", async () => {
-    const storeRoot = await seedStore(t, {
-      mcp: { c7: { command: "npx", env: { TOKEN: "${CELLARER_SECRET:MISSING}" } } },
-    });
-    // vault 不含 MISSING。
     const { saveVault } = await import("../src/secrets/vault.js");
-    await saveVault(t.env, storeRoot, { OTHER: "x" }, "pp");
-    const r = await apply(t.env, {
+    await saveVault(t.env, storeRoot, { C7_KEY: "configured" }, "pp");
+    await apply(t.env, {
       storeRoot,
       scope: "global",
-      agents: ["claude-code"],
+      agents: ["reference-native"],
       capabilities: ["mcp"],
       secretMode: "vault",
       vaultPassphrase: "pp",
     });
-    const content = await t.env.fs.readFile(t.path("home", ".claude", "mcp.json"));
-    // 降级为 agent 可识别的 env 引用,绝不写 ${CELLARER_SECRET:..} 内部字面量。
-    expect(content).toContain("${MISSING}");
-    expect(content).not.toContain("CELLARER_SECRET");
-    // 告警提示解析失败。
-    expect(r.plan.warnings.some((w) => w.includes("MISSING") && w.includes("unresolved"))).toBe(
-      true,
+    const content = await t.env.fs.readFile(t.path("home", ".reference-native", "mcp.json"));
+    expect(content).toContain("${CELLARER_SECRET:C7_KEY}");
+    const led = await loadLedger(t.env, storeRoot);
+    expect(led.owners[0]?.secretRefs).toContain("C7_KEY");
+  });
+
+  it("preserves a CELLARER_SECRET reference token inside args", async () => {
+    const storeRoot = await seedStore(t, {
+      mcp: { c7: { command: "npx", args: ["--token", "${CELLARER_SECRET:ARG_KEY}"] } },
+      configure: addReferenceNativeAdapter,
+    });
+    const { saveVault } = await import("../src/secrets/vault.js");
+    await saveVault(t.env, storeRoot, { ARG_KEY: "configured" }, "pp");
+    await apply(t.env, {
+      storeRoot,
+      scope: "global",
+      agents: ["reference-native"],
+      capabilities: ["mcp"],
+      secretMode: "vault",
+      vaultPassphrase: "pp",
+    });
+    const content = await t.env.fs.readFile(t.path("home", ".reference-native", "mcp.json"));
+    expect(content).toContain("${CELLARER_SECRET:ARG_KEY}");
+  });
+
+  it("does not resolve a reference through keychain while rendering", async () => {
+    const storeRoot = await seedStore(t, {
+      mcp: { c7: { command: "npx", env: { TOKEN: "${CELLARER_SECRET:C7_TOKEN}" } } },
+      configure: addReferenceNativeAdapter,
+    });
+    let reads = 0;
+    t.env.secretStore = {
+      async get() {
+        reads += 1;
+        return { found: true, value: "ghp_realtokenrealtokenrealtoken12345" };
+      },
+      async set() {},
+      async delete() {
+        return false;
+      },
+    };
+    await apply(t.env, {
+      storeRoot,
+      scope: "global",
+      agents: ["reference-native"],
+      capabilities: ["mcp"],
+      secretMode: "keychain",
+    });
+    const content = await t.env.fs.readFile(t.path("home", ".reference-native", "mcp.json"));
+    // The complete apply operation shares one provider scope across planning and under-lock guards.
+    expect(reads).toBe(1);
+    expect(content).toContain("${CELLARER_SECRET:C7_TOKEN}");
+    expect(content).not.toContain("ghp_realtoken");
+  });
+
+  it("uses only the referenced keychain value as a scoped known-value guard", async () => {
+    const lowEntropyCanary = "low entropy provider canary";
+    const storeRoot = await seedStore(t, {
+      mcp: {
+        c7: {
+          command: "npx",
+          args: ["${CELLARER_SECRET:NEEDED}", `literal=${lowEntropyCanary}`],
+        },
+      },
+      configure: addReferenceNativeAdapter,
+    });
+    const reads: string[] = [];
+    t.env.secretStore = {
+      async get(_service, account) {
+        reads.push(account);
+        if (account !== "NEEDED") throw new Error("unreferenced keychain entry was accessed");
+        return { found: true, value: lowEntropyCanary };
+      },
+      async set() {},
+      async delete() {
+        return false;
+      },
+    };
+
+    const result = await plan(t.env, {
+      storeRoot,
+      scope: "global",
+      agents: ["reference-native"],
+      capabilities: ["mcp"],
+      secretMode: "keychain",
+    });
+
+    expect(reads.every((name) => name === "NEEDED")).toBe(true);
+    expect(result.secretFindings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ artifact: "mcp/c7", rule: "known-secret-value" }),
+      ]),
     );
+    expect(JSON.stringify(result)).not.toContain(lowEntropyCanary);
+  });
+
+  it("blocks a selected MCP resource when its required reference is missing", async () => {
+    const storeRoot = await seedStore(t, {
+      mcp: { c7: { command: "npx", env: { TOKEN: "${CELLARER_SECRET:MISSING_TOKEN}" } } },
+      configure: addReferenceNativeAdapter,
+    });
+    t.env.secretStore = {
+      async get() {
+        return { found: false };
+      },
+      async set() {},
+      async delete() {
+        return false;
+      },
+    };
+
+    const result = await plan(t.env, {
+      storeRoot,
+      scope: "global",
+      agents: ["reference-native"],
+      capabilities: ["mcp"],
+      secretMode: "keychain",
+    });
+
+    expect(result.actions.find((action) => action.capability === "mcp")?.op).toBe("skip");
+    expect(result.secretReferenceFindings).toEqual([
+      {
+        reference: "${CELLARER_SECRET:MISSING_TOKEN}",
+        provider: "keychain",
+        status: "missing",
+      },
+    ]);
+    expect(JSON.stringify(result)).not.toContain("ghp_realtoken");
+  });
+
+  it("does not verify unrequested MCP references while planning Rules", async () => {
+    const storeRoot = await seedStore(t, {
+      mcp: { unused: { command: "npx", env: { TOKEN: "${CELLARER_SECRET:UNUSED}" } } },
+    });
+    await t.env.fs.mkdir(t.path("home", ".cellarer", "store", "rules"), { recursive: true });
+    await t.env.fs.writeFile(t.path("home", ".cellarer", "store", "rules", "safe.md"), "# Safe");
+    let reads = 0;
+    t.env.secretStore = {
+      async get() {
+        reads += 1;
+        return { found: false };
+      },
+      async set() {},
+      async delete() {
+        return false;
+      },
+    };
+
+    const result = await plan(t.env, {
+      storeRoot,
+      scope: "global",
+      agents: ["claude-code"],
+      capabilities: ["rules"],
+      secretMode: "keychain",
+    });
+
+    expect(reads).toBe(0);
+    expect(result.secretReferenceFindings).toBeUndefined();
+    expect(result.actions.find((action) => action.capability === "rules")?.op).toBe("write");
+  });
+
+  it("does not let an adapter-skipped MCP reference block an executable Rules action", async () => {
+    const storeRoot = await seedStore(t, {
+      mcp: { skipped: { command: "npx", env: { TOKEN: "${CELLARER_SECRET:SKIPPED}" } } },
+    });
+    await t.env.fs.mkdir(t.path("home", ".cellarer", "store", "rules"), { recursive: true });
+    await t.env.fs.writeFile(t.path("home", ".cellarer", "store", "rules", "safe.md"), "# Safe");
+    let reads = 0;
+    t.env.secretStore = {
+      async get() {
+        reads += 1;
+        return { found: false };
+      },
+      async set() {},
+      async delete() {
+        return false;
+      },
+    };
+
+    const result = await plan(t.env, {
+      storeRoot,
+      scope: "global",
+      agents: ["claude-code"],
+      capabilities: ["rules", "mcp"],
+      secretMode: "keychain",
+    });
+
+    expect(reads).toBe(0);
+    expect(result.secretReferenceFindings).toBeUndefined();
+    expect(result.actions.find((action) => action.capability === "mcp")?.op).toBe("skip");
+    expect(result.actions.find((action) => action.capability === "rules")?.op).toBe("write");
+  });
+
+  it("does not read a provider for an ownership-rejected MCP action", async () => {
+    const storeRoot = await seedStore(t, {
+      mcp: {
+        rejected: { command: "npx", env: { TOKEN: "$" + "{CELLARER_SECRET:REJECTED}" } },
+      },
+      configure: addReferenceNativeAdapter,
+    });
+    await t.env.fs.mkdir(t.path("home", ".reference-native"), { recursive: true });
+    await t.env.fs.writeFile(
+      t.path("home", ".reference-native", "mcp.json"),
+      JSON.stringify({ userOwned: true }),
+    );
+    let reads = 0;
+    t.env.secretStore = {
+      async get() {
+        reads += 1;
+        return { found: true, value: "must-not-be-read" };
+      },
+      async set() {},
+      async delete() {
+        return false;
+      },
+    };
+
+    const result = await plan(t.env, {
+      storeRoot,
+      scope: "global",
+      agents: ["reference-native"],
+      capabilities: ["mcp"],
+      secretMode: "keychain",
+    });
+
+    expect(result.actions.find((action) => action.capability === "mcp")?.op).toBe("skip");
+    expect(result.conflicts).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: "UNOWNED_TARGET" })]),
+    );
+    expect(reads).toBe(0);
   });
 
   it("blocked action's preview.after is cleared so no plaintext leaks via the returned plan", async () => {
@@ -239,61 +441,184 @@ describe("engine mcp — secret handling (red line)", () => {
     expect(a?.preview?.after).toBeUndefined();
   });
 
-  it("vault mode global: resolves real value (escape hatch), recorded in ledger refs only", async () => {
+  it("vault mode preserves references and never sends resolved values to the target writer", async () => {
     // 先建 vault。
     const { saveVault } = await import("../src/secrets/vault.js");
     const storeRoot = await seedStore(t, {
       mcp: { c7: { command: "npx", env: { TOKEN: "${CELLARER_SECRET:C7_TOKEN}" } } },
+      configure: addReferenceNativeAdapter,
     });
     await saveVault(t.env, storeRoot, { C7_TOKEN: "ghp_realtokenrealtokenrealtoken12345" }, "pp");
     await apply(t.env, {
       storeRoot,
       scope: "global",
-      agents: ["claude-code"],
+      agents: ["reference-native"],
       capabilities: ["mcp"],
       secretMode: "vault",
       vaultPassphrase: "pp",
     });
-    const content = await t.env.fs.readFile(t.path("home", ".claude", "mcp.json"));
-    // global scope 是逃生通道:允许真值注入(本机非 git)。
-    expect(content).toContain("ghp_realtokenrealtokenrealtoken12345");
-    // 但台账只记引用名,不记真值。
+    const content = await t.env.fs.readFile(t.path("home", ".reference-native", "mcp.json"));
+    expect(content).toContain("${CELLARER_SECRET:C7_TOKEN}");
+    expect(content).not.toContain("ghp_realtokenrealtokenrealtoken12345");
     const led = await loadLedger(t.env, storeRoot);
     expect(JSON.stringify(led)).not.toContain("ghp_realtoken");
     expect(led.owners[0]?.secretRefs).toContain("C7_TOKEN");
   });
 
-  it("project scope vault mode: secret-scan guard ABORTS (would write plaintext to git-tracked file)", async () => {
+  it("project scope vault mode also writes only the reference token", async () => {
     const { saveVault } = await import("../src/secrets/vault.js");
     const proj = t.path("proj");
     await t.env.fs.mkdir(proj, { recursive: true });
     const storeRoot = await seedStore(t, {
       mcp: { c7: { command: "npx", env: { TOKEN: "${CELLARER_SECRET:T}" } } },
+      configure: addReferenceNativeAdapter,
     });
     await saveVault(t.env, storeRoot, { T: "ghp_realtokenrealtokenrealtoken12345" }, "pp");
     const p = await plan(t.env, {
       storeRoot,
       scope: "project",
       dir: proj,
-      agents: ["claude-code"],
+      agents: ["reference-native"],
       capabilities: ["mcp"],
       secretMode: "vault",
       vaultPassphrase: "pp",
     });
     const mcpAction = p.actions.find((a) => a.capability === "mcp");
-    expect(mcpAction?.op).toBe("skip");
-    expect(mcpAction?.reason).toContain("secret-scan");
-    // apply 不落地该动作 → 无 .mcp.json 写出。
+    expect(mcpAction?.op).toBe("merge");
     await apply(t.env, {
       storeRoot,
       scope: "project",
       dir: proj,
-      agents: ["claude-code"],
+      agents: ["reference-native"],
       capabilities: ["mcp"],
       secretMode: "vault",
       vaultPassphrase: "pp",
     });
-    await expect(t.env.fs.readFile(t.path("proj", ".mcp.json"))).rejects.toThrow();
+    const content = await t.env.fs.readFile(t.path("proj", ".reference-native", "mcp.json"));
+    expect(content).toContain("${CELLARER_SECRET:T}");
+    expect(content).not.toContain("ghp_realtokenrealtokenrealtoken12345");
+  });
+
+  it("blocks an adapter that requires cellarer to materialize plaintext", async () => {
+    const storeRoot = await seedStore(t, {
+      mcp: { c7: { command: "npx", env: { TOKEN: "${CELLARER_SECRET:C7_TOKEN}" } } },
+      configure(config) {
+        config.adapters.legacy = {
+          displayName: "Legacy",
+          mcp: {
+            global: "~/.legacy/mcp.json",
+            format: "json",
+            supportedSecretReferences: [],
+          },
+        };
+      },
+    });
+    const result = await plan(t.env, {
+      storeRoot,
+      scope: "global",
+      agents: ["legacy"],
+      capabilities: ["mcp"],
+    });
+    const action = result.actions.find((candidate) => candidate.agent === "legacy");
+    expect(action?.op).toBe("skip");
+    expect(action?.reason).toMatch(/incompatible.*plaintext materialization/i);
+    expect(result.warnings.join("\n")).not.toContain("C7_TOKEN=");
+  });
+
+  it.each([
+    "codex",
+    "cursor",
+    "opencode",
+    "windsurf",
+  ])("17.1 makes the built-in %s planner fail closed for the current literal environment token", async (agent) => {
+    const storeRoot = await seedStore(t, {
+      mcp: { c7: { command: "npx", env: { TOKEN: "${EXACT_ENV_TOKEN}" } } },
+    });
+    const env = { ...t.env, env: { EXACT_ENV_TOKEN: "configured" } };
+
+    const result = await plan(env, {
+      storeRoot,
+      scope: "global",
+      agents: [agent],
+      capabilities: ["mcp"],
+    });
+
+    expect(result.actions.find((candidate) => candidate.agent === agent)).toMatchObject({
+      op: "skip",
+      reason: expect.stringMatching(/incompatible.*plaintext materialization/i),
+    });
+    expect(JSON.stringify(result)).not.toContain("configured");
+  });
+
+  it.each([
+    "claude-code",
+    "gemini-cli",
+  ])("17.1 preserves the exact environment token for the compatible built-in %s planner", async (agent) => {
+    const storeRoot = await seedStore(t, {
+      mcp: { c7: { command: "npx", env: { TOKEN: "${EXACT_ENV_TOKEN}" } } },
+    });
+    const env = { ...t.env, env: { EXACT_ENV_TOKEN: "configured" } };
+
+    const result = await plan(env, {
+      storeRoot,
+      scope: "global",
+      agents: [agent],
+      capabilities: ["mcp"],
+    });
+    const action = result.actions.find((candidate) => candidate.agent === agent);
+
+    expect(action?.op).not.toBe("skip");
+    expect(action?.preview?.after).toContain("${EXACT_ENV_TOKEN}");
+    expect(action?.preview?.after).not.toContain("configured");
+  });
+
+  it.each([
+    {
+      label: "stdio extension",
+      server: {
+        command: "npx",
+        extension: { nested: { credential: "${CELLARER_SECRET:STDIO_EXTRA}" } },
+      },
+    },
+    {
+      label: "remote extension",
+      server: {
+        url: "https://example.test/mcp",
+        extension: [{ nested: "${CELLARER_SECRET:REMOTE_EXTRA}" }],
+      },
+    },
+    {
+      label: "custom config",
+      server: {
+        transport: { options: { token: "${CELLARER_SECRET:CUSTOM_CONFIG}" } },
+      },
+    },
+  ])("13.1 rejects unsupported references nested in $label", async ({ server }) => {
+    const storeRoot = await seedStore(t, {
+      mcp: { nested: server },
+      configure(config) {
+        config.adapters.legacy = {
+          displayName: "Legacy",
+          mcp: {
+            global: "~/.legacy/mcp.json",
+            format: "json",
+            supportedSecretReferences: ["environment"],
+          },
+        };
+      },
+    });
+
+    const result = await plan(t.env, {
+      storeRoot,
+      scope: "global",
+      agents: ["legacy"],
+      capabilities: ["mcp"],
+    });
+
+    expect(result.actions.find((candidate) => candidate.agent === "legacy")).toMatchObject({
+      op: "skip",
+      reason: expect.stringMatching(/incompatible.*plaintext materialization/i),
+    });
   });
 
   it("dirty store plaintext is ALWAYS blocked (even global, even env mode)", async () => {
@@ -335,8 +660,7 @@ describe("engine mcp — secret handling (red line)", () => {
   });
 
   it("generic guard: accidental plaintext in a RULE is blocked in GLOBAL scope too (no escape hatch)", async () => {
-    // 修正后的策略:逃生通道(§10.2)只给「vault/keychain 故意解析注入的真值」,
-    // rules 片段里误写的明文 token 是脏数据,global 也必须拦(无 allowResolvedPlaintext 标记)。
+    // rules 片段里误写的明文 token 是脏数据,任何 scope 都必须拦。
     const storeRoot = t.path("home", ".cellarer");
     await t.env.fs.mkdir(t.path("home", ".cellarer", "store", "rules"), { recursive: true });
     await t.env.fs.writeFile(

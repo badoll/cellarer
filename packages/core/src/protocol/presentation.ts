@@ -36,9 +36,10 @@ export function mutationPresentation(
   plan: MutationPlan,
   result?: OperationResult,
 ): MutationPresentation {
+  const earlyConflict = result && !result.ok && isEarlyConflict(result.conflict.code);
   return {
-    planId: plan.planId,
-    planDigest: plan.digest,
+    planId: earlyConflict ? "untrusted" : plan.planId,
+    planDigest: earlyConflict ? "untrusted" : plan.digest,
     operation: plan.operation,
     baseRevision: plan.baseRevision,
     ...(result
@@ -47,11 +48,49 @@ export function mutationPresentation(
             ? result
             : {
                 ok: false as const,
-                conflict: result.conflict,
+                conflict: earlyConflict ? redactEarlyConflict(result.conflict) : result.conflict,
               },
         }
       : {}),
   };
+}
+
+function isEarlyConflict(code: string): boolean {
+  return [
+    "LOCK_CONFLICT",
+    "INTERRUPTED_OPERATION",
+    "INVALID_PLAN",
+    "INVALID_PLAN_DIGEST",
+    "EXPIRED_PLAN",
+    "STALE_REVISION",
+    "TARGET_PRECONDITION_CONFLICT",
+  ].includes(code);
+}
+
+function redactEarlyConflict(
+  conflict: Extract<OperationResult, { ok: false }>["conflict"],
+): Extract<OperationResult, { ok: false }>["conflict"] {
+  if (conflict.code === "EXPIRED_PLAN") {
+    return { ...conflict, planId: "untrusted", expiredAt: "untrusted" };
+  }
+  if (conflict.code === "STALE_REVISION") return { ...conflict, planId: "untrusted" };
+  if (conflict.code === "TARGET_PRECONDITION_CONFLICT") {
+    return {
+      ...conflict,
+      planId: "untrusted",
+      actionId: "untrusted",
+      target: "untrusted",
+    };
+  }
+  if (conflict.code === "INVALID_PLAN_DIGEST") {
+    return {
+      ...conflict,
+      planId: "untrusted",
+      expectedDigest: "untrusted",
+      actualDigest: "invalid",
+    };
+  }
+  return conflict;
 }
 
 export function mutationRecoveryPresentation(

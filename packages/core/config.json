@@ -53,7 +53,8 @@
         "global": "~/.claude/mcp.json",
         "project": "{dir}/.mcp.json",
         "format": "json",
-        "serversKey": "mcpServers"
+        "serversKey": "mcpServers",
+        "supportedSecretReferences": ["environment"]
       },
       "skills": {
         "global": "~/.claude/skills",
@@ -80,7 +81,8 @@
         "global": "~/.codex/config.toml",
         "project": "{dir}/.codex/config.toml",
         "format": "toml",
-        "serversKey": "mcp_servers"
+        "serversKey": "mcp_servers",
+        "supportedSecretReferences": []
       },
       "skills": {
         "global": "~/.codex/skills",
@@ -107,7 +109,8 @@
         "global": "~/.cursor/mcp.json",
         "project": "{dir}/.cursor/mcp.json",
         "format": "json",
-        "serversKey": "mcpServers"
+        "serversKey": "mcpServers",
+        "supportedSecretReferences": []
       },
       "skills": {
         "global": "~/.cursor/skills-cursor",
@@ -134,7 +137,8 @@
         "global": "~/.gemini/settings.json",
         "project": "{dir}/.gemini/settings.json",
         "format": "json",
-        "serversKey": "mcpServers"
+        "serversKey": "mcpServers",
+        "supportedSecretReferences": ["environment"]
       },
       "capabilities": {
         "rules": ["global", "project"],
@@ -157,6 +161,7 @@
         "project": "{dir}/opencode.json",
         "format": "json",
         "serversKey": "mcp",
+        "supportedSecretReferences": [],
         "dialect": {
           "commandStyle": "array",
           "envKey": "environment",
@@ -190,6 +195,7 @@
         "project": "{dir}/.codeium/windsurf/mcp_config.json",
         "format": "json",
         "serversKey": "mcpServers",
+        "supportedSecretReferences": [],
         "dialect": {
           "urlKey": "serverUrl"
         }

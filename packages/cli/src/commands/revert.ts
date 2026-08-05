@@ -2,6 +2,8 @@ import { revert } from "@cellarer/core";
 import { Command } from "commander";
 import { resolveContext } from "../context.js";
 import { printMutation } from "../mutation-output.js";
+import { safeConsole as console } from "../output.js";
+import { readProtectedPassphraseInput } from "./secret.js";
 
 interface RevertOpts {
   agent?: string;
@@ -10,7 +12,7 @@ interface RevertOpts {
   dryRun?: boolean;
   all?: boolean;
   acknowledge?: string;
-  snapshotPassphrase?: string;
+  snapshotPassphraseFd?: string;
   json?: boolean;
 }
 
@@ -23,11 +25,11 @@ export function revertCommand(): Command {
     .option("--all", "回滚台账中的全部条目(无 --agent/--dir 时必须显式确认)")
     .option("--keep-backups", "保留 .bak 备份")
     .option("--acknowledge <tokens>", "确认 dry-run 返回的精确漂移 token(逗号分隔)")
-    .option("--snapshot-passphrase <passphrase>", "解密恢复快照的口令")
+    .option("--snapshot-passphrase-fd <number>", "从继承的文件描述符读取 snapshot 口令")
     .option("--dry-run", "仅预览,不落地")
     .option("--json", "输出完整 Core revert plan/result")
     .action(async (opts: RevertOpts) => {
-      const ctx = resolveContext(opts);
+      const ctx = await resolveContext(opts, "required");
       // 防误删:无 --agent/--dir 选择器时,必须 --all 才回滚全部(对齐 apply 要求 --agent)。
       const hasSelector = ctx.agents.length > 0 || ctx.dir !== undefined;
       if (!hasSelector && !opts.all && !opts.dryRun) {
@@ -35,6 +37,10 @@ export function revertCommand(): Command {
         process.exitCode = 1;
         return;
       }
+      const snapshotPassphrase =
+        !opts.dryRun && (opts.acknowledge || opts.snapshotPassphraseFd)
+          ? await readProtectedPassphraseInput(opts.snapshotPassphraseFd)
+          : undefined;
       const result = await revert(ctx.env, {
         storeRoot: ctx.storeRoot,
         // 未指定 --dir 时回滚全部作用域(scopeFilter 为 undefined)。
@@ -42,7 +48,7 @@ export function revertCommand(): Command {
         dir: ctx.dir,
         agents: ctx.agents.length > 0 ? ctx.agents : undefined,
         acknowledgements: parseTokens(opts.acknowledge),
-        snapshotPassphrase: opts.snapshotPassphrase,
+        snapshotPassphrase,
         keepBackups: opts.keepBackups,
         dryRun: opts.dryRun,
       });

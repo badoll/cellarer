@@ -6,8 +6,16 @@ import type { Env } from "../env.js";
 import { readFileOrNull } from "../fs/probe.js";
 import { isPathInside } from "../fs/safety.js";
 import type { Ledger, Scope, TargetOwner } from "../model/index.js";
+import { scanTextForSecrets } from "../secrets/detector.js";
+import {
+  assertNoSecretValues,
+  containsObservableKnownValue,
+  observableOptionsForEnv,
+  type SecretValue,
+  serializeObservable,
+} from "../secrets/observable.js";
 
-const appliedReceiptSchema = z.object({
+const appliedReceiptSchema = z.strictObject({
   method: z.enum(["write", "symlink", "junction", "copy"]),
   fingerprint: z.string(),
   contentFingerprint: z.string().optional(),
@@ -28,19 +36,30 @@ const targetOwnerFields = {
     .min(1)
     .refine((ids) => new Set(ids).size === ids.length, "artifactIds must be an ordered set"),
   receipt: appliedReceiptSchema,
-  secretRefs: z.array(z.string()).optional(),
+  secretRefs: z
+    .array(
+      z
+        .string()
+        .min(1)
+        .refine((name) => name.trim() === name && !/[{}\r\n]/.test(name)),
+    )
+    .optional(),
 };
 
 const targetOwnerSchema = z.discriminatedUnion("scope", [
-  z.object({ ...targetOwnerFields, scope: z.literal("global"), projectRoot: z.never().optional() }),
-  z.object({
+  z.strictObject({
+    ...targetOwnerFields,
+    scope: z.literal("global"),
+    projectRoot: z.never().optional(),
+  }),
+  z.strictObject({
     ...targetOwnerFields,
     scope: z.literal("project"),
     projectRoot: z.string().refine(isAbsolute, "projectRoot must be absolute"),
   }),
 ]);
 
-const ledgerSchema = z.object({
+const ledgerSchema = z.strictObject({
   version: z.literal(2),
   owners: z.array(targetOwnerSchema),
 });
@@ -199,14 +218,17 @@ export async function loadLedgerForPlanning(env: Env, storeRoot: string): Promis
 
 export async function saveLedger(env: Env, storeRoot: string, ledger: Ledger): Promise<void> {
   const path = join(storeRoot, "state.json");
-  await env.fs.publishFileAtomically(path, serializeLedger(ledger), {
-    mode: 0o600,
-  });
+  await env.fs.publishFileAtomically(
+    path,
+    serializeLedger(ledger, observableOptionsForEnv(env).knownValues),
+    { mode: 0o600 },
+  );
 }
 
-export function serializeLedger(ledger: Ledger): string {
+export function serializeLedger(ledger: Ledger, knownValues: readonly SecretValue[] = []): string {
+  assertNoSecretValues(ledger, "state");
   const validated = makeLedger(ledgerSchema.parse(ledger).owners);
-  return `${JSON.stringify(validated, null, 2)}\n`;
+  return serializeExactLedgerState(validated, knownValues);
 }
 
 // Narrow recovery writer for a duplicate-bearing ledger. It only removes owners that the revert
@@ -290,7 +312,51 @@ export async function prepareLedgerAfterSelectiveRevert(
   }
 
   const ledger = { version: 2 as const, owners: validated.owners };
-  return { ledger, serialized: `${JSON.stringify(ledger, null, 2)}\n` };
+  return {
+    ledger,
+    serialized: serializeExactLedgerState(ledger, observableOptionsForEnv(env).knownValues ?? []),
+  };
+}
+
+// `secretRefs` is validated durable protocol metadata containing reference names, not a generic
+// observable exemption. Validate the complete exact-key ledger first, run ordinary state
+// redaction over a shape with only that one field removed, and then preserve the validated names
+// only in this dedicated serializer. Any ordinary `{ secretRefs: ... }` still follows the shared
+// sensitive-field policy.
+function serializeExactLedgerState(ledger: Ledger, knownValues: readonly SecretValue[]): string {
+  assertNoSecretValues(ledger, "state");
+  const exact = ledgerSchema.parse(ledger) as Ledger;
+  const withoutSecretRefs: Ledger = {
+    version: exact.version,
+    owners: exact.owners.map((owner) => {
+      const { secretRefs: _secretRefs, ...rest } = owner;
+      return rest;
+    }),
+  };
+  const ordinarySerialized = serializeObservable("state", withoutSecretRefs, {
+    knownValues,
+    pretty: true,
+  });
+  const ordinaryPublished = ledgerSchema.parse(JSON.parse(ordinarySerialized)) as Ledger;
+  if (!sameLedger(ordinaryPublished, withoutSecretRefs)) {
+    throw new TypeError("active secret value is not allowed in durable ownership state");
+  }
+  for (const owner of exact.owners) {
+    for (const referenceName of owner.secretRefs ?? []) {
+      if (
+        containsObservableKnownValue(referenceName, knownValues) ||
+        scanTextForSecrets(referenceName).length > 0
+      ) {
+        throw new TypeError("active secret value is not allowed in durable ownership state");
+      }
+    }
+  }
+  const serialized = JSON.stringify(exact, null, 2);
+  const published = ledgerSchema.parse(JSON.parse(serialized)) as Ledger;
+  if (!sameLedger(published, exact)) {
+    throw new TypeError("invalid durable ownership state serialization");
+  }
+  return `${serialized}\n`;
 }
 
 function normalizeOwner(owner: TargetOwner): TargetOwner {

@@ -1,4 +1,9 @@
 export const MUTATION_PLAN_SCHEMA_VERSION = 1 as const;
+export const MUTATION_AUTHORIZATION_SCHEMA_VERSION = 1 as const;
+export const MUTATION_AUTHORIZATION_ALGORITHM = "HMAC-SHA-256" as const;
+export const EXECUTABLE_MUTATION_PLAN_DOMAIN = "executable-plan-v1" as const;
+export const DURABLE_MUTATION_PLAN_DOMAIN = "durable-plan-v1" as const;
+export const OPERATION_JOURNAL_DOMAIN = "operation-journal-v1" as const;
 export const OPERATION_JOURNAL_SCHEMA_VERSION = 1 as const;
 export const OPERATION_RECEIPT_SCHEMA_VERSION = 1 as const;
 
@@ -59,8 +64,25 @@ export interface MutationPlanInput {
   readonly expires: PlanExpiry;
 }
 
+export type MutationAuthorizationDomain =
+  | typeof EXECUTABLE_MUTATION_PLAN_DOMAIN
+  | typeof DURABLE_MUTATION_PLAN_DOMAIN
+  | typeof OPERATION_JOURNAL_DOMAIN;
+
+export interface MutationAuthorizationEnvelope<
+  Domain extends MutationAuthorizationDomain = MutationAuthorizationDomain,
+> {
+  readonly schemaVersion: typeof MUTATION_AUTHORIZATION_SCHEMA_VERSION;
+  readonly domain: Domain;
+  readonly algorithm: typeof MUTATION_AUTHORIZATION_ALGORITHM;
+  readonly authorityId: string;
+  readonly authorityEpoch: number;
+  readonly seal: string;
+}
+
 export interface MutationPlan extends MutationPlanInput {
   readonly digest: string;
+  readonly authorization: MutationAuthorizationEnvelope<typeof EXECUTABLE_MUTATION_PLAN_DOMAIN>;
 }
 
 export interface DurableMutationPlanAction {
@@ -68,6 +90,9 @@ export interface DurableMutationPlanAction {
   readonly kind: string;
   readonly target: string;
   readonly payloadDigest: string;
+  // Provider recovery needs the non-secret identity authorized by the signed action. Other
+  // payloads remain digest-only so journals cannot become a second persistence surface.
+  readonly payload?: CanonicalJsonObject;
   readonly postcondition?: TargetStateReceipt;
 }
 
@@ -84,6 +109,7 @@ export interface DurableMutationPlan {
   readonly expires: PlanExpiry;
   readonly digest: string;
   readonly durableDigest: string;
+  readonly authorization: MutationAuthorizationEnvelope<typeof DURABLE_MUTATION_PLAN_DOMAIN>;
 }
 
 export interface LockOwnerEvidence {
@@ -121,6 +147,11 @@ export interface InvalidPlanDigestConflict {
   readonly planId: string;
   readonly expectedDigest: string;
   readonly actualDigest: string;
+}
+
+export interface InvalidPlanConflict {
+  readonly code: "INVALID_PLAN";
+  readonly message: "mutation plan is invalid";
 }
 
 export interface TargetPreconditionConflict {
@@ -164,6 +195,7 @@ export interface ManualRecoveryRequiredConflict {
 
 export type MutationConflict =
   | LockConflict
+  | InvalidPlanConflict
   | StaleRevisionConflict
   | ExpiredPlanConflict
   | InvalidPlanDigestConflict
@@ -209,6 +241,8 @@ export interface OperationStatePublication {
 export interface OperationJournal {
   readonly schemaVersion: typeof OPERATION_JOURNAL_SCHEMA_VERSION;
   readonly operationId: string;
+  readonly sequence: number;
+  readonly previousJournalSeal: string | null;
   // Recovery consumes the exact immutable authorization rather than attempting to replan.
   readonly plan: DurableMutationPlan;
   readonly nextRevision: StoreRevision;
@@ -218,6 +252,7 @@ export interface OperationJournal {
   readonly actions: readonly OperationJournalAction[];
   readonly statePublications?: readonly OperationStatePublication[];
   readonly completedReceipt?: OperationReceipt;
+  readonly authorization: MutationAuthorizationEnvelope<typeof OPERATION_JOURNAL_DOMAIN>;
 }
 
 export interface OperationReceipt {

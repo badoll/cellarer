@@ -123,10 +123,14 @@ export type {
   Env,
   FileStat,
   FsLike,
+  HeadlessLifetimeLease,
+  HeadlessLifetimeOwner,
+  MutationAuthority,
+  MutationAuthorityLease,
+  MutationAuthorityRequest,
   Platform,
   ProcessLiveness,
-  SecretGet,
-  SecretStore,
+  ProtectedJournalTip,
   SymlinkType,
 } from "./env.js";
 // markers
@@ -151,6 +155,8 @@ export type {
   LinkMethod,
   PlanAction,
   Scope,
+  SecretGuardFinding,
+  SecretReferenceFinding,
   TargetAcknowledgement,
   TargetAcknowledgementKind,
   TargetClassification,
@@ -161,13 +167,15 @@ export type {
   TargetReplacementApproval,
 } from "./model/index.js";
 export {
+  assertMutationAuthorityRotationAllowed,
+  withMutationAuthorityRotationExclusion,
+} from "./protocol/authority-lifecycle.js";
+export {
   canonicalJson,
   canonicalMutationPlan,
   createDurableMutationPlan,
   createMutationPlan,
-  mutationPlanDigest,
   verifyDurableMutationPlanDigest,
-  verifyMutationPlanDigest,
 } from "./protocol/canonical.js";
 export { targetState } from "./protocol/execute.js";
 export {
@@ -193,6 +201,7 @@ export {
   type LockOwnerEvidence,
   type ManualRecoveryRequiredConflict,
   MUTATION_PLAN_SCHEMA_VERSION,
+  type MutationAuthorizationEnvelope,
   type MutationConflict,
   type MutationOperation,
   type MutationPlan,
@@ -270,11 +279,41 @@ export type {
 export { discoverySummary } from "./resources/discovery.js";
 // secrets
 export {
+  assertMutationAuthorityCredentialTarget,
+  assertOrdinarySecretCredentialTarget,
+  MUTATION_AUTHORITY_ACCOUNT_PREFIX,
+  MUTATION_AUTHORITY_CREDENTIAL_SERVICE,
+} from "./secrets/authority-namespace.js";
+export {
   detectSecret,
   isPlaceholderValue,
   type SecretFinding,
   scanTextForSecrets,
 } from "./secrets/detector.js";
+export {
+  type DeleteStoredSecretOptions,
+  deleteStoredSecret,
+  diagnoseKeychainMutationRecovery,
+  type KeychainMutationRecoveryDiagnosis,
+  type ListStoredSecretNamesOptions,
+  listStoredSecretNames,
+  missingSecretReferences,
+  type ReconcileKeychainMutationRecoveryOptions,
+  reconcileKeychainMutationRecovery,
+  type SecretReferenceVerification,
+  type SecretReferenceVerificationStatus,
+  type SetStoredSecretOptions,
+  type StoredSecretMutationResult,
+  type StoredSecretProvider,
+  setStoredSecret,
+  verifySecretReferences,
+} from "./secrets/provider.js";
+export {
+  redactSafeObservableText,
+  type SafeObservableOptions,
+  serializeSafeObservable,
+  serializeSafeWebObservable,
+} from "./secrets/public-boundary.js";
 export {
   deriveSecretName,
   envPlaceholder,
@@ -284,18 +323,15 @@ export {
   secretPlaceholder,
 } from "./secrets/redactor.js";
 export {
-  resolveFields,
-  resolveSecretValue,
-  type SecretMode,
-  type SecretSources,
-} from "./secrets/resolver.js";
-export {
-  decryptVault,
-  encryptVault,
-  loadVault,
-  saveVault,
-  vaultPath,
-} from "./secrets/vault.js";
+  type CellarerSecretReference,
+  cellarerSecretReference,
+  type EnvironmentSecretReference,
+  environmentSecretReference,
+  parseSecretReference,
+  type SecretReference,
+  secretReferenceToken,
+} from "./secrets/reference.js";
+export type { SecretMode } from "./secrets/types.js";
 export type {
   DefaultsPatch,
   SettingsCollection,

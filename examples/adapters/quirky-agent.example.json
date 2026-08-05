@@ -16,6 +16,7 @@
         "project": "{dir}/.quirky/mcp.json",
         "format": "json",
         "serversKey": "mcp",
+        "supportedSecretReferences": ["environment"],
         "dialect": {
           "commandStyle": "array",
           "envKey": "environment",

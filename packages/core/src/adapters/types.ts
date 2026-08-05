@@ -38,6 +38,8 @@ export interface AdapterMcp {
   codec: McpCodec;
   serversKey: string; // 例:mcpServers / mcp_servers
   defaultStrategy: MergeStrategy; // 默认 merge;可被 config.json / CLI 覆盖
+  // 目标原生支持的引用种类;缺少某种引用支持时,planning 拒绝而不明文化。
+  supportedSecretReferences: ("environment" | "cellarer")[];
 }
 
 // skills 下发:目录级 link/copy(无格式转换,落地方式由 plan 的 method 决定)。

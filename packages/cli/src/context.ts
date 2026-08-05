@@ -2,6 +2,11 @@
 import { isAbsolute, resolve } from "node:path";
 import { createRealEnv, type Env, resolveStoreRoot, type Scope } from "@cellarer/core";
 import { tryKeychainStore } from "./keychain.js";
+import {
+  attachMutationAuthority,
+  canonicalizeStoreRoot,
+  type MutationAuthorityCompositionMode,
+} from "./mutation-authority.js";
 
 export interface CommonOpts {
   global?: boolean;
@@ -32,12 +37,36 @@ export function parseAgents(spec: string | undefined): string[] {
 }
 
 // 解析作用域:--dir → project(指定工程根);否则 global。
-export function resolveContext(opts: CommonOpts): ResolvedContext {
+export async function resolveContext(
+  opts: CommonOpts,
+  authorityMode: MutationAuthorityCompositionMode = "optional",
+): Promise<ResolvedContext> {
   const env = createRealEnv();
   // keychain(密钥分层第 4 层)经此注入 Env.secretStore;native 不可用则保持 undefined(降级 vault)。
-  const keychain = tryKeychainStore();
-  if (keychain) env.secretStore = keychain;
-  const storeRoot = resolveStoreRoot(env);
+  // 纯只读 dry-run 的 none 模式不加载任何 credential capability。
+  if (authorityMode !== "none") {
+    const keychain = tryKeychainStore();
+    if (keychain) env.secretStore = keychain;
+  }
+  const requestedStoreRoot = resolveStoreRoot(env);
+  let storeRoot: string;
+  try {
+    storeRoot = await canonicalizeStoreRoot(env, requestedStoreRoot, {
+      create: authorityMode === "provision",
+    });
+  } catch (error) {
+    if (
+      (authorityMode === "none" || authorityMode === "optional") &&
+      (error as { code?: unknown } | null)?.code === "ENOENT"
+    ) {
+      storeRoot = isAbsolute(requestedStoreRoot)
+        ? requestedStoreRoot
+        : resolve(env.cwd(), requestedStoreRoot);
+    } else {
+      throw error;
+    }
+  }
+  await attachMutationAuthority(env, storeRoot, authorityMode);
   // --dir 在边界 absolutize,使 core 拿到的 target 与台账过滤都基于绝对路径
   // (core 的 relativeInside/expand 对相对路径会读 process.cwd,故在此一次性消解)。
   const dir = opts.dir

@@ -66,7 +66,8 @@ existing file. Adapter customization uses this shape:
         "global": "~/.myagent/mcp.json",
         "project": "{dir}/.myagent/mcp.json",
         "format": "json",
-        "serversKey": "mcpServers"
+        "serversKey": "mcpServers",
+        "supportedSecretReferences": ["environment", "cellarer"]
       },
       "skills": {
         "global": "~/.myagent/skills",
@@ -91,6 +92,31 @@ default should delete that key.
 
 When the key does not match a packaged built-in adapter, the value is a custom
 adapter definition and must declare at least one of `rules`, `mcp`, or `skills`.
+A custom MCP adapter must also declare `supportedSecretReferences`. List only
+the reference kinds that the target consumes natively. Planning skips a target
+when selected content uses an unsupported kind; an empty list therefore blocks
+all secret-backed MCP values instead of materializing plaintext.
+
+## Built-in Secret-Reference Compatibility
+
+`supportedSecretReferences` describes the exact output produced by the current
+adapter, not an agent's abstract ability to use environment variables. The
+generic renderer preserves `${ENV_VAR}` literally and does not translate it to
+another token dialect or a structural environment-variable facility.
+
+| Built-in adapter | Declared support | Current compatibility boundary |
+| --- | --- | --- |
+| Claude Code | `environment` | Its native MCP environment configuration consumes the exact `${VAR}` token emitted by the renderer. |
+| Gemini CLI | `environment` | Its native MCP environment configuration consumes the exact `${VAR}` token emitted by the renderer. |
+| Codex | none | Codex requires its structural `env_vars` facility; translation is not implemented. |
+| Cursor | none | Exact `${VAR}` expansion is not part of cellarer's verified current target contract. |
+| OpenCode | none | OpenCode uses `{env:NAME}`; translation is not implemented. |
+| Windsurf | none | Windsurf uses `${env:NAME}`; translation is not implemented. |
+
+No built-in currently declares `cellarer` support. Planning fails closed when
+selected MCP content uses a reference kind absent from the target's declaration.
+Codex, Cursor, OpenCode, and Windsurf therefore reject `${ENV_VAR}` until a later
+adapter-specific renderer implements and verifies the required translation.
 
 ## Path Templates
 
@@ -111,6 +137,7 @@ Adapters can describe typical MCP shape differences:
   "mcp": {
     "format": "json",
     "serversKey": "mcp",
+    "supportedSecretReferences": ["environment"],
     "dialect": {
       "commandStyle": "array",
       "envKey": "environment",
@@ -122,6 +149,8 @@ Adapters can describe typical MCP shape differences:
 
 Use these for agents that store command arguments as arrays, use
 `environment` instead of `env`, or use `serverUrl` for remote MCP servers.
+Field-shape dialect settings do not translate secret-reference tokens and do
+not by themselves justify adding `environment` support.
 
 ## Examples
 

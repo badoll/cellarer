@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Env, Platform, ProcessLiveness } from "../../src/env.js";
 import { createRealEnv } from "../../src/real-env.js";
+import { deterministicMutationAuthority } from "./mutation-authority.js";
 
 export interface TmpEnv {
   env: Env;
@@ -28,6 +29,7 @@ export interface TmpEnvOptions {
   hostname?: string;
   probeProcessLiveness?: (processId: number) => Promise<ProcessLiveness>;
   randomId?: () => string;
+  mutationAuthority?: Env["mutationAuthority"];
 }
 
 // 固定时间戳,便于断言台账可重现。
@@ -56,6 +58,7 @@ export function makeTmpEnv(opts: TmpEnvOptions = {}): TmpEnv {
     randomId: opts.randomId ?? real.randomId,
     now: () => opts.now ?? FIXED_NOW,
     env: opts.env ?? {},
+    mutationAuthority: opts.mutationAuthority ?? deterministicMutationAuthority(),
   };
 
   return {

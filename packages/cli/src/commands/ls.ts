@@ -8,6 +8,7 @@ import {
 } from "@cellarer/core";
 import { Command } from "commander";
 import { resolveContext } from "../context.js";
+import { safeConsole as console } from "../output.js";
 
 // 列出库房资源(rules / mcp / skills)及其 collection 标签。
 export function lsCommand(): Command {
@@ -15,7 +16,7 @@ export function lsCommand(): Command {
     .description("列出库房资源(rules / mcp / skills)及其 collection 标签")
     .option("--collection <collection>", "按 collection 过滤")
     .action(async (opts: { collection?: string }) => {
-      const ctx = resolveContext(opts);
+      const ctx = await resolveContext(opts);
       const [config, rules, mcp, skills] = await Promise.all([
         loadConfig(ctx.env, ctx.storeRoot),
         listRuleArtifacts(ctx.env, ctx.storeRoot),

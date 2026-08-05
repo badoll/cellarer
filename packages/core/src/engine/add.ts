@@ -1,20 +1,40 @@
 // add:从本地或 GitHub source 导入制品到库房。rules/MCP 仍是本地文件导入;
 // skills 走 source resolver -> discovery -> selection -> safety guard -> store/provenance。
 import { basename, extname, join, relative } from "node:path";
-import type { Env } from "../env.js";
+import type { Env, MutationAuthorityLease } from "../env.js";
 import { lstatOrNull, readdirOrEmpty, readFileOrNull, statOrNull } from "../fs/probe.js";
 import { type McpServer, serverFromRaw, serverToRaw } from "../mcp/model.js";
 import type { ArtifactKind } from "../model/index.js";
+import { withCurrentMutationAuthorityLease } from "../protocol/canonical.js";
 import type { CanonicalJsonObject, OperationResult } from "../protocol/models.js";
 import {
   executeStoreActionMutation,
   type PreparedStoreMutationAction,
 } from "../protocol/store-mutation.js";
-import { detectSecret, scanTextForSecrets } from "../secrets/detector.js";
+import {
+  attachProviderScope,
+  containsKnownSecretValue,
+  createProviderScope,
+  discoverActiveSecretValues,
+  inventoryActiveSecretValues,
+  type ProviderScope,
+  withProviderScope,
+} from "../secrets/active-values.js";
+import {
+  detectSecret,
+  scanStructuredFileSecretFindings,
+  scanTextForSecrets,
+} from "../secrets/detector.js";
+import {
+  assertSafeRecursiveSnapshotCurrent,
+  captureSafeRecursiveSource,
+  installSafeRecursiveSnapshot,
+  type SafeRecursiveSnapshot,
+  UnsafeRecursiveSourceError,
+} from "../secrets/safe-tree.js";
 import { sha256 } from "../store/checksum.js";
 import { type CellarerConfig, CONFIG_FILENAME, loadConfig } from "../store/config.js";
 import {
-  importSkillArtifact,
   isSafeArtifactName,
   listMcpArtifacts,
   listRuleArtifacts,
@@ -24,7 +44,6 @@ import {
   writeRuleArtifact,
   writeSkillProvenance,
 } from "../store/store.js";
-import { fingerprintTarget } from "../target-ownership.js";
 
 export interface GitHubSource {
   source: string;
@@ -64,6 +83,10 @@ export interface AddOptions {
   // M2 只保留命令面兼容;当前没有交互确认。
   yes?: boolean;
   gitClient?: GitClient;
+  // Provider inputs are operation-scoped and never persisted in Store/protocol evidence.
+  secretMode?: "env" | "vault" | "keychain";
+  vaultPassphrase?: string;
+  keychainService?: string;
 }
 
 export interface SkillCandidate {
@@ -120,6 +143,13 @@ interface PreparedAddAction extends PreparedStoreMutationAction {
 interface PreparedAdd {
   result: AddResult;
   actions: PreparedAddAction[];
+}
+
+class StructuredAddGuardError extends Error {
+  constructor() {
+    super("structured import validation failed before protocol publication");
+    this.name = "StructuredAddGuardError";
+  }
 }
 
 interface SourceStage {
@@ -188,33 +218,55 @@ async function nameExists(
   return list.some((a) => a.name === name);
 }
 
-// 收集目录下所有文件文本(用于 skills 写前明文护栏);经 Env.fs 遍历。
-async function collectDirText(env: Env, dir: string): Promise<string> {
-  const parts: string[] = [];
-  const walk = async (d: string): Promise<void> => {
-    for (const name of await readdirOrEmpty(env, d)) {
-      const full = join(d, name);
-      const st = await env.fs.lstat(full);
-      if (st.isDirectory()) await walk(full);
-      else if (st.isFile()) parts.push(await env.fs.readFile(full));
-    }
-  };
-  await walk(dir);
-  return parts.join("\n");
+async function safeSourceSnapshot(env: Env, source: string): Promise<SafeRecursiveSnapshot> {
+  return captureSafeRecursiveSource(env, source);
 }
 
-// skill 目录内是否含符号链接(任意深度)。含则拒绝导入。
-async function findSymlink(env: Env, dir: string): Promise<string | null> {
-  for (const name of await readdirOrEmpty(env, dir)) {
-    const full = join(dir, name);
-    const st = await env.fs.lstat(full);
-    if (st.isSymbolicLink()) return full;
-    if (st.isDirectory()) {
-      const nested = await findSymlink(env, full);
-      if (nested) return nested;
-    }
+async function structuredLocalFileRejection(
+  env: Env,
+  kind: ArtifactKind,
+  name: string,
+  source: string,
+): Promise<AddResult | null> {
+  if (kind !== "mcp") return null;
+  const snapshot = await safeSourceSnapshot(env, source);
+  if (snapshot.kind !== "file" || snapshot.files.length !== 1) return null;
+  const findings = scanStructuredFileSecretFindings(source, snapshot.files[0]?.content ?? "");
+  if (findings.some((finding) => finding.rule === "structured-parse-error")) {
+    throw new Error(`invalid mcp source ${source}: structured parse failed`);
   }
-  return null;
+  if (findings.length === 0) return null;
+  const result = emptyResult();
+  result.rejected.push({
+    kind,
+    name,
+    reason: `structured mcp field finding(s) [${[
+      ...new Set(findings.map((finding) => finding.rule)),
+    ].join(", ")}] — replace plaintext with a supported reference before importing`,
+  });
+  return result;
+}
+
+async function structuredSkillRejection(
+  env: Env,
+  candidate: SkillCandidate,
+): Promise<string | null> {
+  if (candidate.rejected) return null;
+  let snapshot: SafeRecursiveSnapshot;
+  try {
+    snapshot = await safeSourceSnapshot(env, candidate.path);
+  } catch (error) {
+    if (error instanceof UnsafeRecursiveSourceError) return null;
+    throw error;
+  }
+  if (snapshot.kind !== "directory") return null;
+  const findings = snapshot.files.flatMap((file) =>
+    scanStructuredFileSecretFindings(file.relativePath, file.content),
+  );
+  if (findings.length === 0) return null;
+  return `structured sensitive-field finding(s) [${[
+    ...new Set(findings.map((finding) => `${finding.source}:${finding.rule}`)),
+  ].join(", ")}] — replace plaintext with a supported reference before importing`;
 }
 
 // mcp 结构化密钥检测(名字启发 + 高熵,强于纯文本的 high-value 前缀扫描)。
@@ -252,7 +304,7 @@ async function addLocalFile(
   kind: ArtifactKind,
   name: string,
   source: string,
-  isDir: boolean,
+  _isDir: boolean,
 ): Promise<PreparedAdd> {
   const result = emptyResult();
   if (opts.list || opts.all || (opts.skills && opts.skills.length > 0)) {
@@ -271,16 +323,30 @@ async function addLocalFile(
     return { result, actions: [] };
   };
 
-  const payloadText = isDir ? await collectDirText(env, source) : await env.fs.readFile(source);
+  let snapshot: SafeRecursiveSnapshot;
+  try {
+    snapshot = await safeSourceSnapshot(env, source);
+  } catch (error) {
+    if (!(error instanceof UnsafeRecursiveSourceError)) throw error;
+    return reject(unsafeRecursiveReason(error));
+  }
+  if (snapshot.kind !== "file" || snapshot.files.length !== 1) {
+    return reject(`unsafe recursive source (non-regular) at ${source}`);
+  }
+  const payloadText = snapshot.files[0]?.content ?? "";
   const textHits = scanTextForSecrets(payloadText);
   if (textHits.length > 0) {
     return reject(
       `plaintext secret(s) [${textHits.map((h) => h.rule).join(", ")}] — replace with \${ENV} or \${CELLARER_SECRET:name} before importing`,
     );
   }
-
   let action: PreparedAddAction;
   if (kind === "rules") {
+    if (await containsActiveKnownValue(env, opts, payloadText)) {
+      return reject(
+        "known secret value is present beside an active reference — remove plaintext before importing",
+      );
+    }
     const path = join(opts.storeRoot, "store", "rules", `${name}.md`);
     action = {
       actionId: addActionId(kind, name, path),
@@ -289,11 +355,23 @@ async function addLocalFile(
       payload: { contentDigest: sha256(payloadText) },
       postcondition: { state: "present", fingerprint: sha256(payloadText) },
       execute: async () => {
+        await assertSafeRecursiveSnapshotCurrent(env, snapshot);
         await writeRuleArtifact(env, opts.storeRoot, name, payloadText);
       },
       imported: { kind, name, path },
     };
   } else if (kind === "mcp") {
+    const structuredHits = scanStructuredFileSecretFindings(source, payloadText);
+    if (structuredHits.some((finding) => finding.rule === "structured-parse-error")) {
+      throw new Error(`invalid mcp source ${source}: structured parse failed`);
+    }
+    if (structuredHits.length > 0) {
+      return reject(
+        `structured mcp field finding(s) [${[
+          ...new Set(structuredHits.map((finding) => finding.rule)),
+        ].join(", ")}] — replace plaintext with a supported reference before importing`,
+      );
+    }
     let raw: unknown;
     try {
       raw = JSON.parse(payloadText);
@@ -309,6 +387,11 @@ async function addLocalFile(
         `plaintext secret in mcp field(s) [${fieldHits.join(", ")}] — replace with \${ENV} or \${CELLARER_SECRET:name} before importing`,
       );
     }
+    if (await containsActiveKnownValue(env, opts, payloadText)) {
+      return reject(
+        "known secret value is present beside an active reference — remove plaintext before importing",
+      );
+    }
     const path = join(opts.storeRoot, "store", "mcp", `${name}.json`);
     const serializedServer = `${JSON.stringify(serverToRaw(server), null, 2)}\n`;
     action = {
@@ -318,13 +401,14 @@ async function addLocalFile(
       payload: jsonObject({ server }),
       postcondition: { state: "present", fingerprint: sha256(serializedServer) },
       execute: async () => {
+        await assertSafeRecursiveSnapshotCurrent(env, snapshot);
         await writeMcpArtifact(env, opts.storeRoot, name, server);
       },
       imported: { kind, name, path },
     };
   } else {
     const path = join(opts.storeRoot, "store", "skills", name);
-    const sourceFingerprint = await requiredSourceFingerprint(env, source);
+    const sourceFingerprint = snapshot.fingerprint;
     action = {
       actionId: addActionId(kind, name, path),
       kind: "add-skills",
@@ -332,8 +416,8 @@ async function addLocalFile(
       payload: { sourceFingerprint },
       postcondition: { state: "present", fingerprint: sourceFingerprint },
       execute: async () => {
-        await assertSourceFingerprint(env, source, sourceFingerprint);
-        await importSkillArtifact(env, opts.storeRoot, name, source);
+        await assertSafeRecursiveSnapshotCurrent(env, snapshot);
+        await installSafeRecursiveSnapshot(env, snapshot, path, true);
       },
       imported: { kind, name, path },
     };
@@ -815,17 +899,43 @@ async function importSkillCandidate(
     return;
   }
 
-  const link = await findSymlink(env, candidate.path);
-  if (link !== null) {
+  let snapshot: SafeRecursiveSnapshot;
+  try {
+    snapshot = await safeSourceSnapshot(env, candidate.path);
+  } catch (error) {
+    if (!(error instanceof UnsafeRecursiveSourceError)) throw error;
     result.rejected.push({
       kind: "skills",
       name: candidate.name,
-      reason: `skill contains a symlink (${link}) — symlinks are not safely importable`,
+      reason: unsafeRecursiveReason(error),
+    });
+    return;
+  }
+  if (snapshot.kind !== "directory") {
+    result.rejected.push({
+      kind: "skills",
+      name: candidate.name,
+      reason: `unsafe recursive source (non-regular) at ${candidate.path}`,
+    });
+    return;
+  }
+  const payloadText = snapshot.files.map((file) => file.content).join("\n");
+
+  const structuredHits = snapshot.files.flatMap((file) =>
+    scanStructuredFileSecretFindings(file.relativePath, file.content),
+  );
+  if (structuredHits.length > 0) {
+    result.rejected.push({
+      kind: "skills",
+      name: candidate.name,
+      reason: `structured sensitive-field finding(s) [${[
+        ...new Set(structuredHits.map((finding) => `${finding.source}:${finding.rule}`)),
+      ].join(", ")}] — replace plaintext with a supported reference before importing`,
     });
     return;
   }
 
-  const textHits = scanTextForSecrets(await collectDirText(env, candidate.path));
+  const textHits = scanTextForSecrets(payloadText);
   if (textHits.length > 0) {
     result.rejected.push({
       kind: "skills",
@@ -834,9 +944,18 @@ async function importSkillCandidate(
     });
     return;
   }
+  if (await containsActiveKnownValue(env, opts, payloadText)) {
+    result.rejected.push({
+      kind: "skills",
+      name: candidate.name,
+      reason:
+        "known secret value is present beside an active reference — remove plaintext before importing",
+    });
+    return;
+  }
 
   const path = join(opts.storeRoot, "store", "skills", candidate.name);
-  const sourceFingerprint = await requiredSourceFingerprint(env, candidate.path);
+  const sourceFingerprint = snapshot.fingerprint;
   const provenance: SkillProvenance = {
     kind: "skills",
     name: candidate.name,
@@ -861,8 +980,8 @@ async function importSkillCandidate(
       payload: { sourceFingerprint },
       postcondition: { state: "present", fingerprint: sourceFingerprint },
       execute: async () => {
-        await assertSourceFingerprint(env, candidate.path, sourceFingerprint);
-        await importSkillArtifact(env, opts.storeRoot, candidate.name, candidate.path);
+        await assertSafeRecursiveSnapshotCurrent(env, snapshot);
+        await installSafeRecursiveSnapshot(env, snapshot, path, true);
       },
       imported: { kind: "skills", name: candidate.name, path },
     },
@@ -882,10 +1001,16 @@ async function importSkillCandidate(
   );
 }
 
+function unsafeRecursiveReason(error: UnsafeRecursiveSourceError): string {
+  const reason = error.reason === "symbolic-link" ? "symlink" : error.reason;
+  return `unsafe recursive source (${reason}) at ${error.path}`;
+}
+
 async function executeAddTransaction(
   env: Env,
   opts: AddOptions,
   prepare: () => Promise<PreparedAdd>,
+  authorityLease: MutationAuthorityLease,
 ): Promise<AddResult> {
   const transaction = await executeStoreActionMutation(
     env,
@@ -894,6 +1019,9 @@ async function executeAddTransaction(
     "add",
     async () => {
       const prepared = await prepare();
+      if (prepared.result.rejected.some((item) => /structured/i.test(item.reason))) {
+        throw new StructuredAddGuardError();
+      }
       const imported = prepared.actions.flatMap((action) =>
         action.imported ? [action.imported] : [],
       );
@@ -904,6 +1032,7 @@ async function executeAddTransaction(
         ...(publications.length > 0 ? { publications } : {}),
       };
     },
+    { authorityLease },
   );
   const successfulActionIds = new Set(
     transaction.operation.ok
@@ -935,7 +1064,10 @@ async function addCollectionPublication(
     const id = `${item.kind}/${item.name}`;
     const collections = next.artifacts[id]?.collections ?? [];
     if (!collections.includes(opts.collection)) {
-      next.artifacts[id] = { collections: [...collections, opts.collection] };
+      next.artifacts[id] = {
+        ...next.artifacts[id],
+        collections: [...collections, opts.collection],
+      };
     }
   }
   return [
@@ -955,61 +1087,135 @@ function jsonObject(value: unknown): CanonicalJsonObject {
   return JSON.parse(JSON.stringify(value)) as CanonicalJsonObject;
 }
 
-async function requiredSourceFingerprint(env: Env, source: string): Promise<string> {
-  const fingerprint = await fingerprintTarget(env, source);
-  if (!fingerprint) throw new Error(`add source cannot be fingerprinted completely: ${source}`);
-  return fingerprint;
-}
-
-async function assertSourceFingerprint(env: Env, source: string, expected: string): Promise<void> {
-  if ((await fingerprintTarget(env, source)) === expected) return;
-  const error = new Error(`add source changed after preparation: ${source}`) as Error & {
-    code: string;
+async function containsActiveKnownValue(
+  env: Env,
+  opts: AddOptions,
+  content: string,
+): Promise<boolean> {
+  const config = await loadConfig(env, opts.storeRoot);
+  const providerOptions = {
+    secretMode: opts.secretMode ?? config.defaults.secretMode,
+    vaultPassphrase: opts.vaultPassphrase,
+    keychainService: opts.keychainService,
+    requireAvailable: true,
   };
-  error.code = "ESTALE";
-  throw error;
+  await discoverActiveSecretValues(env, opts.storeRoot, [content], providerOptions);
+  const active = await inventoryActiveSecretValues(env, opts.storeRoot, providerOptions);
+  return containsKnownSecretValue(content, active);
 }
 
 export async function add(env: Env, opts: AddOptions): Promise<AddResult> {
-  validateSkillSelectionOptions(opts);
-  const localStat = await statOrNull(env, opts.source);
-  if (localStat !== null && !localStat.isDirectory()) {
-    const kind = inferKind(false, opts.source);
-    return executeAddTransaction(env, opts, () =>
-      addLocalFile(env, opts, kind, deriveName(opts.source, false), opts.source, false),
-    );
-  }
+  if (opts.list) return addWithAuthorityLease(env, opts);
+  return withCurrentMutationAuthorityLease(env, (authorityLease) =>
+    addWithAuthorityLease(env, opts, authorityLease),
+  );
+}
 
-  const stage = await stageSource(env, opts);
+async function addWithAuthorityLease(
+  env: Env,
+  opts: AddOptions,
+  authorityLease?: MutationAuthorityLease,
+): Promise<AddResult> {
+  const { scope, operationEnv } = await addProviderScope(env, opts);
   try {
-    const stagedStat = await statOrNull(env, stage.path);
-    if (stagedStat === null) {
-      throw new Error(`source path does not exist: ${stage.path}`);
-    }
-    if (!stagedStat.isDirectory()) {
-      const kind = inferKind(false, stage.path);
-      return executeAddTransaction(env, opts, () =>
-        addLocalFile(env, opts, kind, deriveName(stage.path, false), stage.path, false),
+    validateSkillSelectionOptions(opts);
+    const localStat = await statOrNull(operationEnv, opts.source);
+    if (localStat !== null && !localStat.isDirectory()) {
+      const kind = inferKind(false, opts.source);
+      const name = deriveName(opts.source, false);
+      const rejection = await structuredLocalFileRejection(operationEnv, kind, name, opts.source);
+      if (rejection) return attachProviderScope(rejection, scope);
+      const result = await executeAddTransaction(
+        operationEnv,
+        opts,
+        () => addLocalFile(operationEnv, opts, kind, name, opts.source, false),
+        requireAddMutationLease(authorityLease),
       );
+      return attachProviderScope(result, scope);
     }
 
-    const candidates = await discoverSkillCandidates(env, stage);
-    if (opts.list) {
-      const result = emptyResult();
-      result.candidates = visibleCandidates(candidates, opts.collection === "internal");
-      return result;
-    }
-    return executeAddTransaction(env, opts, async () => {
-      const result = emptyResult();
-      result.candidates = visibleCandidates(candidates, opts.collection === "internal");
-      const selected = selectCandidates(candidates, opts, result);
-      const actions: PreparedAddAction[] = [];
-      for (const candidate of selected) {
-        await importSkillCandidate(env, opts, stage, candidate, result, actions);
+    const stage = await stageSource(operationEnv, opts);
+    try {
+      const stagedStat = await statOrNull(operationEnv, stage.path);
+      if (stagedStat === null) {
+        throw new Error(`source path does not exist: ${stage.path}`);
       }
-      return { result, actions };
-    });
-  } finally {
-    await stage.cleanup?.();
+      if (!stagedStat.isDirectory()) {
+        const kind = inferKind(false, stage.path);
+        const name = deriveName(stage.path, false);
+        const rejection = await structuredLocalFileRejection(operationEnv, kind, name, stage.path);
+        if (rejection) return attachProviderScope(rejection, scope);
+        const result = await executeAddTransaction(
+          operationEnv,
+          opts,
+          () => addLocalFile(operationEnv, opts, kind, name, stage.path, false),
+          requireAddMutationLease(authorityLease),
+        );
+        return attachProviderScope(result, scope);
+      }
+
+      if (!operationEnv.fs.supportsSafeRecursiveSnapshots()) {
+        throw new UnsafeRecursiveSourceError(stage.path, "unsupported");
+      }
+
+      const candidates = await discoverSkillCandidates(operationEnv, stage);
+      if (opts.list) {
+        const result = emptyResult();
+        result.candidates = visibleCandidates(candidates, opts.collection === "internal");
+        return attachProviderScope(result, scope);
+      }
+      const preflight = emptyResult();
+      preflight.candidates = visibleCandidates(candidates, opts.collection === "internal");
+      const selected = selectCandidates(candidates, opts, preflight);
+      for (const candidate of selected) {
+        const reason = await structuredSkillRejection(operationEnv, candidate);
+        if (reason) preflight.rejected.push({ kind: "skills", name: candidate.name, reason });
+      }
+      if (preflight.rejected.length > 0) return attachProviderScope(preflight, scope);
+      const result = await executeAddTransaction(
+        operationEnv,
+        opts,
+        async () => {
+          const prepared = emptyResult();
+          prepared.candidates = visibleCandidates(candidates, opts.collection === "internal");
+          const selectedCandidates = selectCandidates(candidates, opts, prepared);
+          const actions: PreparedAddAction[] = [];
+          for (const candidate of selectedCandidates) {
+            await importSkillCandidate(operationEnv, opts, stage, candidate, prepared, actions);
+          }
+          return { result: prepared, actions };
+        },
+        requireAddMutationLease(authorityLease),
+      );
+      return attachProviderScope(result, scope);
+    } finally {
+      await stage.cleanup?.();
+    }
+  } catch (error) {
+    throw attachAddScopeToError(error, scope);
   }
+}
+
+function requireAddMutationLease(
+  authorityLease: MutationAuthorityLease | undefined,
+): MutationAuthorityLease {
+  if (!authorityLease) throw new TypeError("mutation authority is not current");
+  return authorityLease;
+}
+
+async function addProviderScope(
+  env: Env,
+  opts: AddOptions,
+): Promise<{ scope: ProviderScope; operationEnv: Env }> {
+  const config = await loadConfig(env, opts.storeRoot);
+  const scope = createProviderScope({
+    secretMode: opts.secretMode ?? config.defaults.secretMode,
+    vaultPassphrase: opts.vaultPassphrase,
+    keychainService: opts.keychainService,
+  });
+  return { scope, operationEnv: withProviderScope(env, scope) };
+}
+
+function attachAddScopeToError(error: unknown, scope: ProviderScope): unknown {
+  return typeof error === "object" && error !== null ? attachProviderScope(error, scope) : error;
 }
