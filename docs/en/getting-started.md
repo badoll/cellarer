@@ -109,7 +109,7 @@ agent or directory selector, pass `--all` explicitly.
 
 ```bash
 node packages/cli/dist/bin.js ui
-node packages/cli/dist/bin.js ui --port 4317 --token local-token
+node packages/cli/dist/bin.js ui --port 4317 --token-fd 3 3< /path/to/ui-token
 ```
 
 The server listens on `127.0.0.1` only.

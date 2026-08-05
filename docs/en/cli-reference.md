@@ -8,6 +8,111 @@ Run from source after `pnpm build`:
 node packages/cli/dist/bin.js <command>
 ```
 
+## Machine protocol
+
+Every registered command uses CLI protocol `1.0` and accepts the same global
+transport options:
+
+| Option | Description |
+| --- | --- |
+| `--output text\|json\|jsonl` | Select human text, one terminal JSON envelope, or newline-delimited protocol records. Default: `text`. |
+| `--non-interactive` | Forbid prompts and fail with `INPUT_REQUIRED` when mandatory input or acknowledgement is missing. |
+| `--input <path\|->` | Read a versioned command request from a file or stdin (`-`) and validate it before invoking Core. |
+
+Place global options before the command in scripts. `--output json` and
+`--output jsonl` imply non-interactive execution. So do `--input -` and a
+non-TTY invocation. Older command-local `--json` flags remain aliases for
+`--output json`; an explicit `--output` takes precedence. New automation should
+use `--output` because it works for every registered command.
+
+### Structured input
+
+The command remains in argv for auditable routing. The request repeats that
+identity and supplies command-domain fields under `input`:
+
+```json
+{
+  "protocolVersion": "1.0",
+  "command": "status",
+  "requestId": "ci:status:42",
+  "input": {
+    "agents": ["codex"],
+    "dir": "/workspace/project"
+  }
+}
+```
+
+```bash
+node packages/cli/dist/bin.js --output json --input request.json status
+node packages/cli/dist/bin.js --output json --input - status < request.json
+```
+
+The request must validate against the command's advertised input schema. A
+domain field cannot appear in both argv and `input`; duplication returns
+`INPUT_AMBIGUITY` before Core is invoked. Transport flags such as `--output`
+stay in argv. Secret values and passphrases do not belong in request JSON: use
+`--stdin`, an inherited `--fd`, or the command's protected passphrase/token FD.
+
+### JSON results and JSONL completion
+
+JSON mode writes exactly one compact terminal envelope to stdout:
+
+```json
+{
+  "protocolVersion": "1.0",
+  "command": "status",
+  "requestId": "req-...",
+  "status": "success",
+  "data": { "items": [] },
+  "warnings": []
+}
+```
+
+A handled failure uses the same envelope with `status: "error"` and a typed
+`error` object. Its optional `data` remains command-specific. In `json` and
+`jsonl` modes, stdout contains protocol records only: no prompts, colors,
+spinners, banners, or diagnostics. Redacted diagnostics use stderr.
+
+Commands advertised with `streaming: true` (`apply`, `scan`, and `revert`) may
+write JSONL event envelopes before the result. Each non-empty stdout line is one
+complete JSON object; event `sequence` starts at 1, and the final line is exactly
+one terminal result envelope. A stream that ends without that terminal record
+is transport-interrupted and must not be treated as success. Non-streaming
+commands emit only the terminal line when `--output jsonl` is selected.
+
+### Exit classes and stable errors
+
+Branch on the stable `error.code`; the localized `message` is for people. Exit
+codes classify failures coarsely:
+
+| Exit | Meaning | Error codes |
+| ---: | --- | --- |
+| `0` | Success | — |
+| `2` | Usage, input schema, ambiguity, or missing input | `INVALID_USAGE`, `INVALID_INPUT`, `INPUT_REQUIRED`, `INPUT_AMBIGUITY` |
+| `3` | Policy or domain validation | `POLICY_VIOLATION`, `DOMAIN_VALIDATION_FAILED` |
+| `4` | Concurrency or precondition conflict | `STALE_REVISION`, `LOCK_CONFLICT`, `TARGET_CONFLICT` |
+| `5` | Execution or partial failure | `EXECUTION_FAILED`, `PARTIAL_FAILURE` |
+| `6` | Manual recovery required | `RECOVERY_REQUIRED` |
+| `70` | Unexpected internal failure; details are redacted | `INTERNAL_ERROR` |
+
+### Capability and schema discovery
+
+Discovery is local and requires no network access:
+
+```bash
+node packages/cli/dist/bin.js --output json capabilities
+node packages/cli/dist/bin.js --output json schema
+node packages/cli/dist/bin.js --output json schema \
+  urn:cellarer:cli:protocol:1.0:command:status:output
+```
+
+`capabilities` returns supported protocol versions and every command's
+mutability, streaming support, input/output schema IDs, optional event schema
+ID, and required features. `schema [schema-id]` returns the selected JSON Schema
+inside the terminal envelope's `data`; without an ID it returns a deterministic
+local bundle. Retrieve schema IDs from `capabilities` instead of constructing
+them. `--version` is derived from the installed CLI package metadata.
+
 ## `init`
 
 Initializes the store through the signed mutation journal. Product directories
@@ -113,7 +218,7 @@ node packages/cli/dist/bin.js add ./server.json --force
 node packages/cli/dist/bin.js add ./my-skill/
 node packages/cli/dist/bin.js add vercel-labs/skills --list
 node packages/cli/dist/bin.js add vercel-labs/skills --skill nextjs --collection public
-node packages/cli/dist/bin.js add https://github.com/vercel-labs/skills/tree/main/skills/web-design-guidelines --json
+node packages/cli/dist/bin.js --output json add https://github.com/vercel-labs/skills/tree/main/skills/web-design-guidelines
 ```
 
 Regular single-file Rule and MCP imports use a portable no-follow identity
@@ -133,7 +238,7 @@ Options:
 | `--all` | Import all eligible skills from a multi-skill source. |
 | `--collection <name>` | Tag imported resources with a collection. `internal` also includes internal skills. |
 | `--yes` | Skip confirmations. `add` is currently non-interactive. |
-| `--json` | Print a JSON candidate list or import report. |
+| `--json` | Compatibility alias for `--output json`; command data contains the candidate list or import report. |
 
 Supported sources:
 
@@ -173,7 +278,7 @@ scope, and target paths.
 
 ```bash
 node packages/cli/dist/bin.js agents
-node packages/cli/dist/bin.js agents -a codex,claude-code --dir /path/to/project --json
+node packages/cli/dist/bin.js --output json agents -a codex,claude-code --dir /path/to/project
 ```
 
 Options:
@@ -182,7 +287,7 @@ Options:
 | --- | --- |
 | `-a, --agent <ids>` | Show only these comma-separated agent ids. |
 | `--dir <path>` | Project scope root. Omit for global scope. |
-| `--json` | Print machine-readable output. |
+| `--json` | Compatibility alias for `--output json`. |
 
 ## `doctor`
 
@@ -192,7 +297,7 @@ without writing files.
 
 ```bash
 node packages/cli/dist/bin.js doctor
-node packages/cli/dist/bin.js doctor -a codex --json
+node packages/cli/dist/bin.js --output json doctor -a codex
 ```
 
 Options:
@@ -201,7 +306,7 @@ Options:
 | --- | --- |
 | `-a, --agent <ids>` | Check only these comma-separated agent ids. |
 | `--dir <path>` | Project scope root. Omit for global scope. |
-| `--json` | Print machine-readable output. |
+| `--json` | Compatibility alias for `--output json`. |
 
 The JSON report includes `mutationRecovery`. `clean` means there is no
 incomplete operation; `incomplete` and `manual-recovery-required` include a
@@ -216,7 +321,7 @@ Plans or writes resources to selected agents.
 ```bash
 node packages/cli/dist/bin.js apply --dry-run --agent claude-code,codex
 node packages/cli/dist/bin.js apply --agent claude-code,codex --collection default
-node packages/cli/dist/bin.js apply --dry-run --agent claude-code --json
+node packages/cli/dist/bin.js --output json apply --dry-run --agent claude-code
 ```
 
 Options:
@@ -226,7 +331,7 @@ Options:
 | `-a, --agent <ids>` | Required. Comma-separated agent ids. |
 | `--dir <path>` | Project scope root. Omit for global scope. |
 | `--collection <collection>` | Filter resources by collection. |
-| `--rules` | Include rules. If no capability flag is set, all capabilities are included. |
+| `--rules` | Include rules. Interactive text and dry-run may default to all capabilities; a non-interactive write requires at least one explicit capability flag. |
 | `--mcp` | Include MCP servers. |
 | `--skills` | Include skills. |
 | `--copy` | Prefer copy instead of symlink for skills. |
@@ -237,7 +342,7 @@ Options:
 | `--override-drift <tokens>` | Comma-separated exact drift-override tokens from `plan.conflicts`. |
 | `--snapshot-passphrase-fd <number>` | Read the replacement snapshot passphrase from an inherited descriptor; otherwise use hidden terminal input. |
 | `--dry-run` | Print the plan without writing. |
-| `--json` | Print the Core apply plan/result, mutation identity or receipt, conflicts, and acknowledgement tokens. |
+| `--json` | Compatibility alias for `--output json`; command data contains the Core plan/result, mutation identity or receipt, conflicts, and acknowledgement tokens. |
 
 An unacknowledged ownership conflict blocks apply and exits nonzero. Inspect the JSON dry-run,
 then repeat the same selection with the exact conflict token in `--replace-unowned` or
@@ -249,9 +354,10 @@ Every response includes `mutation.planId`, `planDigest`, `operation`, and
 `mutation.result.receipt`, with its operation id, resulting revision, outcome,
 and per-action receipts. The CLI plans and applies within one invocation; a
 later non-dry-run invocation does not resubmit the serialized dry-run plan.
-Typed protocol conflicts such as `LOCK_CONFLICT`, `STALE_REVISION`,
-`TARGET_PRECONDITION_CONFLICT`, and `INTERRUPTED_OPERATION` exit nonzero without
-performing an unauthorized target write.
+The public envelope maps Core conflicts to stable CLI errors such as
+`LOCK_CONFLICT`, `STALE_REVISION`, `TARGET_CONFLICT`, and `RECOVERY_REQUIRED`;
+the original Core code remains in redacted error details. These failures exit
+nonzero without performing an unauthorized target write.
 
 ## `scan`
 
@@ -279,13 +385,15 @@ Options:
 | `--vault-passphrase-fd <number>` | Read the vault passphrase from an inherited descriptor for a mutating vault-backed import. |
 | `--keychain-service <name>` | Keychain service for a mutating keychain-backed import; default `cellarer`. |
 | `--dry-run` | Show candidates without writing. |
-| `--json` | Print JSON output. |
+| `--json` | Compatibility alias for `--output json`. |
 
 `scan --dry-run` is a pure read-only preview that cannot be submitted to an
 execution API. It does not provision, load, or query mutation authority or
 secret credentials and always scans in environment-reference mode, even if a
 vault or keychain mode was requested. A non-dry-run import remains an executable
-mutation and requires authority.
+mutation and requires authority. A non-interactive write also requires one
+explicit agent and at least one capability flag; dry-run requires the agent but
+may inspect all capabilities when no capability flag is present.
 
 ## `status`
 
@@ -294,7 +402,7 @@ applied-versus-disk separately and includes mutation recovery health.
 
 ```bash
 node packages/cli/dist/bin.js status
-node packages/cli/dist/bin.js status --agent codex --json
+node packages/cli/dist/bin.js --output json status --agent codex
 ```
 
 Options:
@@ -303,9 +411,9 @@ Options:
 | --- | --- |
 | `-a, --agent <ids>` | Filter by comma-separated agent ids. |
 | `--dir <path>` | Filter by project root. |
-| `--json` | Print machine-readable output. |
+| `--json` | Compatibility alias for `--output json`. |
 
-`status --agent <ids> --json` returns `verification.desiredVsApplied`,
+`--output json status --agent <ids>` returns `verification.desiredVsApplied`,
 `verification.appliedVsDisk`, `verification.recovery`, and
 `verification.healthy`. Without `--agent`, the command returns ledger-versus-
 disk `items` only and does not claim full verification health.
@@ -315,7 +423,7 @@ disk `items` only and does not claim full verification health.
 Rolls back ledger entries.
 
 ```bash
-node packages/cli/dist/bin.js revert --agent codex --dry-run --json
+node packages/cli/dist/bin.js --output json revert --agent codex --dry-run
 node packages/cli/dist/bin.js revert --agent codex --acknowledge "$ACK_TOKEN" --snapshot-passphrase-fd 3 3< "$CELLARER_SNAPSHOT_PASSPHRASE_FILE"
 ```
 
@@ -334,7 +442,7 @@ Options:
 | `--acknowledge <tokens>` | Comma-separated exact drift tokens returned by the dry-run plan. |
 | `--snapshot-passphrase-fd <number>` | Read the snapshot passphrase from an inherited descriptor; otherwise use hidden terminal input when acknowledgement needs it. |
 | `--dry-run` | Preview rollback actions. |
-| `--json` | Print the Core revert plan/result and mutation identity or receipt. |
+| `--json` | Compatibility alias for `--output json`; command data contains the Core revert plan/result and mutation identity or receipt. |
 
 Revert uses the same store lock, immutable plan validation, journal, revision,
 and operation receipt boundary as apply. A dry-run has no mutation result; a
@@ -400,15 +508,20 @@ Starts the local Web console.
 
 ```bash
 node packages/cli/dist/bin.js ui
-node packages/cli/dist/bin.js ui --port 4317 --token local-token
+node packages/cli/dist/bin.js ui --port 4317 --token-fd 3 3< /path/to/ui-token
 ```
 
 Options:
 
 | Option | Description |
 | --- | --- |
-| `--port <port>` | Port, default `4317`. |
-| `--token <token>` | Require `Authorization: Bearer <token>` for API requests. |
+| `--port <port>` | Port in the range `1..65535`, default `4317`. |
+| `--token-fd <number>` | Read the optional bearer token from an inherited descriptor numbered `3` or greater. |
+
+The bearer token never belongs in argv or structured request JSON. Pass only
+the descriptor number and source its bytes from a runner-owned protected file,
+pipe, or equivalent channel; the example file should be readable only by its
+owner.
 
 `ui` preloads any available authority before starting the server and injects
 only the narrow in-memory `MutationAuthority` capability needed for sealing,

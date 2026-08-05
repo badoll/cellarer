@@ -177,6 +177,20 @@ export {
   createMutationPlan,
   verifyDurableMutationPlanDigest,
 } from "./protocol/canonical.js";
+export {
+  CLI_PROTOCOL_VERSION,
+  type CliCommandRequest,
+  type CliError,
+  type CliErrorCode,
+  type CliErrorResultEnvelope,
+  type CliEvent,
+  type CliEventEnvelope,
+  type CliProtocolRecord,
+  type CliProtocolVersion,
+  type CliResultEnvelope,
+  type CliSuccessResultEnvelope,
+  type CliWarning,
+} from "./protocol/cli.js";
 export { targetState } from "./protocol/execute.js";
 export {
   DEFAULT_OPERATION_RECEIPT_RETENTION,

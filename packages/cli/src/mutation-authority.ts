@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { join, resolve } from "node:path";
 import {
+  type CliErrorCode,
   type Env,
   type HeadlessLifetimeLease,
   MUTATION_AUTHORITY_ACCOUNT_PREFIX,
@@ -13,6 +14,7 @@ import {
   withMutationAuthorityRotationExclusion,
 } from "@cellarer/core";
 import { tryAuthorityCredentialStore } from "./keychain.js";
+import { CliHandledError } from "./protocol/errors.js";
 
 type SecretStore = NonNullable<Env["secretStore"]>;
 
@@ -77,7 +79,10 @@ export async function attachMutationAuthority(
       return;
     }
     if (mode === "required") {
-      throw new Error("mutation authority is unavailable; run cellarer init");
+      throw authorityError(
+        "POLICY_VIOLATION",
+        "mutation authority is unavailable; run cellarer init",
+      );
     }
   } finally {
     // The composition root consumes the protected channel. Core/Web receive a copied environment
@@ -124,10 +129,14 @@ export async function provisionMutationAuthority(
   const normalizedStoreRoot = await canonicalizeStoreRoot(env, storeRoot, { create: true });
   if (env.env[HEADLESS_MUTATION_AUTHORITY_ENV] !== undefined) {
     const authority = await loadMutationAuthority(env, normalizedStoreRoot, credentialStore);
-    if (!authority) throw new Error("mutation authority is unavailable");
+    if (!authority) {
+      throw authorityError("POLICY_VIOLATION", "mutation authority is unavailable");
+    }
     return authority;
   }
-  if (!credentialStore) throw new Error("mutation authority provider is unavailable");
+  if (!credentialStore) {
+    throw authorityError("POLICY_VIOLATION", "mutation authority provider is unavailable");
+  }
 
   const coordination = await acquireAuthorityCoordination(env, normalizedStoreRoot);
   try {
@@ -170,44 +179,57 @@ export async function rotateMutationAuthority(
     env.env[HEADLESS_MUTATION_AUTHORITY_ENV] !== undefined ||
     (env.mutationAuthority !== undefined && headlessAuthorities.has(env.mutationAuthority))
   ) {
-    throw new Error(
+    throw authorityError(
+      "POLICY_VIOLATION",
       `replace ${HEADLESS_MUTATION_AUTHORITY_ENV} through the protected environment to rotate it`,
     );
   }
-  if (!credentialStore) throw new Error("mutation authority provider is unavailable");
+  if (!credentialStore) {
+    throw authorityError("POLICY_VIOLATION", "mutation authority provider is unavailable");
+  }
   const coordination = await acquireAuthorityCoordination(env, normalizedStoreRoot);
   try {
-    return await withMutationAuthorityRotationExclusion(env, normalizedStoreRoot, async () => {
-      const encoded = await readPersistentCredential(normalizedStoreRoot, credentialStore);
-      if (encoded === undefined) {
-        throw new Error("mutation authority is not provisioned; run cellarer init");
-      }
-      const current = parsePersistentMaterial(encoded);
-      if (current.authorityEpoch >= Number.MAX_SAFE_INTEGER) {
+    try {
+      return await withMutationAuthorityRotationExclusion(env, normalizedStoreRoot, async () => {
+        const encoded = await readPersistentCredential(normalizedStoreRoot, credentialStore);
+        if (encoded === undefined) {
+          throw authorityError(
+            "POLICY_VIOLATION",
+            "mutation authority is not provisioned; run cellarer init",
+          );
+        }
+        const current = parsePersistentMaterial(encoded);
+        if (current.authorityEpoch >= Number.MAX_SAFE_INTEGER) {
+          current.masterKey.fill(0);
+          throw authorityError(
+            "DOMAIN_VALIDATION_FAILED",
+            "mutation authority epoch cannot be advanced",
+          );
+        }
+        const replacement: AuthorityMaterial = {
+          authorityId: current.authorityId,
+          authorityEpoch: current.authorityEpoch + 1,
+          masterKey: randomBytes(MASTER_KEY_BYTES),
+        };
         current.masterKey.fill(0);
-        throw new Error("mutation authority epoch cannot be advanced");
-      }
-      const replacement: AuthorityMaterial = {
-        authorityId: current.authorityId,
-        authorityEpoch: current.authorityEpoch + 1,
-        masterKey: randomBytes(MASTER_KEY_BYTES),
-      };
-      current.masterKey.fill(0);
-      const replacementEncoded = encodePersistentMaterial(replacement);
-      await writeAndVerifyPersistentCredential(
-        normalizedStoreRoot,
-        replacementEncoded,
-        "rotation",
-        credentialStore,
-      );
-      return createMutationAuthority(
-        replacement,
-        normalizedStoreRoot,
-        env,
-        credentialStore,
-        undefined,
-      );
-    });
+        const replacementEncoded = encodePersistentMaterial(replacement);
+        await writeAndVerifyPersistentCredential(
+          normalizedStoreRoot,
+          replacementEncoded,
+          "rotation",
+          credentialStore,
+        );
+        return createMutationAuthority(
+          replacement,
+          normalizedStoreRoot,
+          env,
+          credentialStore,
+          undefined,
+        );
+      });
+    } catch (error) {
+      throw mapAuthorityRotationError(error);
+    }
   } finally {
     await coordination.release();
   }
@@ -249,7 +271,9 @@ async function readPersistentCredential(
     MUTATION_AUTHORITY_CREDENTIAL_SERVICE,
     authorityAccount(normalizedStoreRoot),
   );
-  if ("error" in result) throw new Error("mutation authority provider is unavailable");
+  if ("error" in result) {
+    throw authorityError("POLICY_VIOLATION", "mutation authority provider is unavailable");
+  }
   return result.found ? result.value : undefined;
 }
 
@@ -259,16 +283,21 @@ async function writeAndVerifyPersistentCredential(
   operation: "provisioning" | "rotation",
   provider: SecretStore | null | undefined,
 ): Promise<void> {
-  if (!provider) throw new Error("mutation authority provider is unavailable");
+  if (!provider) {
+    throw authorityError("POLICY_VIOLATION", "mutation authority provider is unavailable");
+  }
   const account = authorityAccount(normalizedStoreRoot);
   try {
     await provider.set(MUTATION_AUTHORITY_CREDENTIAL_SERVICE, account, encoded);
   } catch {
-    throw new Error(`mutation authority ${operation} failed`);
+    throw authorityError("EXECUTION_FAILED", `mutation authority ${operation} failed`);
   }
   const readBack = await readPersistentCredential(normalizedStoreRoot, provider);
   if (!readBack || !safeStringEqual(readBack, encoded)) {
-    throw new Error(`mutation authority ${operation} read-back verification failed`);
+    throw authorityError(
+      "EXECUTION_FAILED",
+      `mutation authority ${operation} read-back verification failed`,
+    );
   }
 }
 
@@ -284,7 +313,7 @@ function localAuthorityId(env: Env, normalizedStoreRoot: string): string {
 function parseHeadlessMaterial(value: string, normalizedStoreRoot: string): AuthorityMaterial {
   const parts = value.split(":");
   if (parts.length !== 3 || parts[0] !== "v1") {
-    throw new Error("protected environment authority is malformed");
+    throw authorityError("INVALID_INPUT", "protected environment authority is malformed");
   }
   const authorityEpoch = parseEpoch(parts[1]);
   const masterKey = parseKey(parts[2]);
@@ -300,7 +329,7 @@ function parseHeadlessMaterial(value: string, normalizedStoreRoot: string): Auth
 function parsePersistentMaterial(value: string): AuthorityMaterial {
   const parts = value.split(":");
   if (parts.length !== 4 || parts[0] !== "v1" || !parts[1] || !AUTHORITY_ID.test(parts[1])) {
-    throw new Error("stored mutation authority is malformed");
+    throw authorityError("RECOVERY_REQUIRED", "stored mutation authority is malformed");
   }
   return {
     authorityId: parts[1],
@@ -317,9 +346,9 @@ function parseEpoch(
   value: string | undefined,
   message = "protected environment authority is malformed",
 ) {
-  if (!value || !/^[1-9][0-9]*$/.test(value)) throw new Error(message);
+  if (!value || !/^[1-9][0-9]*$/.test(value)) throw malformedAuthorityError(message);
   const epoch = Number(value);
-  if (!Number.isSafeInteger(epoch) || epoch <= 0) throw new Error(message);
+  if (!Number.isSafeInteger(epoch) || epoch <= 0) throw malformedAuthorityError(message);
   return epoch;
 }
 
@@ -327,10 +356,10 @@ function parseKey(
   value: string | undefined,
   message = "protected environment authority is malformed",
 ) {
-  if (!value || !BASE64URL_256.test(value)) throw new Error(message);
+  if (!value || !BASE64URL_256.test(value)) throw malformedAuthorityError(message);
   const key = Buffer.from(value, "base64url");
   if (key.length !== MASTER_KEY_BYTES || key.toString("base64url") !== value)
-    throw new Error(message);
+    throw malformedAuthorityError(message);
   return key;
 }
 
@@ -503,7 +532,10 @@ async function acquireHeadlessAuthorityOwner(
 ): Promise<HeldHeadlessOwner> {
   const lifetimeOwner = env.headlessLifetimeOwner;
   if (!lifetimeOwner) {
-    throw new Error("headless mutation authority owner is active or unavailable");
+    throw authorityError(
+      "LOCK_CONFLICT",
+      "headless mutation authority owner is active or unavailable",
+    );
   }
   const processId = env.processId();
   const hostname = env.hostname();
@@ -516,7 +548,10 @@ async function acquireHeadlessAuthorityOwner(
     ) {
       return held;
     }
-    throw new Error("headless mutation authority owner is active or unavailable");
+    throw authorityError(
+      "LOCK_CONFLICT",
+      "headless mutation authority owner is active or unavailable",
+    );
   }
   if (held) {
     heldHeadlessOwners.delete(processKey);
@@ -526,10 +561,16 @@ async function acquireHeadlessAuthorityOwner(
   try {
     lease = await lifetimeOwner.acquire(normalizedStoreRoot);
   } catch {
-    throw new Error("headless mutation authority owner is active or unavailable");
+    throw authorityError(
+      "LOCK_CONFLICT",
+      "headless mutation authority owner is active or unavailable",
+    );
   }
   if (!(await headlessLeaseIsCurrent(lease))) {
-    throw new Error("headless mutation authority owner is active or unavailable");
+    throw authorityError(
+      "LOCK_CONFLICT",
+      "headless mutation authority owner is active or unavailable",
+    );
   }
 
   // Concurrent loads in one process may await the same kernel acquisition. Re-check the
@@ -542,7 +583,10 @@ async function acquireHeadlessAuthorityOwner(
     ) {
       return winner;
     }
-    throw new Error("headless mutation authority owner is active or unavailable");
+    throw authorityError(
+      "LOCK_CONFLICT",
+      "headless mutation authority owner is active or unavailable",
+    );
   }
 
   const owner = Object.freeze({
@@ -630,7 +674,10 @@ async function acquireAuthorityCoordination(
             throw error;
           });
           if (current !== owner) {
-            throw new Error("mutation authority coordination owner changed before release");
+            throw authorityError(
+              "LOCK_CONFLICT",
+              "mutation authority coordination owner changed before release",
+            );
           }
           await env.fs.rm(path);
           released = true;
@@ -641,7 +688,7 @@ async function acquireAuthorityCoordination(
     // publish and release without introducing an un-injected clock or timer into Core.
     await Promise.resolve();
   }
-  throw new Error("mutation authority coordination is unavailable");
+  throw authorityError("LOCK_CONFLICT", "mutation authority coordination is unavailable");
 }
 
 function persistentCredentialStore(): SecretStore | undefined {
@@ -652,4 +699,33 @@ function safeStringEqual(left: string, right: string): boolean {
   const leftBytes = Buffer.from(left);
   const rightBytes = Buffer.from(right);
   return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
+}
+
+function authorityError(code: CliErrorCode, message: string) {
+  return new CliHandledError({ code, message });
+}
+
+function malformedAuthorityError(message: string): CliHandledError {
+  return authorityError(
+    message.startsWith("protected environment") ? "INVALID_INPUT" : "RECOVERY_REQUIRED",
+    message,
+  );
+}
+
+function mapAuthorityRotationError(error: unknown): unknown {
+  if (error instanceof CliHandledError) return error;
+  const message = error instanceof Error ? error.message : "";
+  if (
+    message === "mutation authority rotation refused while an active operation journal exists" ||
+    message === "mutation authority rotation refused while recovery is active"
+  ) {
+    return new CliHandledError({ code: "RECOVERY_REQUIRED", message });
+  }
+  if (message === "mutation authority rotation refused while a mutation is active") {
+    return new CliHandledError({ code: "LOCK_CONFLICT", message });
+  }
+  if (message === "mutation authority rotation safety check failed") {
+    return new CliHandledError({ code: "EXECUTION_FAILED", message });
+  }
+  return error;
 }

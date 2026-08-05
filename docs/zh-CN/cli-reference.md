@@ -8,6 +8,105 @@
 node packages/cli/dist/bin.js <command>
 ```
 
+## 机器协议
+
+所有已注册命令都使用 CLI protocol `1.0`,并接受同一组全局 transport 选项:
+
+| 选项 | 说明 |
+| --- | --- |
+| `--output text\|json\|jsonl` | 选择人类文本、单个 terminal JSON envelope 或逐行 protocol records。默认 `text`。 |
+| `--non-interactive` | 禁止 prompt;缺少必需输入或确认时返回 `INPUT_REQUIRED`。 |
+| `--input <path\|->` | 从文件或 stdin (`-`) 读取版本化 command request,在调用 Core 前完成校验。 |
+
+脚本应把全局选项放在命令前。`--output json`、`--output jsonl`、`--input -`
+以及非 TTY 调用都会隐含 non-interactive。旧的命令级 `--json` 保留为
+`--output json` 的兼容别名;显式 `--output` 优先。新自动化应使用适用于全部已注册命令的
+`--output`。
+
+### 结构化输入
+
+命令仍保留在 argv 中,以便审计路由。Request 会重复该 identity,并把命令领域字段放在
+`input` 下:
+
+```json
+{
+  "protocolVersion": "1.0",
+  "command": "status",
+  "requestId": "ci:status:42",
+  "input": {
+    "agents": ["codex"],
+    "dir": "/workspace/project"
+  }
+}
+```
+
+```bash
+node packages/cli/dist/bin.js --output json --input request.json status
+node packages/cli/dist/bin.js --output json --input - status < request.json
+```
+
+Request 必须通过该命令公布的 input schema。同一领域字段不能同时出现在 argv 与
+`input`;重复会在调用 Core 前返回 `INPUT_AMBIGUITY`。`--output` 等 transport flags
+仍放在 argv 中。密钥真值与口令不得进入 request JSON;应使用 `--stdin`、继承的 `--fd`
+或命令专用的受保护 passphrase/token FD。
+
+### JSON 结果与 JSONL 完成语义
+
+JSON mode 只向 stdout 写一个紧凑 terminal envelope:
+
+```json
+{
+  "protocolVersion": "1.0",
+  "command": "status",
+  "requestId": "req-...",
+  "status": "success",
+  "data": { "items": [] },
+  "warnings": []
+}
+```
+
+Handled failure 使用同一 envelope,但 `status` 为 `"error"`,并包含 typed `error`。
+可选 `data` 仍由命令定义。在 `json`/`jsonl` mode 中,stdout 只能包含 protocol records,
+不能出现 prompt、颜色、spinner、banner 或诊断;脱敏诊断写入 stderr。
+
+公布 `streaming: true` 的命令(`apply`、`scan`、`revert`)可在结果前输出 JSONL event
+envelopes。stdout 每个非空行都是完整 JSON object;event `sequence` 从 1 开始,最后一行
+必须是且只能有一个 terminal result envelope。若 stream 结束时没有 terminal record,
+应判定为 transport-interrupted,不能视为成功。非 streaming 命令选择
+`--output jsonl` 时只输出 terminal 行。
+
+### Exit classes 与稳定错误
+
+自动化应按稳定的 `error.code` 分支;本地化 `message` 只供人阅读。Exit code 只做粗粒度
+分类:
+
+| Exit | 含义 | Error codes |
+| ---: | --- | --- |
+| `0` | 成功 | — |
+| `2` | Usage、input schema、歧义或缺少输入 | `INVALID_USAGE`、`INVALID_INPUT`、`INPUT_REQUIRED`、`INPUT_AMBIGUITY` |
+| `3` | Policy 或 domain validation | `POLICY_VIOLATION`、`DOMAIN_VALIDATION_FAILED` |
+| `4` | 并发或前置条件冲突 | `STALE_REVISION`、`LOCK_CONFLICT`、`TARGET_CONFLICT` |
+| `5` | Execution 或 partial failure | `EXECUTION_FAILED`、`PARTIAL_FAILURE` |
+| `6` | 需要人工 recovery | `RECOVERY_REQUIRED` |
+| `70` | 未预期内部失败;细节会脱敏 | `INTERNAL_ERROR` |
+
+### Capability 与 schema discovery
+
+Discovery 完全在本地完成,不需要网络:
+
+```bash
+node packages/cli/dist/bin.js --output json capabilities
+node packages/cli/dist/bin.js --output json schema
+node packages/cli/dist/bin.js --output json schema \
+  urn:cellarer:cli:protocol:1.0:command:status:output
+```
+
+`capabilities` 返回支持的 protocol versions,以及每个命令的 mutability、streaming、
+input/output schema ID、可选 event schema ID 与 required features。
+`schema [schema-id]` 会在 terminal envelope 的 `data` 中返回选定 JSON Schema;省略 ID 时
+返回确定性的本地 bundle。应从 `capabilities` 取得 schema IDs,不要自行拼接。
+`--version` 来自已安装 CLI package metadata。
+
 ## `init`
 
 通过已签名的 mutation journal 初始化库房。产品目录与 `config.json` 都会取得 action
@@ -97,7 +196,7 @@ node packages/cli/dist/bin.js add ./server.json --force
 node packages/cli/dist/bin.js add ./my-skill/
 node packages/cli/dist/bin.js add vercel-labs/skills --list
 node packages/cli/dist/bin.js add vercel-labs/skills --skill nextjs --collection public
-node packages/cli/dist/bin.js add https://github.com/vercel-labs/skills/tree/main/skills/web-design-guidelines --json
+node packages/cli/dist/bin.js --output json add https://github.com/vercel-labs/skills/tree/main/skills/web-design-guidelines
 ```
 
 普通单文件 Rule/MCP import 使用可移植的 no-follow identity handshake,在 Windows 上仍可用。
@@ -116,7 +215,7 @@ platform/architecture 组合会在读取或复制目录内容前返回 unsupport
 | `--all` | 从 multi-skill source 导入所有 eligible skills。 |
 | `--collection <name>` | 给导入资源打 collection 标签。`internal` 也会包含 internal skills。 |
 | `--yes` | 跳过确认提示。当前 `add` 为非交互。 |
-| `--json` | 输出 JSON candidate list 或 import report。 |
+| `--json` | `--output json` 的兼容别名;command data 包含 candidate list 或 import report。 |
 
 支持的来源:
 
@@ -155,7 +254,7 @@ node packages/cli/dist/bin.js ls --collection default
 
 ```bash
 node packages/cli/dist/bin.js agents
-node packages/cli/dist/bin.js agents -a codex,claude-code --dir /path/to/project --json
+node packages/cli/dist/bin.js --output json agents -a codex,claude-code --dir /path/to/project
 ```
 
 选项:
@@ -164,7 +263,7 @@ node packages/cli/dist/bin.js agents -a codex,claude-code --dir /path/to/project
 | --- | --- |
 | `-a, --agent <ids>` | 只展示这些逗号分隔的 agent id。 |
 | `--dir <path>` | project scope 根目录。不传时为 global scope。 |
-| `--json` | 输出机器可读结果。 |
+| `--json` | `--output json` 的兼容别名。 |
 
 ## `doctor`
 
@@ -173,7 +272,7 @@ node packages/cli/dist/bin.js agents -a codex,claude-code --dir /path/to/project
 
 ```bash
 node packages/cli/dist/bin.js doctor
-node packages/cli/dist/bin.js doctor -a codex --json
+node packages/cli/dist/bin.js --output json doctor -a codex
 ```
 
 选项:
@@ -182,7 +281,7 @@ node packages/cli/dist/bin.js doctor -a codex --json
 | --- | --- |
 | `-a, --agent <ids>` | 只检查这些逗号分隔的 agent id。 |
 | `--dir <path>` | project scope 根目录。不传时为 global scope。 |
-| `--json` | 输出机器可读结果。 |
+| `--json` | `--output json` 的兼容别名。 |
 
 JSON 报告包含 `mutationRecovery`。`clean` 表示没有未完成 operation;
 `incomplete` 与 `manual-recovery-required` 会包含 typed error 和 operation evidence。
@@ -196,7 +295,7 @@ JSON 报告包含 `mutationRecovery`。`clean` 表示没有未完成 operation;
 ```bash
 node packages/cli/dist/bin.js apply --dry-run --agent claude-code,codex
 node packages/cli/dist/bin.js apply --agent claude-code,codex --collection default
-node packages/cli/dist/bin.js apply --dry-run --agent claude-code --json
+node packages/cli/dist/bin.js --output json apply --dry-run --agent claude-code
 ```
 
 选项:
@@ -206,7 +305,7 @@ node packages/cli/dist/bin.js apply --dry-run --agent claude-code --json
 | `-a, --agent <ids>` | 必填。逗号分隔的 agent id。 |
 | `--dir <path>` | project scope 根目录。不传时为 global scope。 |
 | `--collection <collection>` | 按 collection 过滤资源。 |
-| `--rules` | 包含 rules。不传任何能力 flag 时默认包含全部能力。 |
+| `--rules` | 包含 rules。交互式 text 与 dry-run 可默认包含全部能力;non-interactive 写入至少需要一个显式 capability flag。 |
 | `--mcp` | 包含 MCP servers。 |
 | `--skills` | 包含 skills。 |
 | `--copy` | skills 优先 copy 而非 symlink。 |
@@ -217,7 +316,7 @@ node packages/cli/dist/bin.js apply --dry-run --agent claude-code --json
 | `--override-drift <tokens>` | `plan.conflicts` 返回的逗号分隔精确 drift override tokens。 |
 | `--snapshot-passphrase-fd <number>` | 从继承描述符读取 replacement snapshot 口令;否则使用终端隐藏输入。 |
 | `--dry-run` | 只打印计划,不写入。 |
-| `--json` | 输出 Core apply plan/result、mutation identity 或 receipt、conflicts 与 acknowledgement tokens。 |
+| `--json` | `--output json` 的兼容别名;command data 包含 Core plan/result、mutation identity 或 receipt、conflicts 与 acknowledgement tokens。 |
 
 未确认的 ownership conflict 会阻止 apply 并以非零状态退出。先检查 JSON dry-run,再用相同选择
 重试:把精确 token 放入 `--replace-unowned` 或 `--override-drift`,并提供
@@ -227,9 +326,9 @@ node packages/cli/dist/bin.js apply --dry-run --agent claude-code --json
 成功的非 dry-run 响应还会包含 `mutation.result.receipt`,其中有 operation id、
 resulting revision、outcome 和每个 action 的 receipts。CLI 在同一次调用内 plan 并
 apply;后续的非 dry-run 调用不会重新提交序列化的 dry-run plan。
-`LOCK_CONFLICT`、`STALE_REVISION`、`TARGET_PRECONDITION_CONFLICT` 与
-`INTERRUPTED_OPERATION` 等 typed protocol conflicts 会以非零状态退出,且不执行未授权的
-target write。
+Public envelope 会把 Core conflicts 映射为稳定 CLI errors,例如 `LOCK_CONFLICT`、
+`STALE_REVISION`、`TARGET_CONFLICT` 与 `RECOVERY_REQUIRED`;原始 Core code 保留在脱敏
+error details 中。这些失败会以非零状态退出,且不执行未授权的 target write。
 
 ## `scan`
 
@@ -256,12 +355,13 @@ node packages/cli/dist/bin.js scan --agent codex --into-collection default
 | `--vault-passphrase-fd <number>` | Vault-backed mutating import 从继承描述符读取 vault 口令。 |
 | `--keychain-service <name>` | Keychain-backed mutating import 使用的 service;默认 `cellarer`。 |
 | `--dry-run` | 只展示候选项,不写入。 |
-| `--json` | 输出 JSON。 |
+| `--json` | `--output json` 的兼容别名。 |
 
 `scan --dry-run` 是不能提交到 execution API 的纯只读 preview。它不会 provision、load
 或 query mutation authority/secret credentials;即使请求 vault 或 keychain,也始终按
 environment-reference mode 扫描。非 dry-run import 仍是 executable mutation,必须有
-authority。
+authority。Non-interactive 写入还要求一个显式 agent 与至少一个 capability flag;dry-run
+必须指定 agent,但未传 capability flag 时可检查全部能力。
 
 ## `status`
 
@@ -270,7 +370,7 @@ applied-versus-disk,并包含 mutation recovery health。
 
 ```bash
 node packages/cli/dist/bin.js status
-node packages/cli/dist/bin.js status --agent codex --json
+node packages/cli/dist/bin.js --output json status --agent codex
 ```
 
 选项:
@@ -279,9 +379,9 @@ node packages/cli/dist/bin.js status --agent codex --json
 | --- | --- |
 | `-a, --agent <ids>` | 按逗号分隔的 agent id 过滤。 |
 | `--dir <path>` | 按 project 根目录过滤。 |
-| `--json` | 输出机器可读结果。 |
+| `--json` | `--output json` 的兼容别名。 |
 
-`status --agent <ids> --json` 返回 `verification.desiredVsApplied`、
+`--output json status --agent <ids>` 返回 `verification.desiredVsApplied`、
 `verification.appliedVsDisk`、`verification.recovery` 和 `verification.healthy`。
 不传 `--agent` 时,命令只返回 ledger-versus-disk `items`,不表示完整 verification
 health。
@@ -291,7 +391,7 @@ health。
 回滚台账条目。
 
 ```bash
-node packages/cli/dist/bin.js revert --agent codex --dry-run --json
+node packages/cli/dist/bin.js --output json revert --agent codex --dry-run
 node packages/cli/dist/bin.js revert --agent codex --acknowledge "$ACK_TOKEN" --snapshot-passphrase-fd 3 3< "$CELLARER_SNAPSHOT_PASSPHRASE_FILE"
 ```
 
@@ -310,7 +410,7 @@ passphrase。
 | `--acknowledge <tokens>` | 逗号分隔的精确 drift tokens,由 dry-run plan 返回。 |
 | `--snapshot-passphrase-fd <number>` | 从继承描述符读取 snapshot passphrase;需要 acknowledgement 且未传 FD 时使用终端隐藏输入。 |
 | `--dry-run` | 预览回滚动作。 |
-| `--json` | 输出 Core revert plan/result 与 mutation identity 或 receipt。 |
+| `--json` | `--output json` 的兼容别名;command data 包含 Core revert plan/result 与 mutation identity 或 receipt。 |
 
 Revert 与 apply 使用相同的 store lock、immutable plan 校验、journal、revision 和
 operation receipt 边界。Dry-run 没有 mutation result;成功写入后会返回
@@ -369,15 +469,19 @@ Headless authority 应由 runner 在确认不存在 active journal 后,把受保
 
 ```bash
 node packages/cli/dist/bin.js ui
-node packages/cli/dist/bin.js ui --port 4317 --token local-token
+node packages/cli/dist/bin.js ui --port 4317 --token-fd 3 3< /path/to/ui-token
 ```
 
 选项:
 
 | 选项 | 说明 |
 | --- | --- |
-| `--port <port>` | 端口,默认 `4317`。 |
-| `--token <token>` | API 请求需要 `Authorization: Bearer <token>`。 |
+| `--port <port>` | `1..65535` 范围内的端口,默认 `4317`。 |
+| `--token-fd <number>` | 从编号不小于 `3` 的继承描述符读取可选 bearer token。 |
+
+Bearer token 真值不得出现在 argv 或 structured request JSON 中。只传 descriptor
+编号,由 runner-owned 的受保护文件、pipe 或等价通道提供 bytes;示例文件应仅允许 owner
+读取。
 
 `ui` 会在启动 server 前 preload 可用 authority,并且只向 Web 注入用于 sealing、current-
 epoch lease 与 protected journal tip 的窄 `MutationAuthority` capability。Web 不会得到

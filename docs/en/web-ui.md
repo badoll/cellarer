@@ -10,7 +10,7 @@ It is a thin shell over `@cellarer/core`.
 ```bash
 pnpm build
 node packages/cli/dist/bin.js ui
-node packages/cli/dist/bin.js ui --port 4317 --token local-token
+node packages/cli/dist/bin.js ui --port 4317 --token-fd 3 3< /path/to/ui-token
 ```
 
 The server listens on `127.0.0.1` only.

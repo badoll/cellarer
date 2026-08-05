@@ -1,8 +1,16 @@
 import { revert } from "@cellarer/core";
 import { Command } from "commander";
-import { resolveContext } from "../context.js";
+import { parseAgents, resolveContext } from "../context.js";
 import { printMutation } from "../mutation-output.js";
 import { safeConsole as console } from "../output.js";
+import {
+  cliErrorFromMutationConflict,
+  commandFailure,
+  commandSuccess,
+  commandWarnings,
+  executeCliCommand,
+} from "../protocol/execution.js";
+import { assertNonInteractiveMutationInput, CliInputError } from "../protocol/input.js";
 import { readProtectedPassphraseInput } from "./secret.js";
 
 interface RevertOpts {
@@ -28,67 +36,101 @@ export function revertCommand(): Command {
     .option("--snapshot-passphrase-fd <number>", "从继承的文件描述符读取 snapshot 口令")
     .option("--dry-run", "仅预览,不落地")
     .option("--json", "输出完整 Core revert plan/result")
-    .action(async (opts: RevertOpts) => {
-      const ctx = await resolveContext(opts, "required");
-      // 防误删:无 --agent/--dir 选择器时,必须 --all 才回滚全部(对齐 apply 要求 --agent)。
-      const hasSelector = ctx.agents.length > 0 || ctx.dir !== undefined;
-      if (!hasSelector && !opts.all && !opts.dryRun) {
-        console.error("revert 会回滚台账全部条目;请用 --agent/--dir 缩小范围,或显式 --all。");
-        process.exitCode = 1;
-        return;
-      }
-      const snapshotPassphrase =
-        !opts.dryRun && (opts.acknowledge || opts.snapshotPassphraseFd)
-          ? await readProtectedPassphraseInput(opts.snapshotPassphraseFd)
-          : undefined;
-      const result = await revert(ctx.env, {
-        storeRoot: ctx.storeRoot,
-        // 未指定 --dir 时回滚全部作用域(scopeFilter 为 undefined)。
-        scope: ctx.scopeFilter,
-        dir: ctx.dir,
-        agents: ctx.agents.length > 0 ? ctx.agents : undefined,
-        acknowledgements: parseTokens(opts.acknowledge),
-        snapshotPassphrase,
-        keepBackups: opts.keepBackups,
-        dryRun: opts.dryRun,
-      });
-      const failed =
-        !opts.dryRun &&
-        (result.plan.targets.some((target) => target.blocked) ||
-          result.failures.length > 0 ||
-          result.mutation.result?.ok === false);
-      if (failed) process.exitCode = 1;
-      if (opts.json) {
-        console.log(JSON.stringify(result, null, 2));
-        return;
-      }
-      printMutation(result.mutation);
-      for (const w of result.warnings) console.warn(`⚠ ${w}`);
-      for (const target of result.plan.targets) {
-        if (!target.blocked) continue;
-        console.error(`⛔ ${target.target} — ${target.blockReason ?? "revert blocked"}`);
-        if (target.acknowledgement) {
-          console.error(`   acknowledgement: ${target.acknowledgement.token}`);
-        }
-      }
-      for (const failure of result.failures) {
-        console.error(`⛔ ${failure.target} — ${failure.message}`);
-      }
-      if (result.plan.targets.length === 0) {
-        console.log("台账中无匹配条目可回滚。");
-        return;
-      }
-      if (opts.dryRun) {
-        for (const target of result.plan.targets) {
-          const verb = target.blocked ? "已阻止" : "将回滚";
-          console.log(`↩ ${verb} ${target.proposedAction} → ${target.target}`);
-        }
-        return;
-      }
-      for (const entry of result.reverted) {
-        console.log(`↩ 已回滚 ${entry.agent} ${entry.capability}/${entry.scope} → ${entry.target}`);
-      }
+    .action(async (opts: RevertOpts, command: Command) => {
+      await executeCliCommand(
+        command,
+        async (execution) => {
+          const invocation = execution.invocation;
+          assertNonInteractiveMutationInput(
+            "revert",
+            {
+              agents: parseAgents(opts.agent),
+              dir: opts.dir,
+              all: opts.all,
+              dryRun: opts.dryRun,
+            },
+            invocation,
+          );
+          const ctx = await resolveContext(opts, "required");
+          const hasSelector = ctx.agents.length > 0 || ctx.dir !== undefined;
+          if (!hasSelector && !opts.all && !opts.dryRun) {
+            throw new CliInputError(
+              "INPUT_REQUIRED",
+              "revert requires agents, dir, or explicit all selection",
+              { fields: ["agents|dir|all"] },
+              invocation,
+            );
+          }
+          const snapshotPassphrase =
+            !opts.dryRun && (opts.acknowledge || opts.snapshotPassphraseFd)
+              ? await readProtectedPassphraseInput(opts.snapshotPassphraseFd, undefined, {
+                  nonInteractive: invocation.nonInteractive,
+                  invocation,
+                })
+              : undefined;
+          execution.event("REVERT_STARTED", { phase: "revert", current: 0, total: 1 });
+          const result = await revert(ctx.env, {
+            storeRoot: ctx.storeRoot,
+            scope: ctx.scopeFilter,
+            dir: ctx.dir,
+            agents: ctx.agents.length > 0 ? ctx.agents : undefined,
+            acknowledgements: parseTokens(opts.acknowledge),
+            snapshotPassphrase,
+            keepBackups: opts.keepBackups,
+            dryRun: opts.dryRun,
+          });
+          execution.event("REVERT_COMPLETED", { phase: "revert", current: 1, total: 1 });
+          const warnings = commandWarnings(result.warnings, "REVERT_WARNING");
+          const operationConflict =
+            result.mutation.result && !result.mutation.result.ok
+              ? cliErrorFromMutationConflict(result.mutation.result.conflict)
+              : undefined;
+          const error =
+            operationConflict ??
+            (result.failures.length > 0
+              ? { code: "PARTIAL_FAILURE" as const, message: "Revert reported action failures" }
+              : result.plan.conflicts.length > 0 ||
+                  (!opts.dryRun && result.plan.targets.some((target) => target.blocked))
+                ? { code: "TARGET_CONFLICT" as const, message: "Revert plan is blocked" }
+                : undefined);
+          return error ? commandFailure(error, result, warnings) : commandSuccess(result, warnings);
+        },
+        (outcome) => {
+          const result = outcome.data;
+          if (!result) return;
+          printRevertText(result, opts);
+        },
+      );
     });
+}
+
+function printRevertText(result: Awaited<ReturnType<typeof revert>>, opts: RevertOpts): void {
+  printMutation(result.mutation);
+  for (const warning of result.warnings) console.warn(`⚠ ${warning}`);
+  for (const target of result.plan.targets) {
+    if (!target.blocked) continue;
+    console.error(`⛔ ${target.target} — ${target.blockReason ?? "revert blocked"}`);
+    if (target.acknowledgement) {
+      console.error(`   acknowledgement: ${target.acknowledgement.token}`);
+    }
+  }
+  for (const failure of result.failures) {
+    console.error(`⛔ ${failure.target} — ${failure.message}`);
+  }
+  if (result.plan.targets.length === 0) {
+    console.log("台账中无匹配条目可回滚。");
+    return;
+  }
+  if (opts.dryRun) {
+    for (const target of result.plan.targets) {
+      const verb = target.blocked ? "已阻止" : "将回滚";
+      console.log(`↩ ${verb} ${target.proposedAction} → ${target.target}`);
+    }
+    return;
+  }
+  for (const entry of result.reverted) {
+    console.log(`↩ 已回滚 ${entry.agent} ${entry.capability}/${entry.scope} → ${entry.target}`);
+  }
 }
 
 function parseTokens(spec: string | undefined): string[] | undefined {

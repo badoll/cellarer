@@ -1,7 +1,12 @@
 import { closeSync, promises as fs, mkdtempSync, openSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRealEnv } from "@cellarer/core";
+import {
+  type ApplyCallResult,
+  createRealEnv,
+  type RevertCallResult,
+  type VerificationReport,
+} from "@cellarer/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { HEADLESS_MUTATION_AUTHORITY_ENV } from "../src/mutation-authority.js";
 import { serializeCliOutput } from "../src/output.js";
@@ -9,13 +14,22 @@ import { buildProgram } from "../src/program.js";
 
 const TEST_MUTATION_AUTHORITY = `v1:1:${Buffer.alloc(32, 0x19).toString("base64url")}`;
 let previousMutationAuthority: string | undefined;
+let previousStdoutWrite: typeof process.stdout.write;
+const machineOutput: string[] = [];
 
 beforeEach(() => {
   previousMutationAuthority = process.env[HEADLESS_MUTATION_AUTHORITY_ENV];
   process.env[HEADLESS_MUTATION_AUTHORITY_ENV] = TEST_MUTATION_AUTHORITY;
+  machineOutput.length = 0;
+  previousStdoutWrite = process.stdout.write;
+  process.stdout.write = ((chunk: unknown) => {
+    machineOutput.push(String(chunk));
+    return true;
+  }) as typeof process.stdout.write;
 });
 
 afterEach(() => {
+  process.stdout.write = previousStdoutWrite;
   if (previousMutationAuthority === undefined) {
     delete process.env[HEADLESS_MUTATION_AUTHORITY_ENV];
   } else {
@@ -59,9 +73,9 @@ describe("cli program wiring", () => {
         { from: "node" },
       );
 
-      expect(process.exitCode).toBe(1);
+      expect(process.exitCode).toBe(2);
       expect(errors.join("\n")).not.toContain(canary);
-      expect(errors.join("\n")).toContain("[REDACTED]");
+      expect(errors.join("\n")).toContain("Invalid --secret-mode");
     } finally {
       console.error = oldError;
       process.exitCode = oldExit;
@@ -113,8 +127,8 @@ describe("cli program wiring", () => {
         { from: "node" },
       );
 
-      expect(output.join("\n")).not.toContain("tiny");
-      expect(output.join("\n")).toContain("[REDACTED]");
+      expect(machineOutput.join("")).not.toContain("tiny");
+      expect(machineOutput.join("")).toContain("[REDACTED]");
     } finally {
       console.log = oldLog;
       console.error = oldError;
@@ -136,16 +150,26 @@ describe("cli program wiring", () => {
         "agents",
         "apply",
         "authority",
+        "capabilities",
         "doctor",
         "init",
         "ls",
         "revert",
         "scan",
+        "schema",
         "secret",
         "status",
         "ui",
       ].sort(),
     );
+  });
+
+  it("exposes the UI bearer token only through a protected descriptor", () => {
+    const ui = buildProgram().commands.find((command) => command.name() === "ui");
+    const flags = ui?.options.map((option) => option.long) ?? [];
+
+    expect(flags).toContain("--token-fd");
+    expect(flags).not.toContain("--token");
   });
 
   it("init prints its committed operation and resulting revision", async () => {
@@ -213,7 +237,7 @@ describe("cli program wiring", () => {
         },
       );
 
-      const report = JSON.parse(logs.join("\n"));
+      const report = machineData<{ candidates: Array<{ name: string }> }>();
       expect(report.candidates.map((c: { name: string }) => c.name)).toEqual(["alpha"]);
       await expect(
         fs.stat(join(root, "cellarer-home", "store", "skills", "alpha")),
@@ -250,7 +274,7 @@ describe("cli program wiring", () => {
         { from: "node" },
       );
 
-      expect(process.exitCode).toBe(1);
+      expect(process.exitCode).toBe(2);
       expect(errors.join("\n")).toMatch(/--skill and --all are mutually exclusive/);
     } finally {
       console.error = oldError;
@@ -353,8 +377,8 @@ describe("cli program wiring", () => {
         ],
         { from: "node" },
       );
-      expect(process.exitCode).toBe(1);
-      const blocked = JSON.parse(logs.join("\n"));
+      expect(process.exitCode).toBe(4);
+      const blocked = machineData<ApplyCallResult>();
       expect(blocked.plan.conflicts[0]).toMatchObject({
         code: "UNOWNED_TARGET",
         acknowledgement: { kind: "replace-unowned" },
@@ -369,6 +393,7 @@ describe("cli program wiring", () => {
       await fs.writeFile(snapshotPassphrasePath, "cli-snapshot-passphrase\n", "utf8");
 
       logs = [];
+      machineOutput.length = 0;
       process.exitCode = undefined;
       const replacementFd = openSync(snapshotPassphrasePath, "r");
       try {
@@ -394,7 +419,7 @@ describe("cli program wiring", () => {
         closeSync(replacementFd);
       }
       expect(process.exitCode).toBeUndefined();
-      const applied = JSON.parse(logs.join("\n"));
+      const applied = machineData<ApplyCallResult>();
       expect(applied.entries).toHaveLength(1);
       expect(applied.mutation).toMatchObject({
         planId: expect.stringMatching(/^plan-/),
@@ -419,18 +444,20 @@ describe("cli program wiring", () => {
 
       await fs.writeFile(join(storeRoot, "store", "rules", "new.md"), "# new desired", "utf8");
       logs = [];
+      machineOutput.length = 0;
       process.exitCode = undefined;
       await buildProgram().parseAsync(
         ["node", "cellarer", "status", "--agent", "claude-code", "--dir", project, "--json"],
         { from: "node" },
       );
-      const verification = JSON.parse(logs.join("\n")).verification;
+      const verification = machineData<{ verification: VerificationReport }>().verification;
       expect(verification.desiredVsApplied).toMatchObject({ status: "diverged" });
       expect(verification.appliedVsDisk).toMatchObject({ status: "converged" });
       expect(verification.recovery).toEqual({ status: "clean" });
 
       await fs.writeFile(target, "user drift", "utf8");
       logs = [];
+      machineOutput.length = 0;
       process.exitCode = undefined;
       await buildProgram().parseAsync(
         [
@@ -447,12 +474,13 @@ describe("cli program wiring", () => {
         ],
         { from: "node" },
       );
-      expect(process.exitCode).toBe(1);
-      const drifted = JSON.parse(logs.join("\n"));
+      expect(process.exitCode).toBe(4);
+      const drifted = machineData<ApplyCallResult>();
       expect(drifted.plan.conflicts[0].code).toBe("OWNED_TARGET_DRIFTED");
       const override = drifted.plan.conflicts[0].acknowledgement.token as string;
 
       logs = [];
+      machineOutput.length = 0;
       process.exitCode = undefined;
       const overrideFd = openSync(snapshotPassphrasePath, "r");
       try {
@@ -478,7 +506,7 @@ describe("cli program wiring", () => {
         closeSync(overrideFd);
       }
       expect(process.exitCode).toBeUndefined();
-      expect(JSON.parse(logs.join("\n")).entries).toHaveLength(1);
+      expect(machineData<ApplyCallResult>().entries).toHaveLength(1);
     } finally {
       console.log = oldLog;
       console.error = oldError;
@@ -545,11 +573,11 @@ describe("cli program wiring", () => {
         { from: "node" },
       );
 
-      const output = logs.join("\n");
-      expect(process.exitCode).toBe(1);
+      const output = machineOutput.join("");
+      expect(process.exitCode).toBe(4);
       expect(output).not.toContain("ordinary-password");
       expect(output).not.toContain("nested-ordinary-token");
-      const body = JSON.parse(output);
+      const body = JSON.parse(output).data;
       expect(body.plan.actions[0]).toMatchObject({
         op: "skip",
         ownership: { classification: "unowned-existing" },
@@ -613,6 +641,7 @@ describe("cli program wiring", () => {
       await fs.writeFile(statePath, duplicateState, "utf8");
 
       logs = [];
+      machineOutput.length = 0;
       process.exitCode = undefined;
       await buildProgram().parseAsync(
         [
@@ -628,20 +657,21 @@ describe("cli program wiring", () => {
         ],
         { from: "node" },
       );
-      expect(process.exitCode).toBe(1);
-      const applyBody = JSON.parse(logs.join("\n"));
+      expect(process.exitCode).toBe(4);
+      const applyBody = machineData<ApplyCallResult>();
       expect(applyBody.entries).toEqual([]);
       expect(applyBody.plan.conflicts[0]).toMatchObject({ code: "INVALID_TARGET_OWNER" });
       expect(await fs.readFile(target, "utf8")).toBe(targetBefore);
       expect(await fs.readFile(statePath, "utf8")).toBe(duplicateState);
 
       logs = [];
+      machineOutput.length = 0;
       process.exitCode = undefined;
       await buildProgram().parseAsync(["node", "cellarer", "revert", "--dir", project, "--json"], {
         from: "node",
       });
-      expect(process.exitCode).toBe(1);
-      const revertBody = JSON.parse(logs.join("\n"));
+      expect(process.exitCode).toBe(4);
+      const revertBody = machineData<RevertCallResult>();
       expect(revertBody.reverted).toEqual([]);
       expect(revertBody.plan.conflicts[0]).toMatchObject({ code: "INVALID_TARGET_OWNER" });
       expect(await fs.readFile(target, "utf8")).toBe(targetBefore);
@@ -701,6 +731,7 @@ describe("cli program wiring", () => {
         { from: "node" },
       );
       logs = [];
+      machineOutput.length = 0;
       process.exitCode = undefined;
       await buildProgram().parseAsync(
         ["node", "cellarer", "apply", "--agent", "codex", "--dir", project, "--skills", "--json"],
@@ -722,13 +753,14 @@ describe("cli program wiring", () => {
       await fs.writeFile(statePath, duplicateState, "utf8");
 
       logs = [];
+      machineOutput.length = 0;
       process.exitCode = undefined;
       await buildProgram().parseAsync(
         ["node", "cellarer", "apply", "--agent", "codex", "--dir", project, "--skills", "--json"],
         { from: "node" },
       );
-      expect(process.exitCode).toBe(1);
-      const applyBody = JSON.parse(logs.join("\n"));
+      expect(process.exitCode).toBe(4);
+      const applyBody = machineData<ApplyCallResult>();
       expect(applyBody.entries).toEqual([]);
       expect(applyBody.plan.invalidLedger).toBe(true);
       expect(applyBody.plan.actions[0]).toMatchObject({
@@ -741,23 +773,25 @@ describe("cli program wiring", () => {
       expect(await fs.readFile(statePath, "utf8")).toBe(duplicateState);
 
       logs = [];
+      machineOutput.length = 0;
       process.exitCode = undefined;
       await buildProgram().parseAsync(
         ["node", "cellarer", "revert", "--agent", "codex", "--dir", project, "--dry-run", "--json"],
         { from: "node" },
       );
-      const dryRun = JSON.parse(logs.join("\n"));
+      const dryRun = machineData<RevertCallResult>();
       expect(dryRun.reverted).toEqual([skillOwner]);
       expect(await fs.readFile(statePath, "utf8")).toBe(duplicateState);
 
       logs = [];
+      machineOutput.length = 0;
       process.exitCode = undefined;
       await buildProgram().parseAsync(
         ["node", "cellarer", "revert", "--agent", "codex", "--dir", project, "--json"],
         { from: "node" },
       );
       expect(process.exitCode).toBeUndefined();
-      const reverted = JSON.parse(logs.join("\n"));
+      const reverted = machineData<RevertCallResult>();
       expect(reverted.reverted).toEqual([skillOwner]);
       expect(JSON.parse(await fs.readFile(statePath, "utf8")).owners).toEqual([
         ruleOwner,
@@ -808,4 +842,8 @@ async function writeSkill(
     `---\nname: ${name}\ndescription: ${description}\n---\n# ${name}\n`,
     "utf8",
   );
+}
+
+function machineData<T>(): T {
+  return (JSON.parse(machineOutput.join("")) as { data: T }).data;
 }

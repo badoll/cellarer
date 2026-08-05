@@ -1,0 +1,38 @@
+{
+  "success": {
+    "protocolVersion": "1.0",
+    "command": "status",
+    "requestId": "req-fixed",
+    "status": "success",
+    "data": {
+      "items": []
+    },
+    "warnings": []
+  },
+  "event": {
+    "protocolVersion": "1.0",
+    "command": "apply",
+    "requestId": "req-fixed",
+    "sequence": 1,
+    "event": {
+      "code": "PLAN_READY",
+      "data": {
+        "actions": 2
+      }
+    }
+  },
+  "conflict": {
+    "protocolVersion": "1.0",
+    "command": "apply",
+    "requestId": "req-fixed",
+    "status": "error",
+    "warnings": [],
+    "error": {
+      "code": "STALE_REVISION",
+      "message": "Store revision changed",
+      "details": {
+        "accessToken": "[REDACTED]"
+      }
+    }
+  }
+}

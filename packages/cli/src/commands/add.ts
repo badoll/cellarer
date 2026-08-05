@@ -1,8 +1,23 @@
-import { type AddResult, add, type SecretMode, type SkillCandidate } from "@cellarer/core";
+import {
+  type AddResult,
+  add,
+  type PresentedOperationResult,
+  type SecretMode,
+  type SkillCandidate,
+} from "@cellarer/core";
 import { Command } from "commander";
 import { resolveContext } from "../context.js";
 import { createCliGitClient } from "../git-client.js";
 import { createSafeConsole } from "../output.js";
+import {
+  cliErrorFromOperation,
+  commandFailure,
+  commandSuccess,
+  commandWarnings,
+  executeCliCommand,
+  publicOperationResult,
+} from "../protocol/execution.js";
+import { CliInputError, type CliInvocation } from "../protocol/input.js";
 import { readProtectedPassphraseInput } from "./secret.js";
 
 interface AddCliOpts {
@@ -23,11 +38,19 @@ function collect(value: string, previous: string[]): string[] {
   return previous;
 }
 
+interface AddCommandData {
+  readonly imported: AddResult["imported"];
+  readonly skipped: AddResult["skipped"];
+  readonly rejected: AddResult["rejected"];
+  readonly candidates: AddResult["candidates"];
+  readonly operation?: PresentedOperationResult;
+}
+
 // 从源导入资源到库房。CLI 是薄壳:解析参数 + 注入 GitClient effect + 展示 core report。
 export function addCommand(): Command {
   return new Command("add")
     .description("从本地路径或 GitHub source 导入资源到库房")
-    .argument("<source>", "源:本地 .md/.json/skill 目录、GitHub owner/repo 或 GitHub URL")
+    .argument("[source]", "源:本地 .md/.json/skill 目录、GitHub owner/repo 或 GitHub URL")
     .option("--force", "同名资源已存在时覆盖(默认跳过)")
     .option("--list", "只列出可导入的 skill candidates,不写库房")
     .option("--skill <name>", "导入指定 skill;可重复传入", collect, [])
@@ -38,64 +61,95 @@ export function addCommand(): Command {
     .option("--vault-passphrase-fd <number>", "从继承的文件描述符读取 vault 口令")
     .option("--keychain-service <name>", "keychain service 名称(默认 cellarer)")
     .option("--json", "输出 JSON report")
-    .action(async (source: string, opts: AddCliOpts) => {
-      if ((opts.skill?.length ?? 0) > 0 && opts.all) {
-        console.error("--skill and --all are mutually exclusive");
-        process.exitCode = 1;
-        return;
-      }
-      const ctx = await resolveContext({}, opts.list ? "optional" : "required");
-      const secretMode = parseSecretMode(opts.secretMode);
-      const vaultPassphrase =
-        secretMode === "vault"
-          ? await readProtectedPassphraseInput(opts.vaultPassphraseFd)
-          : undefined;
-      const json = opts.json || process.env.CELLARER_JSON === "1";
-      try {
-        const r = await add(ctx.env, {
-          storeRoot: ctx.storeRoot,
-          source,
-          force: opts.force,
-          list: opts.list,
-          skills: opts.skill,
-          all: opts.all,
-          collection: opts.collection,
-          yes: opts.yes,
-          gitClient: createCliGitClient(),
-          secretMode,
-          vaultPassphrase,
-          keychainService: opts.keychainService,
-        });
-        const resultConsole = createSafeConsole(r);
-        if (json) {
-          resultConsole.log(JSON.stringify(r, null, 2));
-          if (r.rejected.length > 0 || r.operation?.ok === false) process.exitCode = 1;
-          return;
-        }
-        printResult(r, opts, resultConsole);
-      } catch (err) {
-        const errorConsole = createSafeConsole(err);
-        if (json) {
-          errorConsole.log(
-            JSON.stringify({ error: err instanceof Error ? err.message : String(err) }, null, 2),
-          );
-        } else {
-          errorConsole.error(err instanceof Error ? err.message : String(err));
-        }
-        process.exitCode = 1;
-      }
+    .action(async (source: string | undefined, opts: AddCliOpts, command: Command) => {
+      await executeCliCommand(
+        command,
+        async (execution) => {
+          const invocation = execution.invocation;
+          if (!source) {
+            throw new CliInputError(
+              "INPUT_REQUIRED",
+              "add requires an explicit source",
+              { fields: ["source"] },
+              invocation,
+            );
+          }
+          if ((opts.skill?.length ?? 0) > 0 && opts.all) {
+            throw new CliInputError(
+              "INPUT_AMBIGUITY",
+              "--skill and --all are mutually exclusive",
+              { fields: ["skills", "all"] },
+              invocation,
+            );
+          }
+          const ctx = await resolveContext({}, opts.list ? "optional" : "required");
+          const secretMode = parseSecretMode(opts.secretMode, invocation);
+          const vaultPassphrase =
+            secretMode === "vault"
+              ? await readProtectedPassphraseInput(opts.vaultPassphraseFd, undefined, {
+                  nonInteractive: invocation.nonInteractive,
+                  invocation,
+                })
+              : undefined;
+          const result = await add(ctx.env, {
+            storeRoot: ctx.storeRoot,
+            source,
+            force: opts.force,
+            list: opts.list,
+            skills: opts.skill,
+            all: opts.all,
+            collection: opts.collection,
+            yes: opts.yes,
+            gitClient: createCliGitClient(),
+            secretMode,
+            vaultPassphrase,
+            keychainService: opts.keychainService,
+          });
+          const data: AddCommandData = {
+            imported: result.imported,
+            skipped: result.skipped,
+            rejected: result.rejected,
+            candidates: result.candidates,
+            ...(result.operation ? { operation: publicOperationResult(result.operation) } : {}),
+          };
+          const warnings = commandWarnings(result.warnings, "ADD_WARNING");
+          const error = result.operation ? cliErrorFromOperation(result.operation) : undefined;
+          const partialError =
+            result.rejected.length > 0
+              ? { code: "PARTIAL_FAILURE" as const, message: "One or more resources were rejected" }
+              : undefined;
+          const failure = error ?? partialError;
+          return failure
+            ? commandFailure(failure, data, warnings, result)
+            : commandSuccess(data, warnings, result);
+        },
+        (outcome) => {
+          const data = outcome.data;
+          if (!data) return;
+          printResult(data, opts, outcome.warnings, createSafeConsole(outcome.context));
+        },
+      );
     });
 }
 
-function parseSecretMode(value: string | undefined): SecretMode | undefined {
+function parseSecretMode(
+  value: string | undefined,
+  invocation: CliInvocation,
+): SecretMode | undefined {
   if (value === undefined) return undefined;
   if (["env", "vault", "keychain"].includes(value)) return value as SecretMode;
-  throw new TypeError(`无效 --secret-mode "${value}";可选:env | vault | keychain`);
+  throw new CliInputError(
+    "INVALID_INPUT",
+    "Invalid --secret-mode; expected env, vault, or keychain",
+    { fields: ["secretMode"] },
+    invocation,
+  );
 }
 
 function printResult(
-  r: AddResult,
+  r: AddCommandData,
   opts: AddCliOpts,
+  warnings: readonly { readonly message: string }[],
   output: Pick<Console, "log" | "warn" | "error">,
 ): void {
   if (opts.list) {
@@ -105,11 +159,10 @@ function printResult(
   for (const i of r.imported) output.log(`✓ 已导入 ${i.kind}/${i.name} → ${i.path}`);
   for (const s of r.skipped) output.log(`- 跳过 ${s.kind}/${s.name}(${s.reason})`);
   for (const j of r.rejected) output.error(`✗ 拒绝 ${j.kind}/${j.name}(${j.reason})`);
-  for (const w of r.warnings) output.warn(`⚠ ${w}`);
+  for (const warning of warnings) output.warn(`⚠ ${warning.message}`);
   if (r.operation?.ok === false) {
     output.error(`✗ mutation ${r.operation.conflict.code}: ${r.operation.conflict.message}`);
   }
-  if (r.rejected.length > 0 || r.operation?.ok === false) process.exitCode = 1;
   if (r.imported.length === 0 && r.skipped.length === 0 && r.rejected.length === 0) {
     output.log("未导入任何资源。");
   }

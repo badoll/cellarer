@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  readProtectedDescriptorInput,
   readProtectedPassphraseInput,
   readProtectedSecretInput,
   secretCommand,
 } from "../src/commands/secret.js";
+import { CliInputError } from "../src/protocol/input.js";
 
 describe("secret command protected input", () => {
   it("does not register a positional value or value-bearing option", () => {
@@ -37,6 +39,37 @@ describe("secret command protected input", () => {
     expect(interactive.readHidden).toHaveBeenCalledWith(false);
   });
 
+  it.each([
+    [
+      "passphrase",
+      (value: string, io: Parameters<typeof readProtectedPassphraseInput>[1]) =>
+        readProtectedPassphraseInput(value, io),
+    ],
+    [
+      "UI token",
+      (value: string, io: Parameters<typeof readProtectedDescriptorInput>[2]) =>
+        readProtectedDescriptorInput(value, { field: "tokenFd", label: "UI token" }, io),
+    ],
+  ] as const)("accepts only safe inherited descriptor numbers for %s input", async (_label, read) => {
+    const io = {
+      isInteractive: false,
+      readDescriptor: vi.fn(async () => "protected-value\n"),
+      readHidden: vi.fn(async () => "unused"),
+    };
+
+    await expect(read("3", io)).resolves.toBe("protected-value");
+    await expect(read("2147483647", io)).resolves.toBe("protected-value");
+    expect(io.readDescriptor).toHaveBeenNthCalledWith(1, 3);
+    expect(io.readDescriptor).toHaveBeenNthCalledWith(2, 2_147_483_647);
+
+    for (const value of ["2", "2147483648", "NaN", "Infinity", "3.5"]) {
+      const error = await read(value, io).catch((reason: unknown) => reason);
+      expect(error).toBeInstanceOf(CliInputError);
+      expect(error).toMatchObject({ cliError: { code: "INVALID_INPUT" } });
+    }
+    expect(io.readDescriptor).toHaveBeenCalledTimes(2);
+  });
+
   it("reads an explicit stdin channel without echoing or returning it through diagnostics", async () => {
     const readDescriptor = vi.fn(async () => "  secret with spaces  \n");
     const readHidden = vi.fn(async () => "unused");
@@ -62,6 +95,90 @@ describe("secret command protected input", () => {
     await expect(readProtectedSecretInput({ fd: "0" }, io)).rejects.toThrow("inherited descriptor");
   });
 
+  it("maps an expected descriptor read failure to typed invalid input", async () => {
+    const descriptorError = Object.assign(new Error("descriptor-canary"), { code: "EBADF" });
+    const io = {
+      isInteractive: false,
+      readDescriptor: vi.fn(async () => {
+        throw descriptorError;
+      }),
+      readHidden: vi.fn(async () => "unused"),
+    };
+
+    const error = await readProtectedSecretInput({ fd: "9999" }, io).catch(
+      (reason: unknown) => reason,
+    );
+
+    expect(error).toBeInstanceOf(CliInputError);
+    expect(error).toMatchObject({ cliError: { code: "INVALID_INPUT" } });
+    expect(error).not.toHaveProperty("cliError.details.cause");
+  });
+
+  it("does not misclassify an unknown descriptor failure as invalid input", async () => {
+    const unknownError = new Error("unknown-descriptor-failure");
+    const io = {
+      isInteractive: false,
+      readDescriptor: vi.fn(async () => {
+        throw unknownError;
+      }),
+      readHidden: vi.fn(async () => "unused"),
+    };
+
+    await expect(readProtectedSecretInput({ fd: "4" }, io)).rejects.toBe(unknownError);
+  });
+
+  it.each([
+    [
+      "passphrase",
+      (io: Parameters<typeof readProtectedPassphraseInput>[1]) =>
+        readProtectedPassphraseInput("4", io),
+    ],
+    [
+      "UI token",
+      (io: Parameters<typeof readProtectedDescriptorInput>[2]) =>
+        readProtectedDescriptorInput("4", { field: "tokenFd", label: "UI token" }, io),
+    ],
+  ])("maps an expected %s descriptor failure to invalid input", async (_label, read) => {
+    const descriptorError = Object.assign(new Error("descriptor-canary"), { code: "EBADF" });
+    const io = {
+      isInteractive: false,
+      readDescriptor: vi.fn(async () => {
+        throw descriptorError;
+      }),
+      readHidden: vi.fn(async () => "unused"),
+    };
+
+    const error = await read(io).catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(CliInputError);
+    expect(error).toMatchObject({ cliError: { code: "INVALID_INPUT" } });
+    expect(error).not.toHaveProperty("cliError.details.cause");
+  });
+
+  it.each([
+    [
+      "passphrase",
+      (io: Parameters<typeof readProtectedPassphraseInput>[1]) =>
+        readProtectedPassphraseInput("4", io),
+    ],
+    [
+      "UI token",
+      (io: Parameters<typeof readProtectedDescriptorInput>[2]) =>
+        readProtectedDescriptorInput("4", { field: "tokenFd", label: "UI token" }, io),
+    ],
+  ])("does not misclassify an unknown %s descriptor failure", async (_label, read) => {
+    const unknownError = new Error("unknown-descriptor-failure");
+    const io = {
+      isInteractive: false,
+      readDescriptor: vi.fn(async () => {
+        throw unknownError;
+      }),
+      readHidden: vi.fn(async () => "unused"),
+    };
+
+    await expect(read(io)).rejects.toBe(unknownError);
+  });
+
   it("uses hidden confirmed input only on an interactive terminal", async () => {
     const readHidden = vi.fn(async () => "interactive-secret");
     await expect(
@@ -72,5 +189,23 @@ describe("secret command protected input", () => {
     await expect(
       readProtectedSecretInput({}, { isInteractive: false, readDescriptor: vi.fn(), readHidden }),
     ).rejects.toThrow("--stdin or --fd");
+  });
+
+  it("never opens hidden prompts when non-interactive execution is explicit", async () => {
+    const readHidden = vi.fn(async () => "must-not-be-read");
+    const io = { isInteractive: true, readDescriptor: vi.fn(), readHidden };
+
+    const secretError = await readProtectedSecretInput({}, io, { nonInteractive: true }).catch(
+      (reason: unknown) => reason,
+    );
+    const passphraseError = await readProtectedPassphraseInput(undefined, io, {
+      nonInteractive: true,
+    }).catch((reason: unknown) => reason);
+
+    expect(secretError).toBeInstanceOf(CliInputError);
+    expect(secretError).toMatchObject({ cliError: { code: "INPUT_REQUIRED" } });
+    expect(passphraseError).toBeInstanceOf(CliInputError);
+    expect(passphraseError).toMatchObject({ cliError: { code: "INPUT_REQUIRED" } });
+    expect(readHidden).not.toHaveBeenCalled();
   });
 });

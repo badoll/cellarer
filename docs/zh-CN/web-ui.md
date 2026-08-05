@@ -9,7 +9,7 @@ Web UI 是用于查看和操作 cellarer 库房的本地控制台。它是 `@cel
 ```bash
 pnpm build
 node packages/cli/dist/bin.js ui
-node packages/cli/dist/bin.js ui --port 4317 --token local-token
+node packages/cli/dist/bin.js ui --port 4317 --token-fd 3 3< /path/to/ui-token
 ```
 
 服务只监听 `127.0.0.1`。

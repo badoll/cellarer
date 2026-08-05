@@ -71,22 +71,28 @@ describe("CLI scan least-privilege composition", () => {
       };
     };
     const output: string[] = [];
-    const oldLog = console.log;
+    const oldWrite = process.stdout.write;
     try {
-      console.log = (message?: unknown) => output.push(String(message));
+      process.stdout.write = ((chunk: unknown) => {
+        output.push(String(chunk));
+        return true;
+      }) as typeof process.stdout.write;
       await scanCommand(resolve).parseAsync(
         ["node", "scan", "--agent", "claude-code", "--rules", "--dry-run", "--json"],
         { from: "node" },
       );
     } finally {
-      console.log = oldLog;
+      process.stdout.write = oldWrite;
     }
 
     expect(mode).toBe("none");
     expect(credentialCalls).toBe(0);
-    expect(JSON.parse(output.join("\n"))).toMatchObject({
-      agent: "claude-code",
-      items: [expect.objectContaining({ kind: "rules", name: "claude-code" })],
+    expect(JSON.parse(output.join("")).data).toMatchObject({
+      plan: {
+        agent: "claude-code",
+        items: [expect.objectContaining({ kind: "rules", name: "claude-code" })],
+      },
+      imported: [],
     });
   });
 });

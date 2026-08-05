@@ -1,13 +1,28 @@
 import {
   applyScan,
   type ConflictStrategy,
+  type PresentedOperationResult,
   type ScanItem,
+  type ScanPlan,
   type SecretMode,
   scanPlan,
 } from "@cellarer/core";
 import { Command } from "commander";
 import { resolveContext } from "../context.js";
-import { safeConsole as console, createSafeConsole } from "../output.js";
+import { createSafeConsole } from "../output.js";
+import {
+  cliErrorFromOperation,
+  commandFailure,
+  commandSuccess,
+  commandWarnings,
+  executeCliCommand,
+  publicOperationResult,
+} from "../protocol/execution.js";
+import {
+  assertNonInteractiveMutationInput,
+  CliInputError,
+  type CliInvocation,
+} from "../protocol/input.js";
 import { readProtectedPassphraseInput } from "./secret.js";
 
 interface ScanOpts {
@@ -28,6 +43,12 @@ interface ScanOpts {
 
 const CONFLICTS: ConflictStrategy[] = ["keep-theirs", "keep-mine", "copy"];
 
+interface ScanCommandData {
+  readonly plan: ScanPlan;
+  readonly imported: readonly ScanItem[];
+  readonly operation?: PresentedOperationResult;
+}
+
 function resolveCaps(opts: ScanOpts): ("rules" | "mcp" | "skills")[] | undefined {
   const caps: ("rules" | "mcp" | "skills")[] = [];
   if (opts.rules) caps.push("rules");
@@ -37,7 +58,7 @@ function resolveCaps(opts: ScanOpts): ("rules" | "mcp" | "skills")[] | undefined
 }
 
 // 扫描回写(import):agent/目录现有配置 → 规范化 + 脱敏 → 写库房。
-// scan 默认即非交互(无确认提示):用 --dry-run 预览,--select 缩范围,CELLARER_JSON=1 出 JSON。
+// scan 默认即非交互(无确认提示):用 --dry-run 预览、--select 缩小范围。
 export function scanCommand(resolve = resolveContext): Command {
   return new Command("scan")
     .description("扫描 agent 现有 rules/mcp/skills 回写库房(密钥自动脱敏为占位符)")
@@ -53,87 +74,142 @@ export function scanCommand(resolve = resolveContext): Command {
     .option("--secret-mode <mode>", "密钥来源:env(默认)| vault | keychain")
     .option("--vault-passphrase-fd <number>", "从继承的文件描述符读取 vault 口令")
     .option("--keychain-service <name>", "keychain service 名称(默认 cellarer)")
-    .option("--json", "JSON 输出(等价 CELLARER_JSON=1)")
-    .action(async (opts: ScanOpts) => {
-      const ctx = await resolve(opts, opts.dryRun ? "none" : "required");
-      if (ctx.agents.length !== 1) {
-        console.error("scan 需指定单个 --agent <id>,例:--agent claude-code");
-        process.exitCode = 1;
-        return;
-      }
-      if (opts.conflict && !CONFLICTS.includes(opts.conflict as ConflictStrategy)) {
-        console.error(`无效 --conflict "${opts.conflict}";可选:${CONFLICTS.join(" | ")}`);
-        process.exitCode = 1;
-        return;
-      }
-      const json = opts.json || process.env.CELLARER_JSON === "1";
-      const requestedSecretMode = parseSecretMode(opts.secretMode);
-      const secretMode = opts.dryRun ? "env" : requestedSecretMode;
-      const vaultPassphrase =
-        secretMode === "vault"
-          ? await readProtectedPassphraseInput(opts.vaultPassphraseFd)
-          : undefined;
-      const scanArgs = {
-        storeRoot: ctx.storeRoot,
-        agent: ctx.agents[0] as string,
-        scope: ctx.scope,
-        dir: ctx.dir,
-        intoCollection: opts.intoCollection,
-        conflict: opts.conflict as ConflictStrategy | undefined,
-        capabilities: resolveCaps(opts),
-        select: opts.select
-          ? opts.select
-              .split(",")
-              .map((s) => s.trim())
-              .filter(Boolean)
-          : undefined,
-        secretMode,
-        vaultPassphrase,
-        keychainService: opts.keychainService,
-      };
+    .option("--json", "JSON 输出(兼容别名;等价 --output json)")
+    .action(async (opts: ScanOpts, command: Command) => {
+      await executeCliCommand(
+        command,
+        async (execution) => {
+          const invocation = execution.invocation;
+          const capabilities = resolveCaps(opts);
+          assertNonInteractiveMutationInput(
+            "scan",
+            {
+              agent: opts.agent,
+              capabilities,
+              dryRun: opts.dryRun,
+            },
+            invocation,
+          );
+          const ctx = await resolve(opts, opts.dryRun ? "none" : "required");
+          if (ctx.agents.length !== 1) {
+            throw new CliInputError(
+              "INPUT_REQUIRED",
+              "scan requires exactly one agent",
+              { fields: ["agent"] },
+              invocation,
+            );
+          }
+          if (opts.conflict && !CONFLICTS.includes(opts.conflict as ConflictStrategy)) {
+            throw new CliInputError(
+              "INVALID_INPUT",
+              "Invalid conflict strategy",
+              { fields: ["conflict"] },
+              invocation,
+            );
+          }
+          const requestedSecretMode = parseSecretMode(opts.secretMode, invocation);
+          const secretMode = opts.dryRun ? "env" : requestedSecretMode;
+          const vaultPassphrase =
+            secretMode === "vault"
+              ? await readProtectedPassphraseInput(opts.vaultPassphraseFd, undefined, {
+                  nonInteractive: invocation.nonInteractive,
+                  invocation,
+                })
+              : undefined;
+          const scanArgs = {
+            storeRoot: ctx.storeRoot,
+            agent: ctx.agents[0] as string,
+            scope: ctx.scope,
+            dir: ctx.dir,
+            intoCollection: opts.intoCollection,
+            conflict: opts.conflict as ConflictStrategy | undefined,
+            capabilities,
+            select: opts.select
+              ? opts.select
+                  .split(",")
+                  .map((value) => value.trim())
+                  .filter(Boolean)
+              : undefined,
+            secretMode,
+            vaultPassphrase,
+            keychainService: opts.keychainService,
+          };
 
-      if (opts.dryRun) {
-        const plan = await scanPlan(ctx.env, scanArgs);
-        const resultConsole = createSafeConsole(plan);
-        if (json) {
-          resultConsole.log(JSON.stringify(plan, null, 2));
-          return;
-        }
-        for (const w of plan.warnings) resultConsole.warn(`⚠ ${w}`);
-        if (plan.items.length === 0) {
-          resultConsole.log("未发现可回写的资源。");
-          return;
-        }
-        resultConsole.log("dry-run 发现项:");
-        for (const it of plan.items) printItem(it, "将", resultConsole);
-        return;
-      }
-
-      const result = await applyScan(ctx.env, scanArgs);
-      const resultConsole = createSafeConsole(result);
-      if (json) {
-        resultConsole.log(JSON.stringify(result, null, 2));
-        return;
-      }
-      for (const w of result.plan.warnings) resultConsole.warn(`⚠ ${w}`);
-      if (result.imported.length === 0) {
-        resultConsole.log("无新资源入库(检查冲突策略与 --select)。");
-        return;
-      }
-      for (const it of result.imported) printItem(it, "已", resultConsole);
-      // 提示:涉密资源需把真值存入 vault。
-      const refs = result.imported.flatMap((i) => i.secretRefs ?? []);
-      if (refs.length > 0) {
-        resultConsole.log(`\n🔑 检测到密钥引用(真值未入库):${[...new Set(refs)].join(", ")}`);
-        resultConsole.log("   用 cellarer secret add <name> --stdin 存入 vault。");
-      }
+          execution.event("SCAN_STARTED", { phase: "scan", current: 0, total: 1 });
+          let data: ScanCommandData;
+          let observableContext: unknown;
+          if (opts.dryRun) {
+            const plan = await scanPlan(ctx.env, scanArgs);
+            data = { plan, imported: [] };
+            observableContext = plan;
+          } else {
+            const result = await applyScan(ctx.env, scanArgs);
+            data = {
+              plan: result.plan,
+              imported: result.imported,
+              operation: publicOperationResult(result.operation),
+            };
+            observableContext = result;
+          }
+          execution.event("SCAN_COMPLETED", { phase: "scan", current: 1, total: 1 });
+          const warnings = commandWarnings(data.plan.warnings, "SCAN_WARNING");
+          const error =
+            !opts.dryRun && data.operation
+              ? cliErrorFromPresentedOperation(data.operation)
+              : undefined;
+          return error
+            ? commandFailure(error, data, warnings, observableContext)
+            : commandSuccess(data, warnings, observableContext);
+        },
+        (outcome) => {
+          const data = outcome.data;
+          if (!data) return;
+          printScanText(data, opts);
+        },
+      );
     });
 }
 
-function parseSecretMode(value: string | undefined): SecretMode | undefined {
+function parseSecretMode(
+  value: string | undefined,
+  invocation: CliInvocation,
+): SecretMode | undefined {
   if (value === undefined) return undefined;
   if (["env", "vault", "keychain"].includes(value)) return value as SecretMode;
-  throw new TypeError(`无效 --secret-mode "${value}";可选:env | vault | keychain`);
+  throw new CliInputError(
+    "INVALID_INPUT",
+    "Invalid --secret-mode; expected env, vault, or keychain",
+    { fields: ["secretMode"] },
+    invocation,
+  );
+}
+
+function cliErrorFromPresentedOperation(operation: PresentedOperationResult) {
+  return cliErrorFromOperation(operation);
+}
+
+function printScanText(data: ScanCommandData, opts: ScanOpts): void {
+  const output = createSafeConsole(data);
+  for (const warning of data.plan.warnings) output.warn(`⚠ ${warning}`);
+  if (opts.dryRun) {
+    if (data.plan.items.length === 0) {
+      output.log("未发现可回写的资源。");
+      return;
+    }
+    output.log("dry-run 发现项:");
+    for (const item of data.plan.items) printItem(item, "将", output);
+    return;
+  }
+  if (data.imported.length === 0) {
+    output.log("无新资源入库(检查冲突策略与 --select)。");
+    return;
+  }
+  for (const item of data.imported) printItem(item, "已", output);
+  const refs = data.imported.flatMap((item) => item.secretRefs ?? []);
+  if (refs.length > 0) {
+    output.log(`\n🔑 检测到密钥引用(真值未入库):${[...new Set(refs)].join(", ")}`);
+    output.log("   用 cellarer secret add <name> --stdin 存入 vault。");
+  }
 }
 
 function printItem(

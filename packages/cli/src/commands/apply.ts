@@ -1,8 +1,20 @@
 import { apply, type Capability, type LinkMethod, type SecretMode } from "@cellarer/core";
 import { Command } from "commander";
-import { resolveContext } from "../context.js";
+import { parseAgents, resolveContext } from "../context.js";
 import { printMutation } from "../mutation-output.js";
-import { safeConsole as console, createSafeConsole } from "../output.js";
+import { createSafeConsole } from "../output.js";
+import {
+  cliErrorFromMutationConflict,
+  commandFailure,
+  commandSuccess,
+  commandWarnings,
+  executeCliCommand,
+} from "../protocol/execution.js";
+import {
+  assertNonInteractiveMutationInput,
+  CliInputError,
+  type CliInvocation,
+} from "../protocol/input.js";
 import { readProtectedPassphraseInput } from "./secret.js";
 
 interface ApplyOpts {
@@ -24,13 +36,13 @@ interface ApplyOpts {
   json?: boolean;
 }
 
-// 从 --rules/--mcp/--skills 解析能力集合;都不给 → 默认全部三类。
-function resolveCapabilities(opts: ApplyOpts): Capability[] {
+// 从 --rules/--mcp/--skills 解析显式能力集合。仅交互式 text 路径保留默认全部。
+function selectedCapabilities(opts: ApplyOpts): Capability[] {
   const caps: Capability[] = [];
   if (opts.rules) caps.push("rules");
   if (opts.mcp) caps.push("mcp");
   if (opts.skills) caps.push("skills");
-  return caps.length > 0 ? caps : ["rules", "mcp", "skills"];
+  return caps;
 }
 
 // 下发(distribute):库房资源 → agent。支持 rules / mcp / skills。
@@ -53,112 +65,171 @@ export function applyCommand(): Command {
     .option("--snapshot-passphrase-fd <number>", "从继承的文件描述符读取 snapshot 口令")
     .option("--dry-run", "仅预览,不落地")
     .option("--json", "输出完整 Core apply plan/result")
-    .action(async (opts: ApplyOpts) => {
-      // 校验 --secret-mode:无效值直接报错,避免被静默当作 vault 路径(导致密钥未解析却报成功)。
-      const SECRET_MODES = ["env", "vault", "keychain"] as const;
-      if (opts.secretMode && !SECRET_MODES.includes(opts.secretMode as SecretMode)) {
-        console.error(`无效 --secret-mode "${opts.secretMode}";可选:${SECRET_MODES.join(" | ")}`);
-        process.exitCode = 1;
-        return;
-      }
-      const ctx = await resolveContext(opts, "required");
-      if (ctx.agents.length === 0) {
-        console.error("需指定 --agent <ids>(逗号分隔),例:--agent claude-code,codex");
-        process.exitCode = 1;
-        return;
-      }
-      const method: LinkMethod | undefined = opts.copy ? "copy" : undefined;
-      const capabilities = resolveCapabilities(opts);
-      const secretMode = opts.secretMode as SecretMode | undefined;
-      const vaultPassphrase =
-        secretMode === "vault"
-          ? await readProtectedPassphraseInput(opts.vaultPassphraseFd)
-          : undefined;
-      const needsSnapshotPassphrase =
-        !opts.dryRun && Boolean(opts.replaceUnowned || opts.overrideDrift);
-      const snapshotPassphrase = needsSnapshotPassphrase
-        ? await readProtectedPassphraseInput(opts.snapshotPassphraseFd)
-        : undefined;
-
-      const result = await apply(ctx.env, {
-        storeRoot: ctx.storeRoot,
-        scope: ctx.scope,
-        dir: ctx.dir,
-        agents: ctx.agents,
-        collections: ctx.collections,
-        capabilities,
-        method,
-        mcpStrategy: opts.mcpOverwrite ? "overwrite" : undefined,
-        secretMode,
-        vaultPassphrase,
-        keychainService: opts.keychainService,
-        replaceUnowned: parseTokens(opts.replaceUnowned),
-        overrideDrift: parseTokens(opts.overrideDrift),
-        snapshotPassphrase,
-        dryRun: opts.dryRun,
-      });
-      const resultConsole = createSafeConsole(result);
-
-      const blocked = result.plan.conflicts.length > 0;
-      const failed = result.failures.length > 0;
-      const operationFailed = result.mutation.result?.ok === false;
-      const guarded = result.plan.actions.some(
-        (action) =>
-          action.op === "skip" &&
-          (action.reason?.includes("secret-scan") || action.reason?.includes("secret-reference")),
-      );
-      if (blocked || failed || guarded || operationFailed) process.exitCode = 1;
-      if (opts.json) {
-        resultConsole.log(JSON.stringify(result, null, 2));
-        return;
-      }
-
-      printMutation(result.mutation, resultConsole);
-      for (const w of result.plan.warnings) resultConsole.warn(`⚠ ${w}`);
-      for (const conflict of result.plan.conflicts) {
-        resultConsole.error(`⛔ ${conflict.code} ${conflict.target} — ${conflict.message}`);
-        if (conflict.acknowledgement) {
-          resultConsole.error(`   acknowledgement: ${conflict.acknowledgement.token}`);
-        }
-      }
-      for (const failure of result.failures) {
-        resultConsole.error(`⛔ ${failure.code} ${failure.target} — ${failure.message}`);
-      }
-
-      if (opts.dryRun) {
-        resultConsole.log("dry-run 预览:");
-        for (const a of result.plan.actions) {
-          if (a.op === "skip") {
-            resultConsole.log(`  [skip] ${a.agent} ${a.capability}/${a.scope} — ${a.reason}`);
-            continue;
+    .action(async (opts: ApplyOpts, command: Command) => {
+      await executeCliCommand(
+        command,
+        async (execution) => {
+          const invocation = execution.invocation;
+          const secretMode = parseSecretMode(opts.secretMode, invocation);
+          const explicitCapabilities = selectedCapabilities(opts);
+          assertNonInteractiveMutationInput(
+            "apply",
+            {
+              agents: parseAgents(opts.agent),
+              capabilities: explicitCapabilities,
+              dryRun: opts.dryRun,
+            },
+            invocation,
+          );
+          const ctx = await resolveContext(opts, "required");
+          if (ctx.agents.length === 0) {
+            throw new CliInputError(
+              "INPUT_REQUIRED",
+              "apply requires at least one agent",
+              { fields: ["agents"] },
+              invocation,
+            );
           }
-          const existed = a.preview?.before !== undefined ? "(覆盖既有)" : "(新建)";
-          const detail = a.capability === "skills" ? "" : ` ${existed}`;
-          resultConsole.log(`  [${a.op}] ${a.agent} ${a.capability} → ${a.target}${detail}`);
-        }
-        return;
-      }
+          const method: LinkMethod | undefined = opts.copy ? "copy" : undefined;
+          const capabilities =
+            explicitCapabilities.length > 0
+              ? explicitCapabilities
+              : (["rules", "mcp", "skills"] satisfies Capability[]);
+          const vaultPassphrase =
+            secretMode === "vault"
+              ? await readProtectedPassphraseInput(opts.vaultPassphraseFd, undefined, {
+                  nonInteractive: invocation.nonInteractive,
+                  invocation,
+                })
+              : undefined;
+          const needsSnapshotPassphrase =
+            !opts.dryRun && Boolean(opts.replaceUnowned || opts.overrideDrift);
+          const snapshotPassphrase = needsSnapshotPassphrase
+            ? await readProtectedPassphraseInput(opts.snapshotPassphraseFd, undefined, {
+                nonInteractive: invocation.nonInteractive,
+                invocation,
+              })
+            : undefined;
 
-      for (const e of result.entries) {
-        const refs =
-          e.secretRefs && e.secretRefs.length > 0 ? ` 🔑[${e.secretRefs.join(",")}]` : "";
-        resultConsole.log(
-          `✓ ${e.agent} ${e.capability}/${e.scope} → ${e.target} (${e.receipt.method})${refs}`,
-        );
-      }
-      // skip 的安全护栏命中要醒目提示(secret-scan 拦截)。
-      for (const a of result.plan.actions) {
-        if (
-          a.op === "skip" &&
-          (a.reason?.includes("secret-scan") || a.reason?.includes("secret-reference"))
-        ) {
-          resultConsole.error(`⛔ ${a.agent} ${a.capability} 被安全护栏拦截:${a.reason}`);
-        }
-      }
-      if (result.entries.length === 0) {
-        resultConsole.log("无可下发的资源(检查 collection 过滤与 agent 能力)。");
-      }
+          execution.event("APPLY_STARTED", { phase: "apply", current: 0, total: 1 });
+          const result = await apply(ctx.env, {
+            storeRoot: ctx.storeRoot,
+            scope: ctx.scope,
+            dir: ctx.dir,
+            agents: ctx.agents,
+            collections: ctx.collections,
+            capabilities,
+            method,
+            mcpStrategy: opts.mcpOverwrite ? "overwrite" : undefined,
+            secretMode,
+            vaultPassphrase,
+            keychainService: opts.keychainService,
+            replaceUnowned: parseTokens(opts.replaceUnowned),
+            overrideDrift: parseTokens(opts.overrideDrift),
+            snapshotPassphrase,
+            dryRun: opts.dryRun,
+          });
+          execution.event("APPLY_COMPLETED", { phase: "apply", current: 1, total: 1 });
+          const warnings = commandWarnings(result.plan.warnings, "APPLY_WARNING");
+          const operationConflict =
+            result.mutation.result && !result.mutation.result.ok
+              ? cliErrorFromMutationConflict(result.mutation.result.conflict)
+              : undefined;
+          const guarded = result.plan.actions.some(
+            (action) =>
+              action.op === "skip" &&
+              (action.reason?.includes("secret-scan") ||
+                action.reason?.includes("secret-reference")),
+          );
+          const error =
+            operationConflict ??
+            (result.failures.length > 0
+              ? { code: "PARTIAL_FAILURE" as const, message: "Apply reported action failures" }
+              : result.plan.conflicts.length > 0
+                ? { code: "TARGET_CONFLICT" as const, message: "Apply plan is blocked" }
+                : guarded
+                  ? {
+                      code: "POLICY_VIOLATION" as const,
+                      message: "Apply was blocked by a safety guard",
+                    }
+                  : undefined);
+          return error ? commandFailure(error, result, warnings) : commandSuccess(result, warnings);
+        },
+        (outcome) => {
+          const result = outcome.data;
+          if (!result) return;
+          const resultConsole = createSafeConsole(result);
+          printApplyText(result, opts, resultConsole);
+        },
+      );
     });
+}
+
+function parseSecretMode(
+  value: string | undefined,
+  invocation: CliInvocation,
+): SecretMode | undefined {
+  if (value === undefined) return undefined;
+  if (["env", "vault", "keychain"].includes(value)) return value as SecretMode;
+  throw new CliInputError(
+    "INVALID_INPUT",
+    "Invalid --secret-mode; expected env, vault, or keychain",
+    { fields: ["secretMode"] },
+    invocation,
+  );
+}
+
+function printApplyText(
+  result: Awaited<ReturnType<typeof apply>>,
+  opts: ApplyOpts,
+  output: Pick<Console, "log" | "warn" | "error">,
+): void {
+  printMutation(result.mutation, output);
+  for (const warning of result.plan.warnings) output.warn(`⚠ ${warning}`);
+  for (const conflict of result.plan.conflicts) {
+    output.error(`⛔ ${conflict.code} ${conflict.target} — ${conflict.message}`);
+    if (conflict.acknowledgement) {
+      output.error(`   acknowledgement: ${conflict.acknowledgement.token}`);
+    }
+  }
+  for (const failure of result.failures) {
+    output.error(`⛔ ${failure.code} ${failure.target} — ${failure.message}`);
+  }
+  if (opts.dryRun) {
+    output.log("dry-run 预览:");
+    for (const action of result.plan.actions) {
+      if (action.op === "skip") {
+        output.log(
+          `  [skip] ${action.agent} ${action.capability}/${action.scope} — ${action.reason}`,
+        );
+        continue;
+      }
+      const existed = action.preview?.before !== undefined ? "(覆盖既有)" : "(新建)";
+      const detail = action.capability === "skills" ? "" : ` ${existed}`;
+      output.log(
+        `  [${action.op}] ${action.agent} ${action.capability} → ${action.target}${detail}`,
+      );
+    }
+    return;
+  }
+  for (const entry of result.entries) {
+    const refs =
+      entry.secretRefs && entry.secretRefs.length > 0 ? ` 🔑[${entry.secretRefs.join(",")}]` : "";
+    output.log(
+      `✓ ${entry.agent} ${entry.capability}/${entry.scope} → ${entry.target} (${entry.receipt.method})${refs}`,
+    );
+  }
+  for (const action of result.plan.actions) {
+    if (
+      action.op === "skip" &&
+      (action.reason?.includes("secret-scan") || action.reason?.includes("secret-reference"))
+    ) {
+      output.error(`⛔ ${action.agent} ${action.capability} 被安全护栏拦截:${action.reason}`);
+    }
+  }
+  if (result.entries.length === 0) {
+    output.log("无可下发的资源(检查 collection 过滤与 agent 能力)。");
+  }
 }
 
 function parseTokens(spec: string | undefined): string[] | undefined {

@@ -3,12 +3,22 @@ import process from "node:process";
 import {
   deleteStoredSecret,
   listStoredSecretNames,
+  type PresentedOperationResult,
   type StoredSecretProvider,
   setStoredSecret,
 } from "@cellarer/core";
 import { Command } from "commander";
 import { resolveContext } from "../context.js";
 import { safeConsole as console } from "../output.js";
+import {
+  cliErrorFromOperation,
+  commandFailure,
+  commandSuccess,
+  executeCliCommand,
+  publicOperationResult,
+} from "../protocol/execution.js";
+import { CliInputError, type CliInvocation } from "../protocol/input.js";
+import { PROTECTED_DESCRIPTOR_MAX, PROTECTED_DESCRIPTOR_MIN } from "../protocol/schemas.js";
 
 // 密钥管理子命令(密钥分层第 3 层 age vault;见计划 §10)。
 // 安全红线:ls 只列名不列值;真值只进 vault(加密落盘),绝不打印/绝不入库房资源。
@@ -25,31 +35,73 @@ export interface SecretInputIo {
   readonly readHidden: (confirm: boolean) => Promise<string>;
 }
 
+export interface ProtectedInputOptions {
+  readonly nonInteractive?: boolean;
+  readonly invocation?: CliInvocation;
+}
+
+export interface ProtectedDescriptorOptions {
+  readonly field: string;
+  readonly label: string;
+  readonly invocation?: CliInvocation;
+}
+
+interface SecretMutationData {
+  readonly provider: StoredSecretProvider;
+  readonly name: string;
+  readonly operation: PresentedOperationResult;
+}
+
 export function secretCommand(): Command {
   const cmd = new Command("secret").description("密钥管理(age vault;ls 只列名不列值)");
 
   // add <name>:值仅可来自 hidden TTY、stdin 或继承描述符，绝不进入 argv。
   cmd
-    .command("add <name>")
+    .command("add [name]")
     .description("新增/更新一个密钥(真值加密入 vault,绝不打印)")
     .option("--provider <provider>", "存储提供方:vault(默认)|keychain", "vault")
     .option("--stdin", "从标准输入读取密钥值")
     .option("--fd <number>", "从继承的文件描述符读取密钥值")
     .option("--passphrase-fd <number>", "从继承的文件描述符读取 vault 口令")
-    .action(async (name: string, opts: SecretOpts) => {
-      const { env, storeRoot } = await resolveContext({}, "required");
-      const provider = resolveProvider(opts.provider);
-      const plaintext = await readProtectedSecretInput(opts);
-      const result = await setStoredSecret(env, storeRoot, {
-        provider,
-        name,
-        value: plaintext,
-        ...(provider === "vault"
-          ? { vaultPassphrase: await readProtectedPassphraseInput(opts.passphraseFd) }
-          : {}),
-      });
-      assertSecretMutationCommitted(result.operation);
-      console.log(`✓ 已写入密钥 "${name}"(${provider},未回显真值)。`);
+    .action(async (name: string | undefined, opts: SecretOpts, command: Command) => {
+      await executeCliCommand(
+        command,
+        async (execution) => {
+          const invocation = execution.invocation;
+          const requiredName = requireSecretName(name, invocation);
+          const provider = resolveProvider(opts.provider, invocation);
+          const protectedOptions = { nonInteractive: invocation.nonInteractive, invocation };
+          const plaintext = await readProtectedSecretInput(opts, undefined, protectedOptions);
+          const vaultPassphrase =
+            provider === "vault"
+              ? await readProtectedPassphraseInput(opts.passphraseFd, undefined, protectedOptions)
+              : undefined;
+          const { env, storeRoot } = await resolveContext({}, "required");
+          const result = await setStoredSecret(env, storeRoot, {
+            provider,
+            name: requiredName,
+            value: plaintext,
+            ...(provider === "vault" ? { vaultPassphrase } : {}),
+          });
+          const data: SecretMutationData = {
+            provider: result.provider,
+            name: result.name,
+            operation: publicOperationResult(result.operation),
+          };
+          const error = cliErrorFromOperation(result.operation);
+          return error ? commandFailure(error, data, [], result) : commandSuccess(data, [], result);
+        },
+        (outcome) => {
+          if (!outcome.data) return;
+          if (outcome.ok) {
+            console.log(
+              `✓ 已写入密钥 "${outcome.data.name}"(${outcome.data.provider},未回显真值)。`,
+            );
+          } else {
+            console.error(outcome.error.message);
+          }
+        },
+      );
     });
 
   // ls:只列引用名,绝不列值。
@@ -57,39 +109,77 @@ export function secretCommand(): Command {
     .command("ls")
     .description("列出 vault 中的密钥引用名(不显示真值)")
     .option("--passphrase-fd <number>", "从继承的文件描述符读取 vault 口令")
-    .action(async (opts: SecretOpts) => {
-      const { env, storeRoot } = await resolveContext({});
-      const pp = await readProtectedPassphraseInput(opts.passphraseFd);
-      const names = await listStoredSecretNames(env, storeRoot, {
-        provider: "vault",
-        vaultPassphrase: pp,
-      });
-      if (names.length === 0) {
-        console.log("vault 为空。");
-        return;
-      }
-      console.log("密钥引用名:");
-      for (const n of names) console.log(`  ${n}`);
+    .action(async (opts: SecretOpts, command: Command) => {
+      await executeCliCommand(
+        command,
+        async (execution) => {
+          const invocation = execution.invocation;
+          const passphrase = await readProtectedPassphraseInput(opts.passphraseFd, undefined, {
+            nonInteractive: invocation.nonInteractive,
+            invocation,
+          });
+          const { env, storeRoot } = await resolveContext({});
+          const names = await listStoredSecretNames(env, storeRoot, {
+            provider: "vault",
+            vaultPassphrase: passphrase,
+          });
+          return commandSuccess({ names });
+        },
+        (outcome) => {
+          if (!outcome.ok) return;
+          if (outcome.data.names.length === 0) {
+            console.log("vault 为空。");
+            return;
+          }
+          console.log("密钥引用名:");
+          for (const name of outcome.data.names) console.log(`  ${name}`);
+        },
+      );
     });
 
   // rm <name>:删除一个密钥。
   cmd
-    .command("rm <name>")
+    .command("rm [name]")
     .description("删除一个密钥")
     .option("--provider <provider>", "存储提供方:vault(默认)|keychain", "vault")
     .option("--passphrase-fd <number>", "从继承的文件描述符读取 vault 口令")
-    .action(async (name: string, opts: SecretOpts) => {
-      const { env, storeRoot } = await resolveContext({}, "required");
-      const provider = resolveProvider(opts.provider);
-      const result = await deleteStoredSecret(env, storeRoot, {
-        provider,
-        name,
-        ...(provider === "vault"
-          ? { vaultPassphrase: await readProtectedPassphraseInput(opts.passphraseFd) }
-          : {}),
-      });
-      assertSecretMutationCommitted(result.operation);
-      console.log(`✓ 已删除密钥 "${name}"(${provider})。`);
+    .action(async (name: string | undefined, opts: SecretOpts, command: Command) => {
+      await executeCliCommand(
+        command,
+        async (execution) => {
+          const invocation = execution.invocation;
+          const requiredName = requireSecretName(name, invocation);
+          const provider = resolveProvider(opts.provider, invocation);
+          const vaultPassphrase =
+            provider === "vault"
+              ? await readProtectedPassphraseInput(opts.passphraseFd, undefined, {
+                  nonInteractive: invocation.nonInteractive,
+                  invocation,
+                })
+              : undefined;
+          const { env, storeRoot } = await resolveContext({}, "required");
+          const result = await deleteStoredSecret(env, storeRoot, {
+            provider,
+            name: requiredName,
+            ...(provider === "vault" ? { vaultPassphrase } : {}),
+          });
+          const data: SecretMutationData = {
+            provider: result.provider,
+            name: result.name,
+            operation: publicOperationResult(result.operation),
+          };
+          const error = cliErrorFromOperation(result.operation);
+          return error ? commandFailure(error, data, [], result) : commandSuccess(data, [], result);
+        },
+        (outcome) => {
+          if (!outcome.data) return;
+          if (outcome.ok) {
+            console.log(`✓ 已删除密钥 "${outcome.data.name}"(${outcome.data.provider})。`);
+          } else {
+            console.error(outcome.error.message);
+          }
+        },
+      );
     });
 
   return cmd;
@@ -98,50 +188,138 @@ export function secretCommand(): Command {
 export async function readProtectedSecretInput(
   opts: Pick<SecretOpts, "stdin" | "fd">,
   io: SecretInputIo = defaultSecretInputIo(),
+  options: ProtectedInputOptions = {},
 ): Promise<string> {
   const selectedChannels = Number(opts.stdin === true) + Number(opts.fd !== undefined);
   if (selectedChannels > 1) {
-    throw new Error("select exactly one secret input channel: --stdin or --fd");
+    throw new CliInputError(
+      "INPUT_AMBIGUITY",
+      "select exactly one secret input channel: --stdin or --fd",
+      { fields: ["stdin", "fd"] },
+      options.invocation,
+    );
   }
   let value: string;
   if (opts.stdin) {
     value = await io.readDescriptor(0);
   } else if (opts.fd !== undefined) {
     const fd = Number(opts.fd);
-    if (!Number.isSafeInteger(fd) || fd < 3) {
-      throw new Error("--fd must name an inherited descriptor numbered 3 or greater");
+    if (
+      !Number.isSafeInteger(fd) ||
+      fd < PROTECTED_DESCRIPTOR_MIN ||
+      fd > PROTECTED_DESCRIPTOR_MAX
+    ) {
+      throw new CliInputError(
+        "INVALID_INPUT",
+        `--fd must name an inherited descriptor numbered from ${PROTECTED_DESCRIPTOR_MIN} through ${PROTECTED_DESCRIPTOR_MAX}`,
+        { fields: ["fd"] },
+        options.invocation,
+      );
     }
-    value = await io.readDescriptor(fd);
+    try {
+      value = await io.readDescriptor(fd);
+    } catch (error) {
+      if (!isExpectedDescriptorReadError(error)) throw error;
+      throw new CliInputError(
+        "INVALID_INPUT",
+        "unable to read secret value from inherited descriptor",
+        { fields: ["fd"] },
+        options.invocation,
+      );
+    }
   } else {
-    if (!io.isInteractive) {
-      throw new Error("non-interactive secret input requires --stdin or --fd");
+    if (options.nonInteractive || !io.isInteractive) {
+      throw new CliInputError(
+        "INPUT_REQUIRED",
+        "non-interactive secret input requires --stdin or --fd",
+        { fields: ["stdin|fd"] },
+        options.invocation,
+      );
     }
     value = await io.readHidden(true);
   }
   const normalized = stripSingleLineTerminator(value);
-  if (normalized.length === 0) throw new Error("secret value must not be empty");
+  if (normalized.length === 0) {
+    throw new CliInputError(
+      "INVALID_INPUT",
+      "secret value must not be empty",
+      undefined,
+      options.invocation,
+    );
+  }
   return normalized;
 }
 
 export async function readProtectedPassphraseInput(
   fdOption: string | undefined,
   io: SecretInputIo = defaultSecretInputIo(),
+  options: ProtectedInputOptions = {},
 ): Promise<string> {
   let value: string;
   if (fdOption !== undefined) {
-    const fd = Number(fdOption);
-    if (!Number.isSafeInteger(fd) || fd < 3) {
-      throw new Error("passphrase fd must name an inherited descriptor numbered 3 or greater");
-    }
-    value = await io.readDescriptor(fd);
+    return readProtectedDescriptorInput(
+      fdOption,
+      { field: "passphraseFd", label: "passphrase", invocation: options.invocation },
+      io,
+    );
   } else {
-    if (!io.isInteractive) {
-      throw new Error("non-interactive passphrase input requires an inherited descriptor");
+    if (options.nonInteractive || !io.isInteractive) {
+      throw new CliInputError(
+        "INPUT_REQUIRED",
+        "non-interactive passphrase input requires an inherited descriptor",
+        { fields: ["passphraseFd"] },
+        options.invocation,
+      );
     }
     value = await io.readHidden(false);
   }
   const normalized = stripSingleLineTerminator(value);
-  if (normalized.length === 0) throw new Error("passphrase must not be empty");
+  if (normalized.length === 0) {
+    throw new CliInputError(
+      "INVALID_INPUT",
+      "passphrase must not be empty",
+      undefined,
+      options.invocation,
+    );
+  }
+  return normalized;
+}
+
+export async function readProtectedDescriptorInput(
+  fdOption: string,
+  options: ProtectedDescriptorOptions,
+  io: SecretInputIo = defaultSecretInputIo(),
+): Promise<string> {
+  const fd = Number(fdOption);
+  if (!Number.isSafeInteger(fd) || fd < PROTECTED_DESCRIPTOR_MIN || fd > PROTECTED_DESCRIPTOR_MAX) {
+    throw new CliInputError(
+      "INVALID_INPUT",
+      `${options.label} fd must name an inherited descriptor numbered from ${PROTECTED_DESCRIPTOR_MIN} through ${PROTECTED_DESCRIPTOR_MAX}`,
+      { fields: [options.field] },
+      options.invocation,
+    );
+  }
+  let value: string;
+  try {
+    value = await io.readDescriptor(fd);
+  } catch (error) {
+    if (!isExpectedDescriptorReadError(error)) throw error;
+    throw new CliInputError(
+      "INVALID_INPUT",
+      `unable to read ${options.label} from inherited descriptor`,
+      { fields: [options.field] },
+      options.invocation,
+    );
+  }
+  const normalized = stripSingleLineTerminator(value);
+  if (normalized.length === 0) {
+    throw new CliInputError(
+      "INVALID_INPUT",
+      `${options.label} must not be empty`,
+      { fields: [options.field] },
+      options.invocation,
+    );
+  }
   return normalized;
 }
 
@@ -210,14 +388,37 @@ function stripSingleLineTerminator(value: string): string {
       : value;
 }
 
-function resolveProvider(value: string | undefined): StoredSecretProvider {
-  if (value === undefined || value === "vault") return "vault";
-  if (value === "keychain") return "keychain";
-  throw new Error(`无效 provider "${value}":仅支持 vault | keychain`);
+function isExpectedDescriptorReadError(error: unknown): boolean {
+  if (error === null || typeof error !== "object" || !("code" in error)) return false;
+  const code = (error as { readonly code?: unknown }).code;
+  return (
+    typeof code === "string" &&
+    ["EACCES", "EBADF", "EINVAL", "EIO", "EISDIR", "ENXIO", "ESPIPE"].includes(code)
+  );
 }
 
-function assertSecretMutationCommitted(
-  operation: Awaited<ReturnType<typeof setStoredSecret>>["operation"],
-): void {
-  if (!operation.ok) throw new Error(operation.conflict.message);
+function resolveProvider(
+  value: string | undefined,
+  invocation: CliInvocation,
+): StoredSecretProvider {
+  if (value === undefined || value === "vault") return "vault";
+  if (value === "keychain") return "keychain";
+  throw new CliInputError(
+    "INVALID_INPUT",
+    "Invalid provider; expected vault or keychain",
+    { fields: ["provider"] },
+    invocation,
+  );
+}
+
+function requireSecretName(value: string | undefined, invocation: CliInvocation): string {
+  if (value) return value;
+  throw new CliInputError(
+    "INPUT_REQUIRED",
+    invocation.nonInteractive
+      ? "non-interactive secret command requires a name"
+      : "secret name is required",
+    { fields: ["name"] },
+    invocation,
+  );
 }

@@ -106,7 +106,7 @@ node packages/cli/dist/bin.js revert --agent claude-code,codex
 
 ```bash
 node packages/cli/dist/bin.js ui
-node packages/cli/dist/bin.js ui --port 4317 --token local-token
+node packages/cli/dist/bin.js ui --port 4317 --token-fd 3 3< /path/to/ui-token
 ```
 
 服务只监听 `127.0.0.1`。
