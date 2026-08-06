@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { listRuleArtifacts, readRuleArtifact, resolveStoreRoot } from "../src/store/store.js";
+import { createResourceRecord, loadResourceRecord } from "../src/resources/model.js";
+import {
+  listRuleArtifacts,
+  listSkillArtifacts,
+  readRuleArtifact,
+  resolveStoreRoot,
+  writeSkillProvenance,
+} from "../src/store/store.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
 describe("store/store", () => {
@@ -46,5 +53,38 @@ describe("store/store", () => {
     const frag = await readRuleArtifact(t.env, storeRoot, "rules/coding-style");
     expect(frag.content).toBe("Use tabs.");
     expect(frag.relPath).toBe("rules/coding-style.md");
+  });
+
+  it("lists a renamed artifact by its persisted immutable resource ID", async () => {
+    const sourcePath = t.path("home", ".cellarer", "store", "skills", "renamed");
+    await t.env.fs.mkdir(sourcePath, { recursive: true });
+    await t.env.fs.writeFile(
+      t.path("home", ".cellarer", "store", "skills", "renamed", "SKILL.md"),
+      "# renamed\n",
+    );
+    const observed = await loadResourceRecord(t.env, storeRoot, {
+      id: "skills/renamed",
+      kind: "skills",
+      name: "renamed",
+      sourcePath,
+      collections: [],
+    });
+    await writeSkillProvenance(
+      t.env,
+      storeRoot,
+      "renamed",
+      createResourceRecord({
+        resourceId: "skills/original",
+        kind: "skills",
+        name: "renamed",
+        contentFingerprint: observed.currentRevision.contentFingerprint,
+        validation: observed.currentRevision.validation,
+        source: observed.currentRevision.source,
+      }),
+    );
+
+    await expect(listSkillArtifacts(t.env, storeRoot)).resolves.toEqual([
+      expect.objectContaining({ id: "skills/original", name: "renamed" }),
+    ]);
   });
 });

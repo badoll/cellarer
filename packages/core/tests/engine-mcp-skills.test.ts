@@ -441,6 +441,7 @@ describe("engine mcp — secret handling (red line)", () => {
     expect(a?.preview?.after).toBeUndefined();
   });
 
+  // This real transaction must finish before fixture teardown; Vitest timeouts do not cancel it.
   it("vault mode preserves references and never sends resolved values to the target writer", async () => {
     // 先建 vault。
     const { saveVault } = await import("../src/secrets/vault.js");
@@ -463,8 +464,9 @@ describe("engine mcp — secret handling (red line)", () => {
     const led = await loadLedger(t.env, storeRoot);
     expect(JSON.stringify(led)).not.toContain("ghp_realtoken");
     expect(led.owners[0]?.secretRefs).toContain("C7_TOKEN");
-  });
+  }, 30_000);
 
+  // This real transaction must finish before fixture teardown; Vitest timeouts do not cancel it.
   it("project scope vault mode also writes only the reference token", async () => {
     const { saveVault } = await import("../src/secrets/vault.js");
     const proj = t.path("proj");
@@ -497,7 +499,7 @@ describe("engine mcp — secret handling (red line)", () => {
     const content = await t.env.fs.readFile(t.path("proj", ".reference-native", "mcp.json"));
     expect(content).toContain("${CELLARER_SECRET:T}");
     expect(content).not.toContain("ghp_realtokenrealtokenrealtoken12345");
-  });
+  }, 30_000);
 
   it("blocks an adapter that requires cellarer to materialize plaintext", async () => {
     const storeRoot = await seedStore(t, {
@@ -836,6 +838,7 @@ describe("engine skills distribution", () => {
     expect((await status(t.env, { storeRoot }))[0]?.status).toBe("drifted");
   });
 
+  // This real transaction must finish before fixture teardown; Vitest timeouts do not cancel it.
   it("blocks a drifted copy skill until exact override, then heals it idempotently", async () => {
     const storeRoot = await seedStore(t, { skills: { s: { "a.txt": "A" } } });
     const opts = {
@@ -866,7 +869,7 @@ describe("engine skills distribution", () => {
     const led1 = JSON.stringify(await loadLedger(t.env, storeRoot));
     await apply(t.env, opts);
     expect(JSON.stringify(await loadLedger(t.env, storeRoot))).toBe(led1);
-  });
+  }, 30_000);
 
   it("is idempotent for a copy-landed skill when unchanged", async () => {
     const storeRoot = await seedStore(t, { skills: { s: { "a.txt": "A" } } });
@@ -883,6 +886,7 @@ describe("engine skills distribution", () => {
     expect(JSON.stringify(await loadLedger(t.env, storeRoot))).toBe(led1);
   });
 
+  // This real transaction must finish before fixture teardown; Vitest timeouts do not cancel it.
   it("can explicitly heal a copy-landed skill replaced by a plain file without ENOTDIR", async () => {
     const storeRoot = await seedStore(t, { skills: { s: { "a.txt": "A" } } });
     const opts = {
@@ -907,7 +911,7 @@ describe("engine skills distribution", () => {
       snapshotPassphrase: "test-snapshot-passphrase",
     });
     expect(await t.env.fs.readFile(t.path("home", ".claude", "skills", "s", "a.txt"))).toBe("A");
-  });
+  }, 30_000);
 });
 
 describe("collection filtering across capabilities", () => {

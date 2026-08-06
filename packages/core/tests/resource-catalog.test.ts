@@ -1,9 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { appendActivity } from "../src/activity.js";
-import { resourceCatalog, sha256 } from "../src/index.js";
+import { createResourceRecord, loadResourceRecord, resourceCatalog, sha256 } from "../src/index.js";
 import { tagArtifactCollections } from "../src/store/config.js";
 import { saveLedger } from "../src/store/ledger.js";
-import { initStore, writeMcpArtifact, writeRuleArtifact } from "../src/store/store.js";
+import {
+  initStore,
+  writeMcpArtifact,
+  writeRuleArtifact,
+  writeSkillProvenance,
+} from "../src/store/store.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
 describe("resource catalog", () => {
@@ -32,8 +37,57 @@ describe("resource catalog", () => {
         name: "style",
         state: "managed",
         collections: ["default"],
+        provenance: { type: "local-snapshot" },
+        currentRevision: expect.objectContaining({
+          id: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+          contentFingerprint: sha256("# style"),
+          validation: expect.objectContaining({
+            status: "backfilled",
+            checks: ["content-fingerprint"],
+          }),
+        }),
       }),
     );
+  });
+
+  it("joins inventory state by immutable resource ID after the editable name changes", async () => {
+    const sourcePath = t.path("home", ".cellarer", "store", "skills", "renamed");
+    await t.env.fs.mkdir(sourcePath, { recursive: true });
+    await t.env.fs.writeFile(
+      t.path("home", ".cellarer", "store", "skills", "renamed", "SKILL.md"),
+      "# renamed\n",
+    );
+    const observed = await loadResourceRecord(t.env, storeRoot, {
+      id: "skills/renamed",
+      kind: "skills",
+      name: "renamed",
+      sourcePath,
+      collections: [],
+    });
+    await writeSkillProvenance(
+      t.env,
+      storeRoot,
+      "renamed",
+      createResourceRecord({
+        resourceId: "skills/original",
+        kind: "skills",
+        name: "renamed",
+        contentFingerprint: observed.currentRevision.contentFingerprint,
+        validation: observed.currentRevision.validation,
+        source: observed.currentRevision.source,
+      }),
+    );
+    await tagArtifactCollections(t.env, storeRoot, ["skills/original"], "default");
+
+    const catalog = await resourceCatalog(t.env, { storeRoot, kind: "skills" });
+
+    expect(catalog.resources).toEqual([
+      expect.objectContaining({
+        id: "skills/original",
+        name: "renamed",
+        collections: ["default"],
+      }),
+    ]);
   });
 
   it("marks synced and drifted targets from ledger status", async () => {

@@ -21,6 +21,7 @@ import type {
   Ledger,
   LedgerEntry,
   PlanAction,
+  SyncProfileTargetEvidence,
 } from "../model/index.js";
 import {
   acquireCurrentMutationAuthorityLease,
@@ -53,6 +54,7 @@ import { mutationPresentation } from "../protocol/presentation.js";
 import { PublicationPostconditionError } from "../protocol/publication.js";
 import { captureStoreProvenance, validateStoreProvenance } from "../protocol/store-mutation.js";
 import { observeAtStableStoreRevision } from "../protocol/store-revision.js";
+import { resourceRevisionContentPath } from "../resources/model.js";
 import {
   attachProviderScope,
   configureProviderScope,
@@ -83,6 +85,7 @@ import {
   loadLedgerForPlanning,
   serializeLedger,
 } from "../store/ledger.js";
+import { resolveCanonicalSyncProfile, syncProfilesPath } from "../sync/profiles.js";
 import { fingerprintTarget } from "../target-ownership.js";
 import {
   createEncryptedTargetSnapshot,
@@ -132,6 +135,7 @@ interface ApplyContext {
   storeRoot: string;
   snapshotPassphrase?: string;
   projectRoot?: string;
+  syncProfile?: SyncProfileTargetEvidence;
 }
 
 interface AppliedAction {
@@ -338,6 +342,7 @@ export async function planApplyMutation(
   execution: {
     providerAccess?: "allowed" | "forbidden";
     authorityLease?: MutationAuthorityLease;
+    syncProfileId?: string;
   } = {},
 ): Promise<PlannedApplyMutation> {
   requireMutationAuthority(env);
@@ -359,16 +364,20 @@ async function planApplyMutationWithAuthorityLease(
   env: Env,
   opts: DistributeOptions,
   planOptions: MutationPlanOptions,
-  execution: { providerAccess?: "allowed" | "forbidden" },
+  execution: { providerAccess?: "allowed" | "forbidden"; syncProfileId?: string },
 ): Promise<PlannedApplyMutation> {
   requireMutationAuthority(env);
+  if (Object.hasOwn(opts, "syncProfile")) {
+    throw new TypeError("sync profile owner evidence must be resolved from profiles.json");
+  }
   const requestedCapabilities = opts.capabilities ?? ["rules"];
+  const syncProfileId = execution.syncProfileId;
   const initialCapabilityRoots = await captureCapabilityRootSnapshots(
     env,
     opts.storeRoot,
     requestedCapabilities,
   );
-  const provenancePaths = distributionStoreProvenancePaths(env, opts);
+  const provenancePaths = distributionStoreProvenancePaths(env, opts, syncProfileId !== undefined);
   const initialProvenance = await captureStoreProvenance(env, opts.storeRoot, provenancePaths);
   const config = await loadConfig(env, opts.storeRoot);
   const scope =
@@ -388,6 +397,11 @@ async function planApplyMutationWithAuthorityLease(
     if (canonicalJson(initialProvenance) !== canonicalJson(provenanceBefore)) {
       throw new TypeError("distribution Store provenance changed while planning");
     }
+    const syncProfile = await canonicalSyncProfileForDistribution(
+      operationEnv,
+      opts,
+      syncProfileId,
+    );
     const capabilityRootsBefore = await captureCapabilityRootSnapshots(
       operationEnv,
       opts.storeRoot,
@@ -432,9 +446,11 @@ async function planApplyMutationWithAuthorityLease(
       gitignore,
       storeProvenance: provenanceBefore,
       capabilityRootProvenance: capabilityRootsBefore.descriptors,
+      syncProfile,
     };
   });
-  const { distributePlan, gitignore, storeProvenance, capabilityRootProvenance } = observed.value;
+  const { distributePlan, gitignore, storeProvenance, capabilityRootProvenance, syncProfile } =
+    observed.value;
   const effectiveSecretMode = opts.secretMode ?? config.defaults.secretMode;
   const effectiveKeychainService = opts.keychainService ?? "cellarer";
   const executable = distributePlan.actions.filter((action) => action.op !== "skip");
@@ -463,11 +479,15 @@ async function planApplyMutationWithAuthorityLease(
     storeRoot: opts.storeRoot,
     scope: opts.scope,
     agents: opts.agents,
+    ...(opts.resourceIds ? { resourceIds: opts.resourceIds } : {}),
+    ...(syncProfile ? { syncProfile } : {}),
     configFingerprint: sha256(canonicalJson(config)),
     storeProvenance,
     capabilityRootProvenance,
     ...(opts.dir ? { dir: opts.dir } : {}),
     ...(opts.capabilities ? { capabilities: opts.capabilities } : {}),
+    ...(opts.method ? { method: opts.method } : {}),
+    ...(opts.mcpStrategy ? { mcpStrategy: opts.mcpStrategy } : {}),
     distributePlan,
   });
   const prepared = {
@@ -540,6 +560,12 @@ export async function applyMutationPlan(
       try {
         assertMutationPlanActionAlignment(mutationPlan);
         decoded = decodeApplyMutation(operationEnv, mutationPlan);
+        if (
+          context.syncProfileId !== undefined &&
+          decoded.syncProfile?.profileId !== context.syncProfileId
+        ) {
+          throw new TypeError("apply mutation plan omits its canonical sync profile selection");
+        }
         if (context.options) {
           trustedOptions = assertTrustedApplyOptions(context);
           assertApplyOptionsMatchTrustedContext(decoded.opts, trustedOptions);
@@ -591,6 +617,7 @@ export async function applyMutationPlan(
             operationEnv,
             decoded.opts,
             decoded.executionPlan,
+            decoded.syncProfile,
             context.snapshotPassphrase ?? trustedOptions.snapshotPassphrase,
             mutationPlan,
             recordAction,
@@ -612,6 +639,22 @@ export async function applyMutationPlan(
           validatePreflightBeforeObservation: async () => validateApplyProvenance(false),
           validateBeforeObservationUnderLock: async () => validateApplyProvenance(true),
           validateUnderLock: async () => {
+            let canonicalSyncProfile: SyncProfileTargetEvidence | undefined;
+            try {
+              canonicalSyncProfile = await canonicalSyncProfileForDistribution(
+                operationEnv,
+                decoded.opts,
+                decoded.syncProfile?.profileId,
+              );
+            } catch {
+              return invalidPlanResult();
+            }
+            if (
+              canonicalJson(canonicalSyncProfile ?? null) !==
+              canonicalJson(decoded.syncProfile ?? null)
+            ) {
+              return invalidPlanResult();
+            }
             const currentConfig = await loadConfig(operationEnv, context.storeRoot);
             if (sha256(canonicalJson(currentConfig)) !== decoded.configFingerprint) {
               return invalidPlanResult();
@@ -746,6 +789,9 @@ function assertApplyOptionsMatchTrustedContext(
     agents: trusted.agents,
     ...(trusted.dir ? { dir: trusted.dir } : {}),
     ...(trusted.capabilities ? { capabilities: trusted.capabilities } : {}),
+    ...(trusted.resourceIds ? { resourceIds: trusted.resourceIds } : {}),
+    ...(trusted.method ? { method: trusted.method } : {}),
+    ...(trusted.mcpStrategy ? { mcpStrategy: trusted.mcpStrategy } : {}),
   };
   if (canonicalJson(jsonObject(supplied)) !== canonicalJson(jsonObject(trustedSignedOptions))) {
     throw new TypeError("apply mutation options do not match the trusted execution context");
@@ -878,6 +924,7 @@ async function executeApplyPlan(
   env: Env,
   opts: DistributeOptions,
   distributePlan: DistributePlan,
+  syncProfile: SyncProfileTargetEvidence | undefined,
   snapshotPassphrase: string | undefined,
   mutationPlan: MutationPlan,
   recordAction: RecordOperationAction,
@@ -941,6 +988,7 @@ async function executeApplyPlan(
           storeRoot: opts.storeRoot,
           snapshotPassphrase,
           projectRoot,
+          syncProfile,
         },
         action.source ? stagedSources.get(action.source) : undefined,
       );
@@ -1186,6 +1234,7 @@ function decodeApplyMutation(
   executionPlan: DistributePlan;
   configFingerprint: string;
   capabilityRootProvenance: readonly CapabilityRootProvenanceDescriptor[];
+  syncProfile?: SyncProfileTargetEvidence;
 } {
   if (planReceipt.operation !== "apply") {
     throw new TypeError("apply mutation requires an apply plan");
@@ -1202,6 +1251,10 @@ function decodeApplyMutation(
   ];
   if ("dir" in input) inputKeys.push("dir");
   if ("capabilities" in input) inputKeys.push("capabilities");
+  if ("resourceIds" in input) inputKeys.push("resourceIds");
+  if ("method" in input) inputKeys.push("method");
+  if ("mcpStrategy" in input) inputKeys.push("mcpStrategy");
+  if ("syncProfile" in input) inputKeys.push("syncProfile");
   if (
     !hasExactKeys(input, inputKeys) ||
     typeof input.storeRoot !== "string" ||
@@ -1220,6 +1273,9 @@ function decodeApplyMutation(
   ) {
     throw new TypeError("apply mutation plan has invalid normalized inputs");
   }
+  const syncProfile = isSyncProfileTargetEvidence(input.syncProfile)
+    ? input.syncProfile
+    : undefined;
   const opts: DistributeOptions = {
     storeRoot: input.storeRoot,
     scope: input.scope,
@@ -1228,16 +1284,31 @@ function decodeApplyMutation(
     ...(Array.isArray(input.capabilities)
       ? { capabilities: input.capabilities as DistributeOptions["capabilities"] }
       : {}),
+    ...(Array.isArray(input.resourceIds) ? { resourceIds: input.resourceIds as string[] } : {}),
+    ...(input.method === "symlink" || input.method === "copy" ? { method: input.method } : {}),
+    ...(input.mcpStrategy === "merge" || input.mcpStrategy === "overwrite"
+      ? { mcpStrategy: input.mcpStrategy }
+      : {}),
   };
   if (
     new Set(opts.agents).size !== opts.agents.length ||
     opts.agents.some((agent) => agent.length === 0) ||
     (opts.capabilities &&
-      !opts.capabilities.every((capability) => ["rules", "mcp", "skills"].includes(capability)))
+      !opts.capabilities.every((capability) => ["rules", "mcp", "skills"].includes(capability))) ||
+    ("method" in input && !opts.method) ||
+    ("mcpStrategy" in input && !opts.mcpStrategy) ||
+    (opts.resourceIds &&
+      (new Set(opts.resourceIds).size !== opts.resourceIds.length ||
+        !opts.resourceIds.every(
+          (resourceId) =>
+            typeof resourceId === "string" &&
+            /^(rules|mcp|skills)\/[A-Za-z0-9._-]+$/.test(resourceId),
+        ))) ||
+    ("syncProfile" in input && !syncProfile)
   ) {
     throw new TypeError("apply mutation plan has invalid normalized inputs");
   }
-  const expectedProvenancePaths = distributionStoreProvenancePaths(env, opts);
+  const expectedProvenancePaths = distributionStoreProvenancePaths(env, opts, !!syncProfile);
   const actualProvenancePaths = input.storeProvenance.flatMap((descriptor) =>
     typeof descriptor === "object" &&
     descriptor !== null &&
@@ -1337,6 +1408,7 @@ function decodeApplyMutation(
     executionPlan: { ...distributePlan, actions },
     configFingerprint: input.configFingerprint,
     capabilityRootProvenance,
+    ...(syncProfile ? { syncProfile } : {}),
   };
 }
 
@@ -1383,10 +1455,55 @@ function decodeCapabilityRootProvenance(
   return parsed;
 }
 
-function distributionStoreProvenancePaths(env: Env, opts: DistributeOptions): string[] {
-  return [join(opts.storeRoot, "config.json"), join(opts.storeRoot, "state.json")]
+function distributionStoreProvenancePaths(
+  env: Env,
+  opts: DistributeOptions,
+  includeSyncProfiles: boolean,
+): string[] {
+  return [
+    join(opts.storeRoot, "config.json"),
+    join(opts.storeRoot, "state.json"),
+    join(opts.storeRoot, "store", "metadata"),
+    ...(includeSyncProfiles ? [syncProfilesPath(opts.storeRoot)] : []),
+  ]
     .map((path) => normalize(isAbsolute(path) ? path : join(env.cwd(), path)))
     .sort((left, right) => left.localeCompare(right));
+}
+
+async function canonicalSyncProfileForDistribution(
+  env: Env,
+  opts: DistributeOptions,
+  profileId: string | undefined,
+): Promise<SyncProfileTargetEvidence | undefined> {
+  if (profileId === undefined) return undefined;
+  const resolved = await resolveCanonicalSyncProfile(env, {
+    storeRoot: opts.storeRoot,
+    profileId,
+  });
+  const actual = {
+    scope: opts.scope,
+    agents: opts.agents,
+    resourceIds: opts.resourceIds,
+    capabilities: opts.capabilities,
+    method: opts.method,
+    mcpStrategy: opts.mcpStrategy,
+    collections: opts.collections,
+    hasProjectDir: opts.dir !== undefined,
+  };
+  const expected = {
+    scope: resolved.profile.desired.scope,
+    agents: resolved.profile.desired.agentIds,
+    resourceIds: resolved.resources.map((resource) => resource.resourceId),
+    capabilities: resolved.profile.desired.capabilities,
+    method: resolved.profile.desired.method,
+    mcpStrategy: resolved.profile.desired.mergePolicy,
+    collections: undefined,
+    hasProjectDir: resolved.profile.desired.scope === "project",
+  };
+  if (canonicalJson(jsonObject(actual)) !== canonicalJson(jsonObject(expected))) {
+    throw new TypeError("sync profile distribution options do not match profiles.json");
+  }
+  return resolved.evidence;
 }
 
 function distributionCapabilityRootPaths(env: Env, opts: DistributeOptions): string[] {
@@ -1438,6 +1555,17 @@ function isExecutableApplyActionSemanticallyValid(
   }
   const artifactIds = action.artifactIds ?? [];
   const storeInputs = action.storeInputs ?? [];
+  const skillResourceId = artifactIds[0];
+  const skillSourceFingerprint = action.desiredEvidence?.sourceFingerprint;
+  const expectedSkillSources =
+    action.capability === "skills" && skillResourceId
+      ? [
+          join(opts.storeRoot, "store", skillResourceId),
+          ...(skillSourceFingerprint
+            ? [resourceRevisionContentPath(opts.storeRoot, skillResourceId, skillSourceFingerprint)]
+            : []),
+        ]
+      : [];
   if (
     (action.capability === "rules" && action.reason !== artifactIds.join(", ")) ||
     (action.capability === "mcp" &&
@@ -1447,7 +1575,7 @@ function isExecutableApplyActionSemanticallyValid(
         action.artifact !== artifactIds[0] ||
         action.reason !== artifactIds[0] ||
         normalize(action.source ?? "") !== action.source ||
-        action.source !== join(opts.storeRoot, "store", artifactIds[0] ?? "")))
+        !expectedSkillSources.includes(action.source ?? "")))
   ) {
     return false;
   }
@@ -1563,8 +1691,11 @@ async function applyAction(
     context.projectRoot,
     sourceSnapshot,
   );
+  const { syncProfile: _priorSyncProfile, ...unboundEntry } = entry;
   return {
-    entry,
+    entry: context.syncProfile
+      ? { ...unboundEntry, syncProfile: context.syncProfile }
+      : unboundEntry,
     ...(snapshotEvidence ? { snapshot: snapshotEvidence } : {}),
     ...(snapshotPath && prior ? { transientSnapshotPath: snapshotPath } : {}),
   };
@@ -1826,6 +1957,30 @@ function actionArtifactIds(action: PlanAction): string[] {
 
 function sameArtifactIds(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((id, index) => id === right[index]);
+}
+
+function isSyncProfileTargetEvidence(value: unknown): value is SyncProfileTargetEvidence {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  if (
+    !hasExactKeys(candidate, ["profileId", "profileRevision", "resolvedResources"]) ||
+    typeof candidate.profileId !== "string" ||
+    !/^[A-Za-z0-9._-]+$/.test(candidate.profileId) ||
+    typeof candidate.profileRevision !== "string" ||
+    !/^sha256:[0-9a-f]{64}$/.test(candidate.profileRevision) ||
+    !Array.isArray(candidate.resolvedResources)
+  ) {
+    return false;
+  }
+  return candidate.resolvedResources.every(
+    (resource) =>
+      hasExactKeys(resource, ["capability", "resourceId", "revision"]) &&
+      typeof resource.resourceId === "string" &&
+      /^(rules|mcp|skills)\/[A-Za-z0-9._-]+$/.test(resource.resourceId) &&
+      typeof resource.revision === "string" &&
+      /^sha256:[0-9a-f]{64}$/.test(resource.revision) &&
+      ["rules", "mcp", "skills"].includes(resource.capability as string),
+  );
 }
 
 function canonicalProjectRoot(env: Env, dir: string): string {

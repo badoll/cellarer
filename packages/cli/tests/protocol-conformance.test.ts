@@ -239,7 +239,75 @@ const commandCases = {
   "operation.show": () => ["operation", "show", "missing-operation"],
   "operation.recover": () => ["operation", "recover", "missing-operation", "--dry-run"],
   plan: () => ["plan", "--agent", "codex", "--rules"],
+  "resource.dependencies": () => ["resource", "dependencies", "rules/missing"],
+  "resource.check": () => ["resource", "check", "rules/missing"],
+  "resource.update": () => ["resource", "update", "rules/missing", "--dry-run"],
+  "resource.rename": () => ["resource", "rename", "rules/missing", "renamed", "--dry-run"],
+  "resource.remove": () => ["resource", "remove", "rules/missing", "--dry-run"],
+  "resource.export": ({ root }) => [
+    "resource",
+    "export",
+    "rules/missing",
+    join(root, "missing.bundle.json"),
+    "--dry-run",
+  ],
+  "resource.import": ({ root }) => [
+    "resource",
+    "import",
+    join(root, "missing.bundle.json"),
+    "--dry-run",
+  ],
+  "profile.list": () => ["profile", "list"],
+  "profile.show": () => ["profile", "show", "missing"],
+  "profile.create": () => [
+    "profile",
+    "create",
+    "conformance",
+    "--desired",
+    profileDesired(),
+    "--dry-run",
+  ],
+  "profile.update": () => [
+    "profile",
+    "update",
+    "missing",
+    "--desired",
+    profileDesired(),
+    "--dry-run",
+  ],
+  "profile.delete": () => ["profile", "delete", "missing", "--dry-run"],
+  "sync.plan": ({ project }) => ["sync", "plan", "missing", "--workspace-root", project],
+  "sync.apply": ({ project }) => [
+    "sync",
+    "apply",
+    "missing",
+    "--workspace-root",
+    project,
+    "--plan",
+    "{}",
+  ],
+  "sync.verify": ({ project }) => ["sync", "verify", "missing", "--workspace-root", project],
+  "sync.uninstall": ({ project }) => [
+    "sync",
+    "uninstall",
+    "missing",
+    "--workspace-root",
+    project,
+    "--dry-run",
+  ],
 } satisfies Record<RegisteredCommand, CommandCase>;
+
+function profileDesired(): string {
+  return JSON.stringify({
+    agentIds: ["codex"],
+    scope: "project",
+    resourceIds: ["rules/missing"],
+    collectionIds: [],
+    capabilities: ["rules"],
+    method: "copy",
+    mergePolicy: "merge",
+  });
+}
 
 describe("CLI command registry protocol conformance", () => {
   let context: TestContext;
@@ -585,6 +653,8 @@ describe("CLI command registry protocol conformance", () => {
     ["scan", "vaultPassphraseFd"],
     ["revert", "snapshotPassphraseFd"],
     ["operation.recover", "snapshotPassphraseFd"],
+    ["sync.plan", "snapshotPassphraseFd"],
+    ["sync.apply", "snapshotPassphraseFd"],
     ["secret.add", "fd"],
     ["secret.add", "passphraseFd"],
     ["secret.ls", "passphraseFd"],

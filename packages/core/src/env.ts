@@ -35,6 +35,39 @@ export interface FileTreeSnapshot {
   readonly nodes: readonly FileTreeSnapshotNode[];
 }
 
+export type RemoteResourceSourceEvidence =
+  | {
+      readonly type: "git";
+      readonly repositoryUrl: string;
+      readonly ref: string;
+      readonly commit: string;
+      readonly subpath: string;
+    }
+  | {
+      readonly type: "url";
+      readonly url: string;
+      readonly integrity: string;
+      readonly validators?: ResourceUrlValidators;
+    };
+
+export interface ResourceUrlValidators {
+  readonly etag?: string;
+  readonly lastModified?: string;
+}
+
+export interface ResourceSourceFetchResult {
+  readonly evidence: RemoteResourceSourceEvidence;
+  readonly nodes: readonly FileTreeSnapshotNode[];
+  readonly cleanup?: () => Promise<void>;
+}
+
+// Network/VCS access is a composition-root capability. Core validates every returned byte and
+// immutable source field; tests inject deterministic fixtures and never need real network access.
+export interface ResourceSourceTransport {
+  check(source: RemoteResourceSourceEvidence): Promise<RemoteResourceSourceEvidence>;
+  fetch(source: RemoteResourceSourceEvidence): Promise<ResourceSourceFetchResult>;
+}
+
 // fs 抽象:只暴露引擎实际用到的最小集合,full real 实现见 createRealEnv。
 export interface FsLike {
   readFile(path: string): Promise<string>;
@@ -184,4 +217,5 @@ export interface Env {
   // Composition must inject this before any executable mutation is planned or accepted. It stays
   // optional at the type boundary so read-only Core services remain usable when authority is absent.
   mutationAuthority?: MutationAuthority;
+  resourceSourceTransport?: ResourceSourceTransport;
 }

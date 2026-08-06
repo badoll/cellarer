@@ -14,7 +14,9 @@ export type MutationOperation =
   | "revert"
   | "settings"
   | "secret-metadata"
-  | "store-import";
+  | "store-import"
+  | "resource-lifecycle"
+  | "sync-uninstall";
 
 export type CanonicalJsonPrimitive = null | boolean | number | string;
 export type CanonicalJsonValue =

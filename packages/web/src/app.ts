@@ -7,15 +7,25 @@
 import {
   type ActivityAction,
   apply,
+  applyResourceBundleImportPlan,
+  applyResourceExportPlan,
+  applyResourceRemovePlan,
+  applyResourceRenamePlan,
+  applyResourceUpdatePlan,
   applyScan,
+  applySyncProfilePlan,
+  applySyncProfileUninstallPlan,
   type Capability,
   type ConflictStrategy,
   ControlPlaneValidationError,
+  checkResourceUpdate,
   collectLedgerSecretRefStats,
   collectLedgerSecretRefs,
+  createSyncProfile,
   type Destination,
   type DiffIdentity,
   dashboardSummary,
+  deleteSyncProfile,
   diffTarget,
   discoverySummaryControlPlane,
   doctor,
@@ -27,8 +37,10 @@ import {
   listMcpArtifacts,
   listRuleArtifacts,
   listSkillArtifacts,
+  listSyncProfiles,
   loadConfig,
   loadLedger,
+  type MutationPlan,
   mutateAgentAdapter,
   mutateBuiltinAgent,
   mutateCollection,
@@ -43,16 +55,29 @@ import {
   parseCollectionUpdateMutationBody,
   parseControlPlaneSettingsMutationBody,
   planApplyMutation,
+  planAvailableResourceUpdate,
+  planResourceBundleImport,
+  planResourceExport,
+  planResourceRemove,
+  planResourceRename,
+  planSyncProfile,
+  planSyncProfileUninstall,
+  resourceDependencyReport,
   revert,
   type ScanSelection,
   type Scope,
   StoreMutationConflictError,
+  type SyncProfileDesiredState,
   scanPlan,
   serializeSafeObservable,
   serializeSafeWebObservable,
   settingsSummary,
+  showSyncProfile,
   status,
+  updateSyncProfile,
+  validateResourceBundle,
   verifyControlPlane,
+  verifySyncProfile,
 } from "@cellarer/core";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -135,6 +160,67 @@ interface DiffBody {
   identity: DiffIdentity;
   dir?: string;
   collections?: string[];
+}
+
+interface ResourceIdBody {
+  resourceId: string;
+}
+
+interface ResourceRenameBody extends ResourceIdBody {
+  newName: string;
+  mode: "rename" | "local-fork";
+  mutationPlan?: MutationPlan;
+  dryRun?: boolean;
+}
+
+interface ResourceRemoveBody extends ResourceIdBody {
+  cascade: boolean;
+  mutationPlan?: MutationPlan;
+  dryRun?: boolean;
+}
+
+interface ResourceExportBody extends ResourceIdBody {
+  bundlePath: string;
+  mutationPlan?: MutationPlan;
+  dryRun?: boolean;
+}
+
+interface ResourceBundleBody {
+  bundlePath: string;
+  mutationPlan?: MutationPlan;
+  dryRun?: boolean;
+}
+
+interface ResourceUpdateApplyBody {
+  mutationPlan: MutationPlan;
+}
+
+interface ProfileMutationBody {
+  profileId: string;
+  desired: SyncProfileDesiredState;
+  dryRun?: boolean;
+}
+
+interface ProfileUpdateBody {
+  desired: SyncProfileDesiredState;
+  dryRun?: boolean;
+}
+
+interface ProfileInvocationBody {
+  workspaceRoot?: string;
+  replaceUnowned?: string[];
+  overrideDrift?: string[];
+  snapshotPassphrase?: string;
+}
+
+interface ProfileApplyBody extends ProfileInvocationBody {
+  mutationPlan: MutationPlan;
+}
+
+interface ProfileUninstallBody extends ProfileInvocationBody {
+  mutationPlan?: MutationPlan;
+  acknowledgements?: string[];
+  dryRun?: boolean;
 }
 
 // project scope 必须带 dir,否则 core 会以 server cwd 为工程根,把文件写进进程启动目录(且无 .gitignore 守护)。
@@ -355,11 +441,28 @@ function activityFilter(query: (name: string) => string | undefined) {
   };
 }
 
+function profileInvocationOpts(deps: AppDeps, profileId: string, body: ProfileInvocationBody) {
+  return {
+    storeRoot: deps.storeRoot,
+    profileId,
+    workspaceRoot: body.workspaceRoot,
+    replaceUnowned: body.replaceUnowned,
+    overrideDrift: body.overrideDrift,
+    snapshotPassphrase: body.snapshotPassphrase,
+    secretMode: "env" as const,
+  };
+}
+
 export function createApp(inputDeps: AppDeps) {
   const { secretStore: _secretStore, ...webEnv } = inputDeps.env;
   const deps: AppDeps = { ...inputDeps, env: webEnv };
   const app = new Hono();
   const responseKnownValueSources = new WeakMap<Response, object>();
+  const responseCorePayloads = new WeakMap<Response, object>();
+  const withCorePayload = <T>(response: T, payload: object): T => {
+    responseCorePayloads.set(response as Response, payload);
+    return response;
+  };
 
   // 统一错误处理:HTTPException 按其状态码;其余(如 JSON 解析失败、core 抛错)→ 400 JSON,不裸 500/栈。
   app.onError((err, c) => {
@@ -402,11 +505,17 @@ export function createApp(inputDeps: AppDeps) {
       .catch(() => undefined);
     if (payload === undefined) return;
     const headers = new Headers(c.res.headers);
-    const serialized = await serializeSafeWebObservable(deps.env, deps.storeRoot, payload, {
-      knownValueSources: [responseKnownValueSources.get(c.res)].filter(
-        (source): source is object => source !== undefined,
-      ),
-    });
+    const observablePayload = responseCorePayloads.get(c.res) ?? payload;
+    const serialized = await serializeSafeWebObservable(
+      deps.env,
+      deps.storeRoot,
+      observablePayload,
+      {
+        knownValueSources: [responseKnownValueSources.get(c.res)].filter(
+          (source): source is object => source !== undefined,
+        ),
+      },
+    );
     c.res = new Response(serialized, {
       status: c.res.status,
       statusText: c.res.statusText,
@@ -645,6 +754,185 @@ export function createApp(inputDeps: AppDeps) {
           mcpStrategy: opts.mcpStrategy,
         }),
       );
+    })
+    .post("/api/resource-lifecycle/dependencies", async (c) => {
+      const body = await c.req.json<ResourceIdBody>();
+      return c.json(
+        await resourceDependencyReport(deps.env, {
+          storeRoot: deps.storeRoot,
+          resourceId: body.resourceId,
+        }),
+      );
+    })
+    .post("/api/resource-lifecycle/check", async (c) => {
+      const body = await c.req.json<ResourceIdBody>();
+      return c.json(
+        await checkResourceUpdate(deps.env, {
+          storeRoot: deps.storeRoot,
+          resourceId: body.resourceId,
+        }),
+      );
+    })
+    .post("/api/resource-lifecycle/update/plan", async (c) => {
+      const body = await c.req.json<ResourceIdBody>();
+      const payload = await planAvailableResourceUpdate(deps.env, {
+        storeRoot: deps.storeRoot,
+        resourceId: body.resourceId,
+      });
+      return withCorePayload(c.json(payload), payload);
+    })
+    .post("/api/resource-lifecycle/update/apply", async (c) => {
+      const body = await c.req.json<ResourceUpdateApplyBody>();
+      const payload = await applyResourceUpdatePlan(deps.env, body.mutationPlan, {
+        storeRoot: deps.storeRoot,
+      });
+      return withCorePayload(c.json(payload), payload);
+    })
+    .post("/api/resource-lifecycle/rename", async (c) => {
+      const body = await c.req.json<ResourceRenameBody>();
+      const options = {
+        storeRoot: deps.storeRoot,
+        resourceId: body.resourceId,
+        newName: body.newName,
+        mode: body.mode,
+      };
+      const planned = await planResourceRename(deps.env, options);
+      if (body.dryRun) return withCorePayload(c.json(planned), planned);
+      const payload = await applyResourceRenamePlan(deps.env, body.mutationPlan ?? planned.plan, {
+        storeRoot: deps.storeRoot,
+        options,
+      });
+      return withCorePayload(c.json(payload), payload);
+    })
+    .post("/api/resource-lifecycle/remove", async (c) => {
+      const body = await c.req.json<ResourceRemoveBody>();
+      const options = {
+        storeRoot: deps.storeRoot,
+        resourceId: body.resourceId,
+        cascade: body.cascade,
+      };
+      const planned = await planResourceRemove(deps.env, options);
+      if (body.dryRun) return withCorePayload(c.json(planned), planned);
+      const payload = await applyResourceRemovePlan(deps.env, body.mutationPlan ?? planned.plan, {
+        storeRoot: deps.storeRoot,
+        options,
+      });
+      return withCorePayload(c.json(payload), payload);
+    })
+    .post("/api/resource-lifecycle/export", async (c) => {
+      const body = await c.req.json<ResourceExportBody>();
+      const options = {
+        storeRoot: deps.storeRoot,
+        resourceId: body.resourceId,
+        bundlePath: body.bundlePath,
+      };
+      const planned = await planResourceExport(deps.env, options);
+      if (body.dryRun) return withCorePayload(c.json(planned), planned);
+      const payload = await applyResourceExportPlan(deps.env, body.mutationPlan ?? planned.plan, {
+        storeRoot: deps.storeRoot,
+        options,
+      });
+      return withCorePayload(c.json(payload), payload);
+    })
+    .post("/api/resource-lifecycle/bundle/validate", async (c) => {
+      const body = await c.req.json<ResourceBundleBody>();
+      return c.json(await validateResourceBundle(deps.env, { bundlePath: body.bundlePath }));
+    })
+    .post("/api/resource-lifecycle/import", async (c) => {
+      const body = await c.req.json<ResourceBundleBody>();
+      const options = { storeRoot: deps.storeRoot, bundlePath: body.bundlePath };
+      const planned = await planResourceBundleImport(deps.env, options);
+      if (body.dryRun) return withCorePayload(c.json(planned), planned);
+      const payload = await applyResourceBundleImportPlan(
+        deps.env,
+        body.mutationPlan ?? planned.plan,
+        {
+          storeRoot: deps.storeRoot,
+          options,
+        },
+      );
+      return withCorePayload(c.json(payload), payload);
+    })
+    .get("/api/profiles", async (c) => {
+      return c.json({ profiles: await listSyncProfiles(deps.env, { storeRoot: deps.storeRoot }) });
+    })
+    .get("/api/profiles/:id", async (c) => {
+      return c.json(
+        await showSyncProfile(deps.env, {
+          storeRoot: deps.storeRoot,
+          profileId: c.req.param("id"),
+        }),
+      );
+    })
+    .post("/api/profiles", async (c) => {
+      const body = await c.req.json<ProfileMutationBody>();
+      const payload = await createSyncProfile(deps.env, {
+        storeRoot: deps.storeRoot,
+        profileId: body.profileId,
+        desired: body.desired,
+        dryRun: body.dryRun,
+      });
+      return withCorePayload(c.json(payload), payload);
+    })
+    .put("/api/profiles/:id", async (c) => {
+      const body = await c.req.json<ProfileUpdateBody>();
+      const payload = await updateSyncProfile(deps.env, {
+        storeRoot: deps.storeRoot,
+        profileId: c.req.param("id"),
+        desired: body.desired,
+        dryRun: body.dryRun,
+      });
+      return withCorePayload(c.json(payload), payload);
+    })
+    .delete("/api/profiles/:id", async (c) => {
+      const payload = await deleteSyncProfile(deps.env, {
+        storeRoot: deps.storeRoot,
+        profileId: c.req.param("id"),
+        dryRun: parseOptionalBoolean(c.req.query("dryRun"), "dryRun"),
+      });
+      return withCorePayload(c.json(payload), payload);
+    })
+    .post("/api/sync/profiles/:id/plan", async (c) => {
+      const body = await c.req.json<ProfileInvocationBody>();
+      const payload = await planSyncProfile(
+        deps.env,
+        profileInvocationOpts(deps, c.req.param("id"), body),
+      );
+      return withCorePayload(c.json(payload), payload);
+    })
+    .post("/api/sync/profiles/:id/apply", async (c) => {
+      const body = await c.req.json<ProfileApplyBody>();
+      const payload = await applySyncProfilePlan(
+        deps.env,
+        body.mutationPlan,
+        profileInvocationOpts(deps, c.req.param("id"), body),
+      );
+      return withCorePayload(c.json(payload), payload);
+    })
+    .post("/api/sync/profiles/:id/verify", async (c) => {
+      const body = await c.req.json<ProfileInvocationBody>();
+      return c.json(
+        await verifySyncProfile(deps.env, profileInvocationOpts(deps, c.req.param("id"), body)),
+      );
+    })
+    .post("/api/sync/profiles/:id/uninstall", async (c) => {
+      const body = await c.req.json<ProfileUninstallBody>();
+      const options = profileInvocationOpts(deps, c.req.param("id"), body);
+      const planned = await planSyncProfileUninstall(deps.env, {
+        ...options,
+        acknowledgements: body.acknowledgements,
+      });
+      if (body.dryRun) return withCorePayload(c.json(planned), planned);
+      const payload = await applySyncProfileUninstallPlan(
+        deps.env,
+        body.mutationPlan ?? planned.mutationPlan,
+        {
+          ...options,
+          targetKeys: planned.targetKeys,
+          acknowledgements: body.acknowledgements,
+        },
+      );
+      return withCorePayload(c.json(payload), payload);
     })
     .get("/api/settings", async (c) => {
       return c.json(await settingsSummary(deps.env, { storeRoot: deps.storeRoot }));

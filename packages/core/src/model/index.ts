@@ -111,7 +111,11 @@ export interface TargetOwnershipEvidence {
   expectedReceipt: AppliedReceipt | null;
 }
 
-export type TargetAcknowledgementKind = "replace-unowned" | "override-drift" | "revert-drift";
+export type TargetAcknowledgementKind =
+  | "replace-unowned"
+  | "override-drift"
+  | "revert-drift"
+  | "uninstall-drift";
 
 export interface TargetAcknowledgement {
   kind: TargetAcknowledgementKind;
@@ -152,6 +156,16 @@ export interface AppliedReceipt {
   appliedAt: string;
 }
 
+export interface SyncProfileTargetEvidence {
+  profileId: string;
+  profileRevision: string;
+  resolvedResources: Array<{
+    resourceId: string;
+    revision: string;
+    capability: Capability;
+  }>;
+}
+
 // state.json v2 以物理目标而非输入制品为 owner 身份。artifactIds 只记录该目标的来源集合。
 export interface TargetOwner {
   agent: string;
@@ -162,6 +176,7 @@ export interface TargetOwner {
   // It is required for project scope and absent for global scope.
   projectRoot?: string;
   artifactIds: string[];
+  syncProfile?: SyncProfileTargetEvidence;
   receipt: AppliedReceipt;
   secretRefs?: string[];
 }

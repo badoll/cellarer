@@ -298,6 +298,16 @@ async function isDurableRecoveryAuthorized(
       "scan-rules",
       "scan-skills",
     ],
+    "resource-lifecycle": [
+      "install-resource-content",
+      "preserve-file",
+      "publish-file",
+      "publish-resource-metadata",
+      "remove-resource-path",
+      "rename-resource-content",
+      "write-resource-bundle",
+    ],
+    "sync-uninstall": ["remove-target", "sync-gitignore"],
   };
   if (
     journal.plan.actions.some(
@@ -314,6 +324,15 @@ async function isDurableRecoveryAuthorized(
     // originating add/scan request, selected target, or payload. A self-consistent journal is
     // integrity evidence only, so interrupted imports remain manual-only before recovery claims,
     // target observation, providers, or effects.
+    return false;
+  }
+  if (
+    journal.plan.operation === "resource-lifecycle" ||
+    journal.plan.operation === "sync-uninstall"
+  ) {
+    // Lifecycle plans carry caller-bound business inputs only in the executable plan. Durable
+    // journals deliberately retain digests, so interrupted effects require explicit evidence-led
+    // reconciliation instead of reconstructing authority from attacker-replayable Store bytes.
     return false;
   }
   if (journal.plan.operation === "settings") {

@@ -313,6 +313,77 @@ node packages/cli/dist/bin.js resource show rules/team-rules
 `resource show` 支持相同查询选项,并要求一个类似 `rules/team-rules` 的不可变 resource
 ID。单独 name 只能用于只读过滤,绝不能作为 mutation identity。
 
+### 资源生命周期
+
+生命周期 mutation 始终使用不可变 resource ID。创建 mutation plan 前先检查依赖和
+source evidence:
+
+```bash
+node packages/cli/dist/bin.js resource dependencies rules/team-rules
+node packages/cli/dist/bin.js resource check rules/team-rules
+node packages/cli/dist/bin.js --output json resource rename \
+  rules/team-rules team-rules-v2 --dry-run
+node packages/cli/dist/bin.js --output json resource remove \
+  rules/team-rules --cascade --dry-run
+node packages/cli/dist/bin.js --output json resource export \
+  rules/team-rules /tmp/team-rules.cellarer.json --dry-run
+node packages/cli/dist/bin.js --output json resource import \
+  /tmp/team-rules.cellarer.json --dry-run
+```
+
+`resource check` 只读。Local snapshot 仍可使用,但会返回 `uncheckable` 和
+`no-verifiable-remote-source`;cellarer 不会为 legacy 内容虚构远程 provenance。内置 CLI
+只会在显式执行 `resource check` 或 `resource update` 时调用网络或 Git。Git evidence
+绑定完整 repository URL、ref、resolved commit 与 subpath;staging 会 checkout 该 ref,
+若 commit 已移动则拒绝。URL check 拒绝 redirect,绑定 content integrity 与可用的
+ETag/Last-Modified validators;staging 使用这些 validators 做条件请求,然后再次验证
+integrity。支持 direct file 与仅包含普通文件/目录的安全 tar archive;不安全 archive
+entry 会 fail closed。Lifecycle error 不复制 source URL、命令 stderr 或 response body。
+
+`resource update <id> --dry-run` 会 check、私有 staging、
+validate、scan,并返回绑定候选内容的 update plan。再以
+`--plan '<data.plan JSON>'` 应用该 exact staged revision 到 Store。Store update 不会下发
+agent targets;下发必须另建 sync plan。
+
+各生命周期 verb 有意保持分离:
+
+- `resource remove` 只在精确依赖检查后删除 Store 内容。
+- `sync uninstall` 只删除 profile 选中的 intact owned targets,保留 profile 和 Store
+  resources。
+- `revert` 恢复历史 target operation 记录的 before-state。
+- `resource rename` 对可编辑 metadata 保留不可变 ID;source-defined identity 会变化时
+  必须显式使用 `--local-fork`。
+- `resource export` 生成可验证的 reference-only bundle,不包含 vault values、绝对本机
+  路径、journals、snapshots 或 ownership records。
+
+### `profile` 与基于 profile 的 `sync`
+
+Profile 保存精确 agent IDs、resource/collection IDs、capabilities、scope、placement
+method 与 merge policy。它绝不保存 secrets、绝对 project paths 或持久化的
+force/drift acknowledgements。
+
+```bash
+node packages/cli/dist/bin.js profile create project-team --desired \
+  '{"agentIds":["codex","claude-code"],"scope":"project","resourceIds":["rules/team-rules"],"collectionIds":[],"capabilities":["rules"],"method":"copy","mergePolicy":"merge"}'
+node packages/cli/dist/bin.js profile list
+node packages/cli/dist/bin.js profile show project-team
+node packages/cli/dist/bin.js --output json sync plan project-team \
+  --workspace-root /workspace/app
+node packages/cli/dist/bin.js --output json sync apply project-team \
+  --workspace-root /workspace/app --plan '<data.mutationPlan JSON>'
+node packages/cli/dist/bin.js sync verify project-team \
+  --workspace-root /workspace/app
+node packages/cli/dist/bin.js --output json sync uninstall project-team \
+  --workspace-root /workspace/app --dry-run
+```
+
+用 `profile update <id> --desired '<JSON>'` 替换 desired state,用
+`profile delete <id> [--dry-run]` 删除 profile 文档。Project-scoped profile 的每次
+`sync plan|apply|verify|uninstall` 调用都必须显式传入
+`--workspace-root <absolute-path>`;不会静默使用 process working directory。
+`--replace-unowned`、`--override-drift` 与 uninstall `--acknowledge` tokens 都只属于
+当前 invocation 并绑定 plan,不会持久化到 profile。
+
 ### `agent list|show|enable|disable|configure|reset|add|update|remove`
 
 ```bash

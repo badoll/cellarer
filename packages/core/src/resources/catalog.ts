@@ -6,15 +6,14 @@ import { status } from "../engine/status.js";
 import type { DriftStatus, StatusItem } from "../engine/types.js";
 import type { Env } from "../env.js";
 import type { Capability, Collection, Scope } from "../model/index.js";
-import { scanTextForSecrets } from "../secrets/detector.js";
 import { loadConfig } from "../store/config.js";
 import { loadLedger } from "../store/ledger.js";
+import { listMcpArtifacts, listRuleArtifacts, listSkillArtifacts } from "../store/store.js";
 import {
-  listMcpArtifacts,
-  listRuleArtifacts,
-  listSkillArtifacts,
-  skillProvenancePath,
-} from "../store/store.js";
+  loadResourceRecord,
+  type ResourceRevision,
+  type ResourceSourceDescriptor,
+} from "./model.js";
 
 export type ResourceState = "managed" | "discovered" | "synced" | "drifted" | "missing" | "blocked";
 
@@ -36,12 +35,8 @@ export interface ResourceCatalogItem {
   state: ResourceState;
   collections: Collection[];
   sourcePath?: string;
-  provenance?: {
-    source?: string;
-    resolvedUrl?: string;
-    ref?: string | null;
-    commit?: string | null;
-  };
+  currentRevision?: ResourceRevision;
+  provenance?: ResourceSourceDescriptor;
   discovered?: {
     agent: string;
     destination: Destination;
@@ -112,9 +107,16 @@ export async function resourceCatalog(
   }
 
   const allArtifacts = [...ruleArtifacts, ...mcpArtifacts, ...skillArtifacts];
-  const filteredArtifacts = allArtifacts.filter((artifact) => {
-    if (opts.kind && artifact.kind !== opts.kind) return false;
-    const collections = config.artifacts[artifact.id]?.collections ?? [];
+  const artifactsWithRecords = await Promise.all(
+    allArtifacts
+      .filter((artifact) => !opts.kind || artifact.kind === opts.kind)
+      .map(async (artifact) => ({
+        artifact,
+        record: await loadResourceRecord(env, opts.storeRoot, artifact),
+      })),
+  );
+  const filteredArtifacts = artifactsWithRecords.filter(({ record }) => {
+    const collections = config.artifacts[record.resourceId]?.collections ?? [];
     if (opts.collections && opts.collections.length > 0) {
       return inCollections(collections, opts.collections);
     }
@@ -122,10 +124,10 @@ export async function resourceCatalog(
   });
 
   const resources: ResourceCatalogItem[] = [];
-  for (const artifact of filteredArtifacts) {
-    const collections = config.artifacts[artifact.id]?.collections ?? [];
+  for (const { artifact, record } of filteredArtifacts) {
+    const collections = config.artifacts[record.resourceId]?.collections ?? [];
     const syncTargets = statusItems
-      .filter((item) => statusMatchesArtifact(item, artifact.id))
+      .filter((item) => statusMatchesArtifact(item, record.resourceId))
       .map((item) => ({
         agent: item.agent,
         destination: scopeToDestination(item.scope),
@@ -138,19 +140,17 @@ export async function resourceCatalog(
     for (const target of syncTargets) counts[target.state] += 1;
 
     resources.push({
-      id: artifact.id,
-      kind: artifact.kind,
-      name: artifact.name,
+      id: record.resourceId,
+      kind: record.kind,
+      name: record.name,
       state: "managed",
       collections,
       sourcePath: artifact.sourcePath,
-      provenance:
-        artifact.kind === "skills"
-          ? await readSkillProvenance(env, opts.storeRoot, artifact.name)
-          : undefined,
+      currentRevision: record.currentRevision,
+      provenance: record.currentRevision.source,
       syncTargets,
-      secretRefs: collectArtifactSecretRefs(ledger.owners, artifact.id),
-      lastActivityAt: lastActivityByArtifact.get(artifact.id),
+      secretRefs: collectArtifactSecretRefs(ledger.owners, record.resourceId),
+      lastActivityAt: lastActivityByArtifact.get(record.resourceId),
     });
   }
 
@@ -302,36 +302,4 @@ function statusToResourceState(
   if (status === "ok") return "synced";
   if (status === "broken-link") return "missing";
   return status;
-}
-
-async function readSkillProvenance(
-  env: Env,
-  storeRoot: string,
-  name: string,
-): Promise<ResourceCatalogItem["provenance"] | undefined> {
-  const path = skillProvenancePath(storeRoot, name);
-  try {
-    const raw = await env.fs.readFile(path);
-    const parsed = JSON.parse(raw) as {
-      source?: string;
-      resolvedUrl?: string;
-      ref?: string | null;
-      commit?: string | null;
-    };
-    return {
-      source: sanitizeOptionalString(parsed.source),
-      resolvedUrl: sanitizeOptionalString(parsed.resolvedUrl),
-      ref: parsed.ref ?? null,
-      commit: parsed.commit ?? null,
-    };
-  } catch (err) {
-    const code = (err as { code?: string } | null)?.code;
-    if (code === "ENOENT" || code === "ENOTDIR") return undefined;
-    throw err;
-  }
-}
-
-function sanitizeOptionalString(value: string | undefined): string | undefined {
-  if (!value) return value;
-  return scanTextForSecrets(value).length > 0 ? "[redacted secret]" : value;
 }

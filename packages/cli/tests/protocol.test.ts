@@ -505,6 +505,22 @@ describe("agent CLI protocol foundation", () => {
       "operation.show",
       "operation.recover",
       "plan",
+      "resource.dependencies",
+      "resource.check",
+      "resource.update",
+      "resource.rename",
+      "resource.remove",
+      "resource.export",
+      "resource.import",
+      "profile.list",
+      "profile.show",
+      "profile.create",
+      "profile.update",
+      "profile.delete",
+      "sync.plan",
+      "sync.apply",
+      "sync.verify",
+      "sync.uninstall",
     ]);
 
     const schemaIds = new Set<string>();

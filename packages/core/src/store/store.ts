@@ -7,6 +7,12 @@ import { linkOrCopy } from "../fs/linkOrCopy.js";
 import { lstatOrNull, readdirOrEmpty, readFileOrNull } from "../fs/probe.js";
 import { type McpServer, serverFromRaw, serverToRaw } from "../mcp/model.js";
 import type { Artifact } from "../model/index.js";
+import {
+  parseResourceRecord,
+  type ResourceRecord,
+  resolveCurrentResourceArtifact,
+  resourceMetadataPath,
+} from "../resources/model.js";
 import { assertFinalSerializedSecretBytes } from "../secrets/final-bytes.js";
 import { observableKnownValues } from "../secrets/observable.js";
 import { captureSafeRecursiveSource, UnsafeRecursiveSourceError } from "../secrets/safe-tree.js";
@@ -62,13 +68,17 @@ export async function listRuleArtifacts(env: Env, storeRoot: string): Promise<Ar
     .filter((f) => f.endsWith(".md"))
     .map((f) => f.slice(0, -".md".length))
     .sort((a, b) => a.localeCompare(b));
-  return names.map((name) => ({
-    id: `rules/${name}`,
-    kind: "rules",
-    name,
-    sourcePath: join(dir, `${name}.md`),
-    collections: [],
-  }));
+  return attachImmutableResourceIds(
+    env,
+    storeRoot,
+    names.map((name) => ({
+      id: `rules/${name}`,
+      kind: "rules",
+      name,
+      sourcePath: join(dir, `${name}.md`),
+      collections: [],
+    })),
+  );
 }
 
 // 读取单个 rule 制品为 fragment(relPath 相对 store/,POSIX 化交由 markers 处理)。
@@ -95,13 +105,17 @@ export async function listMcpArtifacts(env: Env, storeRoot: string): Promise<Art
     .filter((f) => f.endsWith(".json"))
     .map((f) => f.slice(0, -".json".length))
     .sort((a, b) => a.localeCompare(b));
-  return names.map((name) => ({
-    id: `mcp/${name}`,
-    kind: "mcp",
-    name,
-    sourcePath: join(dir, `${name}.json`),
-    collections: [],
-  }));
+  return attachImmutableResourceIds(
+    env,
+    storeRoot,
+    names.map((name) => ({
+      id: `mcp/${name}`,
+      kind: "mcp",
+      name,
+      sourcePath: join(dir, `${name}.json`),
+      collections: [],
+    })),
+  );
 }
 
 // 读取单个 mcp 制品:库房 JSON 文件 → canonical server。
@@ -136,15 +150,36 @@ export async function listSkillArtifacts(env: Env, storeRoot: string): Promise<A
   // 并行 lstat(用 lstatOrNull 收敛「不存在→null」,与项目数据安全约定一致);仅目录算 skill。
   const stats = await Promise.all(entries.map((name) => lstatOrNull(env, join(dir, name))));
   const names = entries
-    .filter((_, i) => stats[i]?.isDirectory())
+    .filter((name, i) => name !== ".cellarer-revisions" && stats[i]?.isDirectory())
     .sort((a, b) => a.localeCompare(b));
-  return names.map((name) => ({
-    id: `skills/${name}`,
-    kind: "skills",
-    name,
-    sourcePath: join(dir, name),
-    collections: [],
-  }));
+  return attachImmutableResourceIds(
+    env,
+    storeRoot,
+    names.map((name) => ({
+      id: `skills/${name}`,
+      kind: "skills",
+      name,
+      sourcePath: join(dir, name),
+      collections: [],
+    })),
+  );
+}
+
+async function attachImmutableResourceIds(
+  env: Env,
+  storeRoot: string,
+  artifacts: Artifact[],
+): Promise<Artifact[]> {
+  return Promise.all(
+    artifacts.map(async (artifact) => {
+      const current = await resolveCurrentResourceArtifact(env, storeRoot, artifact);
+      return {
+        ...current.artifact,
+        id: current.record.resourceId,
+        name: current.record.name,
+      };
+    }),
+  );
 }
 
 // —— 扫描回写(M3):写入库房制品。文件名安全(防路径穿越);内容已脱敏由调用方保证。 ——
@@ -215,18 +250,21 @@ export async function importSkillArtifact(
 }
 
 export function skillProvenancePath(storeRoot: string, name: string): string {
-  assertSafeName(name);
-  return join(skillMetadataDir(storeRoot), `${name}.json`);
+  return resourceMetadataPath(storeRoot, "skills", name);
 }
 
 export async function writeSkillProvenance(
   env: Env,
   storeRoot: string,
   name: string,
-  provenance: unknown,
+  provenance: ResourceRecord,
 ): Promise<string> {
   const abs = skillProvenancePath(storeRoot, name);
-  const serialized = `${JSON.stringify(provenance, null, 2)}\n`;
+  const validated = parseResourceRecord(provenance);
+  if (validated.kind !== "skills" || validated.name !== name) {
+    throw new TypeError("skill provenance identity does not match target");
+  }
+  const serialized = `${JSON.stringify(validated, null, 2)}\n`;
   assertFinalSerializedSecretBytes(serialized, observableKnownValues(env), abs);
   await env.fs.mkdir(skillMetadataDir(storeRoot), { recursive: true });
   await atomicWrite(env, abs, serialized);

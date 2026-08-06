@@ -299,6 +299,7 @@ describe("control-plane agent and config mutation commands", () => {
     }
   });
 
+  // This real transaction must finish before fixture teardown; Vitest timeouts do not cancel it.
   it("dry-runs and applies exact collection mutations with receipts", async () => {
     await fs.writeFile(join(storeRoot, "store", "rules", "style.md"), "# style\n", "utf8");
     const configPath = join(storeRoot, "config.json");
@@ -347,7 +348,7 @@ describe("control-plane agent and config mutation commands", () => {
       status: "error",
       error: { code: "DOMAIN_VALIDATION_FAILED" },
     });
-  });
+  }, 30_000);
 
   it("requires exact non-interactive init targets and returns inventory without writing", async () => {
     const missingTargetStore = join(root, "missing-target-store");

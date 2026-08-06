@@ -131,6 +131,7 @@ export async function planStorePublicationMutation<T>(
   mutationKind: string,
   prepare: () => Promise<PreparedStorePublicationMutation<T>>,
   bindings: StoreMutationPlanBindings = {},
+  execution: { readonly authorityLease?: MutationAuthorityLease } = {},
 ): Promise<StorePublicationMutationPlan<T>> {
   return planStoreActionMutation(
     env,
@@ -142,6 +143,7 @@ export async function planStorePublicationMutation<T>(
       return { value: prepared.value, actions: [], publications: prepared.publications };
     },
     bindings,
+    execution,
   );
 }
 
@@ -152,12 +154,15 @@ export async function planStoreActionMutation<T>(
   mutationKind: string,
   prepare: () => Promise<PreparedStoreActionMutation<T>>,
   bindings: StoreMutationPlanBindings = {},
+  execution: { readonly authorityLease?: MutationAuthorityLease } = {},
 ): Promise<StorePublicationMutationPlan<T>> {
   requireMutationAuthority(env);
-  const authorityLease = await acquireCurrentMutationAuthorityLease(env).catch(() => null);
+  const suppliedLease = execution.authorityLease;
+  const authorityLease =
+    suppliedLease ?? (await acquireCurrentMutationAuthorityLease(env).catch(() => null));
   if (!authorityLease) throw new TypeError("mutation authority is not current");
   if (!(await authorityLease.isCurrent().catch(() => false))) {
-    await authorityLease.release().catch(() => undefined);
+    if (!suppliedLease) await authorityLease.release().catch(() => undefined);
     throw new TypeError("mutation authority is not current");
   }
   try {
@@ -171,7 +176,7 @@ export async function planStoreActionMutation<T>(
     );
     return { value: prepared.prepared.value, plan: prepared.plan };
   } finally {
-    await authorityLease.release();
+    if (!suppliedLease) await authorityLease.release();
   }
 }
 
@@ -521,6 +526,7 @@ export async function applyStorePublicationPlan(
       plan: MutationPlan,
       publication: StorePublicationInput,
     ) => Promise<OperationResult | null>;
+    readonly authorityLease?: MutationAuthorityLease;
   },
 ): Promise<AppliedStorePublicationPlan> {
   try {
@@ -538,9 +544,11 @@ export async function applyStorePublicationPlan(
   if (!decoded) return { plan, changedFields: [], operation: invalidPlanResult() };
   options.validatePublicationData?.(decoded.data);
 
-  const authorityLease = await acquireCurrentMutationAuthorityLease(env).catch(() => null);
+  const suppliedLease = options.authorityLease;
+  const authorityLease =
+    suppliedLease ?? (await acquireCurrentMutationAuthorityLease(env).catch(() => null));
   if (!authorityLease || !(await authorityLease.isCurrent().catch(() => false))) {
-    await authorityLease?.release().catch(() => undefined);
+    if (authorityLease && !suppliedLease) await authorityLease.release().catch(() => undefined);
     return { plan, changedFields: [], operation: invalidPlanResult() };
   }
   try {
@@ -621,7 +629,7 @@ export async function applyStorePublicationPlan(
     );
     return { plan, changedFields: decoded.changedFields, operation };
   } finally {
-    await authorityLease.release();
+    if (!suppliedLease) await authorityLease.release();
   }
 }
 

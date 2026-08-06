@@ -315,6 +315,7 @@ describe("apply external plan boundary", () => {
     await expect(fs.readFile(join(project, "AGENTS.md"), "utf8")).resolves.toContain("Boundary");
   });
 
+  // Vitest timeouts do not cancel this real transaction; let it finish before fixture teardown.
   it("reads one vault passphrase after preflight when a serialized plan requires a cellarer reference", async () => {
     const project = join(root, "vault-project");
     await fs.mkdir(join(storeRoot, "store", "mcp"), { recursive: true });
@@ -374,7 +375,7 @@ describe("apply external plan boundary", () => {
     const target = await fs.readFile(join(project, ".reference-native", "mcp.json"), "utf8");
     expect(target).toContain("$" + "{CELLARER_SECRET:CTX_TOKEN}");
     expect(target).not.toContain("vault-only-secret");
-  });
+  }, 30_000);
 
   it("does not read a vault passphrase for an environment-only reference", async () => {
     const project = join(root, "environment-project");

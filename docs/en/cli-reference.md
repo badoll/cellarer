@@ -344,6 +344,81 @@ node packages/cli/dist/bin.js resource show rules/team-rules
 resource ID such as `rules/team-rules`; a name alone is only a read filter and
 is never a mutation identity.
 
+### Resource lifecycle
+
+Lifecycle mutations always use the immutable resource ID. Inspect dependencies
+and source evidence before creating a mutation plan:
+
+```bash
+node packages/cli/dist/bin.js resource dependencies rules/team-rules
+node packages/cli/dist/bin.js resource check rules/team-rules
+node packages/cli/dist/bin.js --output json resource rename \
+  rules/team-rules team-rules-v2 --dry-run
+node packages/cli/dist/bin.js --output json resource remove \
+  rules/team-rules --cascade --dry-run
+node packages/cli/dist/bin.js --output json resource export \
+  rules/team-rules /tmp/team-rules.cellarer.json --dry-run
+node packages/cli/dist/bin.js --output json resource import \
+  /tmp/team-rules.cellarer.json --dry-run
+```
+
+`resource check` is read-only. A local snapshot remains usable but returns
+`uncheckable` with `no-verifiable-remote-source`; cellarer never invents remote
+provenance for legacy content. The built-in CLI invokes network or Git only for
+an explicit `resource check` or `resource update`. Git evidence binds the full
+repository URL, ref, resolved commit, and subpath; staging checks out the ref and
+rejects it if the commit moved. URL checks reject redirects, bind content
+integrity plus available ETag/Last-Modified validators, and staging uses those
+validators conditionally before verifying integrity again. Direct files and
+safe regular-file/directory tar archives are supported; unsafe archive entries
+fail closed. Source URLs, command stderr, and response bodies are not copied
+into lifecycle errors.
+
+`resource update <id> --dry-run` checks, privately stages, validates, scans, and
+returns a pinned update plan. Re-run it with
+`--plan '<data.plan JSON>'` to apply that exact staged revision to the Store.
+Store update does not distribute agent targets; run a separate sync plan.
+
+The lifecycle verbs are intentionally separate:
+
+- `resource remove` removes Store content only after exact dependency checks.
+- `sync uninstall` removes only intact owned targets selected by a profile and
+  retains the profile and Store resources.
+- `revert` restores recorded before-state for a historical target operation.
+- `resource rename` preserves the immutable ID for editable metadata;
+  `--local-fork` is required when source-defined identity would change.
+- `resource export` writes a verifiable reference-only bundle without vault
+  values, absolute local paths, journals, snapshots, or ownership records.
+
+### `profile` and profile-based `sync`
+
+Profiles store exact agent IDs, resource/collection IDs, capabilities, scope,
+placement method, and merge policy. They never store secrets, absolute project
+paths, or persistent force/drift acknowledgements.
+
+```bash
+node packages/cli/dist/bin.js profile create project-team --desired \
+  '{"agentIds":["codex","claude-code"],"scope":"project","resourceIds":["rules/team-rules"],"collectionIds":[],"capabilities":["rules"],"method":"copy","mergePolicy":"merge"}'
+node packages/cli/dist/bin.js profile list
+node packages/cli/dist/bin.js profile show project-team
+node packages/cli/dist/bin.js --output json sync plan project-team \
+  --workspace-root /workspace/app
+node packages/cli/dist/bin.js --output json sync apply project-team \
+  --workspace-root /workspace/app --plan '<data.mutationPlan JSON>'
+node packages/cli/dist/bin.js sync verify project-team \
+  --workspace-root /workspace/app
+node packages/cli/dist/bin.js --output json sync uninstall project-team \
+  --workspace-root /workspace/app --dry-run
+```
+
+Use `profile update <id> --desired '<JSON>'` to replace desired state and
+`profile delete <id> [--dry-run]` to remove the profile document. A
+project-scoped profile always requires `--workspace-root <absolute-path>` on
+every `sync plan|apply|verify|uninstall` invocation. The process working
+directory is never substituted. `--replace-unowned`, `--override-drift`, and
+uninstall `--acknowledge` tokens are invocation-only, plan-bound inputs; they
+are not persisted in the profile.
+
 ### `agent list|show|enable|disable|configure|reset|add|update|remove`
 
 ```bash

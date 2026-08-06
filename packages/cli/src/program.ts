@@ -24,6 +24,11 @@ import { capabilitiesCommand, schemaCommand } from "./commands/discovery.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { initCommand } from "./commands/init.js";
 import { lsCommand } from "./commands/ls.js";
+import {
+  addResourceLifecycleCommands,
+  profileCommand,
+  syncProfileCommand,
+} from "./commands/resource-lifecycle.js";
 import { revertCommand } from "./commands/revert.js";
 import { scanCommand } from "./commands/scan.js";
 import { secretCommand } from "./commands/secret.js";
@@ -65,7 +70,9 @@ const commandFactories: Readonly<Record<string, () => Command>> = {
   ui: uiCommand,
   capabilities: capabilitiesCommand,
   schema: schemaCommand,
-  resource: resourceCommand,
+  resource: () => addResourceLifecycleCommands(resourceCommand()),
+  profile: profileCommand,
+  sync: syncProfileCommand,
   agent: () => addAgentMutationCommands(agentCommand()),
   collection: () => addCollectionMutationCommands(collectionCommand()),
   config: () => addConfigMutationCommands(configCommand()),

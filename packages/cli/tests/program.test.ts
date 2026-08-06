@@ -161,6 +161,7 @@ describe("cli program wiring", () => {
         "ls",
         "operation",
         "plan",
+        "profile",
         "resource",
         "revert",
         "scan",
@@ -168,6 +169,7 @@ describe("cli program wiring", () => {
         "secret",
         "status",
         "summary",
+        "sync",
         "ui",
         "verify",
       ].sort(),
@@ -350,6 +352,7 @@ describe("cli program wiring", () => {
     expect(revertFlags).toContain("--json");
   });
 
+  // This real transaction must finish before fixture teardown; Vitest timeouts do not cancel it.
   it("apply JSON reports blocked conflicts, exits nonzero, and accepts exact replacement inputs", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "cellarer-cli-test-")));
     const storeRoot = join(root, "cellarer-home");
@@ -528,7 +531,7 @@ describe("cli program wiring", () => {
       else process.env.CELLARER_HOME = oldHome;
       await fs.rm(root, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it("apply --json does not print an ownership-blocked MCP merge containing existing secrets", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "cellarer-cli-test-")));
@@ -818,7 +821,7 @@ describe("cli program wiring", () => {
       else process.env.CELLARER_HOME = oldHome;
       await fs.rm(root, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it("agents and doctor expose agent/dir/json flags", () => {
     const program = buildProgram();

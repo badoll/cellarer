@@ -6,8 +6,10 @@ import type {
   LinkMethod,
   PlanAction,
   Scope,
+  SyncProfileTargetEvidence,
   TargetOwner,
 } from "../model/index.js";
+import { canonicalJson } from "../protocol/canonical.js";
 import {
   type MutationRecoveryPresentation,
   mutationRecoveryPresentation,
@@ -24,10 +26,12 @@ export interface VerificationOptions {
   readonly scope: Scope;
   readonly dir?: string;
   readonly agents: string[];
+  readonly resourceIds?: string[];
   readonly collections?: string[];
   readonly capabilities?: Capability[];
   readonly method?: LinkMethod;
   readonly mcpStrategy?: "merge" | "overwrite";
+  readonly syncProfile?: SyncProfileTargetEvidence;
 }
 
 export type DesiredAppliedStatus =
@@ -36,6 +40,7 @@ export type DesiredAppliedStatus =
   | "selection-mismatch"
   | "content-mismatch"
   | "method-mismatch"
+  | "provenance-mismatch"
   | "unverifiable"
   | "unexpected-applied";
 
@@ -45,6 +50,7 @@ export interface DesiredAppliedComparisons {
   readonly selection: EvidenceComparison;
   readonly content: EvidenceComparison;
   readonly method: EvidenceComparison;
+  readonly provenance: EvidenceComparison;
 }
 
 export interface DesiredAppliedItem {
@@ -86,6 +92,7 @@ export async function verify(env: Env, opts: VerificationOptions): Promise<Verif
       scope: opts.scope,
       dir: opts.dir,
       agents: opts.agents,
+      resourceIds: opts.resourceIds,
       collections: opts.collections,
       capabilities,
       method: opts.method,
@@ -136,6 +143,7 @@ export async function verify(env: Env, opts: VerificationOptions): Promise<Verif
       appliedArtifactIds,
       desiredMethod,
       appliedMethod,
+      opts.syncProfile,
     );
     const itemStatus = desiredAppliedStatus(owner, comparisons);
     desiredItems.push({
@@ -167,6 +175,7 @@ export async function verify(env: Env, opts: VerificationOptions): Promise<Verif
         selection: "mismatched",
         content: "not-applicable",
         method: "not-applicable",
+        provenance: "not-applicable",
       },
     });
   }
@@ -216,10 +225,16 @@ function compareDesiredEvidence(
   appliedArtifactIds: readonly string[],
   desiredMethod: DesiredPlacementMethod | undefined,
   appliedMethod: DesiredPlacementMethod | undefined,
+  expectedSyncProfile: SyncProfileTargetEvidence | undefined,
 ): DesiredAppliedComparisons {
   const selection = sameStrings(desiredArtifactIds, appliedArtifactIds) ? "matched" : "mismatched";
   if (!owner) {
-    return { selection, content: "unverifiable", method: "unverifiable" };
+    return {
+      selection,
+      content: "unverifiable",
+      method: "unverifiable",
+      provenance: expectedSyncProfile ? "unverifiable" : "not-applicable",
+    };
   }
 
   const content = compareContentEvidence(action, owner);
@@ -229,7 +244,12 @@ function compareDesiredEvidence(
       : desiredMethod === appliedMethod
         ? "matched"
         : "mismatched";
-  return { selection, content, method };
+  const provenance = expectedSyncProfile
+    ? canonicalJson(owner.syncProfile ?? null) === canonicalJson(expectedSyncProfile)
+      ? "matched"
+      : "mismatched"
+    : "not-applicable";
+  return { selection, content, method, provenance };
 }
 
 function compareContentEvidence(action: PlanAction, owner: TargetOwner): EvidenceComparison {
@@ -256,10 +276,12 @@ function desiredAppliedStatus(
   if (comparisons.selection === "mismatched") return "selection-mismatch";
   if (comparisons.content === "mismatched") return "content-mismatch";
   if (comparisons.method === "mismatched") return "method-mismatch";
+  if (comparisons.provenance === "mismatched") return "provenance-mismatch";
   if (
     comparisons.selection === "unverifiable" ||
     comparisons.content === "unverifiable" ||
-    comparisons.method === "unverifiable"
+    comparisons.method === "unverifiable" ||
+    comparisons.provenance === "unverifiable"
   ) {
     return "unverifiable";
   }

@@ -29,6 +29,23 @@ import {
 const CANONICAL_ISO_UTC_TIMESTAMP =
   /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d\.\d{3}Z$/;
 
+declare const currentMutationAuthorityScopeBrand: unique symbol;
+
+export type CurrentMutationAuthorityScope = Readonly<{
+  [currentMutationAuthorityScopeBrand]: true;
+}>;
+
+interface CurrentMutationAuthorityScopeRecord {
+  readonly authority: MutationAuthority;
+  readonly lease: MutationAuthorityLease;
+  active: boolean;
+}
+
+// A scope is a runtime capability, not a structural TypeScript brand. Only objects created while
+// this module owns a current authority lease are present in this table, and captured scopes remain
+// permanently inactive after their callback exits.
+const currentMutationAuthorityScopes = new WeakMap<object, CurrentMutationAuthorityScopeRecord>();
+
 export const MUTATION_OPERATIONS = [
   "initialize",
   "apply",
@@ -36,6 +53,8 @@ export const MUTATION_OPERATIONS = [
   "settings",
   "secret-metadata",
   "store-import",
+  "resource-lifecycle",
+  "sync-uninstall",
 ] as const satisfies readonly MutationOperation[];
 
 export const MUTATION_ACTION_KINDS = [
@@ -56,6 +75,12 @@ export const MUTATION_ACTION_KINDS = [
   "add-mcp",
   "add-skills",
   "add-skill-provenance",
+  "install-resource-revision",
+  "publish-resource-metadata",
+  "rename-resource-content",
+  "install-resource-content",
+  "remove-resource-path",
+  "write-resource-bundle",
   "scan-rules",
   "scan-mcp",
   "scan-skills",
@@ -382,6 +407,42 @@ export async function withCurrentMutationAuthorityLease<T>(
   } finally {
     if (!suppliedLease) await lease.release();
   }
+}
+
+export async function withCurrentMutationAuthorityScope<T>(
+  env: Env,
+  run: (scope: CurrentMutationAuthorityScope) => Promise<T>,
+): Promise<T> {
+  const authority = requireMutationAuthority(env);
+  const lease = await acquireCurrentMutationAuthorityLease(env).catch(() => null);
+  if (!lease) throw new TypeError("mutation authority is not current");
+  const scope = Object.freeze(Object.create(null)) as CurrentMutationAuthorityScope;
+  const record: CurrentMutationAuthorityScopeRecord = { authority, lease, active: true };
+  currentMutationAuthorityScopes.set(scope, record);
+  try {
+    return await run(scope);
+  } finally {
+    record.active = false;
+    await lease.release();
+  }
+}
+
+export async function assertCurrentMutationAuthorityScope(
+  env: Env,
+  scope: CurrentMutationAuthorityScope,
+): Promise<MutationAuthorityLease> {
+  const authority = requireMutationAuthority(env);
+  const record =
+    typeof scope === "object" && scope !== null ? currentMutationAuthorityScopes.get(scope) : null;
+  if (
+    !record?.active ||
+    record.authority !== authority ||
+    !(await authority.isCurrent().catch(() => false)) ||
+    !(await record.lease.isCurrent().catch(() => false))
+  ) {
+    throw new TypeError("mutation authority scope is not current");
+  }
+  return record.lease;
 }
 
 function mutationAuthorityRequest(

@@ -1142,6 +1142,7 @@ describe("planned control-plane mutations", () => {
     await expect(t.env.fs.snapshotTreeNoFollow(storeRoot)).resolves.toEqual(beforeStore);
   });
 
+  // This real transaction must finish before fixture teardown; Vitest timeouts do not cancel it.
   it("rejects resealed business-input and publication tampering across every control-plane domain", async () => {
     await writeRuleArtifact(t.env, storeRoot, "style", "# style");
     await mutateCollection(t.env, {
@@ -1293,7 +1294,7 @@ describe("planned control-plane mutations", () => {
     for (const [label, forged] of cases) {
       await assertInvalidControlPlanePlanHasNoEffects(t, storeRoot, forged, label);
     }
-  });
+  }, 30_000);
 
   it.each([
     {},
@@ -1664,6 +1665,7 @@ describe("planned control-plane mutations", () => {
     }
   });
 
+  // This real transaction must finish before fixture teardown; Vitest timeouts do not cancel it.
   it("plans and applies exact collection create, membership, update, and defaults mutations", async () => {
     await writeRuleArtifact(t.env, storeRoot, "style", "# style");
     await writeRuleArtifact(t.env, storeRoot, "safety", "# safety");
@@ -1730,7 +1732,7 @@ describe("planned control-plane mutations", () => {
         "rules/safety": { collections: ["work"] },
       },
     });
-  });
+  }, 30_000);
 
   it("rejects unknown member IDs and blocks deletion selected by desired defaults", async () => {
     const beforeStore = await t.env.fs.snapshotTreeNoFollow(storeRoot);

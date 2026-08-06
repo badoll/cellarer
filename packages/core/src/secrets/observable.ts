@@ -707,7 +707,8 @@ function isExactTargetAcknowledgement(value: object): value is TargetAcknowledge
     return (
       (kind.value === "replace-unowned" ||
         kind.value === "override-drift" ||
-        kind.value === "revert-drift") &&
+        kind.value === "revert-drift" ||
+        kind.value === "uninstall-drift") &&
       typeof token.value === "string" &&
       /^sha256:[0-9a-f]{64}$/.test(token.value)
     );

@@ -27,6 +27,18 @@ const appliedReceiptSchema = z.strictObject({
 
 const artifactIdSchema = z.string().regex(/^(rules|mcp|skills)\/[^/*,\s]+$/);
 
+const syncProfileTargetEvidenceSchema = z.strictObject({
+  profileId: z.string().regex(/^[A-Za-z0-9._-]+$/),
+  profileRevision: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  resolvedResources: z.array(
+    z.strictObject({
+      resourceId: artifactIdSchema,
+      revision: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+      capability: z.enum(["rules", "mcp", "skills"]),
+    }),
+  ),
+});
+
 const targetOwnerFields = {
   agent: z.string(),
   capability: z.enum(["rules", "mcp", "skills"]),
@@ -35,6 +47,7 @@ const targetOwnerFields = {
     .array(artifactIdSchema)
     .min(1)
     .refine((ids) => new Set(ids).size === ids.length, "artifactIds must be an ordered set"),
+  syncProfile: syncProfileTargetEvidenceSchema.optional(),
   receipt: appliedReceiptSchema,
   secretRefs: z
     .array(

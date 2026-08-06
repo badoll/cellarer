@@ -619,7 +619,7 @@ function withoutVolatile(value: unknown): unknown {
   if (value === null || typeof value !== "object") return value;
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>)
-      .filter(([key]) => !["generatedAt", "verifiedAt"].includes(key))
+      .filter(([key]) => !["generatedAt", "verifiedAt", "checkedAt"].includes(key))
       .map(([key, child]) => [key, withoutVolatile(child)]),
   );
 }

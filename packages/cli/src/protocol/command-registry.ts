@@ -274,6 +274,45 @@ const resourceSyncTarget = dataObject(["agent", "destination", "scope", "target"
   state: jsonSchema.enumeration(["synced", "drifted", "missing", "blocked"]),
   reason: jsonSchema.string(),
 });
+const contentFingerprint = jsonSchema.string({ pattern: "^sha256:[0-9a-f]{64}$" });
+const resourceSourceDescriptor: JsonSchema = {
+  oneOf: [
+    dataObject(["type"], {
+      type: { const: "local-snapshot" },
+      capturedFrom: jsonSchema.string({ minLength: 1 }),
+    }),
+    dataObject(["type", "repositoryUrl", "ref", "commit", "subpath"], {
+      type: { const: "git" },
+      repositoryUrl: jsonSchema.string({ minLength: 1 }),
+      ref: jsonSchema.string({ minLength: 1 }),
+      commit: jsonSchema.string({ pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" }),
+      subpath: jsonSchema.string({ minLength: 1 }),
+    }),
+    dataObject(["type", "url", "integrity"], {
+      type: { const: "url" },
+      url: jsonSchema.string({ minLength: 1 }),
+      integrity: contentFingerprint,
+    }),
+  ],
+};
+const resourceValidationEvidence = dataObject(["status", "checkedAt", "checks"], {
+  status: jsonSchema.enumeration(["validated", "backfilled"]),
+  checkedAt: jsonSchema.string({ minLength: 1 }),
+  checks: jsonSchema.array(
+    jsonSchema.enumeration([
+      "content-fingerprint",
+      "manifest",
+      "adapter-compatibility",
+      "secret-scan",
+    ]),
+  ),
+});
+const resourceRevision = dataObject(["id", "contentFingerprint", "validation", "source"], {
+  id: contentFingerprint,
+  contentFingerprint,
+  validation: resourceValidationEvidence,
+  source: resourceSourceDescriptor,
+});
 const controlPlaneResource = dataObject(
   [
     "id",
@@ -293,12 +332,8 @@ const controlPlaneResource = dataObject(
     name: jsonSchema.string({ minLength: 1 }),
     source: jsonSchema.string({ minLength: 1 }),
     state: resourceState,
-    provenance: dataObject([], {
-      source: jsonSchema.string({ minLength: 1 }),
-      resolvedUrl: jsonSchema.string({ minLength: 1 }),
-      ref: { type: ["string", "null"] },
-      commit: { type: ["string", "null"] },
-    }),
+    currentRevision: resourceRevision,
+    provenance: resourceSourceDescriptor,
     discovered: dataObject(["agent", "destination", "source"], {
       agent: jsonSchema.string({ minLength: 1 }),
       destination,
@@ -1004,6 +1039,7 @@ const desiredAppliedItem = dataObject(
       "selection-mismatch",
       "content-mismatch",
       "method-mismatch",
+      "provenance-mismatch",
       "unverifiable",
       "unexpected-applied",
     ]),
@@ -1011,10 +1047,11 @@ const desiredAppliedItem = dataObject(
     appliedArtifactIds: stringArray,
     desiredMethod: jsonSchema.enumeration(["write", "symlink", "copy"]),
     appliedMethod: jsonSchema.enumeration(["write", "symlink", "copy"]),
-    comparisons: dataObject(["selection", "content", "method"], {
+    comparisons: dataObject(["selection", "content", "method", "provenance"], {
       selection: evidenceComparison,
       content: evidenceComparison,
       method: evidenceComparison,
+      provenance: evidenceComparison,
     }),
   },
 );
@@ -2059,6 +2096,229 @@ export const controlPlaneCommandRegistry = [
 
 export type ControlPlaneCommand = (typeof controlPlaneCommandRegistry)[number]["command"];
 
+const resourceId = jsonSchema.string({
+  minLength: 1,
+  pattern: "^(rules|mcp|skills)/[A-Za-z0-9._-]+$",
+});
+const syncProfileId = jsonSchema.string({
+  minLength: 1,
+  pattern: "^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$",
+});
+const syncProfileDesired = dataObject(
+  ["agentIds", "scope", "resourceIds", "collectionIds", "capabilities", "method", "mergePolicy"],
+  {
+    agentIds: jsonSchema.array(agentId),
+    scope,
+    resourceIds: jsonSchema.array(resourceId),
+    collectionIds: stringArray,
+    capabilities: capabilityArray,
+    method: jsonSchema.enumeration(["symlink", "copy"]),
+    mergePolicy: { const: "merge" },
+  },
+);
+const opaquePlan = opaqueJsonMap;
+
+export const lifecycleProfileCommandRegistry = [
+  defineCommand({
+    command: "resource.dependencies",
+    mutability: "read",
+    requiredFeatures: ["exact-resource-selector"],
+    input: jsonSchema.object({ resourceId }, ["resourceId"]),
+    bindings: [positional("resourceId", 0)],
+    output: opaqueJsonMap,
+  }),
+  defineCommand({
+    command: "resource.check",
+    mutability: "read",
+    requiredFeatures: ["exact-resource-selector", "resource-provenance"],
+    input: jsonSchema.object({ resourceId }, ["resourceId"]),
+    bindings: [positional("resourceId", 0)],
+    output: opaqueJsonMap,
+  }),
+  defineCommand({
+    command: "resource.update",
+    mutability: "write",
+    requiredFeatures: ["mutation-authority", "plan-apply", "resource-provenance"],
+    input: jsonSchema.object({ resourceId, plan: opaquePlan, dryRun: jsonSchema.boolean() }, [
+      "resourceId",
+    ]),
+    bindings: [
+      positional("resourceId", 0),
+      option("plan", undefined, stringifyJson),
+      option("dryRun"),
+    ],
+    output: opaqueJsonMap,
+  }),
+  defineCommand({
+    command: "resource.rename",
+    mutability: "write",
+    requiredFeatures: ["mutation-authority", "plan-apply", "exact-resource-selector"],
+    input: jsonSchema.object(
+      {
+        resourceId,
+        newName: jsonSchema.string({ minLength: 1 }),
+        localFork: jsonSchema.boolean(),
+        plan: opaquePlan,
+        dryRun: jsonSchema.boolean(),
+      },
+      ["resourceId", "newName"],
+    ),
+    bindings: [
+      positional("resourceId", 0),
+      positional("newName", 1),
+      option("localFork"),
+      option("plan", undefined, stringifyJson),
+      option("dryRun"),
+    ],
+    output: opaqueJsonMap,
+  }),
+  defineCommand({
+    command: "resource.remove",
+    mutability: "write",
+    requiredFeatures: ["mutation-authority", "plan-apply", "exact-resource-selector"],
+    input: jsonSchema.object(
+      { resourceId, cascade: jsonSchema.boolean(), plan: opaquePlan, dryRun: jsonSchema.boolean() },
+      ["resourceId"],
+    ),
+    bindings: [
+      positional("resourceId", 0),
+      option("cascade"),
+      option("plan", undefined, stringifyJson),
+      option("dryRun"),
+    ],
+    output: opaqueJsonMap,
+  }),
+  defineCommand({
+    command: "resource.export",
+    mutability: "write",
+    requiredFeatures: ["mutation-authority", "plan-apply", "reference-only-export"],
+    input: jsonSchema.object(
+      {
+        resourceId,
+        bundlePath: jsonSchema.string({ minLength: 1 }),
+        plan: opaquePlan,
+        dryRun: jsonSchema.boolean(),
+      },
+      ["resourceId", "bundlePath"],
+    ),
+    bindings: [
+      positional("resourceId", 0),
+      positional("bundlePath", 1),
+      option("plan", undefined, stringifyJson),
+      option("dryRun"),
+    ],
+    output: opaqueJsonMap,
+  }),
+  defineCommand({
+    command: "resource.import",
+    mutability: "write",
+    requiredFeatures: ["mutation-authority", "plan-apply", "reference-only-export"],
+    input: jsonSchema.object(
+      {
+        bundlePath: jsonSchema.string({ minLength: 1 }),
+        plan: opaquePlan,
+        dryRun: jsonSchema.boolean(),
+      },
+      ["bundlePath"],
+    ),
+    bindings: [
+      positional("bundlePath", 0),
+      option("plan", undefined, stringifyJson),
+      option("dryRun"),
+    ],
+    output: opaqueJsonMap,
+  }),
+  defineCommand({
+    command: "profile.list",
+    mutability: "read",
+    input: jsonSchema.object(),
+    bindings: [],
+    output: opaqueJsonMap,
+  }),
+  defineCommand({
+    command: "profile.show",
+    mutability: "read",
+    input: jsonSchema.object({ profileId: syncProfileId }, ["profileId"]),
+    bindings: [positional("profileId", 0)],
+    output: opaqueJsonMap,
+  }),
+  ...(["create", "update"] as const).map((action) =>
+    defineCommand({
+      command: `profile.${action}`,
+      mutability: "write",
+      requiredFeatures: ["mutation-authority", "plan-apply", "sync-profiles"],
+      input: jsonSchema.object(
+        { profileId: syncProfileId, desired: syncProfileDesired, dryRun: jsonSchema.boolean() },
+        ["profileId", "desired"],
+      ),
+      bindings: [
+        positional("profileId", 0),
+        option("desired", undefined, stringifyJson),
+        option("dryRun"),
+      ],
+      output: opaqueJsonMap,
+    }),
+  ),
+  defineCommand({
+    command: "profile.delete",
+    mutability: "write",
+    requiredFeatures: ["mutation-authority", "plan-apply", "sync-profiles"],
+    input: jsonSchema.object({ profileId: syncProfileId, dryRun: jsonSchema.boolean() }, [
+      "profileId",
+    ]),
+    bindings: [positional("profileId", 0), option("dryRun")],
+    output: opaqueJsonMap,
+  }),
+  defineCommand({
+    command: "sync.plan",
+    mutability: "read",
+    requiredFeatures: ["mutation-authority", "plan-apply", "sync-profiles"],
+    input: profileInvocationInput(true),
+    bindings: profileInvocationBindings(true),
+    output: opaqueJsonMap,
+  }),
+  defineCommand({
+    command: "sync.apply",
+    mutability: "write",
+    requiredFeatures: ["mutation-authority", "plan-apply", "sync-profiles"],
+    input: jsonSchema.object({ ...profileInvocationProperties(true), plan: opaquePlan }, [
+      "profileId",
+      "plan",
+    ]),
+    bindings: [...profileInvocationBindings(true), option("plan", undefined, stringifyJson)],
+    output: opaqueJsonMap,
+  }),
+  defineCommand({
+    command: "sync.verify",
+    mutability: "read",
+    requiredFeatures: ["mutation-authority", "sync-profiles"],
+    input: profileInvocationInput(),
+    bindings: profileInvocationBindings(),
+    output: opaqueJsonMap,
+  }),
+  defineCommand({
+    command: "sync.uninstall",
+    mutability: "write",
+    requiredFeatures: ["mutation-authority", "plan-apply", "sync-profiles"],
+    input: jsonSchema.object(
+      {
+        ...profileInvocationProperties(),
+        plan: opaquePlan,
+        acknowledgements: stringArray,
+        dryRun: jsonSchema.boolean(),
+      },
+      ["profileId"],
+    ),
+    bindings: [
+      ...profileInvocationBindings(),
+      option("plan", undefined, stringifyJson),
+      option("acknowledgements", "acknowledge", joinList),
+      option("dryRun"),
+    ],
+    output: opaqueJsonMap,
+  }),
+] as const satisfies readonly CommandDefinition[];
+
 const implementedControlPlaneCommandNames = [
   "resource.list",
   "resource.show",
@@ -2099,6 +2359,7 @@ const implementedControlPlaneCommandRegistry = implementedControlPlaneCommandNam
 export const commandRegistry = [
   ...legacyCommandRegistry,
   ...implementedControlPlaneCommandRegistry,
+  ...lifecycleProfileCommandRegistry,
 ] as const satisfies readonly CommandDefinition[];
 
 export type RegisteredCommand = (typeof commandRegistry)[number]["command"];
@@ -2326,6 +2587,41 @@ function verificationBindings(): readonly CommandInputBinding[] {
     ...capabilityBindings(),
     option("method"),
     option("mcpStrategy"),
+  ];
+}
+
+function profileInvocationProperties(
+  includeSnapshotPassphraseFd = false,
+): Readonly<Record<string, JsonSchema>> {
+  return {
+    profileId: syncProfileId,
+    workspaceRoot: jsonSchema.string({ minLength: 1 }),
+    replaceUnowned: stringArray,
+    overrideDrift: stringArray,
+    ...(includeSnapshotPassphraseFd
+      ? {
+          snapshotPassphraseFd: jsonSchema.integer(
+            PROTECTED_DESCRIPTOR_MIN,
+            PROTECTED_DESCRIPTOR_MAX,
+          ),
+        }
+      : {}),
+  };
+}
+
+function profileInvocationInput(includeSnapshotPassphraseFd = false): JsonSchema {
+  return jsonSchema.object(profileInvocationProperties(includeSnapshotPassphraseFd), ["profileId"]);
+}
+
+function profileInvocationBindings(
+  includeSnapshotPassphraseFd = false,
+): readonly CommandInputBinding[] {
+  return [
+    positional("profileId", 0),
+    option("workspaceRoot"),
+    option("replaceUnowned", undefined, joinList),
+    option("overrideDrift", undefined, joinList),
+    ...(includeSnapshotPassphraseFd ? [option("snapshotPassphraseFd", undefined, stringify)] : []),
   ];
 }
 

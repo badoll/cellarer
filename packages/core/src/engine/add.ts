@@ -12,6 +12,12 @@ import {
   type PreparedStoreMutationAction,
 } from "../protocol/store-mutation.js";
 import {
+  createResourceRecord,
+  type ResourceRecord,
+  type ResourceSourceDescriptor,
+  resourceSourceDescriptorSchema,
+} from "../resources/model.js";
+import {
   attachProviderScope,
   containsKnownSecretValue,
   createProviderScope,
@@ -111,21 +117,7 @@ export interface SkillFrontmatter {
   metadata?: { internal?: boolean };
 }
 
-export interface SkillProvenance {
-  kind: "skills";
-  name: string;
-  source: string;
-  resolvedUrl: string;
-  vcs: "git" | "local";
-  ref: string | null;
-  commit: string | null;
-  subpath: string;
-  collection: string | null;
-  importedAt: string;
-  frontmatter: SkillFrontmatter | null;
-  internal: boolean;
-  warnings: string[];
-}
+export type SkillProvenance = ResourceRecord;
 
 export interface AddResult {
   imported: { kind: ArtifactKind; name: string; path: string }[];
@@ -956,21 +948,18 @@ async function importSkillCandidate(
 
   const path = join(opts.storeRoot, "store", "skills", candidate.name);
   const sourceFingerprint = snapshot.fingerprint;
-  const provenance: SkillProvenance = {
+  const provenance: SkillProvenance = createResourceRecord({
+    resourceId: `skills/${candidate.name}`,
     kind: "skills",
     name: candidate.name,
-    source: candidate.source,
-    resolvedUrl: candidate.resolvedUrl,
-    vcs: stage.vcs,
-    ref: candidate.ref,
-    commit: candidate.commit,
-    subpath: candidate.subpath,
-    collection: opts.collection ?? null,
-    importedAt: env.now().toISOString(),
-    frontmatter: candidate.frontmatter,
-    internal: candidate.internal,
-    warnings: candidate.warnings,
-  };
+    contentFingerprint: sourceFingerprint,
+    validation: {
+      status: "validated",
+      checkedAt: env.now().toISOString(),
+      checks: ["content-fingerprint", "manifest", "secret-scan"],
+    },
+    source: skillSourceDescriptor(stage, candidate),
+  });
   const provenancePath = skillProvenancePath(opts.storeRoot, candidate.name);
   actions.push(
     {
@@ -999,6 +988,23 @@ async function importSkillCandidate(
       },
     },
   );
+}
+
+function skillSourceDescriptor(
+  stage: SourceStage,
+  candidate: SkillCandidate,
+): ResourceSourceDescriptor {
+  if (stage.vcs === "git" && candidate.ref && candidate.commit) {
+    const git = resourceSourceDescriptorSchema.safeParse({
+      type: "git",
+      repositoryUrl: candidate.resolvedUrl,
+      ref: candidate.ref,
+      commit: candidate.commit,
+      subpath: candidate.subpath,
+    });
+    if (git.success) return git.data;
+  }
+  return { type: "local-snapshot", capturedFrom: candidate.source };
 }
 
 function unsafeRecursiveReason(error: UnsafeRecursiveSourceError): string {

@@ -419,6 +419,7 @@ describe("drift-aware revert", () => {
     expect((await loadLedger(t.env, storeRoot)).owners).toEqual([]);
   });
 
+  // This real transaction must finish before fixture teardown; Vitest timeouts do not cancel it.
   it("rejects replacement by another valid snapshot after revert planning", async () => {
     const { target, snapshotPath, managedFingerprint } = await applySkillOverExistingTarget();
     const revertOptions = {
@@ -454,8 +455,9 @@ describe("drift-aware revert", () => {
     await expect(fingerprintTarget(t.env, target)).resolves.toBe(managedFingerprint);
     await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(1);
     expect((await loadLedger(t.env, storeRoot)).owners).toHaveLength(1);
-  });
+  }, 30_000);
 
+  // This real transaction must finish before fixture teardown; Vitest timeouts do not cancel it.
   it("restores the signed bytes read before a snapshot path swap and never deletes the replacement", async () => {
     const { target, snapshotPath, managedFingerprint } = await applySkillOverExistingTarget();
     const revertOptions = {
@@ -511,7 +513,7 @@ describe("drift-aware revert", () => {
     await expect(t.env.fs.readFile(snapshotPath)).resolves.toBe(alternateBytes);
     expect(snapshotRmCalls).toBe(0);
     await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(1);
-  });
+  }, 30_000);
 
   it("keeps the current target, owner, and snapshot when restore build fails", async () => {
     const { target, originalFile, snapshotPath, managedFingerprint } =

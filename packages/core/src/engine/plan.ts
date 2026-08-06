@@ -28,6 +28,7 @@ import type {
   TargetOwner,
   TargetOwnershipEvidence,
 } from "../model/index.js";
+import { resolveCurrentResourceArtifact } from "../resources/model.js";
 import {
   attachProviderScope,
   createProviderScope,
@@ -126,17 +127,17 @@ export async function plan(
     loadRegistry(env, opts.storeRoot),
     loadLedgerForPlanning(env, opts.storeRoot),
   ]);
-  const ruleArtifacts = artifactsFromCapabilitySnapshot(
+  const baseRuleArtifacts = artifactsFromCapabilitySnapshot(
     opts.storeRoot,
     "rules",
     capabilityRootCapture.snapshots.get("rules") ?? null,
   );
-  const mcpArtifacts = artifactsFromCapabilitySnapshot(
+  const baseMcpArtifacts = artifactsFromCapabilitySnapshot(
     opts.storeRoot,
     "mcp",
     capabilityRootCapture.snapshots.get("mcp") ?? null,
   );
-  const skillArtifacts = artifactsFromCapabilitySnapshot(
+  const baseSkillArtifacts = artifactsFromCapabilitySnapshot(
     opts.storeRoot,
     "skills",
     capabilityRootCapture.snapshots.get("skills") ?? null,
@@ -151,6 +152,18 @@ export async function plan(
       keychainService: opts.keychainService,
     });
   const operationEnv = providerScopeForEnv(env) ? env : withProviderScope(env, providerScope);
+  const resolveArtifacts = (artifacts: Artifact[]) =>
+    Promise.all(
+      artifacts.map(
+        async (artifact) =>
+          (await resolveCurrentResourceArtifact(operationEnv, opts.storeRoot, artifact)).artifact,
+      ),
+    );
+  const [ruleArtifacts, mcpArtifacts, skillArtifacts] = await Promise.all([
+    resolveArtifacts(baseRuleArtifacts),
+    resolveArtifacts(baseMcpArtifacts),
+    resolveArtifacts(baseSkillArtifacts),
+  ]);
 
   const collections = opts.collections ?? config.defaults.collections;
   // 优先级:CLI --method > 按 OS 覆盖([defaults.os.<platform>]) > 全局默认。
@@ -160,7 +173,11 @@ export async function plan(
   const capabilities = requestedCapabilities;
 
   // collection 过滤(三类制品共用 inCollections;制品无标签视为命中)。
-  const inSel = (id: string) => inCollections(config.artifacts[id]?.collections ?? [], collections);
+  const exactResourceIds = opts.resourceIds ? new Set(opts.resourceIds) : null;
+  const inSel = (id: string) =>
+    exactResourceIds
+      ? exactResourceIds.has(id)
+      : inCollections(config.artifacts[id]?.collections ?? [], collections);
   const selectedRules = ruleArtifacts.filter((a) => inSel(a.id));
   const selectedMcp = mcpArtifacts.filter((a) => inSel(a.id));
   const selectedSkills = skillArtifacts.filter((a) => inSel(a.id));

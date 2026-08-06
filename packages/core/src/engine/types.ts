@@ -25,6 +25,7 @@ export interface DistributeOptions {
   scope: Scope;
   dir?: string; // project scope 的工程根
   agents: string[]; // 选中的 agent id
+  resourceIds?: string[]; // 已解析的精确不可变 resource id 集合(profile sync 使用)
   collections?: string[]; // collection 过滤(缺省用 config.defaults.collections)
   capabilities?: Capability[]; // 缺省 ["rules"](M1)
   method?: LinkMethod; // 覆盖默认 method
@@ -79,6 +80,8 @@ export type ApplyMutationPlanPreflight =
 
 export interface ApplyMutationContext {
   storeRoot: string;
+  /** Canonical profile selection expected by a sync-profile apply entrypoint. */
+  syncProfileId?: string;
   /** Existing argv path supplies its caller-owned options; exact sealed-plan input derives them. */
   options?: DistributeOptions;
   snapshotPassphrase?: string;

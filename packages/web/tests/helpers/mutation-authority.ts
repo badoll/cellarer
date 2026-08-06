@@ -6,7 +6,9 @@ import {
   type MutationAuthorizationEnvelope,
 } from "@cellarer/core";
 
-export function deterministicMutationAuthority(): MutationAuthority {
+export function deterministicMutationAuthority(
+  options: { readonly isCurrent?: () => Promise<boolean> } = {},
+): MutationAuthority {
   const authorityId = "web-test-authority";
   const authorityEpoch = 1;
   const key = "cellarer-web-test-authority";
@@ -52,7 +54,7 @@ export function deterministicMutationAuthority(): MutationAuthority {
     const actual = Buffer.from(envelope.seal);
     return expected.length === actual.length && timingSafeEqual(expected, actual);
   };
-  const isCurrent = async () => true;
+  const isCurrent = options.isCurrent ?? (async () => true);
   let journalTip:
     | { readonly operationId: string; readonly sequence: number; readonly seal: string }
     | undefined;
@@ -66,7 +68,7 @@ export function deterministicMutationAuthority(): MutationAuthority {
   const acquireLease = async () => {
     let released = false;
     return Object.freeze({
-      isCurrent: async () => !released,
+      isCurrent: async () => !released && (await isCurrent()),
       release: async () => {
         released = true;
       },

@@ -56,6 +56,7 @@ export interface ControlPlaneResourceDto {
   readonly name: string;
   readonly source: string;
   readonly state: ResourceState;
+  readonly currentRevision?: ResourceCatalogItem["currentRevision"];
   readonly provenance?: ResourceCatalogItem["provenance"];
   readonly discovered?: ResourceCatalogItem["discovered"];
   readonly membership: { readonly collections: readonly string[] };
@@ -450,6 +451,7 @@ function resourceDto(
     name: resource.name,
     source: resourceSource(resource),
     state: resource.state,
+    ...(resource.currentRevision ? { currentRevision: resource.currentRevision } : {}),
     ...(resource.provenance ? { provenance: resource.provenance } : {}),
     ...(resource.discovered ? { discovered: resource.discovered } : {}),
     membership: { collections: resource.collections },
@@ -465,10 +467,12 @@ function resourceDto(
 }
 
 function resourceSource(resource: ResourceCatalogItem): string {
+  const provenance = resource.provenance;
   return (
     resource.discovered?.source ??
-    resource.provenance?.resolvedUrl ??
-    resource.provenance?.source ??
+    (provenance?.type === "git" ? provenance.repositoryUrl : undefined) ??
+    (provenance?.type === "url" ? provenance.url : undefined) ??
+    (provenance?.type === "local-snapshot" ? provenance.capturedFrom : undefined) ??
     resource.sourcePath ??
     `store:${resource.id}`
   );

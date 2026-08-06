@@ -200,6 +200,16 @@ export type {
   StatusOptions,
 } from "./engine/types.js";
 export {
+  type AppliedSyncTargetUninstall,
+  applySyncTargetUninstallPlan,
+  type PlannedSyncTargetUninstall,
+  planSyncTargetUninstall,
+  type SyncTargetUninstallConflict,
+  SyncTargetUninstallError,
+  type SyncTargetUninstallOptions,
+  type SyncTargetUninstallTarget,
+} from "./engine/uninstall.js";
+export {
   type AppliedDiskVerification,
   type DesiredAppliedComparisons,
   type DesiredAppliedItem,
@@ -217,11 +227,14 @@ export type {
   HeadlessLifetimeLease,
   HeadlessLifetimeOwner,
   MutationAuthority,
-  MutationAuthorityLease,
   MutationAuthorityRequest,
   Platform,
   ProcessLiveness,
   ProtectedJournalTip,
+  RemoteResourceSourceEvidence,
+  ResourceSourceFetchResult,
+  ResourceSourceTransport,
+  ResourceUrlValidators,
   SymlinkType,
 } from "./env.js";
 // markers
@@ -367,7 +380,7 @@ export {
   StoreRevisionChangedDuringPlanningError,
   storeRevisionPath,
 } from "./protocol/store-revision.js";
-export { createRealEnv } from "./real-env.js";
+export { createRealEnv, type RealEnvOptions } from "./real-env.js";
 export type {
   Destination,
   ResourceCatalogCounts,
@@ -384,6 +397,69 @@ export type {
   DiscoverySummaryResult,
 } from "./resources/discovery.js";
 export { discoverySummary } from "./resources/discovery.js";
+export {
+  type AppliedResourceLifecycle,
+  applyResourceBundleImportPlan,
+  applyResourceExportPlan,
+  applyResourceRemovePlan,
+  applyResourceRenamePlan,
+  type PlannedResourceBundleImport,
+  type PlannedResourceExport,
+  type PlannedResourceLifecycle,
+  planResourceBundleImport,
+  planResourceExport,
+  planResourceRemove,
+  planResourceRename,
+  type ResourceBundleImportOptions,
+  type ResourceDependencyOptions,
+  type ResourceDependencyReport,
+  type ResourceExportOptions,
+  type ResourceLifecycleBlockCode,
+  ResourceLifecycleError,
+  type ResourceRemoveOptions,
+  type ResourceRenameOptions,
+  resourceDependencyReport,
+  type ValidatedResourceBundle,
+  validateResourceBundle,
+} from "./resources/lifecycle.js";
+export type {
+  CreateResourceRecordInput,
+  ResourceRecord,
+  ResourceRevision,
+  ResourceSourceDescriptor,
+  ResourceValidationCheck,
+  ResourceValidationEvidence,
+} from "./resources/model.js";
+export {
+  createResourceRecord,
+  InvalidResourceMetadataError,
+  loadResourceRecord,
+  parseResourceRecord,
+  RESOURCE_MODEL_SCHEMA_VERSION,
+  resolveCurrentResourceArtifact,
+  resourceMetadataPath,
+  resourceRevisionContentPath,
+  resourceSourceCanCheckForUpdates,
+  resourceSourceDescriptorSchema,
+  resourceValidationCheckSchema,
+  resourceValidationEvidenceSchema,
+} from "./resources/model.js";
+export {
+  type AppliedResourceUpdate,
+  applyResourceUpdatePlan,
+  checkResourceUpdate,
+  discardResourceUpdateStage,
+  type PlannedAvailableResourceUpdate,
+  type PlannedResourceUpdate,
+  planAvailableResourceUpdate,
+  planResourceUpdate,
+  type ResourceUpdateCheck,
+  type ResourceUpdateDiff,
+  type ResourceUpdateDiffFile,
+  ResourceUpdateError,
+  type StagedResourceUpdate,
+  stageResourceUpdate,
+} from "./resources/update.js";
 // secrets
 export {
   assertMutationAuthorityCredentialTarget,
@@ -497,6 +573,42 @@ export {
   resolveStoreRoot,
   skillProvenancePath,
 } from "./store/store.js";
+export {
+  type AppliedSyncProfileMutation,
+  applySyncProfileMutationPlan,
+  createSyncProfile,
+  deleteSyncProfile,
+  listSyncProfiles,
+  type PlannedSyncProfileMutation,
+  parseSyncProfile,
+  type ResolvedSyncProfileResource,
+  SYNC_PROFILE_SCHEMA_VERSION,
+  type SyncProfile,
+  type SyncProfileDeleteOptions,
+  type SyncProfileDesiredState,
+  SyncProfileError,
+  type SyncProfileMutationOptions,
+  type SyncProfileShowOptions,
+  type SyncProfileStoreOptions,
+  showSyncProfile,
+  syncProfileDesiredStateSchema,
+  syncProfileSchema,
+  syncProfilesPath,
+  updateSyncProfile,
+} from "./sync/profiles.js";
+export {
+  type AppliedSyncProfile,
+  type ApplySyncProfileUninstallOptions,
+  applySyncProfilePlan,
+  applySyncProfileUninstallPlan,
+  type PlannedSyncProfile,
+  type PlannedSyncProfileUninstall,
+  planSyncProfile,
+  planSyncProfileUninstall,
+  type SyncProfileInvocationOptions,
+  type SyncProfileVerification,
+  verifySyncProfile,
+} from "./sync/service.js";
 export {
   fingerprintTarget,
   type InspectTargetOwnershipOptions,

@@ -7,7 +7,6 @@ import {
   MUTATION_AUTHORITY_ACCOUNT_PREFIX,
   MUTATION_AUTHORITY_CREDENTIAL_SERVICE,
   type MutationAuthority,
-  type MutationAuthorityLease,
   type MutationAuthorityRequest,
   type MutationAuthorizationEnvelope,
   type ProtectedJournalTip,
@@ -17,6 +16,7 @@ import { tryAuthorityCredentialStore } from "./keychain.js";
 import { CliHandledError } from "./protocol/errors.js";
 
 type SecretStore = NonNullable<Env["secretStore"]>;
+type MutationAuthorityLease = Awaited<ReturnType<MutationAuthority["acquireLease"]>>;
 
 export const HEADLESS_MUTATION_AUTHORITY_ENV = "CELLARER_MUTATION_AUTHORITY";
 

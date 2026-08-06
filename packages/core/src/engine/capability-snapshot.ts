@@ -1,4 +1,4 @@
-import { isAbsolute, join, normalize } from "node:path";
+import { isAbsolute, join, normalize, relative, sep } from "node:path";
 import type { RuleFragment } from "../adapters/types.js";
 import type { Env } from "../env.js";
 import { type McpServer, serverFromRaw } from "../mcp/model.js";
@@ -80,7 +80,12 @@ export function artifactsFromCapabilitySnapshot(
     if (capability === "mcp" && node.kind === "file" && node.relativePath.endsWith(".json")) {
       return [node.relativePath.slice(0, -5)];
     }
-    if (capability === "skills" && node.kind === "directory" && node.relativePath.length > 0) {
+    if (
+      capability === "skills" &&
+      node.kind === "directory" &&
+      node.relativePath.length > 0 &&
+      node.relativePath !== ".cellarer-revisions"
+    ) {
       return [node.relativePath];
     }
     return [];
@@ -109,13 +114,14 @@ export function artifactSnapshotsFromCapabilityRoots(
   for (const artifact of artifacts) {
     const root = roots.get(artifact.kind);
     if (!root) throw new UnsafeRecursiveSourceError(artifact.sourcePath, "stale");
-    const relativePath =
-      artifact.kind === "rules"
-        ? `${artifact.name}.md`
-        : artifact.kind === "mcp"
-          ? `${artifact.name}.json`
-          : artifact.name;
-    snapshots.set(artifact.sourcePath, sliceSafeRecursiveSnapshot(root, relativePath));
+    const child = relative(root.rootPath, artifact.sourcePath);
+    if (!child || child === ".." || child.startsWith(`..${sep}`) || isAbsolute(child)) {
+      throw new UnsafeRecursiveSourceError(artifact.sourcePath, "stale");
+    }
+    snapshots.set(
+      artifact.sourcePath,
+      sliceSafeRecursiveSnapshot(root, child.split(sep).join("/")),
+    );
   }
   return snapshots;
 }

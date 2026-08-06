@@ -239,7 +239,7 @@ describe("safe target planning and placement", () => {
     expect(skillFile?.kind).toBe("file");
     if (skillFile?.kind !== "file") throw new Error("expected snapshotted Skill file");
     expect(Buffer.from(skillFile.data, "base64").toString("utf8")).toBe(UNMANAGED_SECRET);
-  });
+  }, 30_000);
 
   it("refuses replacement when the snapshot root is a symlink to an external directory", async () => {
     await addSkill("demo", "# managed");
@@ -321,6 +321,7 @@ describe("safe target planning and placement", () => {
     expect(await t.env.fs.readdir(snapshotsRoot)).toEqual([]);
   });
 
+  // This real transaction must finish before fixture teardown; Vitest timeouts do not cancel it.
   it("keeps a generated target generated across repeated drift overrides", async () => {
     await writeRuleArtifact(t.env, storeRoot, "style", "# managed");
     const opts = {
@@ -355,8 +356,9 @@ describe("safe target planning and placement", () => {
     expect(reverted.reverted).toHaveLength(1);
     await expect(t.env.fs.lstat(target)).rejects.toThrow();
     expect(await t.env.fs.readdir(join(storeRoot, "snapshots"))).toEqual(retainedSnapshots);
-  });
+  }, 30_000);
 
+  // This real transaction must finish before fixture teardown; Vitest timeouts do not cancel it.
   it("never deletes a transient apply snapshot after an ancestor swap at commit", async () => {
     await writeRuleArtifact(t.env, storeRoot, "style", "# managed");
     const opts = {
@@ -415,7 +417,7 @@ describe("safe target planning and placement", () => {
     await expect(t.env.fs.readFile(join(retainedRoot, swappedName))).resolves.toContain(
       "BEGIN AGE ENCRYPTED FILE",
     );
-  });
+  }, 30_000);
 
   it("preserves the original unmanaged baseline across repeated drift overrides", async () => {
     await writeRuleArtifact(t.env, storeRoot, "style", "# managed");
@@ -652,6 +654,7 @@ describe("safe target planning and placement", () => {
     });
   });
 
+  // Vitest does not cancel the asynchronous transaction or fixture teardown when a case times out.
   it.each([
     false,
     true,
@@ -727,7 +730,7 @@ describe("safe target planning and placement", () => {
         expect.stringContaining("automatic snapshot deletion is unsupported"),
       );
     }
-  });
+  }, 30_000);
 
   it("records a new receipt without changing recovery baseline when approved symlink drift keeps the same link", async () => {
     await addSkill("demo", "# original");

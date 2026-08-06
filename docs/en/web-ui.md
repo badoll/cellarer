@@ -37,6 +37,12 @@ The browser does not write files directly. All file operations go through core.
 | `POST /api/import/apply` | Import selected previewed resources. |
 | `POST /api/sync/plan` | Sync preview. |
 | `POST /api/sync/apply` | Sync previewed resources to agents. |
+| `POST /api/resource-lifecycle/{dependencies,check}` | Read exact dependency or provenance DTOs. |
+| `POST /api/resource-lifecycle/update/{plan,apply}` | Stage/plan or apply a pinned Store-only update. |
+| `POST /api/resource-lifecycle/{rename,remove,export,import}` | Plan or apply the corresponding distinct lifecycle verb. |
+| `POST /api/resource-lifecycle/bundle/validate` | Verify a portable bundle before import. |
+| `GET/POST /api/profiles`, `GET/PUT/DELETE /api/profiles/:id` | Profile list/show/create/update/delete. |
+| `POST /api/sync/profiles/:id/{plan,apply,verify,uninstall}` | Exact profile workflow; project profiles require `workspaceRoot`. |
 | `POST /api/revert` | Preview or apply a ledger revert through the same receipt boundary. |
 | `POST /api/verify` | Desired-versus-applied, applied-versus-disk, and recovery health. |
 | `GET /api/agents` | Registered adapters, enabled state, capabilities, and global detection status. |
@@ -44,7 +50,9 @@ The browser does not write files directly. All file operations go through core.
 | `GET /api/status` | Ledger drift status. |
 | `GET /api/secrets` | Secret reference names only. |
 
-Project scope requests must include `dir`.
+Legacy project-scope distribution requests must include `dir`. Profile-based
+project requests must include an absolute `workspaceRoot` on every invocation;
+profiles do not persist machine-local project paths.
 
 ## Mutation and Verification Responses
 

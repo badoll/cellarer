@@ -36,6 +36,12 @@ React SPA -> Hono API -> @cellarer/web -> @cellarer/core -> Env -> local files
 | `POST /api/import/apply` | 导入已预览并选择的资源。 |
 | `POST /api/sync/plan` | 同步预览。 |
 | `POST /api/sync/apply` | 将已预览的资源同步到 agents。 |
+| `POST /api/resource-lifecycle/{dependencies,check}` | 读取精确 dependency 或 provenance DTO。 |
+| `POST /api/resource-lifecycle/update/{plan,apply}` | Staging/planning 或应用绑定候选内容的 Store-only update。 |
+| `POST /api/resource-lifecycle/{rename,remove,export,import}` | 计划或应用语义分离的对应生命周期 verb。 |
+| `POST /api/resource-lifecycle/bundle/validate` | Import 前验证 portable bundle。 |
+| `GET/POST /api/profiles`、`GET/PUT/DELETE /api/profiles/:id` | Profile list/show/create/update/delete。 |
+| `POST /api/sync/profiles/:id/{plan,apply,verify,uninstall}` | 精确 profile workflow;project profile 要求 `workspaceRoot`。 |
 | `POST /api/revert` | 通过同一 receipt 边界预览或执行 ledger revert。 |
 | `POST /api/verify` | Desired-versus-applied、applied-versus-disk 与 recovery health。 |
 | `GET /api/agents` | 已注册适配器、启用状态、能力矩阵与 global 探测状态。 |
@@ -43,7 +49,8 @@ React SPA -> Hono API -> @cellarer/web -> @cellarer/core -> Env -> local files
 | `GET /api/status` | 台账漂移状态。 |
 | `GET /api/secrets` | 只返回密钥引用名。 |
 
-project scope 请求必须包含 `dir`。
+旧式 project-scope 下发请求必须包含 `dir`。基于 profile 的 project 请求每次都必须包含
+绝对 `workspaceRoot`;profile 不会持久化本机 project path。
 
 ## Mutation 与 Verification 响应
 

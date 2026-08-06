@@ -363,14 +363,47 @@ describe("engine/add — local source import", () => {
       await t.env.fs.readFile(skillProvenancePath(storeRoot, "my-skill")),
     );
     expect(provenance).toMatchObject({
+      schemaVersion: 1,
+      resourceId: "skills/my-skill",
       kind: "skills",
       name: "my-skill",
-      vcs: "local",
-      collection: "public",
-      commit: null,
-      subpath: ".",
+      currentRevision: {
+        contentFingerprint: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+        validation: {
+          status: "validated",
+          checks: ["content-fingerprint", "manifest", "secret-scan"],
+        },
+        source: { type: "local-snapshot", capturedFrom: src },
+      },
     });
-    expect(provenance.importedAt).toBe("2026-06-30T08:00:00.000Z");
+    expect(provenance.currentRevision.validation.checkedAt).toBe("2026-06-30T08:00:00.000Z");
+  });
+
+  it("keeps the resource ID stable when a forced import accepts a new revision", async () => {
+    const src = t.path("revisioned-skill");
+    await writeSkill(t, "revisioned-skill", {
+      name: "revisioned-skill",
+      description: "First revision",
+    });
+    await add(t.env, { storeRoot, source: src });
+    const first = JSON.parse(
+      await t.env.fs.readFile(skillProvenancePath(storeRoot, "revisioned-skill")),
+    );
+
+    await t.env.fs.writeFile(
+      t.path("revisioned-skill", "SKILL.md"),
+      "---\nname: revisioned-skill\ndescription: Second revision\n---\n",
+    );
+    await add(t.env, { storeRoot, source: src, force: true });
+    const second = JSON.parse(
+      await t.env.fs.readFile(skillProvenancePath(storeRoot, "revisioned-skill")),
+    );
+
+    expect(second.resourceId).toBe(first.resourceId);
+    expect(second.currentRevision.id).not.toBe(first.currentRevision.id);
+    expect(second.currentRevision.contentFingerprint).not.toBe(
+      first.currentRevision.contentFingerprint,
+    );
   });
 
   it("lists multiple skills in a local repo without writing store", async () => {
@@ -943,7 +976,7 @@ describe("engine/add — local source import", () => {
           path: t.path("staged"),
           resolvedUrl: source.resolvedUrl,
           ref: source.ref ?? "main",
-          commit: "abc123",
+          commit: "0123456789abcdef0123456789abcdef01234567",
           subpath: source.subpath,
         };
       },
@@ -961,11 +994,17 @@ describe("engine/add — local source import", () => {
       await t.env.fs.readFile(skillProvenancePath(storeRoot, "nextjs")),
     );
     expect(provenance).toMatchObject({
-      vcs: "git",
-      source: "vercel-labs/skills",
-      ref: "main",
-      commit: "abc123",
-      subpath: "skills/nextjs",
+      schemaVersion: 1,
+      resourceId: "skills/nextjs",
+      currentRevision: {
+        source: {
+          type: "git",
+          repositoryUrl: "https://github.com/vercel-labs/skills",
+          ref: "main",
+          commit: "0123456789abcdef0123456789abcdef01234567",
+          subpath: "skills/nextjs",
+        },
+      },
     });
   });
 
@@ -982,7 +1021,7 @@ describe("engine/add — local source import", () => {
           path: t.path("staged"),
           resolvedUrl: source.resolvedUrl,
           ref: source.ref,
-          commit: "def456",
+          commit: "def4567890abcdef0123456789abcdef01234567",
           subpath: source.subpath,
         };
       },
@@ -1009,7 +1048,7 @@ describe("engine/add — local source import", () => {
           path: t.path("staged"),
           resolvedUrl: source.resolvedUrl,
           ref: source.ref,
-          commit: "fed789",
+          commit: "fed7890123456789abcdef0123456789abcdef01",
           subpath: source.subpath,
         };
       },
