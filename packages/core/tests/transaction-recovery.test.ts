@@ -32,12 +32,17 @@ import {
   readStoreRecoveryLockOwner,
   recoveryLockPath,
 } from "../src/protocol/mutation-lock.js";
-import { diagnoseMutationRecovery, recoverInterruptedOperation } from "../src/protocol/recovery.js";
+import {
+  diagnoseInterruptedOperation,
+  diagnoseMutationRecovery,
+  recoverInterruptedOperation,
+} from "../src/protocol/recovery.js";
 import {
   publishStoreRevision,
   readStoreRevision,
   storeRevisionPath,
 } from "../src/protocol/store-revision.js";
+import { createSecretValue, withObservableKnownValues } from "../src/secrets/observable.js";
 import { vaultPath } from "../src/secrets/vault.js";
 import { sha256 } from "../src/store/checksum.js";
 import { fingerprintTarget } from "../src/target-ownership.js";
@@ -152,6 +157,56 @@ describe("transaction journal interruption recovery", () => {
     if (!acquired.ok) throw new Error("expected test mutation lock acquisition");
   }
 
+  it("binds requested recovery diagnosis and wrong-id recovery to the requested operation", async () => {
+    await expect(
+      diagnoseInterruptedOperation(t.env, storeRoot, "operation-missing"),
+    ).resolves.toEqual({
+      found: false,
+      operationId: "operation-missing",
+      status: "not-found",
+      message: "requested operation is not the active recoverable operation",
+    });
+
+    await seedPendingJournalWithLock(t.env.hostname());
+    await expect(
+      diagnoseInterruptedOperation(t.env, storeRoot, "operation-other"),
+    ).resolves.toEqual({
+      found: false,
+      operationId: "operation-other",
+      status: "not-found",
+      message: "requested operation is not the active recoverable operation",
+    });
+    await expect(
+      diagnoseInterruptedOperation(t.env, storeRoot, "operation-fixed"),
+    ).resolves.toMatchObject({
+      found: true,
+      operationId: "operation-fixed",
+      diagnosis: { journal: { operationId: "operation-fixed" } },
+    });
+
+    const wrong = await recoverInterruptedOperation(t.env, storeRoot, {
+      operationId: "operation-other",
+    });
+    expect(wrong).toEqual({
+      ok: false,
+      conflict: {
+        code: "MANUAL_RECOVERY_REQUIRED",
+        message: "manual recovery is required",
+        operationId: "operation-other",
+        targets: [],
+        guidance: "requested operation is not the active recoverable operation",
+      },
+    });
+    await expect(readOperationJournal(t.env, storeRoot)).resolves.toMatchObject({
+      operationId: "operation-fixed",
+      status: "executing",
+    });
+    await expect(readStoreMutationLockOwner(t.env, storeRoot)).resolves.toMatchObject({
+      operationId: "operation-fixed",
+    });
+    await expect(readStoreRecoveryLockOwner(t.env, storeRoot)).resolves.toBeNull();
+  });
+
   it("rejects wrong POSIX modes for signed journal, revision, and receipt publications", async () => {
     const mutationPlan = plan();
     const timestamp = t.env.now().toISOString();
@@ -226,6 +281,83 @@ describe("transaction journal interruption recovery", () => {
       journal: { status: "executing" },
     });
     await expect(t.env.fs.lstat(targetA)).rejects.toThrow();
+  });
+
+  it("preserves fixed journal keys through short-value redaction and keeps recovery verifiable", async () => {
+    const mutationPlan = plan();
+    const timestamp = t.env.now().toISOString();
+    const env = withObservableKnownValues(t.env, [createSecretValue("planId")]);
+    const durablePlan = createDurableMutationPlan(env, storeRoot, mutationPlan);
+    await publishOperationJournal(env, storeRoot, {
+      schemaVersion: 1,
+      operationId: "operation-fixed",
+      plan: durablePlan,
+      nextRevision: 1,
+      status: "executing",
+      startedAt: timestamp,
+      updatedAt: timestamp,
+      actions: [{ actionId: recoveryActionId(targetA), target: targetA, status: "pending" }],
+    });
+    const acquired = await acquireStoreMutationLock(env, storeRoot, {
+      operationId: "operation-fixed",
+      processId: 4242,
+      hostname: env.hostname(),
+      acquiredAt: timestamp,
+    });
+    if (!acquired.ok) throw new Error("expected test mutation lock acquisition");
+
+    const persisted = await readOperationJournal(env, storeRoot);
+    expect(persisted?.plan.planId).toBe("plan-fixed");
+    expect(persisted && verifyDurableMutationPlanDigest(persisted.plan)).toBe(true);
+    await expect(
+      recoverInterruptedOperation({ ...env, probeProcessLiveness: async () => "dead" }, storeRoot, {
+        operationId: "operation-fixed",
+      }),
+    ).resolves.toMatchObject({ ok: true, receipt: { outcome: "compensated" } });
+  });
+
+  it("rejects a journal instead of publishing a nested known-value payload key", async () => {
+    const payloadKeyCanary = "journal-payload-secret-key";
+    const mutationPlan = createAuthorizedMutationPlan(t.env, storeRoot, {
+      schemaVersion: 1,
+      planId: "nested-payload-key",
+      operation: "secret-metadata",
+      baseRevision: 0,
+      normalizedInputs: { mutationKind: "keychain-secret-set" },
+      actions: [
+        {
+          actionId: "action-1",
+          kind: "keychain-secret-set",
+          target: targetA,
+          payload: {
+            provider: "keychain",
+            service: "cellarer",
+            name: "TEST_KEY",
+            metadata: { [payloadKeyCanary]: "user-value" },
+          },
+        },
+      ],
+      targetPreconditions: [
+        { actionId: "action-1", target: targetA, expected: { state: "absent" } },
+      ],
+      expires: { policy: "none" },
+    });
+    const env = withObservableKnownValues(t.env, [createSecretValue(payloadKeyCanary)]);
+    const timestamp = env.now().toISOString();
+
+    await expect(
+      publishOperationJournal(env, storeRoot, {
+        schemaVersion: 1,
+        operationId: "operation-nested-payload-key",
+        plan: createDurableMutationPlan(t.env, storeRoot, mutationPlan),
+        nextRevision: 1,
+        status: "prepared",
+        startedAt: timestamp,
+        updatedAt: timestamp,
+        actions: [{ actionId: "action-1", target: targetA, status: "pending" }],
+      }),
+    ).rejects.toThrow(/journal.*invalid|digest.*invalid/i);
+    await expect(t.env.fs.lstat(operationJournalPath(storeRoot))).rejects.toThrow();
   });
 
   it("never persists raw plan payloads or state publication content in a crash journal", async () => {

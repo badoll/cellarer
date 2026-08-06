@@ -1,8 +1,15 @@
 import { promises as fs, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRealEnv, type Env, readStoreRevision } from "@cellarer/core";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  createRealEnv,
+  type Env,
+  listOperationReceipts,
+  loadConfig,
+  readOperationJournal,
+  readStoreRevision,
+} from "@cellarer/core";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAuthorizedMutationPlan } from "../../core/src/protocol/canonical.js";
 import { executeMutationPlan } from "../../core/src/protocol/execute.js";
 import { sha256 } from "../../core/src/store/checksum.js";
@@ -82,10 +89,51 @@ describe("web app — resources/agents", () => {
         id: "rules/style",
         kind: "rules",
         name: "style",
-        collections: [],
+        membership: { collections: [] },
         state: "managed",
       }),
     );
+  });
+
+  it("preserves safe reference names in a real resource DTO response", async () => {
+    await c.env.fs.writeFile(
+      join(c.storeRoot, "store", "mcp", "context.json"),
+      '{"command":"context","env":{"TOKEN":"${CTX_TOKEN}"}}\n',
+    );
+    await c.env.fs.writeFile(
+      join(c.storeRoot, "state.json"),
+      `${JSON.stringify({
+        version: 2,
+        owners: [
+          {
+            agent: "claude-code",
+            scope: "global",
+            capability: "mcp",
+            target: join(c.root, "home", ".claude", "mcp.json"),
+            artifactIds: ["mcp/context"],
+            receipt: {
+              method: "write",
+              fingerprint: `sha256:${"a".repeat(64)}`,
+              backup: null,
+              generated: false,
+              appliedAt: "2026-06-30T08:00:00.000Z",
+            },
+            secretRefs: ["CTX_TOKEN"],
+          },
+        ],
+      })}\n`,
+    );
+
+    const response = await c.app.request("/api/resources/mcp?includeDiscovered=false");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      resources: [
+        expect.objectContaining({
+          id: "mcp/context",
+          secretReferenceNames: ["CTX_TOKEN"],
+        }),
+      ],
+    });
   });
 
   it("includes discovered agent-native resources in resource routes", async () => {
@@ -125,16 +173,16 @@ describe("web app — resources/agents", () => {
     const agents = body.agents as {
       id: string;
       detected: boolean;
-      root: string;
+      detectionEvidence: { root?: string };
     }[];
 
     expect(agents.find((a) => a.id === "codex")).toMatchObject({
       detected: true,
-      root: join(c.root, "home", ".codex"),
+      detectionEvidence: { root: join(c.root, "home", ".codex") },
     });
     expect(agents.find((a) => a.id === "claude-code")).toMatchObject({
       detected: false,
-      root: join(c.root, "home", ".claude"),
+      detectionEvidence: { root: join(c.root, "home", ".claude") },
     });
   });
 });
@@ -700,8 +748,8 @@ describe("web app — scan import", () => {
           defaults: { method: "symlink", collections: ["default"], secretMode: "keychain" },
           collections: { default: { description: "Default" } },
           artifacts: {},
-          agents: {},
-          adapters: {},
+          adapterOverrides: {},
+          customAdapters: {},
         },
         null,
         2,
@@ -766,7 +814,10 @@ describe("web app — scan import", () => {
 
     const artifacts = await (await c.app.request("/api/resources/rules")).json();
     expect(artifacts.resources).toContainEqual(
-      expect.objectContaining({ name: "claude-code", collections: ["default"] }),
+      expect.objectContaining({
+        name: "claude-code",
+        membership: { collections: ["default"] },
+      }),
     );
     const config = JSON.parse(await c.env.fs.readFile(join(c.storeRoot, "config.json"), "utf8"));
     expect(config.artifacts["rules/claude-code"]).toMatchObject({
@@ -809,6 +860,52 @@ describe("web app — scan import", () => {
     expect(managedNames(rules)).toContain("claude-code");
     expect(managedNames(mcp)).not.toContain("claude-code");
     expect(discoveredNames(mcp)).toContain("claude-code");
+  });
+
+  it("rejects legacy name-only select on every scan/import plan and apply route without effects", async () => {
+    await c.env.fs.mkdir(join(c.root, "home", ".claude"), { recursive: true });
+    await c.env.fs.writeFile(join(c.root, "home", ".claude", "CLAUDE.md"), "# Team rules");
+
+    for (const route of ["/api/import/plan", "/api/import/apply", "/api/scan", "/api/scan/apply"]) {
+      const response = await c.app.request(route, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          agent: "claude-code",
+          capabilities: ["rules"],
+          select: ["claude-code"],
+        }),
+      });
+      expect(response.status, route).toBe(400);
+      const body = await response.json();
+      expect(body).toMatchObject({ error: expect.stringContaining("select") });
+      expect(body).not.toHaveProperty("items");
+      expect(body).not.toHaveProperty("plan");
+      expect(body).not.toHaveProperty("mutation");
+    }
+
+    for (const route of ["/api/import/plan", "/api/import/apply", "/api/scan", "/api/scan/apply"]) {
+      const response = await c.app.request(route, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          agent: "claude-code",
+          capabilities: ["rules"],
+          selectItems: [{ kind: "rules", name: "claude-code" }],
+        }),
+      });
+      expect(response.status, route).toBe(400);
+      expect(await response.json()).toMatchObject({
+        error: expect.stringContaining("selectItems"),
+      });
+    }
+
+    await expect(readStoreRevision(c.env, c.storeRoot)).resolves.toBe(0);
+    await expect(c.env.fs.lstat(join(c.storeRoot, "config.json"))).rejects.toThrow();
+    await expect(c.env.fs.lstat(join(c.storeRoot, "operations"))).rejects.toThrow();
+    await expect(
+      c.env.fs.lstat(join(c.storeRoot, "store", "rules", "claude-code.md")),
+    ).rejects.toThrow();
   });
 
   it("does not expose plaintext secrets while importing scanned MCP config", async () => {
@@ -1306,25 +1403,30 @@ describe("web app — input validation", () => {
     }
   });
 
-  it("updates settings collections and agent enabled state", async () => {
-    const collections = await c.app.request("/api/settings/collections", {
-      method: "PUT",
+  it("applies explicit planned settings, collection, and agent mutations", async () => {
+    const collection = await c.app.request("/api/collections", {
+      method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        collections: {
-          default: { description: "Default" },
-          work: { description: "Work" },
-        },
+        collectionName: "work",
+        description: "Work",
+        resourceIds: [],
       }),
     });
-    expect(collections.status).toBe(200);
+    expect(collection.status).toBe(200);
+    expect(await collection.json()).toMatchObject({ receipt: { outcome: "committed" } });
 
-    const defaults = await c.app.request("/api/settings/defaults", {
+    const settingsMutation = await c.app.request("/api/settings", {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ defaults: { method: "copy" } }),
+      body: JSON.stringify({ settings: { method: "copy" } }),
     });
-    expect(defaults.status).toBe(200);
+    expect(settingsMutation.status).toBe(200);
+    expect(await settingsMutation.json()).toMatchObject({
+      plan: { operation: "settings" },
+      changedFields: ["defaults.method"],
+      receipt: { outcome: "committed" },
+    });
 
     const agent = await c.app.request("/api/agents/codex/enabled", {
       method: "PUT",
@@ -1336,15 +1438,25 @@ describe("web app — input validation", () => {
     const adapterConfig = await c.app.request("/api/agents/local-review/adapter", {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ adapter: { rules: { global: "~/.local-review/RULES.md" } } }),
+      body: JSON.stringify({
+        kind: "custom",
+        adapter: { rules: { global: "~/.local-review/RULES.md" } },
+      }),
     });
     expect(adapterConfig.status).toBe(200);
+
+    const disabledCustomAdapter = await c.app.request("/api/agents/local-review/enabled", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(disabledCustomAdapter.status).toBe(200);
 
     const deletedAdapter = await c.app.request("/api/agents/local-review/adapter", {
       method: "DELETE",
     });
     expect(deletedAdapter.status).toBe(200);
-    await expect(readStoreRevision(c.env, c.storeRoot)).resolves.toBe(5);
+    await expect(readStoreRevision(c.env, c.storeRoot)).resolves.toBe(6);
 
     const settings = await (await c.app.request("/api/settings")).json();
     expect(settings.collections.map((c: { name: string }) => c.name)).toContain("work");
@@ -1353,5 +1465,403 @@ describe("web app — input validation", () => {
     expect(agents.agents.find((a: { id: string }) => a.id === "codex")).toMatchObject({
       enabled: false,
     });
+  }, 20_000);
+
+  it("returns plans for every explicit settings and collection dry-run and receipts on apply", async () => {
+    await c.env.fs.writeFile(join(c.storeRoot, "store", "rules", "style.md"), "# style");
+    const jsonRequest = async (path: string, method: string, body?: unknown) => {
+      const response = await c.app.request(path, {
+        method,
+        ...(body === undefined
+          ? {}
+          : {
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(body),
+            }),
+      });
+      expect(response.status, await response.clone().text()).toBe(200);
+      return response.json();
+    };
+    const expectDryRun = (body: Record<string, unknown>) => {
+      expect(body).toMatchObject({ plan: { operation: "settings" } });
+      expect(body.receipt).toBeUndefined();
+    };
+    const expectApplied = (body: Record<string, unknown>) => {
+      expect(body).toMatchObject({
+        plan: { operation: "settings" },
+        receipt: { outcome: "committed" },
+      });
+    };
+
+    expectDryRun(
+      await jsonRequest("/api/settings", "PUT", {
+        settings: { method: "copy" },
+        dryRun: true,
+      }),
+    );
+    expectApplied(await jsonRequest("/api/settings", "PUT", { settings: { method: "copy" } }));
+    expectApplied(
+      await jsonRequest("/api/collections", "POST", {
+        collectionName: "work",
+        description: "Work",
+        resourceIds: [],
+      }),
+    );
+
+    expectDryRun(
+      await jsonRequest("/api/collections/work", "PUT", {
+        description: "Updated",
+        dryRun: true,
+      }),
+    );
+    expectApplied(await jsonRequest("/api/collections/work", "PUT", { description: "Updated" }));
+    expectDryRun(
+      await jsonRequest("/api/collections/work/members", "PUT", {
+        resourceIds: ["rules/style"],
+        dryRun: true,
+      }),
+    );
+    expectApplied(
+      await jsonRequest("/api/collections/work/members", "PUT", {
+        resourceIds: ["rules/style"],
+      }),
+    );
+    expectDryRun(
+      await jsonRequest("/api/collections/defaults", "PUT", {
+        collectionNames: ["work"],
+        dryRun: true,
+      }),
+    );
+    expectApplied(
+      await jsonRequest("/api/collections/defaults", "PUT", {
+        collectionNames: ["work"],
+      }),
+    );
+    expectApplied(
+      await jsonRequest("/api/collections/defaults", "PUT", {
+        collectionNames: ["default"],
+      }),
+    );
+
+    expectDryRun(await jsonRequest("/api/collections/work?dryRun=true", "DELETE"));
+    expect((await loadConfig(c.env, c.storeRoot)).collections.work).toBeDefined();
+    expectApplied(await jsonRequest("/api/collections/work", "DELETE"));
+    expect(await loadConfig(c.env, c.storeRoot)).toMatchObject({
+      artifacts: { "rules/style": { collections: [] } },
+    });
+  }, 20_000);
+
+  it("rejects obsolete bulk settings routes without changing control-plane state", async () => {
+    const beforeStore = await c.env.fs.snapshotTreeNoFollow(c.storeRoot);
+    const beforeRevision = await readStoreRevision(c.env, c.storeRoot);
+    const beforeReceipts = await listOperationReceipts(c.env, c.storeRoot);
+
+    const responses = await Promise.all([
+      c.app.request("/api/settings/collections", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          collections: {
+            default: { description: "Default" },
+            unsafeBulkReplacement: { description: "Must not be accepted" },
+          },
+        }),
+      }),
+      c.app.request("/api/settings/defaults", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ defaults: { method: "copy" } }),
+      }),
+    ]);
+
+    expect(responses.map((response) => response.status)).toEqual([404, 404]);
+    await expect(c.env.fs.snapshotTreeNoFollow(c.storeRoot)).resolves.toEqual(beforeStore);
+    await expect(readStoreRevision(c.env, c.storeRoot)).resolves.toBe(beforeRevision);
+    await expect(listOperationReceipts(c.env, c.storeRoot)).resolves.toEqual(beforeReceipts);
+  });
+
+  it.each([
+    ["missing enabled", {}],
+    ["non-boolean enabled", { enabled: "false" }],
+    ["null enabled", { enabled: null }],
+    ["unknown field", { enabled: false, unknown: true }],
+    ["non-boolean dryRun", { enabled: false, dryRun: "false" }],
+  ])("rejects an enabled body with %s as HTTP 400 before Env", async (_label, body) => {
+    let envTouches = 0;
+    const fsProxy = new Proxy(c.env.fs, {
+      get(target, key, receiver) {
+        envTouches += 1;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    const app = createApp({ env: { ...c.env, fs: fsProxy }, storeRoot: c.storeRoot });
+
+    const response = await app.request("/api/agents/codex/enabled", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: "DOMAIN_VALIDATION_FAILED" });
+    expect(envTouches).toBe(0);
+  });
+
+  it("applies exact false and true enabled semantics", async () => {
+    for (const enabled of [false, true]) {
+      const response = await c.app.request("/api/agents/codex/enabled", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        plan: {
+          normalizedInputs: {
+            mutationKind: enabled ? "builtin-agent-enable" : "builtin-agent-disable",
+          },
+        },
+      });
+      expect((await loadConfig(c.env, c.storeRoot)).adapterOverrides.codex?.enabled).toBe(enabled);
+    }
+  });
+
+  it("requires explicit adapter kind before Web mutation effects", async () => {
+    let envTouches = 0;
+    const fsProxy = new Proxy(c.env.fs, {
+      get(target, key, receiver) {
+        envTouches += 1;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    const app = createApp({ env: { ...c.env, fs: fsProxy }, storeRoot: c.storeRoot });
+    const response = await app.request("/api/agents/web-agent/adapter", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ adapter: { rules: { global: "~/.web-agent/RULES.md" } } }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: "DOMAIN_VALIDATION_FAILED" });
+    expect(envTouches).toBe(0);
+  });
+
+  it.each([
+    [
+      "accessor",
+      () => {
+        let traps = 0;
+        const body = Object.create(null) as Record<string, unknown>;
+        Object.defineProperty(body, "enabled", {
+          enumerable: true,
+          get() {
+            traps += 1;
+            return false;
+          },
+        });
+        return { body, traps: () => traps };
+      },
+    ],
+    [
+      "Proxy",
+      () => {
+        let traps = 0;
+        const body = new Proxy(
+          { enabled: false },
+          {
+            ownKeys(target) {
+              traps += 1;
+              return Reflect.ownKeys(target);
+            },
+          },
+        );
+        return { body, traps: () => traps };
+      },
+    ],
+    [
+      "toJSON",
+      () => ({ body: { enabled: false, toJSON: () => ({ enabled: true }) }, traps: () => 0 }),
+    ],
+    [
+      "custom prototype",
+      () => ({
+        body: Object.assign(Object.create({ inherited: true }), { enabled: false }),
+        traps: () => 0,
+      }),
+    ],
+    [
+      "symbol key",
+      () => ({ body: { enabled: false, [Symbol("unexpected")]: true }, traps: () => 0 }),
+    ],
+  ])("rejects a hostile enabled %s as HTTP 400 with trap0 and Env0", async (_label, create) => {
+    const hostile = create();
+    let envTouches = 0;
+    const fsProxy = new Proxy(c.env.fs, {
+      get(target, key, receiver) {
+        envTouches += 1;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    const app = createApp({ env: { ...c.env, fs: fsProxy }, storeRoot: c.storeRoot });
+    const parse = vi.spyOn(JSON, "parse").mockImplementationOnce(() => hostile.body as never);
+    try {
+      const response = await app.request("/api/agents/codex/enabled", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ code: "DOMAIN_VALIDATION_FAILED" });
+    } finally {
+      parse.mockRestore();
+    }
+    expect(hostile.traps()).toBe(0);
+    expect(envTouches).toBe(0);
+  });
+
+  it("rejects unknown planned settings and collection fields without changing state", async () => {
+    const configPath = join(c.storeRoot, "config.json");
+    const beforeConfig = await c.env.fs.readFile(configPath).catch(() => null);
+    const beforeRevision = await readStoreRevision(c.env, c.storeRoot);
+    const beforeJournal = await readOperationJournal(c.env, c.storeRoot);
+    const beforeReceipts = await listOperationReceipts(c.env, c.storeRoot);
+    const beforeStore = await c.env.fs.snapshotTreeNoFollow(c.storeRoot);
+
+    const requests = [
+      ["PUT", "/api/settings", { settings: { method: "copy", unexpectedOption: true } }],
+      [
+        "POST",
+        "/api/collections",
+        {
+          collectionName: "unsafe",
+          description: "Unsafe",
+          resourceIds: [],
+          unexpectedOption: true,
+        },
+      ],
+    ] as const;
+
+    for (const [method, path, body] of requests) {
+      const response = await c.app.request(path, {
+        method,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ code: "DOMAIN_VALIDATION_FAILED" });
+      if (beforeConfig === null) await expect(c.env.fs.lstat(configPath)).rejects.toThrow();
+      else await expect(c.env.fs.readFile(configPath)).resolves.toBe(beforeConfig);
+      await expect(readStoreRevision(c.env, c.storeRoot)).resolves.toBe(beforeRevision);
+      await expect(readOperationJournal(c.env, c.storeRoot)).resolves.toEqual(beforeJournal);
+      await expect(listOperationReceipts(c.env, c.storeRoot)).resolves.toEqual(beforeReceipts);
+      await expect(c.env.fs.snapshotTreeNoFollow(c.storeRoot)).resolves.toEqual(beforeStore);
+      await expect(loadConfig(c.env, c.storeRoot)).resolves.toBeDefined();
+    }
+  });
+
+  it("uses planned adapter mutations and preserves a built-in enabled override", async () => {
+    const disabled = await c.app.request("/api/agents/codex/enabled", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(disabled.status).toBe(200);
+
+    const configured = await c.app.request("/api/agents/codex/adapter", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "builtin", adapter: { displayName: "Codex Web" } }),
+    });
+    expect(configured.status).toBe(200);
+    expect(await configured.json()).toMatchObject({
+      plan: { operation: "settings" },
+      changedFields: ["adapterOverrides.codex.displayName"],
+      receipt: { outcome: "committed" },
+    });
+    expect(JSON.parse(await c.env.fs.readFile(join(c.storeRoot, "config.json")))).toMatchObject({
+      adapterOverrides: { codex: { enabled: false, displayName: "Codex Web" } },
+    });
+  });
+
+  it("rejects an unsafe adapter id before Web-facing mutation effects", async () => {
+    const configPath = join(c.storeRoot, "config.json");
+    await expect(c.env.fs.lstat(configPath)).rejects.toThrow();
+    const beforeRevision = await readStoreRevision(c.env, c.storeRoot);
+
+    const response = await c.app.request("/api/agents/agent%20id/adapter", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "custom",
+        adapter: { rules: { global: "~/.unsafe/RULES.md" } },
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      code: "DOMAIN_VALIDATION_FAILED",
+      details: { agentId: "agent id" },
+    });
+    await expect(c.env.fs.lstat(configPath)).rejects.toThrow();
+    await expect(readStoreRevision(c.env, c.storeRoot)).resolves.toBe(beforeRevision);
+    await expect(c.env.fs.lstat(join(c.storeRoot, "operations", "active.json"))).rejects.toThrow();
+  });
+
+  it("blocks planned custom-adapter deletion with exact owned and desired dependencies", async () => {
+    const created = await c.app.request("/api/agents/local-review/adapter", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "custom",
+        adapter: { rules: { global: "~/.local-review/RULES.md" } },
+      }),
+    });
+    expect(created.status).toBe(200);
+    expect(await created.json()).toMatchObject({ receipt: { outcome: "committed" } });
+
+    const ownedTarget = join(c.root, "owned", "RULES.md");
+    await c.env.fs.writeFile(
+      join(c.storeRoot, "state.json"),
+      `${JSON.stringify(
+        {
+          version: 2,
+          owners: [
+            {
+              agent: "local-review",
+              scope: "global",
+              capability: "rules",
+              target: ownedTarget,
+              artifactIds: ["rules/style"],
+              receipt: {
+                method: "write",
+                fingerprint: "sha256:owned",
+                backup: null,
+                generated: true,
+                appliedAt: "2026-06-30T08:00:00.000Z",
+              },
+            },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    const deleted = await c.app.request("/api/agents/local-review/adapter", { method: "DELETE" });
+    expect(deleted.status).toBe(400);
+    expect(await deleted.json()).toMatchObject({
+      code: "DOMAIN_VALIDATION_FAILED",
+      details: {
+        agentId: "local-review",
+        dependencies: {
+          ownedTargets: [ownedTarget],
+          desiredSelections: ["agent:local-review:enabled"],
+        },
+      },
+    });
+    expect(JSON.parse(await c.env.fs.readFile(join(c.storeRoot, "config.json")))).toHaveProperty(
+      "customAdapters.local-review",
+    );
   });
 });

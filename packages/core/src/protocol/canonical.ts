@@ -5,7 +5,10 @@ import type {
   MutationAuthorityLease,
   MutationAuthorityRequest,
 } from "../env.js";
-import { assertNoSecretValues } from "../secrets/observable.js";
+import {
+  assertNoSecretValues,
+  registerObservableMutationAuthorization,
+} from "../secrets/observable.js";
 import { sha256 } from "../store/checksum.js";
 import type {
   DurableMutationPlan,
@@ -302,7 +305,11 @@ export function createAuthorizedMutationPlan(
   if (!authority.verify(request, authorization)) {
     throw new TypeError("mutation authority could not verify its authorization envelope");
   }
-  return deepFreeze({ ...integrityPlan, authorization: deepFreeze({ ...authorization }) });
+  const observableAuthorization = registerObservableMutationAuthorization(
+    authorization,
+    EXECUTABLE_MUTATION_PLAN_DOMAIN,
+  );
+  return deepFreeze({ ...integrityPlan, authorization: observableAuthorization });
 }
 
 export function verifyMutationPlanAuthorization(
@@ -317,7 +324,11 @@ export function verifyMutationPlanAuthorization(
     ) {
       return false;
     }
-    return authority.verify(mutationAuthorityRequest(env, storeRoot, plan), plan.authorization);
+    if (!authority.verify(mutationAuthorityRequest(env, storeRoot, plan), plan.authorization)) {
+      return false;
+    }
+    registerObservableMutationAuthorization(plan.authorization, EXECUTABLE_MUTATION_PLAN_DOMAIN);
+    return true;
   } catch {
     return false;
   }
@@ -438,9 +449,13 @@ export function createDurableMutationPlan(
   if (!authority.verify(request, authorization)) {
     throw new TypeError("mutation authority could not verify its durable authorization envelope");
   }
+  const observableAuthorization = registerObservableMutationAuthorization(
+    authorization,
+    DURABLE_MUTATION_PLAN_DOMAIN,
+  );
   return deepFreeze({
     ...integrityPlan,
-    authorization: deepFreeze({ ...authorization }),
+    authorization: observableAuthorization,
   });
 }
 

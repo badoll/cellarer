@@ -24,11 +24,14 @@ the same command surface is expected to be available through the `cellarer` bin.
 ## Initialize the Store
 
 ```bash
-node packages/cli/dist/bin.js init
+node packages/cli/dist/bin.js init --agent codex,claude-code
 ```
 
 By default this creates or reuses the store under `~/.cellarer`. Set
-`CELLARER_HOME` when you want an isolated store for testing.
+`CELLARER_HOME` when you want an isolated store for testing. Initialization
+reports the detected/configured inventory and enables only the exact adapter
+IDs passed with `--agent`. Omitting targets returns `INPUT_REQUIRED`; it never
+selects all detected agents implicitly.
 
 ## Add Resources
 
@@ -56,54 +59,115 @@ GitLab and arbitrary git URLs are not supported in this milestone.
 ```bash
 node packages/cli/dist/bin.js ls
 node packages/cli/dist/bin.js ls --collection default
+node packages/cli/dist/bin.js resource list --kind rules
+node packages/cli/dist/bin.js resource show rules/my-rules
 ```
+
+Use `resource list/show` for stable IDs, provenance, validation, collection
+membership, desired selection, and applied usage. Mutation commands use the
+immutable ID (for example `rules/my-rules`), not a resource name.
 
 ## Inspect Agents
 
 ```bash
 node packages/cli/dist/bin.js agents
 node packages/cli/dist/bin.js doctor
+node packages/cli/dist/bin.js agent list --scope project --dir /path/to/project
+node packages/cli/dist/bin.js agent show codex --scope global
 ```
 
 Use `agents --dir <path>` or `doctor --dir <path>` to inspect project-scope
 targets. Both commands support `-a, --agent <ids>` and `--json`.
 
+## Manage Agents, Collections, and Settings
+
+```bash
+node packages/cli/dist/bin.js agent configure codex \
+  --adapter '{"displayName":"Codex Local"}' --dry-run
+node packages/cli/dist/bin.js agent add my-agent \
+  --adapter '{"displayName":"My Agent","rules":{"project":"{dir}/.my-agent/RULES.md"}}'
+node packages/cli/dist/bin.js collection create work \
+  --resource rules/my-rules --description "Work resources"
+node packages/cli/dist/bin.js collection defaults set --collection default,work
+node packages/cli/dist/bin.js config update --settings '{"method":"copy"}'
+```
+
+Run any control-plane mutation with `--dry-run` to receive its revisioned plan
+without changing the store or targets. Built-in patches live in
+`adapterOverrides`; declarative custom agents live in `customAdapters`.
+Apply that exact plan instead of repeating the mutation inputs:
+
+```bash
+PLAN_JSON=$(node packages/cli/dist/bin.js --output json \
+  config update --settings '{"method":"copy"}' --dry-run | \
+  node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.stringify(JSON.parse(s).data.plan)))')
+node packages/cli/dist/bin.js --output jsonl apply --plan "$PLAN_JSON"
+```
+
+This round trip works for every agent/adapter, collection membership/default,
+and typed config mutation. The plan contains only reference-safe publication
+bytes. Any revision, config, ledger, artifact-membership, or target change
+between planning and the mutation lock rejects the plan without a receipt.
+
 ## Preview and Apply
 
-Always preview first:
+Create an exact serializable distribution plan first:
 
 ```bash
-node packages/cli/dist/bin.js apply --dry-run --agent claude-code,codex --rules --mcp --skills
+PLAN_JSON=$(node packages/cli/dist/bin.js --output json plan \
+  --agent claude-code,codex --scope global --rules --mcp --skills | \
+  node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.stringify(JSON.parse(s).data.plan)))')
 ```
 
-Apply after the plan looks right:
+Apply the exact authority-sealed plan after reviewing it:
 
 ```bash
-node packages/cli/dist/bin.js apply --agent claude-code,codex --rules --mcp --skills
+node packages/cli/dist/bin.js --output jsonl apply --plan "$PLAN_JSON"
 ```
+
+`--agent` is required for the planning path (`plan`, direct `apply`, or
+`apply --dry-run`), but not for `apply --plan`. The top-level `plan` response is
+`{ plan: <sealed-plan>, preview }`; distribution dry-run/apply returns
+`{ plan: <preview>, entries, failures, mutation }`, with a receipt only at
+`mutation.result.receipt` after execution. Settings dry-run returns
+`{ plan, changedFields }`; settings `apply --plan` also returns `mutation` and,
+on success, `receipt`.
 
 Use `--dir <path>` for project scope. Without `--dir`, cellarer writes to each
-agent's global location.
+agent's global location. For structured input, put the unchanged plan object at
+`input.plan` in an `apply` request. Do not combine `plan` with agents,
+capabilities, `dir`, acknowledgements, or `dryRun`.
 
 ## Scan Existing Agent Configuration
 
 ```bash
 node packages/cli/dist/bin.js scan --agent codex --dry-run --json
-node packages/cli/dist/bin.js scan --agent codex --into-collection default
+node packages/cli/dist/bin.js scan --agent codex --rules --into-collection default \
+  --select '[{"kind":"rules","name":"team","source":"/absolute/path/AGENTS.md"}]'
 ```
 
 `scan` accepts one agent at a time. The plan omits secret values and only returns
-secret reference names.
+secret reference names. A mutating `--select` is a JSON array of complete
+`kind`, `name`, and `source` selectors copied from the preview; name-only input
+is rejected.
 
 ## Check and Revert
 
 ```bash
 node packages/cli/dist/bin.js status
+node packages/cli/dist/bin.js verify --scope project --dir /path/to/project \
+  --agent claude-code,codex --rules
+node packages/cli/dist/bin.js operation list
+node packages/cli/dist/bin.js --output json operation recover operation-<id> --dry-run
+node packages/cli/dist/bin.js --output json operation recover operation-<id>
 node packages/cli/dist/bin.js revert --agent claude-code,codex
 ```
 
 `revert` uses the ledger written by `apply`. To revert everything without an
 agent or directory selector, pass `--all` explicitly.
+Diagnose recovery with `--dry-run` before attempting it. If the result is
+`RECOVERY_REQUIRED`, follow its typed evidence and leave locks and journals in
+place; do not delete them manually.
 
 ## Start the Web UI
 

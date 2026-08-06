@@ -158,7 +158,7 @@ export async function dashboardSummary(
   ];
   const enabledAgentIds = registry
     .list()
-    .filter((agent) => config.agents[agent.id]?.enabled !== false)
+    .filter((agent) => config.adapterOverrides[agent.id]?.enabled !== false)
     .map((agent) => agent.id);
   const selectedAgents = opts.agents && opts.agents.length > 0 ? opts.agents : enabledAgentIds;
   const collections = dashboardCollections(

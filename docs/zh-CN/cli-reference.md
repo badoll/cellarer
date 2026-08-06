@@ -119,8 +119,12 @@ receipt,`config.json` 使用原子发布;成功会推进 store revision,并输�
 校验。其他命令不会 provision 或隐式轮换缺失的 authority。Headless 系统必须由 runner
 注入下述受保护环境通道。
 
+`init` 会预览 supported/detected/configured agent,但绝不会把所有 detected agent
+隐式变成 mutation target。当前源码 CLI 在 human 与 machine 调用中都要求显式提供
+精确初始 target 集合:
+
 ```bash
-node packages/cli/dist/bin.js init
+node packages/cli/dist/bin.js init --agent codex,claude-code
 ```
 
 选项:
@@ -128,6 +132,10 @@ node packages/cli/dist/bin.js init
 | 选项 | 说明 |
 | --- | --- |
 | `--global` | 为清晰度保留;当前默认就是初始化全局库房。 |
+| `-a, --agent <ids>` | 必填的精确 adapter ID 列表,以逗号分隔。初始配置只启用这些 agent。 |
+
+省略 `--agent` 会返回带 agent inventory 的 `INPUT_REQUIRED`,且不创建产品配置。
+未知 ID 返回 `INVALID_INPUT`;不存在“全部 detected agents”的隐式 mutation 默认值。
 
 ## Mutation authority 与 headless 运行
 
@@ -265,6 +273,121 @@ node packages/cli/dist/bin.js --output json agents -a codex,claude-code --dir /p
 | `--dir <path>` | project scope 根目录。不传时为 global scope。 |
 | `--json` | `--output json` 的兼容别名。 |
 
+`agents` 是早期检查命令。完整 control-plane 使用下面的单数 `agent` 命令组。
+
+## Resource、agent、collection 与 config control plane
+
+这些命令与重叠的 Web routes 调用相同 Core DTO/service。只读命令不需要 mutation
+authority。Control-plane `--dry-run` 返回 `{ plan, changedFields }` 且不写入。直接执行
+同一 mutation 返回 `{ plan, changedFields, receipt }`;把 sealed plan 交给
+`apply --plan` 后,成功时返回 `{ plan, changedFields, mutation, receipt }`。
+
+每个 `agent`、自定义 adapter、`collection` 与 `config` mutation 都支持精确的
+dry-run→apply round trip。从 JSON envelope 取出完整 `data.plan` 对象,将原字节提交给
+`apply --plan`:
+
+```bash
+PLAN_JSON=$(node packages/cli/dist/bin.js --output json \
+  agent disable codex --dry-run | \
+  node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.stringify(JSON.parse(s).data.plan)))')
+node packages/cli/dist/bin.js --output jsonl apply --plan "$PLAN_JSON"
+```
+
+相同模式适用于 `agent add|update|remove`、collection members/defaults 与
+`config update|reset`。`apply` 消费 exact authority-sealed plan,不会 replan。revision、
+target、config、ownership ledger 或 artifact membership 变化都会返回 typed conflict,
+且没有 receipt。Settings plan 内自包含的 publication data 只能是 reference-safe config
+bytes,写入前还会再次经过 final secret guard。
+
+### `resource list|show`
+
+```bash
+node packages/cli/dist/bin.js resource list --kind rules --state managed \
+  --source /absolute/path/to/rules.md --no-include-discovered
+node packages/cli/dist/bin.js resource show rules/team-rules
+```
+
+`resource list` 支持 `--kind <rules|mcp|skills>`、逗号分隔的 `--state`、精确且
+逗号分隔的 `--source`、`--agent`、`--collection`、
+`--destination <user|project>`、`--dir` 与 `--no-include-discovered`。
+`resource show` 支持相同查询选项,并要求一个类似 `rules/team-rules` 的不可变 resource
+ID。单独 name 只能用于只读过滤,绝不能作为 mutation identity。
+
+### `agent list|show|enable|disable|configure|reset|add|update|remove`
+
+```bash
+node packages/cli/dist/bin.js agent list --scope project --dir /workspace/app \
+  --agent codex,claude-code
+node packages/cli/dist/bin.js agent show codex --scope global
+node packages/cli/dist/bin.js agent disable codex --dry-run
+node packages/cli/dist/bin.js agent configure codex \
+  --adapter '{"displayName":"Codex Local"}'
+node packages/cli/dist/bin.js agent add my-agent \
+  --adapter '{"displayName":"My Agent","rules":{"project":"{dir}/.my-agent/RULES.md"}}'
+node packages/cli/dist/bin.js agent update my-agent \
+  --adapter '{"displayName":"My Agent","rules":{"global":"~/.my-agent/RULES.md"}}'
+node packages/cli/dist/bin.js agent remove my-agent
+```
+
+`list` 与 `show` 报告 supported、detected、configured、enabled、detection evidence、
+capability scopes、target paths 与 validation issues。`configure`、`reset` 只用于随包
+发布的内置 adapter,并且只持久化到 `adapterOverrides`;`add`、`update`、`remove` 管理
+`customAdapters`。仍有 owned target 或 enabled desired selection 依赖时,自定义 adapter
+删除会被阻止。每个 mutation 都支持 `--dry-run`。
+
+### `collection list|show|create|update|delete|members set|defaults set`
+
+```bash
+node packages/cli/dist/bin.js collection create work \
+  --description "工作资源" --resource rules/team-rules,skills/review
+node packages/cli/dist/bin.js collection members set work \
+  --resource rules/team-rules
+node packages/cli/dist/bin.js collection defaults set --collection default,work
+node packages/cli/dist/bin.js collection show work
+```
+
+Collection membership 只接受不可变 ID。用 `members set --resource ""` 清空成员。
+`update` 要求 `--description`;collection 仍位于 `defaults.collections` 时 `delete` 会被
+阻止。所有 mutation 都支持 `--dry-run`。
+
+### `config show|validate|update|reset`
+
+```bash
+node packages/cli/dist/bin.js config show
+node packages/cli/dist/bin.js config validate \
+  --config '{"version":1,"defaults":{"method":"copy"}}'
+node packages/cli/dist/bin.js config update \
+  --settings '{"method":"copy","secretMode":"env"}'
+node packages/cli/dist/bin.js config reset --field method,secretMode
+```
+
+`config update` 只接受 typed non-secret defaults:`method`、`secretMode` 与 `os` 下
+各平台的 `method`。`config reset` 接受 `method`、`secretMode`、`os`;省略 `--field`
+会重置三者。未知或 secret-shaped 字段返回 `INVALID_INPUT`,且不写入。
+
+### `diff`、`verify`、`discovery summary` 与 `operation list|show|recover`
+
+```bash
+node packages/cli/dist/bin.js diff --scope project --dir /workspace/app \
+  --agent codex,claude-code --collection work --rules --method copy
+node packages/cli/dist/bin.js verify --scope project --dir /workspace/app \
+  --agent codex,claude-code --collection work --rules --method copy
+node packages/cli/dist/bin.js discovery summary --destination project \
+  --dir /workspace/app --agent codex,claude-code
+node packages/cli/dist/bin.js operation list --limit 20
+node packages/cli/dist/bin.js operation show operation-<id>
+node packages/cli/dist/bin.js --output json operation recover operation-<id> --dry-run
+node packages/cli/dist/bin.js --output json operation recover operation-<id>
+```
+
+`diff` 报告 desired-versus-applied actions;`verify` 还会分离 disk drift、secret-
+reference readiness 与 recovery health。验证命令支持 `--scope`、`--dir`、`--agent`、
+`--collection`、`--rules`、`--mcp`、`--skills`、
+`--method <symlink|copy>` 与 `--mcp-strategy <merge|overwrite>`。Operation 输出始终脱敏。
+始终先运行 `operation recover <id> --dry-run` 诊断。只有诊断允许 evidence-based recovery
+时才去掉 `--dry-run`。`RECOVERY_REQUIRED` 会返回 typed recovery evidence;不要手动删除
+lock 或 journal。
+
 ## `doctor`
 
 检查库房初始化、`config.json`、store 目录、adapter 加载、agent 探测、目标路径写权限
@@ -293,16 +416,19 @@ JSON 报告包含 `mutationRecovery`。`clean` 表示没有未完成 operation;
 生成计划或写入资源到选中的 agent。
 
 ```bash
-node packages/cli/dist/bin.js apply --dry-run --agent claude-code,codex
+node packages/cli/dist/bin.js --output json plan \
+  --agent claude-code,codex --scope global --rules --mcp --skills
 node packages/cli/dist/bin.js apply --agent claude-code,codex --collection default
-node packages/cli/dist/bin.js --output json apply --dry-run --agent claude-code
+node packages/cli/dist/bin.js --output json apply --dry-run --agent claude-code --rules
+node packages/cli/dist/bin.js --output jsonl apply --plan "$PLAN_JSON"
 ```
 
 选项:
 
 | 选项 | 说明 |
 | --- | --- |
-| `-a, --agent <ids>` | 必填。逗号分隔的 agent id。 |
+| `-a, --agent <ids>` | 仅当 `apply` 从这些选项 planning 时必填（包括 `--dry-run`）;`apply --plan` 已由 sealed plan 绑定 target,不需要此项。 |
+| `--plan <json>` | 应用 `plan` 或 control-plane mutation dry-run 返回的 exact authority-sealed `data.plan`;不能与 planning inputs 或 `--dry-run` 同用。 |
 | `--dir <path>` | project scope 根目录。不传时为 global scope。 |
 | `--collection <collection>` | 按 collection 过滤资源。 |
 | `--rules` | 包含 rules。交互式 text 与 dry-run 可默认包含全部能力;non-interactive 写入至少需要一个显式 capability flag。 |
@@ -322,10 +448,20 @@ node packages/cli/dist/bin.js --output json apply --dry-run --agent claude-code
 重试:把精确 token 放入 `--replace-unowned` 或 `--override-drift`,并提供
 `--snapshot-passphrase-fd` 或终端隐藏输入提供 snapshot 口令。
 
-每份响应都包含 `mutation.planId`、`planDigest`、`operation` 和 `baseRevision`。
-成功的非 dry-run 响应还会包含 `mutation.result.receipt`,其中有 operation id、
-resulting revision、outcome 和每个 action 的 receipts。CLI 在同一次调用内 plan 并
-apply;后续的非 dry-run 调用不会重新提交序列化的 dry-run plan。
+顶层 `plan` 命令是 resource distribution 的可序列化 planning surface;JSON envelope
+中的 `data.plan` 是 exact executable plan,`data.preview` 是便于阅读的 distribution
+preview。`apply --dry-run` 仍是便捷 preview。`apply --plan` 同时接受这类 distribution
+preview,返回 `{ plan: <distribution-preview>, entries: [], failures: [], mutation }`,其中
+`mutation` 没有 result 或 receipt。实际执行 distribution apply 时顶层字段相同,receipt
+位于 `mutation.result.receipt`。`apply --plan` 同时接受这类 distribution plan 与任意
+agent/adapter/collection/config `--dry-run` 返回的 `operation: "settings"`
+plan。Structured input 把同一个 plan 对象放入 `input.plan`;不要同时提交 agents、
+capabilities、`dir`、acknowledgements 或 `dryRun`。
+
+Distribution apply 与 settings `apply --plan` 响应包含 `mutation.planId`、
+`planDigest`、`operation` 和 `baseRevision`。成功 receipt 包含 operation id、resulting
+revision、outcome 和逐 action receipts;直接 control-plane mutation 则把 receipt 放在
+顶层 `data.receipt`。
 Public envelope 会把 Core conflicts 映射为稳定 CLI errors,例如 `LOCK_CONFLICT`、
 `STALE_REVISION`、`TARGET_CONFLICT` 与 `RECOVERY_REQUIRED`;原始 Core code 保留在脱敏
 error details 中。这些失败会以非零状态退出,且不执行未授权的 target write。
@@ -336,7 +472,8 @@ error details 中。这些失败会以非零状态退出,且不执行未授权�
 
 ```bash
 node packages/cli/dist/bin.js scan --agent codex --dry-run
-node packages/cli/dist/bin.js scan --agent codex --into-collection default
+node packages/cli/dist/bin.js scan --agent codex --rules --into-collection default \
+  --select '[{"kind":"rules","name":"team","source":"/absolute/path/AGENTS.md"}]'
 ```
 
 选项:
@@ -350,7 +487,7 @@ node packages/cli/dist/bin.js scan --agent codex --into-collection default
 | `--skills` | 只扫描 skills。 |
 | `--into-collection <collection>` | 给导入资源打上该 collection。 |
 | `--conflict <strategy>` | `keep-theirs`、`keep-mine` 或 `copy`。 |
-| `--select <names>` | 逗号分隔的资源名白名单。 |
+| `--select <json>` | 完整 `{kind,name,source}` selector 的 JSON 数组;每个对象必须且只能包含这三个字段。 |
 | `--secret-mode <mode>` | Mutating import 的密钥来源:`env`、`vault` 或 `keychain`。只读 dry-run 始终使用 `env`,会忽略该选择。 |
 | `--vault-passphrase-fd <number>` | Vault-backed mutating import 从继承描述符读取 vault 口令。 |
 | `--keychain-service <name>` | Keychain-backed mutating import 使用的 service;默认 `cellarer`。 |
@@ -362,6 +499,10 @@ node packages/cli/dist/bin.js scan --agent codex --into-collection default
 environment-reference mode 扫描。非 dry-run import 仍是 executable mutation,必须有
 authority。Non-interactive 写入还要求一个显式 agent 与至少一个 capability flag;dry-run
 必须指定 agent,但未传 capability flag 时可检查全部能力。
+
+不支持 name-only mutation selection。先从 dry-run item 复制精确 `kind`、`name`、
+`source` 到 `--select`,也可在 structured input 中提供同一数组。Store 内 collection
+命令使用 `rules/team` 这类不可变 ID,而不是 scan tuple。
 
 ## `status`
 

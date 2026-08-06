@@ -23,6 +23,91 @@ export type {
   SkillsCodec,
 } from "./adapters/types.js";
 export {
+  type ControlPlaneAgentDetailDto,
+  type ControlPlaneAgentDetailOptions,
+  type ControlPlaneAgentDto,
+  type ControlPlaneAgentListDto,
+  type ControlPlaneAgentOptions,
+  type ControlPlaneAgentTarget,
+  type ControlPlaneCollectionDetailDto,
+  type ControlPlaneCollectionDetailOptions,
+  type ControlPlaneCollectionDto,
+  type ControlPlaneCollectionListDto,
+  type ControlPlaneConfigDto,
+  type ControlPlaneConfigValidationDto,
+  type ControlPlaneDiffDto,
+  type ControlPlaneDiscoverySummaryDto,
+  type ControlPlaneOperationDetailDto,
+  type ControlPlaneOperationDetailOptions,
+  type ControlPlaneOperationListDto,
+  type ControlPlaneOperationListOptions,
+  type ControlPlaneOperationSummaryDto,
+  type ControlPlaneResourceDetailDto,
+  type ControlPlaneResourceDetailOptions,
+  type ControlPlaneResourceDto,
+  type ControlPlaneResourceListDto,
+  type ControlPlaneResourceQuery,
+  type ControlPlaneResourceValidation,
+  type ControlPlaneStatusDto,
+  type ControlPlaneStoreOptions,
+  type ControlPlaneSummaryDto,
+  type ControlPlaneValidationIssue,
+  type ControlPlaneVerifyDto,
+  diffControlPlane,
+  discoverySummaryControlPlane,
+  listControlPlaneAgents,
+  listControlPlaneCollections,
+  listControlPlaneOperations,
+  listControlPlaneResources,
+  showControlPlaneAgent,
+  showControlPlaneCollection,
+  showControlPlaneConfig,
+  showControlPlaneOperation,
+  showControlPlaneResource,
+  statusControlPlane,
+  summaryControlPlane,
+  validateControlPlaneConfig,
+  verifyControlPlane,
+} from "./control-plane.js";
+export {
+  type AgentAdapterMutationBody,
+  type AgentAdapterMutationOptions,
+  type AgentEnabledMutationBody,
+  type AppliedControlPlaneMutationPlanDto,
+  type ApplyControlPlaneMutationPlanOptions,
+  applyControlPlaneMutationPlan,
+  type BuiltinAgentMutationOptions,
+  type CollectionCreateMutationBody,
+  type CollectionDefaultsMutationBody,
+  type CollectionMembersMutationBody,
+  type CollectionMutationOptions,
+  type CollectionUpdateMutationBody,
+  ControlPlaneCollectionDependencyError,
+  ControlPlaneDependencyError,
+  type ControlPlaneMutationDependencies,
+  type ControlPlaneSettingField,
+  type ControlPlaneSettingsMutationBody,
+  type ControlPlaneSettingsMutationOptions,
+  type ControlPlaneSettingsPatch,
+  ControlPlaneValidationError,
+  type CustomAdapterMutationOptions,
+  mutateAgentAdapter,
+  mutateBuiltinAgent,
+  mutateCollection,
+  mutateControlPlaneSettings,
+  mutateCustomAdapter,
+  type PlannedControlPlaneMutationDto,
+  parseAgentAdapterMutationBody,
+  parseAgentEnabledMutationBody,
+  parseCollectionCreateMutationBody,
+  parseCollectionDefaultsMutationBody,
+  parseCollectionMembersMutationBody,
+  parseCollectionUpdateMutationBody,
+  parseControlPlaneSettingFields,
+  parseControlPlaneSettingsMutationBody,
+  parseControlPlaneSettingsPatch,
+} from "./control-plane-mutations.js";
+export {
   type AgentReadinessState,
   type DashboardAgentCounts,
   type DashboardAgentReadiness,
@@ -64,7 +149,12 @@ export {
   type SkillFrontmatter,
   type SkillProvenance,
 } from "./engine/add.js";
-export { apply, applyMutationPlan, planApplyMutation } from "./engine/apply.js";
+export {
+  apply,
+  applyMutationPlan,
+  planApplyMutation,
+  preflightApplyMutationPlan,
+} from "./engine/apply.js";
 export { inCollections, plan } from "./engine/plan.js";
 export {
   applyRevertMutationPlan,
@@ -87,6 +177,7 @@ export type {
   ApplyCallResult,
   ApplyFailure,
   ApplyMutationContext,
+  ApplyMutationPlanPreflight,
   ApplyMutationResult,
   ApplyResult,
   DistributeOptions,
@@ -255,6 +346,7 @@ export {
   type PresentedOperationResult,
 } from "./protocol/presentation.js";
 export {
+  diagnoseInterruptedOperation,
   diagnoseMutationRecovery,
   type MutationRecoveryDiagnosis,
   type MutationRecoveryStatus,
@@ -262,6 +354,7 @@ export {
   type OperationRecoveryRetentionResult,
   pruneOperationRecoveryArtifacts,
   type RecoverInterruptedOperationOptions,
+  type RequestedMutationRecoveryDiagnosis,
   recoverInterruptedOperation,
 } from "./protocol/recovery.js";
 export {
@@ -347,33 +440,40 @@ export {
 } from "./secrets/reference.js";
 export type { SecretMode } from "./secrets/types.js";
 export type {
-  DefaultsPatch,
   SettingsCollection,
   SettingsSummary,
   SettingsSummaryOptions,
 } from "./settings.js";
-export {
-  deleteCustomAdapterConfig,
-  saveCollections,
-  saveDefaults,
-  setAgentEnabled,
-  settingsSummary,
-  upsertAdapterConfig,
-} from "./settings.js";
+export { settingsSummary } from "./settings.js";
 export { sha256 } from "./store/checksum.js";
 // store
-export type { AdapterBodyConfig, AdapterPatchConfig, CellarerConfig } from "./store/config.js";
+export type {
+  AdapterBodyConfig,
+  AdapterOverrideConfig,
+  AdapterPatchConfig,
+  CellarerConfig,
+} from "./store/config.js";
 export {
+  AGENT_ID_PATTERN,
   CONFIG_FILENAME,
+  InvalidConfigError,
   initialConfigText,
   loadAdapterSpecs,
   loadConfig,
+  NORMALIZED_STORE_RELATIVE_SOURCE_PATTERN,
   PACKAGED_CONFIG_PATH,
   packagedConfigText,
+  parseAdapterBodyConfig,
+  parseAdapterOverrideConfig,
+  parseAdapterPatchConfig,
   parseConfig,
   parsePackagedConfigForSettings,
 } from "./store/config.js";
-export { type InitializeStoreResult, initializeStore } from "./store/initialize.js";
+export {
+  type InitializeStoreOptions,
+  type InitializeStoreResult,
+  initializeStore,
+} from "./store/initialize.js";
 export {
   addEntries,
   addOwners,

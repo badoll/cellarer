@@ -9,17 +9,23 @@ export interface JsonSchema {
   readonly const?: unknown;
   readonly enum?: readonly unknown[];
   readonly properties?: Readonly<Record<string, JsonSchema>>;
+  readonly propertyNames?: JsonSchema;
   readonly required?: readonly string[];
   readonly items?: JsonSchema;
   readonly additionalProperties?: boolean | JsonSchema;
   readonly minLength?: number;
+  readonly minProperties?: number;
   readonly minimum?: number;
   readonly maximum?: number;
   readonly pattern?: string;
   readonly allOf?: readonly JsonSchema[];
+  readonly anyOf?: readonly JsonSchema[];
+  readonly oneOf?: readonly JsonSchema[];
   readonly if?: JsonSchema;
   readonly then?: JsonSchema;
   readonly not?: JsonSchema;
+  /** Explicit protocol boundary for intentionally opaque JSON values (for schema discovery only). */
+  readonly "x-cellarer-opaque"?: true;
 }
 
 export interface CommandProtocolSchemas {
@@ -36,6 +42,26 @@ const REQUEST_ID_PATTERN = "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$";
 export const PROTECTED_DESCRIPTOR_MIN = 3;
 export const PROTECTED_DESCRIPTOR_MAX = 2_147_483_647;
 
+const jsonScalar: JsonSchema = { type: ["string", "number", "boolean", "null"] };
+
+function jsonValueSchema(depth = 8): JsonSchema {
+  if (depth === 0) return jsonScalar;
+  const child = jsonValueSchema(depth - 1);
+  return {
+    oneOf: [
+      jsonScalar,
+      { type: "array", items: child },
+      { type: "object", properties: {}, additionalProperties: child },
+    ],
+  };
+}
+
+const jsonDetailMap: JsonSchema = {
+  type: "object",
+  properties: {},
+  additionalProperties: jsonValueSchema(),
+};
+
 export const CLI_WARNING_SCHEMA: JsonSchema = {
   $id: schemaId("warning"),
   $schema: JSON_SCHEMA_DIALECT,
@@ -46,7 +72,7 @@ export const CLI_WARNING_SCHEMA: JsonSchema = {
   properties: {
     code: { type: "string", minLength: 1 },
     message: { type: "string" },
-    details: { type: "object", additionalProperties: true },
+    details: jsonDetailMap,
   },
 };
 
@@ -76,7 +102,7 @@ export const CLI_ERROR_SCHEMA: JsonSchema = {
       ],
     },
     message: { type: "string" },
-    details: { type: "object", additionalProperties: true },
+    details: jsonDetailMap,
   },
 };
 
@@ -107,6 +133,42 @@ export const jsonSchema = {
   }),
 };
 
+export function assertClosedJsonSchema(schema: JsonSchema, path = "schema"): void {
+  if (schema["x-cellarer-opaque"] === true) return;
+  const schemaKeys = Object.keys(schema).filter(
+    (key) => key !== "$id" && key !== "$schema" && key !== "title" && key !== "description",
+  );
+  if (schemaKeys.length === 0) throw new TypeError(`${path}: empty JSON Schema branch`);
+  const types = Array.isArray(schema.type) ? schema.type : schema.type ? [schema.type] : [];
+  const objectSchema = types.includes("object") || schema.additionalProperties !== undefined;
+  if (
+    objectSchema &&
+    (schema.additionalProperties === undefined || schema.additionalProperties === true)
+  ) {
+    throw new TypeError(`${path}: object schema is not closed`);
+  }
+  for (const [key, child] of Object.entries(schema.properties ?? {})) {
+    assertClosedJsonSchema(child, `${path}.properties.${key}`);
+  }
+  if (schema.propertyNames) assertClosedJsonSchema(schema.propertyNames, `${path}.propertyNames`);
+  if (schema.items) assertClosedJsonSchema(schema.items, `${path}.items`);
+  if (typeof schema.additionalProperties === "object") {
+    assertClosedJsonSchema(schema.additionalProperties, `${path}.additionalProperties`);
+  }
+  for (const [index, child] of (schema.oneOf ?? []).entries()) {
+    assertClosedJsonSchema(child, `${path}.oneOf[${index}]`);
+  }
+  for (const [index, child] of (schema.anyOf ?? []).entries()) {
+    assertClosedJsonSchema(child, `${path}.anyOf[${index}]`);
+  }
+  for (const [index, child] of (schema.allOf ?? []).entries()) {
+    assertClosedJsonSchema(child, `${path}.allOf[${index}]`);
+  }
+  if (schema.if) assertClosedJsonSchema(schema.if, `${path}.if`);
+  if (schema.then) assertClosedJsonSchema(schema.then, `${path}.then`);
+  if (schema.not) assertClosedJsonSchema(schema.not, `${path}.not`);
+}
+
 export function createCommandProtocolSchemas(
   command: string,
   inputDataSchema: JsonSchema,
@@ -125,6 +187,22 @@ export function createCommandProtocolSchemas(
     ...(eventDataSchema && eventSchemaId
       ? { eventSchema: commandEventSchema(command, eventSchemaId, eventDataSchema) }
       : {}),
+  };
+}
+
+export function createCommandErrorResultSchema(command: string): JsonSchema {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["protocolVersion", "command", "requestId", "status", "warnings", "error"],
+    properties: {
+      protocolVersion: { const: CLI_PROTOCOL_VERSION },
+      command: { const: command },
+      requestId: requestIdSchema(),
+      status: { const: "error" },
+      warnings: { type: "array", items: withoutSchemaIdentity(CLI_WARNING_SCHEMA) },
+      error: withoutSchemaIdentity(CLI_ERROR_SCHEMA),
+    },
   };
 }
 

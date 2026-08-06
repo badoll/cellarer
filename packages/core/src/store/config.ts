@@ -1,8 +1,8 @@
 // User config: ~/.cellarer/config.json.
-// Packaged config carries built-in adapters; user config carries defaults, artifact metadata,
-// and key-based adapter entries. Adapter keys are the adapter ids.
+// Packaged config carries built-in adapters; user config keeps built-in/custom overrides separate.
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isProxy } from "node:util/types";
 import { z } from "zod";
 import type { AgentSpec } from "../adapters/spec.js";
 import type { Env } from "../env.js";
@@ -10,10 +10,34 @@ import { atomicWrite } from "../fs/atomicWrite.js";
 import { readFileOrNull } from "../fs/probe.js";
 import type { McpDialect } from "../mcp/model.js";
 import type { Capability, Scope } from "../model/index.js";
+import { registerObservablePublicControlPlaneConfig } from "../secrets/observable.js";
 
 export const CONFIG_FILENAME = "config.json";
 export const PACKAGED_CONFIG_PATH = fileURLToPath(new URL("../../config.json", import.meta.url));
+export const NORMALIZED_STORE_RELATIVE_SOURCE_PATTERN =
+  "^(?!/)(?!.*\\\\)(?![A-Za-z]:)(?!.*:)(?!.*%[0-9A-Fa-f]{2})(?!(?:.*\\/)?\\.{1,2}(?:\\/|$))(?!.*\\/\\/)(?!.*\\/$)[^/]+(?:\\/[^/]+)*$";
+export const AGENT_ID_PATTERN =
+  "^(?!(?:__proto__|prototype|constructor)$)[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$";
 
+const nonEmptyString = z.string().min(1);
+const agentIdSchema = z
+  .string()
+  .regex(
+    new RegExp(AGENT_ID_PATTERN),
+    "agent id must use letters, digits, dots, underscores, or hyphens without unsafe boundary or reserved object keys",
+  );
+const agentIdRecord = <T extends z.ZodType>(valueSchema: T) =>
+  z
+    .custom<Record<string, unknown>>(
+      (value) =>
+        typeof value === "object" &&
+        value !== null &&
+        !Array.isArray(value) &&
+        Object.keys(value).every((key) => agentIdSchema.safeParse(key).success),
+      "adapter map contains an invalid agent id",
+    )
+    .pipe(z.record(agentIdSchema, valueSchema));
+const nonEmptyStringArray = z.array(nonEmptyString);
 const methodSchema = z.enum(["symlink", "copy"]);
 const secretModeSchema = z.enum(["env", "vault", "keychain"]);
 const mergeStrategySchema = z.enum(["merge", "overwrite"]);
@@ -28,7 +52,7 @@ const osDefaultsSchema = z
 const defaultsSchema = z
   .object({
     method: methodSchema.default("symlink"),
-    collections: z.array(z.string()).default(["default"]),
+    collections: nonEmptyStringArray.default(["default"]),
     secretMode: secretModeSchema.default("env"),
     os: z
       .object({
@@ -42,18 +66,14 @@ const defaultsSchema = z
   .strict();
 
 const collectionSchema = z.object({ description: z.string().optional() }).strict();
+const collectionsSchema = z.record(nonEmptyString, collectionSchema);
 const secretPatternSuppressionSchema = z
   .object({
     source: z
       .string()
       .min(1)
-      .refine(
-        (value) =>
-          !value.startsWith("/") &&
-          !value.includes("\\") &&
-          value
-            .split("/")
-            .every((segment) => segment.length > 0 && segment !== "." && segment !== ".."),
+      .regex(
+        new RegExp(NORMALIZED_STORE_RELATIVE_SOURCE_PATTERN),
         "source must be a normalized store-relative file path",
       ),
     rule: z.string().min(1),
@@ -62,33 +82,25 @@ const secretPatternSuppressionSchema = z
   .strict();
 const artifactSchema = z
   .object({
-    collections: z.array(z.string()).default([]),
+    collections: nonEmptyStringArray.default([]),
     secretPatternSuppressions: z.array(secretPatternSuppressionSchema).optional(),
   })
   .strict();
-const agentMcpSchema = z.object({ mergeStrategy: mergeStrategySchema.optional() }).strict();
-const agentSchema = z
-  .object({
-    enabled: z.boolean().optional(),
-    mcp: agentMcpSchema.optional(),
-  })
-  .strict();
-
 const pathTemplate = z
   .object({
-    global: z.string().optional(),
-    project: z.string().optional(),
+    global: nonEmptyString.optional(),
+    project: nonEmptyString.optional(),
   })
   .strict();
 
 const dialectSchema = z
   .object({
     commandStyle: z.enum(["scalar", "array"]).optional(),
-    envKey: z.string().optional(),
-    urlKey: z.string().optional(),
-    typeField: z.string().optional(),
-    stdioType: z.string().optional(),
-    remoteType: z.string().optional(),
+    envKey: nonEmptyString.optional(),
+    urlKey: nonEmptyString.optional(),
+    typeField: nonEmptyString.optional(),
+    stdioType: nonEmptyString.optional(),
+    remoteType: nonEmptyString.optional(),
   })
   .strict();
 
@@ -101,11 +113,11 @@ const capabilitiesSchema = z
   .strict();
 
 const adapterFields = {
-  displayName: z.string().min(1).optional(),
+  displayName: nonEmptyString.optional(),
   detect: z
     .object({
-      global: z.array(z.string()).optional(),
-      project: z.array(z.string()).optional(),
+      global: nonEmptyStringArray.optional(),
+      project: nonEmptyStringArray.optional(),
     })
     .strict()
     .optional(),
@@ -113,7 +125,7 @@ const adapterFields = {
   mcp: pathTemplate
     .extend({
       format: z.enum(["json", "toml"]).optional(),
-      serversKey: z.string().optional(),
+      serversKey: nonEmptyString.optional(),
       mergeStrategy: mergeStrategySchema.optional(),
       supportedSecretReferences: z.array(z.enum(["environment", "cellarer"])).optional(),
       dialect: dialectSchema.optional(),
@@ -124,6 +136,9 @@ const adapterFields = {
 };
 
 const adapterPatchSchema = z.object(adapterFields).strict();
+const adapterOverrideSchema = z
+  .object({ enabled: z.boolean().optional(), ...adapterFields })
+  .strict();
 
 const adapterBodySchema = adapterPatchSchema
   .refine((d) => d.rules || d.mcp || d.skills, {
@@ -137,14 +152,14 @@ const adapterBodySchema = adapterPatchSchema
 const baseConfigShape = {
   version: z.literal(1).default(1),
   defaults: defaultsSchema.prefault({}),
-  collections: z.record(z.string(), collectionSchema).default({}),
-  artifacts: z.record(z.string(), artifactSchema).default({}),
-  agents: z.record(z.string(), agentSchema).default({}),
+  collections: collectionsSchema.default({}),
+  artifacts: z.record(nonEmptyString, artifactSchema).default({}),
 };
 
 const configShape = {
   ...baseConfigShape,
-  adapters: z.record(z.string(), adapterPatchSchema).default({}),
+  adapterOverrides: agentIdRecord(adapterOverrideSchema).default({}),
+  customAdapters: agentIdRecord(adapterBodySchema).default({}),
 };
 
 const configSchema = z.object(configShape).strict();
@@ -152,7 +167,8 @@ const configSchema = z.object(configShape).strict();
 const packagedConfigSchema = z
   .object({
     ...baseConfigShape,
-    builtinAdapters: z.record(z.string(), adapterBodySchema).default({}),
+    adapterOverrides: agentIdRecord(adapterOverrideSchema).default({}),
+    builtinAdapters: agentIdRecord(adapterBodySchema).default({}),
   })
   .strict();
 
@@ -160,6 +176,7 @@ export type CellarerConfig = z.infer<typeof configSchema>;
 type PackagedConfig = z.infer<typeof packagedConfigSchema>;
 export type AdapterBodyConfig = z.infer<typeof adapterBodySchema>;
 export type AdapterPatchConfig = z.infer<typeof adapterPatchSchema>;
+export type AdapterOverrideConfig = z.infer<typeof adapterOverrideSchema>;
 
 function inferScopes(
   explicit: Scope[] | undefined,
@@ -190,12 +207,32 @@ function capabilities(
 
 export function parseConfig(text: string): CellarerConfig {
   const raw = text.trim().length === 0 ? {} : JSON.parse(text);
-  return configSchema.parse(raw);
+  return parseConfigValue(raw);
+}
+
+export function parseConfigValue(value: unknown): CellarerConfig {
+  return configSchema.parse(snapshotConfigRuntimeValue(value));
+}
+
+export function parseAgentId(value: unknown): string {
+  return agentIdSchema.parse(value);
+}
+
+export function projectPublicControlPlaneConfig(config: CellarerConfig): CellarerConfig {
+  return registerObservablePublicControlPlaneConfig(
+    deepFreezeConfigProjection(parseConfigValue(config)),
+  );
+}
+
+function deepFreezeConfigProjection<T>(value: T): T {
+  if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) deepFreezeConfigProjection(child);
+  return Object.freeze(value);
 }
 
 function parsePackagedConfig(text: string): PackagedConfig {
   const raw = text.trim().length === 0 ? {} : JSON.parse(text);
-  return packagedConfigSchema.parse(raw);
+  return packagedConfigSchema.parse(snapshotConfigRuntimeValue(raw));
 }
 
 export function parsePackagedConfigForSettings(text: string): {
@@ -206,11 +243,128 @@ export function parsePackagedConfigForSettings(text: string): {
 }
 
 export function parseAdapterBodyConfig(adapter: unknown): AdapterBodyConfig {
-  return adapterBodySchema.parse(adapter);
+  return parseSnapshottedAdapterBodyConfig(snapshotConfigRuntimeValue(adapter));
 }
 
 export function parseAdapterPatchConfig(adapter: unknown): AdapterPatchConfig {
+  return parseSnapshottedAdapterPatchConfig(snapshotConfigRuntimeValue(adapter));
+}
+
+export function parseSnapshottedAdapterBodyConfig(adapter: unknown): AdapterBodyConfig {
+  return adapterBodySchema.parse(adapter);
+}
+
+export function parseSnapshottedAdapterPatchConfig(adapter: unknown): AdapterPatchConfig {
   return adapterPatchSchema.parse(adapter);
+}
+
+export function parseAdapterOverrideConfig(adapter: unknown): AdapterOverrideConfig {
+  return adapterOverrideSchema.parse(snapshotConfigRuntimeValue(adapter));
+}
+
+const UNSAFE_RUNTIME_CONFIG_KEYS = new Set(["__proto__", "prototype", "constructor", "toJSON"]);
+
+/**
+ * Copies runtime config input using own data descriptors only. This is deliberately stricter
+ * than JSON.stringify so accessors, Proxies, symbols, custom prototypes, and magic object keys
+ * cannot influence validation or final publication.
+ */
+export function snapshotConfigRuntimeValue(
+  value: unknown,
+  options: { readonly omitUndefinedObjectProperties?: boolean } = {},
+): unknown {
+  return snapshotConfigRuntimeNode(value, new WeakSet<object>(), "$config", options);
+}
+
+function snapshotConfigRuntimeNode(
+  value: unknown,
+  ancestors: WeakSet<object>,
+  path: string,
+  options: { readonly omitUndefinedObjectProperties?: boolean },
+): unknown {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (Number.isFinite(value)) return value;
+    throw new TypeError(`${path} must not contain a non-finite number`);
+  }
+  if (typeof value !== "object") {
+    throw new TypeError(`${path} must contain only JSON data values`);
+  }
+  if (isProxy(value)) throw new TypeError(`${path} must not contain a Proxy`);
+  if (ancestors.has(value)) throw new TypeError(`${path} must not contain a cycle`);
+
+  const prototype = Object.getPrototypeOf(value);
+  const array = Array.isArray(value);
+  if (
+    array ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null
+  ) {
+    throw new TypeError(`${path} must contain only plain objects and arrays`);
+  }
+
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors);
+  if (keys.some((key) => typeof key === "symbol")) {
+    throw new TypeError(`${path} must not contain symbol keys`);
+  }
+  ancestors.add(value);
+  try {
+    if (array) {
+      const length = descriptors.length;
+      if (!length || !("value" in length) || !Number.isSafeInteger(length.value)) {
+        throw new TypeError(`${path} must have a plain array length`);
+      }
+      const expected = [
+        ...Array.from({ length: length.value as number }, (_, index) => String(index)),
+        "length",
+      ].sort();
+      const actual = (keys as string[]).sort();
+      if (
+        actual.length !== expected.length ||
+        actual.some((key, index) => key !== expected[index])
+      ) {
+        throw new TypeError(`${path} must be a dense array without custom keys`);
+      }
+      return expected
+        .filter((key) => key !== "length")
+        .sort((left, right) => Number(left) - Number(right))
+        .map((key) =>
+          snapshotConfigDataDescriptor(descriptors[key], ancestors, `${path}[${key}]`, options),
+        );
+    }
+
+    const copy = Object.create(null) as Record<string, unknown>;
+    for (const key of keys as string[]) {
+      if (UNSAFE_RUNTIME_CONFIG_KEYS.has(key)) {
+        throw new TypeError(`${path} contains unsafe key ${JSON.stringify(key)}`);
+      }
+      const descriptor = descriptors[key];
+      if (
+        options.omitUndefinedObjectProperties &&
+        descriptor &&
+        "value" in descriptor &&
+        descriptor.enumerable &&
+        descriptor.value === undefined
+      ) {
+        continue;
+      }
+      copy[key] = snapshotConfigDataDescriptor(descriptor, ancestors, `${path}.${key}`, options);
+    }
+    return copy;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function snapshotConfigDataDescriptor(
+  descriptor: PropertyDescriptor | undefined,
+  ancestors: WeakSet<object>,
+  path: string,
+  options: { readonly omitUndefinedObjectProperties?: boolean },
+): unknown {
+  if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+    throw new TypeError(`${path} must be an enumerable own data property`);
+  }
+  return snapshotConfigRuntimeNode(descriptor.value, ancestors, path, options);
 }
 
 function adapterSupportedSecretReferences(
@@ -257,8 +411,8 @@ function userConfigTemplate(packaged: PackagedConfig): CellarerConfig {
     defaults: packaged.defaults,
     collections: packaged.collections,
     artifacts: packaged.artifacts,
-    agents: packaged.agents,
-    adapters: {},
+    adapterOverrides: packaged.adapterOverrides,
+    customAdapters: {},
   };
 }
 
@@ -274,8 +428,18 @@ export async function loadConfig(env: Env, storeRoot: string): Promise<CellarerC
   try {
     return parseConfig(text);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`invalid config at ${path}: ${msg}`);
+    throw new InvalidConfigError(path, err);
+  }
+}
+
+export class InvalidConfigError extends Error {
+  readonly configPath: string;
+
+  constructor(configPath: string, cause: unknown) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    super(`invalid config at ${configPath}: ${message}`);
+    this.name = "InvalidConfigError";
+    this.configPath = configPath;
   }
 }
 
@@ -310,20 +474,22 @@ export async function loadAdapterSpecs(env: Env, storeRoot: string): Promise<Ada
   const userConfig = userText === null ? parseConfig("") : parseConfig(userText);
 
   const effectiveBuiltins = new Map(Object.entries(packaged.builtinAdapters));
-  const customById = new Map<string, AdapterBodyConfig>();
+  const customById = new Map(Object.entries(userConfig.customAdapters));
 
-  for (const [id, adapter] of Object.entries(userConfig.adapters)) {
+  for (const [id, override] of Object.entries(userConfig.adapterOverrides)) {
+    const { enabled: _enabled, ...adapterPatch } = override;
+    if (Object.keys(adapterPatch).length === 0) continue;
     const builtin = effectiveBuiltins.get(id);
     if (builtin) {
-      effectiveBuiltins.set(id, mergeAdapter(builtin, adapter));
+      effectiveBuiltins.set(id, mergeAdapter(builtin, adapterPatch));
       continue;
     }
-
-    const parsed = adapterBodySchema.safeParse(adapter);
-    if (!parsed.success) {
-      throw new Error(`invalid custom adapter "${id}": ${parsed.error.message}`);
+    const custom = customById.get(id);
+    if (!custom) {
+      warnings.push(`adapter override "${id}" has no built-in or custom adapter`);
+      continue;
     }
-    customById.set(id, parsed.data);
+    customById.set(id, mergeAdapter(custom, adapterPatch));
   }
 
   const specs: AgentSpec[] = [];
@@ -342,8 +508,9 @@ export async function saveConfig(
   storeRoot: string,
   config: CellarerConfig,
 ): Promise<void> {
+  const validated = parseConfigValue(config);
   const path = join(storeRoot, CONFIG_FILENAME);
-  await atomicWrite(env, path, `${JSON.stringify(config, null, 2)}\n`);
+  await atomicWrite(env, path, `${JSON.stringify(validated, null, 2)}\n`);
 }
 
 export async function tagArtifactCollections(

@@ -59,7 +59,7 @@ export type ConflictStrategy = "keep-theirs" | "keep-mine" | "copy";
 export interface ScanSelection {
   kind: "rules" | "mcp" | "skills";
   name: string;
-  source?: string;
+  source: string;
 }
 
 export interface ScanOptions {
@@ -72,9 +72,7 @@ export interface ScanOptions {
   conflict?: ConflictStrategy;
   // 仅扫描这些能力(缺省三类全扫)。
   capabilities?: ("rules" | "mcp" | "skills")[];
-  // 仅导入这些制品名(按扫描发现的原始 name 匹配;缺省导入全部发现项)。非交互选择入口。
-  select?: string[];
-  // Web/GUI 使用的精确选择:避免不同 kind/source 下同名制品被 name-only 选择一起导入。
+  // 精确选择完整 kind/name/source tuple；缺省导入全部发现项。
   selectItems?: ScanSelection[];
   // Provider inputs remain operation-scoped; applyScan requires every active reference.
   secretMode?: "env" | "vault" | "keychain";
@@ -125,22 +123,16 @@ function wantCap(opts: ScanOptions, cap: "rules" | "mcp" | "skills"): boolean {
 }
 
 function selectionKey(item: ScanSelection): string {
-  return `${item.kind}\0${item.name}\0${item.source ?? ""}`;
+  return `${item.kind}\0${item.name}\0${item.source}`;
 }
 
-// 过滤:selectItems 精确匹配行;旧 select 保持按 name 匹配,兼容 CLI 非交互入口。
 function applySelect(
   candidates: ScanCandidate[],
-  select: string[] | undefined,
   selectItems: ScanSelection[] | undefined,
 ): ScanCandidate[] {
-  if (selectItems && selectItems.length > 0) {
-    const want = new Set(selectItems.map(selectionKey));
-    return candidates.filter((c) => want.has(selectionKey(c.item)));
-  }
-  if (!select || select.length === 0) return candidates;
-  const want = new Set(select);
-  return candidates.filter((c) => want.has(c.item.name));
+  if (selectItems === undefined) return candidates;
+  const want = new Set(selectItems.map(selectionKey));
+  return candidates.filter((candidate) => want.has(selectionKey(candidate.item)));
 }
 
 // —— 扫描(只读)：产出候选 —— //
@@ -492,7 +484,7 @@ export async function scanPlan(env: Env, opts: ScanOptions): Promise<ScanPlan> {
   const { scope, operationEnv } = await scanProviderScope(env, opts);
   try {
     const { candidates, warnings } = await scanCandidates(operationEnv, opts);
-    const selected = applySelect(candidates, opts.select, opts.selectItems);
+    const selected = applySelect(candidates, opts.selectItems);
     const existing = await existingNames(operationEnv, opts.storeRoot);
     const resolved = await guardPlaintext(
       operationEnv,
@@ -535,7 +527,7 @@ async function applyScanWithAuthorityLease(
   const { scope, operationEnv } = await scanProviderScope(env, opts);
   try {
     const scanned = await scanCandidates(operationEnv, opts);
-    const selected = applySelect(scanned.candidates, opts.select, opts.selectItems);
+    const selected = applySelect(scanned.candidates, opts.selectItems);
     let structuredBlocked = scanned.structuredBlocked;
     const preflightCandidates = selected.map((candidate) => {
       const findings = structuredFindingsInScanCandidate(candidate);
@@ -575,7 +567,7 @@ async function applyScanWithAuthorityLease(
       async () => {
         const current = await scanCandidates(operationEnv, opts);
         if (current.structuredBlocked) throw new StructuredScanGuardError();
-        const currentSelected = applySelect(current.candidates, opts.select, opts.selectItems);
+        const currentSelected = applySelect(current.candidates, opts.selectItems);
         const existing = await existingNames(operationEnv, opts.storeRoot);
         const warnings = current.warnings;
         const resolved = await guardPlaintext(

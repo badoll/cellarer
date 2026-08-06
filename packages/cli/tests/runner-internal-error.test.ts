@@ -1,4 +1,8 @@
-import { type CliError, StoreMutationConflictError } from "@cellarer/core";
+import {
+  type CliError,
+  ControlPlaneValidationError,
+  StoreMutationConflictError,
+} from "@cellarer/core";
 import { CommanderError } from "commander";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -150,6 +154,24 @@ describe("runCli internal-error boundary", () => {
     expect(errors[0]).not.toContain(canary);
     expect(errors[0]?.trim()).not.toBe("");
     expect(process.exitCode).toBe(70);
+  });
+
+  it("classifies a Core control-plane validation error as a stable domain error", async () => {
+    boundaryFailure.error = new ControlPlaneValidationError("invalid config publication", {
+      reason: "INVALID_CONFIG_PUBLICATION",
+    });
+
+    const captured = await invokeBoundaryFailure("json");
+
+    expect(captured.thrown).toBeUndefined();
+    expect(JSON.parse(captured.stdout)).toMatchObject({
+      status: "error",
+      error: {
+        code: "DOMAIN_VALIDATION_FAILED",
+        details: { reason: "INVALID_CONFIG_PUBLICATION" },
+      },
+    });
+    expect(process.exitCode).toBe(3);
   });
 
   it.each([

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "adapters": {
+  "customAdapters": {
     "acme-agent": {
       "displayName": "ACME Agent",
       "detect": {

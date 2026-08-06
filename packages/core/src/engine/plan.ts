@@ -15,6 +15,7 @@ import { loadRegistry } from "../adapters/registry.js";
 import type { AgentAdapter, RuleFragment } from "../adapters/types.js";
 import type { Env } from "../env.js";
 import { readFileOrNull } from "../fs/probe.js";
+import type { McpServer } from "../mcp/model.js";
 import type {
   Artifact,
   Capability,
@@ -34,22 +35,20 @@ import {
   withProviderScope,
 } from "../secrets/active-values.js";
 import { missingSecretReferences, verifySecretReferences } from "../secrets/provider.js";
-import {
-  captureSafeRecursiveSource,
-  type SafeRecursiveSnapshot,
-  UnsafeRecursiveSourceError,
-} from "../secrets/safe-tree.js";
+import { type SafeRecursiveSnapshot, UnsafeRecursiveSourceError } from "../secrets/safe-tree.js";
 import { sha256 } from "../store/checksum.js";
 import { type CellarerConfig, loadConfig } from "../store/config.js";
 import { duplicateTargetOwnerKeys, loadLedgerForPlanning, targetKey } from "../store/ledger.js";
-import {
-  listMcpArtifacts,
-  listRuleArtifacts,
-  listSkillArtifacts,
-  readRuleArtifact,
-} from "../store/store.js";
 import { inspectTargetOwnership } from "../target-ownership.js";
-import { loadSelectedMcp, planMcp, type RenderedMcp, renderMcp } from "./mcp-plan.js";
+import {
+  artifactSnapshotsFromCapabilityRoots,
+  artifactsFromCapabilitySnapshot,
+  type CapabilityRootCapture,
+  captureCapabilityRootSnapshots,
+  mcpServerFromSnapshot,
+  ruleFragmentFromSnapshot,
+} from "./capability-snapshot.js";
+import { planMcp, type RenderedMcp, renderMcp } from "./mcp-plan.js";
 import { dedupeCollisions } from "./plan/collision.js";
 import { applyRecursiveSecretGuard } from "./plan/secret-guard.js";
 import { planSkills } from "./skills-plan.js";
@@ -74,6 +73,7 @@ interface PlanContext {
   // mcp 密钥渲染与 agent 无关,顶层渲染一次共享。
   renderedMcp: RenderedMcp;
   selectedSkills: Artifact[];
+  stagedSources: ReadonlyMap<string, SafeRecursiveSnapshot>;
 }
 
 // 一个 capability planner:为单个 (agent, scope) 产出零或多个 PlanAction。
@@ -89,7 +89,10 @@ const PLANNERS: Record<Capability, CapabilityPlanner> = {
 export async function plan(
   env: Env,
   opts: DistributeOptions,
-  execution: { providerAccess?: "allowed" | "forbidden" } = {},
+  execution: {
+    providerAccess?: "allowed" | "forbidden";
+    capabilityRootCapture?: CapabilityRootCapture;
+  } = {},
 ): Promise<DistributePlan> {
   const warnings: string[] = [];
   const actions: PlanAction[] = [];
@@ -98,17 +101,45 @@ export async function plan(
   if (requestedCapabilities.includes("skills") && !env.fs.supportsSafeRecursiveSnapshots()) {
     throw new UnsafeRecursiveSourceError(join(opts.storeRoot, "store", "skills"), "unsupported");
   }
+  let capabilityRootCapture: CapabilityRootCapture;
+  try {
+    capabilityRootCapture =
+      execution.capabilityRootCapture ??
+      (await captureCapabilityRootSnapshots(env, opts.storeRoot, requestedCapabilities));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      actions: opts.agents.flatMap((agent) =>
+        requestedCapabilities.map((capability) => {
+          const skipped = skipAction(agent, capability, opts.scope, opts.method ?? "symlink");
+          skipped.reason = message;
+          return skipped;
+        }),
+      ),
+      warnings: [message],
+      conflicts: [],
+    };
+  }
 
-  // 库房配置与制品独立读取并行(config.json / rules / mcp / skills)。
-  const [config, registry, ruleArtifacts, mcpArtifacts, skillArtifacts, ledger] = await Promise.all(
-    [
-      loadConfig(env, opts.storeRoot),
-      loadRegistry(env, opts.storeRoot),
-      listRuleArtifacts(env, opts.storeRoot),
-      listMcpArtifacts(env, opts.storeRoot),
-      listSkillArtifacts(env, opts.storeRoot),
-      loadLedgerForPlanning(env, opts.storeRoot),
-    ],
+  const [config, registry, ledger] = await Promise.all([
+    loadConfig(env, opts.storeRoot),
+    loadRegistry(env, opts.storeRoot),
+    loadLedgerForPlanning(env, opts.storeRoot),
+  ]);
+  const ruleArtifacts = artifactsFromCapabilitySnapshot(
+    opts.storeRoot,
+    "rules",
+    capabilityRootCapture.snapshots.get("rules") ?? null,
+  );
+  const mcpArtifacts = artifactsFromCapabilitySnapshot(
+    opts.storeRoot,
+    "mcp",
+    capabilityRootCapture.snapshots.get("mcp") ?? null,
+  );
+  const skillArtifacts = artifactsFromCapabilitySnapshot(
+    opts.storeRoot,
+    "skills",
+    capabilityRootCapture.snapshots.get("skills") ?? null,
   );
   warnings.push(...registry.warnings);
 
@@ -136,45 +167,25 @@ export async function plan(
 
   // Capture the original staged source text and establish the provider scope before MCP/frontmatter
   // decoding can fail. The final plan guard reuses these exact snapshots and the same provider cache.
-  const stagedSources = new Map<string, SafeRecursiveSnapshot>();
-  const sourcePaths: Array<{ capability: Capability; path: string }> = [
-    ...(capabilities.includes("rules")
-      ? selectedRules.map((artifact) => ({
-          capability: "rules" as const,
-          path: join(opts.storeRoot, "store", "rules", `${artifact.name}.md`),
-        }))
-      : []),
-    ...(capabilities.includes("mcp")
-      ? selectedMcp.map((artifact) => ({
-          capability: "mcp" as const,
-          path: join(opts.storeRoot, "store", "mcp", `${artifact.name}.json`),
-        }))
-      : []),
-    ...(capabilities.includes("skills")
-      ? selectedSkills.map((artifact) => ({
-          capability: "skills" as const,
-          path: join(opts.storeRoot, "store", "skills", artifact.name),
-        }))
-      : []),
-  ];
-  for (const source of sourcePaths) {
-    try {
-      stagedSources.set(source.path, await captureSafeRecursiveSource(operationEnv, source.path));
-    } catch (error) {
-      // Skills planning already converts unsafe recursive sources into its established skip action
-      // and warning. Preserve that fail-closed result instead of turning it into a plan exception.
-      if (source.capability === "skills") continue;
-      throw attachPlanScopeToError(error, providerScope);
-    }
+  let stagedSources: Map<string, SafeRecursiveSnapshot>;
+  try {
+    stagedSources = artifactSnapshotsFromCapabilityRoots(
+      [...selectedRules, ...selectedMcp, ...selectedSkills],
+      capabilityRootCapture.snapshots,
+    );
+  } catch (error) {
+    throw attachPlanScopeToError(error, providerScope);
   }
   // 各 agent 共享同一份制品内容,避免按 agent 重复读(N×M → M)。
   let ruleFragments: RuleFragment[];
-  let mcpServers: Awaited<ReturnType<typeof loadSelectedMcp>>;
+  let mcpServers: { name: string; server: McpServer }[];
   try {
-    [ruleFragments, mcpServers] = await Promise.all([
-      Promise.all(selectedRules.map((a) => readRuleArtifact(operationEnv, opts.storeRoot, a.id))),
-      loadSelectedMcp(operationEnv, opts.storeRoot, selectedMcp),
-    ]);
+    ruleFragments = selectedRules.map((artifact) =>
+      ruleFragmentFromSnapshot(artifact, requiredStagedSource(stagedSources, artifact)),
+    );
+    mcpServers = selectedMcp.map((artifact) =>
+      mcpServerFromSnapshot(artifact, requiredStagedSource(stagedSources, artifact)),
+    );
   } catch (error) {
     throw attachPlanScopeToError(error, providerScope);
   }
@@ -193,6 +204,7 @@ export async function plan(
     selectedMcp,
     renderedMcp,
     selectedSkills,
+    stagedSources,
   };
 
   for (const agentId of opts.agents) {
@@ -202,7 +214,7 @@ export async function plan(
       continue;
     }
     // agents.<id>.enabled = false → 显式禁用,跳过该 agent 的全部能力。
-    if (config.agents[agentId]?.enabled === false) {
+    if (config.adapterOverrides[agentId]?.enabled === false) {
       warnings.push(`agent "${agentId}" is disabled in config.json — skipped`);
       continue;
     }
@@ -479,6 +491,7 @@ async function planRulesCapability(ctx: PlanContext, adapter: AgentAdapter): Pro
     ctx.selectedRules,
     ctx.ruleFragments,
     ctx.method,
+    ctx.stagedSources,
   );
   return action ? [action] : [];
 }
@@ -486,7 +499,7 @@ async function planRulesCapability(ctx: PlanContext, adapter: AgentAdapter): Pro
 // mcp planner:委托 engine/mcp-plan(密钥已在顶层渲染好;此处只做 per-agent merge)。
 // 合并策略优先级:CLI --mcp-overwrite > agents.<id>.mcp.mergeStrategy > adapter 默认。
 function planMcpCapability(ctx: PlanContext, adapter: AgentAdapter): Promise<PlanAction[]> {
-  const perAgent = ctx.config.agents[adapter.id]?.mcp?.mergeStrategy;
+  const perAgent = ctx.config.adapterOverrides[adapter.id]?.mcp?.mergeStrategy;
   return planMcp(
     {
       env: ctx.env,
@@ -495,6 +508,7 @@ function planMcpCapability(ctx: PlanContext, adapter: AgentAdapter): Promise<Pla
       selectedMcp: ctx.selectedMcp,
       rendered: ctx.renderedMcp,
       strategyOverride: ctx.opts.mcpStrategy ?? perAgent,
+      sourceSnapshots: ctx.stagedSources,
     },
     adapter,
   );
@@ -512,6 +526,7 @@ async function planSkillsCapability(
       dir: ctx.opts.dir,
       selectedSkills: ctx.selectedSkills,
       method: ctx.method,
+      sourceSnapshots: ctx.stagedSources,
     },
     adapter,
   );
@@ -525,6 +540,7 @@ async function planRules(
   selectedRules: Artifact[],
   fragments: RuleFragment[],
   method: LinkMethod,
+  stagedSources: ReadonlyMap<string, SafeRecursiveSnapshot>,
 ): Promise<PlanAction | null> {
   const target = adapter.paths(env, opts.scope, opts.dir).rules;
   if (!target || !adapter.rules || fragments.length === 0) return null;
@@ -551,5 +567,26 @@ async function planRules(
       method: "write",
       contentFingerprint,
     },
+    storeInputs: storeInputEvidence(selectedRules, stagedSources),
   };
+}
+
+function requiredStagedSource(
+  stagedSources: ReadonlyMap<string, SafeRecursiveSnapshot>,
+  artifact: Artifact,
+): SafeRecursiveSnapshot {
+  const snapshot = stagedSources.get(artifact.sourcePath);
+  if (!snapshot) throw new TypeError(`Store input disappeared during planning: ${artifact.id}`);
+  return snapshot;
+}
+
+function storeInputEvidence(
+  artifacts: readonly Artifact[],
+  stagedSources: ReadonlyMap<string, SafeRecursiveSnapshot>,
+) {
+  return artifacts.map((artifact) => ({
+    artifactId: artifact.id,
+    path: artifact.sourcePath,
+    fingerprint: requiredStagedSource(stagedSources, artifact).fingerprint,
+  }));
 }

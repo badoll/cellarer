@@ -9,9 +9,11 @@ import {
   redactSafeObservableText,
 } from "@cellarer/core";
 import { serializeCliOutput } from "../output.js";
-import { isPublicProtocolSchemaBundle } from "./command-registry.js";
+import { getCommandDefinition, isPublicProtocolSchemaBundle } from "./command-registry.js";
 import { CLI_EXIT_CODE, type CliExitCode, exitCodeForError } from "./exit-mapper.js";
+import { validateJsonSchema } from "./input.js";
 import { resolveRequestId } from "./request-id.js";
+import { createCommandErrorResultSchema, type JsonSchema } from "./schemas.js";
 
 export type MachineOutput = "json" | "jsonl";
 
@@ -30,11 +32,7 @@ export interface ProtocolRenderer {
   readonly requestId: string;
   readonly terminalEmitted: boolean;
   event<TData>(event: CliEvent<TData>): void;
-  success<TData>(
-    data: TData,
-    warnings?: readonly CliWarning[],
-    context?: unknown,
-  ): typeof CLI_EXIT_CODE.SUCCESS;
+  success<TData>(data: TData, warnings?: readonly CliWarning[], context?: unknown): CliExitCode;
   failure<TData = never>(
     error: CliError,
     warnings?: readonly CliWarning[],
@@ -63,19 +61,67 @@ export function createProtocolRenderer(options: ProtocolRendererOptions): Protoc
   const requestId = resolveRequestId(options.requestId, options.createUuid);
   let sequence = 0;
   let didEmitTerminal = false;
+  const definition = getCommandDefinition(options.command);
 
   const ensureOpen = (): void => {
     if (didEmitTerminal) throw new Error("protocol terminal result has already been emitted");
   };
 
-  const writeRecord = (
+  const snapshotRecord = (
     record: unknown,
     context: unknown = record,
     trustedPublicSchema = false,
-  ): void => {
-    stdout(
-      `${trustedPublicSchema ? JSON.stringify(record) : serializeCliOutput(record, false, context)}\n`,
-    );
+  ): unknown => {
+    const encoded = trustedPublicSchema
+      ? JSON.stringify(record)
+      : serializeCliOutput(record, false, context);
+    if (encoded === undefined) throw new TypeError("protocol record is not serializable");
+    return JSON.parse(encoded) as unknown;
+  };
+
+  const isSchemaValid = (record: unknown, schema: JsonSchema | undefined): boolean => {
+    if (!schema) return false;
+    try {
+      return validateJsonSchema(record, schema).length === 0;
+    } catch {
+      return false;
+    }
+  };
+
+  const emitInternalTerminal = (): typeof CLI_EXIT_CODE.INTERNAL => {
+    if (didEmitTerminal) return CLI_EXIT_CODE.INTERNAL;
+    const fallback: CliErrorResultEnvelope = {
+      protocolVersion: CLI_PROTOCOL_VERSION,
+      command: options.command,
+      requestId,
+      status: "error",
+      warnings: [],
+      error: { code: "INTERNAL_ERROR", message: INTERNAL_FAILURE_DIAGNOSTIC },
+    };
+    // Mark first: if an injected stdout itself throws, outer error handling must not recursively
+    // attempt a second terminal record.
+    didEmitTerminal = true;
+    stdout(`${JSON.stringify(fallback)}\n`);
+    return CLI_EXIT_CODE.INTERNAL;
+  };
+
+  const writeValidatedRecord = (
+    record: unknown,
+    schema: JsonSchema | undefined,
+    context: unknown,
+    trustedPublicSchema = false,
+    terminal = false,
+  ): boolean => {
+    let snapshot: unknown;
+    try {
+      snapshot = snapshotRecord(record, context, trustedPublicSchema);
+      if (!isSchemaValid(snapshot, schema)) return false;
+    } catch {
+      return false;
+    }
+    if (terminal) didEmitTerminal = true;
+    stdout(`${JSON.stringify(snapshot)}\n`);
+    return true;
   };
 
   return {
@@ -97,13 +143,16 @@ export function createProtocolRenderer(options: ProtocolRendererOptions): Protoc
         sequence: ++sequence,
         event,
       };
-      writeRecord(envelope);
+      if (!writeValidatedRecord(envelope, definition?.eventSchema, envelope)) {
+        emitInternalTerminal();
+      }
     },
     success<TData>(
       data: TData,
       warnings: readonly CliWarning[] = [],
       context: unknown = data,
-    ): typeof CLI_EXIT_CODE.SUCCESS {
+    ): CliExitCode {
+      if (didEmitTerminal) return CLI_EXIT_CODE.INTERNAL;
       ensureOpen();
       const envelope: CliSuccessResultEnvelope<TData> = {
         protocolVersion: CLI_PROTOCOL_VERSION,
@@ -113,13 +162,15 @@ export function createProtocolRenderer(options: ProtocolRendererOptions): Protoc
         data,
         warnings,
       };
-      writeRecord(
+      return writeValidatedRecord(
         envelope,
+        definition?.outputSchema,
         context,
         options.command === "schema" && isPublicProtocolSchemaBundle(data),
-      );
-      didEmitTerminal = true;
-      return CLI_EXIT_CODE.SUCCESS;
+        true,
+      )
+        ? CLI_EXIT_CODE.SUCCESS
+        : emitInternalTerminal();
     },
     failure<TData = never>(
       error: CliError,
@@ -127,6 +178,7 @@ export function createProtocolRenderer(options: ProtocolRendererOptions): Protoc
       data?: TData,
       context: unknown = data ?? error,
     ): CliExitCode {
+      if (didEmitTerminal) return CLI_EXIT_CODE.INTERNAL;
       ensureOpen();
       const envelope: CliErrorResultEnvelope<TData> = {
         protocolVersion: CLI_PROTOCOL_VERSION,
@@ -137,16 +189,20 @@ export function createProtocolRenderer(options: ProtocolRendererOptions): Protoc
         warnings,
         error,
       };
-      writeRecord(envelope, context);
-      didEmitTerminal = true;
-      return exitCodeForError(error);
+      return writeValidatedRecord(
+        envelope,
+        definition?.outputSchema ?? createCommandErrorResultSchema(options.command),
+        context,
+        false,
+        true,
+      )
+        ? exitCodeForError(error)
+        : emitInternalTerminal();
     },
     internalFailure(error: unknown): typeof CLI_EXIT_CODE.INTERNAL {
+      if (didEmitTerminal) return CLI_EXIT_CODE.INTERNAL;
       this.diagnostic(safeInternalFailureDiagnostic(error));
-      return this.failure({
-        code: "INTERNAL_ERROR",
-        message: INTERNAL_FAILURE_DIAGNOSTIC,
-      }) as typeof CLI_EXIT_CODE.INTERNAL;
+      return emitInternalTerminal();
     },
     diagnostic(message: string, context: unknown = message): void {
       stderr(`${redactSafeObservableText(context, message)}\n`);

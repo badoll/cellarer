@@ -16,7 +16,7 @@
     }
   },
   "artifacts": {},
-  "agents": {},
+  "adapterOverrides": {},
   "builtinAdapters": {
     "agents-md": {
       "displayName": "AGENTS.md (generic)",

@@ -2,8 +2,10 @@ import { closeSync, openSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { validateControlPlaneConfig } from "@cellarer/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RegisteredCommand } from "../src/protocol/command-registry.js";
+import { validateJsonSchema } from "../src/protocol/input.js";
 import type { JsonSchema } from "../src/protocol/schemas.js";
 
 const authorityCredentials = vi.hoisted(() => new Map<string, string>());
@@ -52,7 +54,7 @@ type CommandCase = (context: TestContext) => readonly string[] | Promise<readonl
 const protectedDescriptors: number[] = [];
 
 const commandCases = {
-  init: () => ["init"],
+  init: () => ["init", "--agent", "codex"],
   add: ({ skillSource }) => ["add", skillSource, "--list"],
   agents: ({ project }) => ["agents", "--dir", project],
   ls: () => ["ls"],
@@ -109,6 +111,134 @@ const commandCases = {
   ],
   capabilities: () => ["capabilities"],
   schema: () => ["schema"],
+  "resource.list": ({ project }) => [
+    "resource",
+    "list",
+    "--destination",
+    "project",
+    "--dir",
+    project,
+    "--agent",
+    "claude-code",
+    "--no-include-discovered",
+  ],
+  "resource.show": ({ project }) => [
+    "resource",
+    "show",
+    "rules/missing",
+    "--destination",
+    "project",
+    "--dir",
+    project,
+    "--agent",
+    "claude-code",
+    "--no-include-discovered",
+  ],
+  "agent.list": ({ project }) => [
+    "agent",
+    "list",
+    "--scope",
+    "project",
+    "--dir",
+    project,
+    "--agent",
+    "claude-code",
+  ],
+  "agent.show": ({ project }) => [
+    "agent",
+    "show",
+    "claude-code",
+    "--scope",
+    "project",
+    "--dir",
+    project,
+  ],
+  "agent.enable": () => ["agent", "enable", "codex", "--dry-run"],
+  "agent.disable": () => ["agent", "disable", "codex", "--dry-run"],
+  "agent.configure": () => [
+    "agent",
+    "configure",
+    "codex",
+    "--adapter",
+    '{"displayName":"Codex Conformance"}',
+    "--dry-run",
+  ],
+  "agent.reset": () => ["agent", "reset", "codex", "--dry-run"],
+  "agent.add": () => [
+    "agent",
+    "add",
+    "conformance-agent",
+    "--adapter",
+    '{"rules":{"global":"~/.conformance/RULES.md"}}',
+    "--dry-run",
+  ],
+  "agent.update": () => [
+    "agent",
+    "update",
+    "missing-conformance-agent",
+    "--adapter",
+    '{"rules":{"global":"~/.conformance/RULES.md"}}',
+    "--dry-run",
+  ],
+  "agent.remove": () => ["agent", "remove", "missing-conformance-agent", "--dry-run"],
+  "collection.list": () => ["collection", "list"],
+  "collection.show": () => ["collection", "show", "default"],
+  "collection.create": () => ["collection", "create", "conformance", "--resource", "", "--dry-run"],
+  "collection.update": () => [
+    "collection",
+    "update",
+    "default",
+    "--description",
+    "Conformance",
+    "--dry-run",
+  ],
+  "collection.delete": () => ["collection", "delete", "default", "--dry-run"],
+  "collection.members.set": () => [
+    "collection",
+    "members",
+    "set",
+    "default",
+    "--resource",
+    "",
+    "--dry-run",
+  ],
+  "collection.defaults.set": () => [
+    "collection",
+    "defaults",
+    "set",
+    "--collection",
+    "default",
+    "--dry-run",
+  ],
+  "config.show": () => ["config", "show"],
+  "config.validate": () => ["config", "validate", "--config", '{"version":1}'],
+  "config.update": () => ["config", "update", "--settings", '{"method":"copy"}', "--dry-run"],
+  "config.reset": () => ["config", "reset", "--field", "method", "--dry-run"],
+  diff: ({ project }) => ["diff", "--scope", "project", "--dir", project, "--agent", "claude-code"],
+  verify: ({ project }) => [
+    "verify",
+    "--scope",
+    "project",
+    "--dir",
+    project,
+    "--agent",
+    "claude-code",
+  ],
+  summary: () => ["summary", "--no-include-plan-coverage"],
+  "discovery.summary": ({ project }) => [
+    "discovery",
+    "summary",
+    "--destination",
+    "project",
+    "--dir",
+    project,
+    "--agent",
+    "claude-code",
+  ],
+  "operation.list": () => ["operation", "list"],
+  "operation.show": () => ["operation", "show", "missing-operation"],
+  "operation.recover": () => ["operation", "recover", "missing-operation", "--dry-run"],
+  plan: () => ["plan", "--agent", "codex", "--rules"],
 } satisfies Record<RegisteredCommand, CommandCase>;
 
 describe("CLI command registry protocol conformance", () => {
@@ -166,11 +296,295 @@ describe("CLI command registry protocol conformance", () => {
   });
 
   it.each([
+    ["minimal", { version: 1 }],
+    ["partial defaults", { defaults: { method: "copy" } }],
+    ["empty default collection name", { defaults: { collections: [""] } }],
+    ["empty adapter path", { customAdapters: { custom: { rules: { global: "" } } } }],
+    [
+      "normalized suppression source",
+      {
+        artifacts: {
+          "rules/style": {
+            secretPatternSuppressions: [
+              { source: "rules/nested/style.md", rule: "github-pat", patternVersion: 1 },
+            ],
+          },
+        },
+      },
+    ],
+    [
+      "parent-traversing suppression source",
+      {
+        artifacts: {
+          "rules/style": {
+            secretPatternSuppressions: [{ source: "../x", rule: "github-pat", patternVersion: 1 }],
+          },
+        },
+      },
+    ],
+    [
+      "absolute suppression source",
+      {
+        artifacts: {
+          "rules/style": {
+            secretPatternSuppressions: [{ source: "/x", rule: "github-pat", patternVersion: 1 }],
+          },
+        },
+      },
+    ],
+    [
+      "nested parent-traversing suppression source",
+      {
+        artifacts: {
+          "rules/style": {
+            secretPatternSuppressions: [
+              { source: "rules/../x", rule: "github-pat", patternVersion: 1 },
+            ],
+          },
+        },
+      },
+    ],
+    [
+      "backslash suppression source",
+      {
+        artifacts: {
+          "rules/style": {
+            secretPatternSuppressions: [
+              { source: "rules\\x", rule: "github-pat", patternVersion: 1 },
+            ],
+          },
+        },
+      },
+    ],
+    [
+      "empty MCP metadata strings",
+      {
+        customAdapters: {
+          custom: {
+            mcp: {
+              global: "",
+              serversKey: "",
+              supportedSecretReferences: [],
+              dialect: { envKey: "" },
+            },
+          },
+        },
+      },
+    ],
+    [
+      "full",
+      {
+        version: 1,
+        defaults: {
+          method: "copy",
+          collections: ["default"],
+          secretMode: "env",
+          os: { darwin: { method: "symlink" } },
+        },
+        collections: { default: { description: "Default" } },
+        artifacts: {
+          "rules/style": {
+            collections: ["default"],
+            secretPatternSuppressions: [
+              { source: "rules/style.md", rule: "github-pat", patternVersion: 1 },
+            ],
+          },
+        },
+        adapterOverrides: {
+          codex: {
+            enabled: true,
+            detect: { global: ["~/.codex"], project: [".codex"] },
+            rules: { global: "~/.codex/AGENTS.md", format: "markdown" },
+          },
+        },
+        customAdapters: {
+          custom: {
+            displayName: "Custom",
+            mcp: {
+              global: "~/.custom/mcp.json",
+              format: "json",
+              supportedSecretReferences: ["environment"],
+              dialect: { commandStyle: "array" },
+            },
+          },
+        },
+      },
+    ],
+    ["unknown field", { version: 1, unknown: true }],
+    ["invalid defaults", { defaults: { method: "hardlink" } }],
+    ["invalid nested field", { defaults: { os: { darwin: { method: "copy", extra: true } } } }],
+    ["invalid adapter", { customAdapters: { empty: {} } }],
+    [
+      "plaintext secret-shaped adapter field",
+      {
+        customAdapters: {
+          leaky: {
+            mcp: {
+              supportedSecretReferences: ["environment"],
+              env: { TOKEN: "plaintext-secret" },
+            },
+          },
+        },
+      },
+    ],
+  ] as const)("matches Core config validation for %s input", (_name, config) => {
+    const schema = commandRegistry.find(({ command }) => command === "config.validate")?.inputSchema
+      .properties?.input?.properties?.config;
+    if (!schema) throw new Error("expected config.validate input schema");
+
+    expect(validateJsonSchema(config, schema).length === 0).toBe(
+      validateControlPlaneConfig(config).valid,
+    );
+  });
+
+  it.each([
+    ["defaults collection", { defaults: { collections: [""] } }],
+    ["artifact collection", { artifacts: { "rules/style": { collections: [""] } } }],
+    ["adapter display name", { adapterOverrides: { custom: { displayName: "" } } }],
+    ["global detection path", { adapterOverrides: { custom: { detect: { global: [""] } } } }],
+    ["project detection path", { adapterOverrides: { custom: { detect: { project: [""] } } } }],
+    ["global rules path", { customAdapters: { custom: { rules: { global: "" } } } }],
+    ["project rules path", { customAdapters: { custom: { rules: { project: "" } } } }],
+    ["global MCP path", { adapterOverrides: { custom: { mcp: { global: "" } } } }],
+    ["project MCP path", { adapterOverrides: { custom: { mcp: { project: "" } } } }],
+    ["MCP servers key", { adapterOverrides: { custom: { mcp: { serversKey: "" } } } }],
+    ["MCP dialect env key", { adapterOverrides: { custom: { mcp: { dialect: { envKey: "" } } } } }],
+    ["MCP dialect URL key", { adapterOverrides: { custom: { mcp: { dialect: { urlKey: "" } } } } }],
+    [
+      "MCP dialect type field",
+      { adapterOverrides: { custom: { mcp: { dialect: { typeField: "" } } } } },
+    ],
+    [
+      "MCP dialect stdio type",
+      { adapterOverrides: { custom: { mcp: { dialect: { stdioType: "" } } } } },
+    ],
+    [
+      "MCP dialect remote type",
+      { adapterOverrides: { custom: { mcp: { dialect: { remoteType: "" } } } } },
+    ],
+    ["global skills path", { customAdapters: { custom: { skills: { global: "" } } } }],
+    ["project skills path", { customAdapters: { custom: { skills: { project: "" } } } }],
+    ["collection name", { collections: { "": {} } }],
+    ["artifact ID", { artifacts: { "": {} } }],
+    ["adapter override ID", { adapterOverrides: { "": { enabled: true } } }],
+    ["custom adapter ID", { customAdapters: { "": { rules: { global: "RULES.md" } } } }],
+  ] as const)("closes canonical config output against empty %s input", (_field, config) => {
+    const definition = commandRegistry.find(({ command }) => command === "config.validate");
+    const inputSchema = definition?.inputSchema.properties?.input?.properties?.config;
+    const outputSchema = definition?.outputSchema.properties?.data?.properties?.config;
+    if (!inputSchema || !outputSchema) throw new Error("expected config.validate schemas");
+
+    expect(validateJsonSchema(config, inputSchema)).not.toEqual([]);
+    expect(validateControlPlaneConfig(config).valid).toBe(false);
+  });
+
+  it.each([
+    { version: 1 },
+    { defaults: { method: "copy", collections: ["default"] } },
+    {
+      artifacts: {
+        "rules/style": {
+          collections: ["default"],
+          secretPatternSuppressions: [
+            { source: "rules/style.v2-guide.md", rule: "github-pat", patternVersion: 1 },
+          ],
+        },
+      },
+    },
+    {
+      customAdapters: {
+        custom: {
+          detect: { global: ["~/.custom"], project: [".custom"] },
+          rules: { global: "~/.custom/RULES.md", project: ".custom/RULES.md" },
+          mcp: {
+            global: "~/.custom/mcp.json",
+            project: ".custom/mcp.json",
+            serversKey: "mcpServers",
+            supportedSecretReferences: ["environment"],
+            dialect: {
+              envKey: "env",
+              urlKey: "url",
+              typeField: "type",
+              stdioType: "stdio",
+              remoteType: "remote",
+            },
+          },
+          skills: { global: "~/.custom/skills", project: ".custom/skills" },
+        },
+      },
+    },
+  ] as const)("roundtrips every accepted config input to canonical schema-valid output", (config) => {
+    const definition = commandRegistry.find(({ command }) => command === "config.validate");
+    const inputSchema = definition?.inputSchema.properties?.input?.properties?.config;
+    const outputSchema = definition?.outputSchema.properties?.data?.properties?.config;
+    if (!inputSchema || !outputSchema) throw new Error("expected config.validate schemas");
+
+    expect(validateJsonSchema(config, inputSchema)).toEqual([]);
+    const validated = validateControlPlaneConfig(config);
+    expect(validated.valid).toBe(true);
+    if (!validated.valid) throw new Error("expected valid config fixture");
+    expect(validateJsonSchema(validated.config, outputSchema)).toEqual([]);
+  });
+
+  it.each([
+    "rules/style.md",
+    "rules/nested/style.v2-guide.md",
+    ".hidden/style-file.md",
+    "rules/100%-style.md",
+    "rules/style%zz.md",
+  ] as const)("accepts normalized suppression source %s consistently", (source) => {
+    const config = {
+      artifacts: {
+        "rules/style": {
+          secretPatternSuppressions: [{ source, rule: "github-pat", patternVersion: 1 }],
+        },
+      },
+    };
+    const definition = commandRegistry.find(({ command }) => command === "config.validate");
+    const inputSchema = definition?.inputSchema.properties?.input?.properties?.config;
+    const outputSchema = definition?.outputSchema.properties?.data?.properties?.config;
+    if (!inputSchema || !outputSchema) throw new Error("expected config.validate schemas");
+
+    expect(validateJsonSchema(config, inputSchema)).toEqual([]);
+    const validated = validateControlPlaneConfig(config);
+    expect(validated.valid).toBe(true);
+    if (!validated.valid) throw new Error("expected valid suppression source");
+    expect(validateJsonSchema(validated.config, outputSchema)).toEqual([]);
+  });
+
+  it.each([
+    ["drive absolute", "C:/x"],
+    ["drive relative", "C:x"],
+    ["lowercase drive", "c:/x"],
+    ["UNC forward slash", "//server/share"],
+    ["UNC backslash", "\\\\server\\share"],
+    ["device path", "\\\\?\\C:\\x"],
+    ["colon edge", "rules:style.md"],
+    ["encoded parent", "rules/%2e%2e/style.md"],
+    ["encoded slash", "rules/%2Fstyle.md"],
+  ] as const)("rejects non-portable suppression source %s consistently", (_name, source) => {
+    const config = {
+      artifacts: {
+        "rules/style": {
+          secretPatternSuppressions: [{ source, rule: "github-pat", patternVersion: 1 }],
+        },
+      },
+    };
+    const schema = commandRegistry.find(({ command }) => command === "config.validate")?.inputSchema
+      .properties?.input?.properties?.config;
+    if (!schema) throw new Error("expected config.validate input schema");
+
+    expect(validateJsonSchema(config, schema)).not.toEqual([]);
+    expect(validateControlPlaneConfig(config).valid).toBe(false);
+  });
+
+  it.each([
     ["add", "vaultPassphraseFd"],
     ["apply", "vaultPassphraseFd"],
     ["apply", "snapshotPassphraseFd"],
     ["scan", "vaultPassphraseFd"],
     ["revert", "snapshotPassphraseFd"],
+    ["operation.recover", "snapshotPassphraseFd"],
     ["secret.add", "fd"],
     ["secret.add", "passphraseFd"],
     ["secret.ls", "passphraseFd"],
@@ -251,6 +665,26 @@ describe("CLI command registry protocol conformance", () => {
     });
   }
 
+  it("rejects unknown nested fields in public operation receipts and distribution plans", async () => {
+    const initialized = JSON.parse(
+      (await invoke(["--output", "json", "init", "--agent", "codex"])).stdout,
+    ) as { data: { operation: { receipt: Record<string, unknown> } } };
+    initialized.data.operation.receipt.unexpectedReceiptField = true;
+    const initDefinition = commandRegistry.find(({ command }) => command === "init");
+    expect(
+      validateAgainstSchema(initialized, initDefinition?.outputSchema as JsonSchema),
+    ).toContain("$.data.operation.receipt.unexpectedReceiptField: additional property");
+
+    const planned = JSON.parse(
+      (await invoke(["--output", "json", "plan", "--agent", "codex"])).stdout,
+    ) as { data: { plan: { normalizedInputs: Record<string, unknown> } } };
+    planned.data.plan.normalizedInputs.unexpectedPlanField = true;
+    const planDefinition = commandRegistry.find(({ command }) => command === "plan");
+    expect(validateAgainstSchema(planned, planDefinition?.outputSchema as JsonSchema)).toContain(
+      "$.data.plan.normalizedInputs.unexpectedPlanField: additional property",
+    );
+  });
+
   it("uses the injected UI starter without opening a real service", async () => {
     await initializeStore();
 
@@ -319,7 +753,7 @@ describe("CLI command registry protocol conformance", () => {
   });
 
   async function initializeStore(): Promise<void> {
-    const captured = await invoke(["--output", "json", "init"]);
+    const captured = await invoke(["--output", "json", "init", "--agent", "codex"]);
     const terminal = JSON.parse(captured.stdout) as { status?: string };
     expect(terminal.status).toBe("success");
   }
@@ -369,6 +803,18 @@ function validateAgainstSchema(value: unknown, schema: JsonSchema, path = "$"): 
   if (schema.enum && !schema.enum.some((candidate) => Object.is(value, candidate))) {
     issues.push(`${path}: enum`);
   }
+  if (schema.oneOf) {
+    const matches = schema.oneOf.filter(
+      (member) => validateAgainstSchema(value, member, path).length === 0,
+    ).length;
+    if (matches !== 1) return [...issues, `${path}: oneOf`];
+  }
+  if (schema.anyOf) {
+    const matches = schema.anyOf.filter(
+      (member) => validateAgainstSchema(value, member, path).length === 0,
+    ).length;
+    if (matches === 0) issues.push(`${path}: anyOf`);
+  }
 
   if (schema.type !== undefined && !matchesType(value, schema.type)) {
     return [...issues, `${path}: type ${String(schema.type)}`];
@@ -376,6 +822,9 @@ function validateAgainstSchema(value: unknown, schema: JsonSchema, path = "$"): 
 
   if (isObject(value)) {
     const properties = schema.properties ?? {};
+    if (schema.minProperties !== undefined && Object.keys(value).length < schema.minProperties) {
+      issues.push(`${path}: minProperties`);
+    }
     for (const required of schema.required ?? []) {
       if (!(required in value)) issues.push(`${path}.${required}: required`);
     }
@@ -429,6 +878,7 @@ function matchesType(value: unknown, expected: string | readonly string[]): bool
     if (type === "integer") return Number.isSafeInteger(value);
     if (type === "string") return typeof value === "string";
     if (type === "boolean") return typeof value === "boolean";
+    if (type === "null") return value === null;
     return false;
   });
 }

@@ -1,7 +1,15 @@
 import type { Env } from "../env.js";
 import type { TargetAcknowledgement } from "../model/index.js";
+import {
+  DURABLE_MUTATION_PLAN_DOMAIN,
+  EXECUTABLE_MUTATION_PLAN_DOMAIN,
+  MUTATION_AUTHORIZATION_ALGORITHM,
+  MUTATION_AUTHORIZATION_SCHEMA_VERSION,
+  type MutationAuthorizationEnvelope,
+  OPERATION_JOURNAL_DOMAIN,
+} from "../protocol/models.js";
 import { isSensitiveSecretFieldName, scanTextForSecrets } from "./detector.js";
-import { parseSecretReference } from "./reference.js";
+import { cellarerSecretReference, parseSecretReference } from "./reference.js";
 
 export const REDACTED_SECRET = "[REDACTED]";
 
@@ -48,6 +56,8 @@ export class SecretValue {
 export interface ObservableRedactionOptions {
   knownValues?: readonly SecretValue[];
   pretty?: boolean | number;
+  /** Preserve only keys at exact paths in a validated durable protocol object. */
+  protocolShape?: "operation-journal" | "operation-receipt";
 }
 
 export function createSecretValue(plaintext: string): SecretValue {
@@ -60,6 +70,8 @@ export function useSecretValue<T>(value: SecretValue, consumer: (plaintext: stri
 
 const OBSERVABLE_KNOWN_VALUES = Symbol("cellarer.observable-known-values");
 const OBSERVABLE_PROVIDER_SCOPE = Symbol("cellarer.observable-provider-scope");
+const observableMutationAuthorizations = new WeakMap<object, MutationAuthorizationEnvelope>();
+const observablePublicControlPlaneConfigs = new WeakSet<object>();
 
 export interface ObservableProviderScope {
   readonly knownValues: readonly SecretValue[];
@@ -91,9 +103,18 @@ export function attachObservableKnownValues<T extends object>(
 
 export function observableKnownValues(value: unknown): readonly SecretValue[] {
   if (typeof value !== "object" || value === null) return [];
-  const found = (value as { [OBSERVABLE_KNOWN_VALUES]?: unknown })[OBSERVABLE_KNOWN_VALUES];
-  if (Array.isArray(found) && found.every((item) => item instanceof SecretValue)) return found;
-  return observableProviderScope(value)?.knownValues ?? [];
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, OBSERVABLE_KNOWN_VALUES);
+    if (descriptor) {
+      if (!("value" in descriptor)) return [];
+      const found = descriptor.value;
+      if (Array.isArray(found) && found.every((item) => item instanceof SecretValue)) return found;
+      return [];
+    }
+    return observableProviderScope(value)?.knownValues ?? [];
+  } catch {
+    return [];
+  }
 }
 
 export function attachObservableProviderScope<T extends object>(
@@ -116,15 +137,24 @@ export function attachObservableProviderScope<T extends object>(
 
 export function observableProviderScope(value: unknown): ObservableProviderScope | undefined {
   if (typeof value !== "object" || value === null) return undefined;
-  const found = (value as { [OBSERVABLE_PROVIDER_SCOPE]?: unknown })[OBSERVABLE_PROVIDER_SCOPE];
-  if (
-    typeof found !== "object" ||
-    found === null ||
-    !Array.isArray((found as ObservableProviderScope).knownValues)
-  ) {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, OBSERVABLE_PROVIDER_SCOPE);
+    if (!descriptor || !("value" in descriptor)) return undefined;
+    const found = descriptor.value;
+    if (typeof found !== "object" || found === null) return undefined;
+    const knownValues = Object.getOwnPropertyDescriptor(found, "knownValues");
+    if (
+      !knownValues ||
+      !("value" in knownValues) ||
+      !Array.isArray(knownValues.value) ||
+      !knownValues.value.every((item) => item instanceof SecretValue)
+    ) {
+      return undefined;
+    }
+    return found as ObservableProviderScope;
+  } catch {
     return undefined;
   }
-  return found as ObservableProviderScope;
 }
 
 export function redactObservableText(
@@ -149,13 +179,38 @@ export function containsObservableKnownValue(
   );
 }
 
+/**
+ * Captures protocol authorization metadata only after its producer or parser has verified it.
+ * Observable serialization recognizes the registered object identity and never reflects over an
+ * arbitrary Authorization-shaped value, because JavaScript cannot distinguish a Proxy from a
+ * plain object without executing a trap.
+ */
+export function registerObservableMutationAuthorization<
+  Domain extends MutationAuthorizationEnvelope["domain"],
+>(
+  value: MutationAuthorizationEnvelope<Domain>,
+  domain: Domain,
+): MutationAuthorizationEnvelope<Domain> {
+  const snapshot = snapshotMutationAuthorization(value, domain);
+  const registered = Object.freeze(snapshot) as MutationAuthorizationEnvelope<Domain>;
+  observableMutationAuthorizations.set(value, registered);
+  observableMutationAuthorizations.set(registered, registered);
+  return registered;
+}
+
+/** Marks a freshly validated Core-owned config projection for path-specific public metadata. */
+export function registerObservablePublicControlPlaneConfig<T extends object>(value: T): T {
+  observablePublicControlPlaneConfigs.add(value);
+  return value;
+}
+
 export function redactObservable(
   boundary: ObservableBoundary,
   value: unknown,
   options: ObservableRedactionOptions = {},
 ): unknown {
   if (boundary === "plan" || boundary === "state") assertNoSecretValues(value, boundary);
-  return redactValue(value, options, false, new WeakSet<object>());
+  return redactValue(boundary, value, options, false, new WeakSet<object>(), [], undefined);
 }
 
 export function serializeObservable(
@@ -185,16 +240,28 @@ function assertNoSecretValue(value: unknown, boundary: string, seen: WeakSet<obj
     if ("cause" in value) assertNoSecretValue(value.cause, boundary, seen);
     return;
   }
-  for (const child of Array.isArray(value) ? value : Object.values(value)) {
+  if (Array.isArray(value)) {
+    for (const child of value) assertNoSecretValue(child, boundary, seen);
+    return;
+  }
+  const entries = enumerableDataEntries(value);
+  if (entries === null) return;
+  for (const [key, child] of entries) {
+    // Authorization-shaped input is handled by the identity registry in redactValue. Traversing
+    // an untrusted candidate here would execute accessors or Proxy traps before it can fail closed.
+    if (key === "authorization") continue;
     assertNoSecretValue(child, boundary, seen);
   }
 }
 
 function redactValue(
+  boundary: ObservableBoundary,
   value: unknown,
   options: ObservableRedactionOptions,
   sensitiveContext: boolean,
   seen: WeakSet<object>,
+  path: readonly string[],
+  publicConfigPath: readonly string[] | undefined,
 ): unknown {
   if (value instanceof SecretValue) return REDACTED_SECRET;
   if (typeof value === "string") {
@@ -215,53 +282,438 @@ function redactValue(
       message: sensitiveContext ? REDACTED_SECRET : redactObservableText(value.message, options),
     };
     const code = (value as Error & { code?: unknown }).code;
-    if (code !== undefined) error.code = redactValue(code, options, sensitiveContext, seen);
+    if (code !== undefined) {
+      error.code = redactValue(
+        boundary,
+        code,
+        options,
+        sensitiveContext,
+        seen,
+        [...path, "code"],
+        undefined,
+      );
+    }
     const cause = value.cause;
-    if (cause !== undefined) error.cause = redactValue(cause, options, sensitiveContext, seen);
+    if (cause !== undefined) {
+      error.cause = redactValue(
+        boundary,
+        cause,
+        options,
+        sensitiveContext,
+        seen,
+        [...path, "cause"],
+        undefined,
+      );
+    }
     return error;
   }
   if (seen.has(value)) throw new TypeError("observable output cannot contain circular values");
   seen.add(value);
+  const currentPublicConfigPath = observablePublicControlPlaneConfigs.has(value)
+    ? []
+    : publicConfigPath;
   if (Array.isArray(value)) {
-    const result = value.map((child) => redactValue(child, options, sensitiveContext, seen));
+    const entries = strictArrayDataValues(value);
+    if (!entries) return REDACTED_SECRET;
+    const result = entries.map((child) =>
+      redactValue(
+        boundary,
+        child,
+        options,
+        sensitiveContext,
+        seen,
+        [...path, "*"],
+        currentPublicConfigPath === undefined ? undefined : [...currentPublicConfigPath, "*"],
+      ),
+    );
     seen.delete(value);
     return result;
   }
   const acknowledgement =
     !sensitiveContext && isExactTargetAcknowledgement(value) ? value : undefined;
+  const entries = enumerableDataEntries(value);
+  if (entries === null) return REDACTED_SECRET;
   const result: Record<string, unknown> = {};
-  for (const [key, child] of Object.entries(value)) {
+  const reservedKeys = new Set(
+    entries.flatMap(([key]) => (observableKeyRequiresRedaction(key, options, path) ? [] : [key])),
+  );
+  const emittedKeys = new Set<string>();
+  for (const [key, child] of entries) {
+    const outputKey = observableOutputKey(key, options, path, reservedKeys, emittedKeys);
+    if (!sensitiveContext && key === "authorization") {
+      const registered =
+        typeof child === "object" && child !== null
+          ? observableMutationAuthorizations.get(child)
+          : undefined;
+      // Only verified factory/parser identities may expose the public seal metadata. Unknown,
+      // getter-backed, custom-prototype, toJSON-bearing, and Proxy-wrapped values fail closed
+      // without a single property read or reflective operation on the candidate.
+      result[outputKey] = registered ?? REDACTED_SECRET;
+      continue;
+    }
     if (acknowledgement && key === "token") {
       // This exact typed acknowledgement is the only token-shaped observable allowed through: its
       // digest is required verbatim by the next apply/revert request. Near-miss objects still take
       // the ordinary sensitive-field path below.
-      result[key] = child;
+      result[outputKey] = child;
       continue;
     }
-    result[key] = redactValue(
+    if (
+      !sensitiveContext &&
+      (boundary === "cli" || boundary === "web") &&
+      (key === "secretReferenceNames" || key === "secretRefs")
+    ) {
+      result[outputKey] = child === undefined ? undefined : redactReferenceNames(child, options);
+      continue;
+    }
+    result[outputKey] = redactValue(
+      boundary,
       child,
       options,
-      sensitiveContext || isSensitiveSecretFieldName(key),
+      sensitiveContext ||
+        (!isPublicControlPlaneMetadataField(currentPublicConfigPath, key) &&
+          isSensitiveSecretFieldName(key)),
       seen,
+      [...path, key],
+      currentPublicConfigPath === undefined ? undefined : [...currentPublicConfigPath, key],
     );
   }
   seen.delete(value);
   return result;
 }
 
-function isExactTargetAcknowledgement(value: object): value is TargetAcknowledgement {
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) return false;
-  const keys = Reflect.ownKeys(value);
-  if (keys.length !== 2 || !keys.includes("kind") || !keys.includes("token")) return false;
-  const candidate = value as Partial<TargetAcknowledgement>;
+function isPublicControlPlaneMetadataField(
+  path: readonly string[] | undefined,
+  key: string,
+): boolean {
+  if (path === undefined) return false;
   return (
-    (candidate.kind === "replace-unowned" ||
-      candidate.kind === "override-drift" ||
-      candidate.kind === "revert-drift") &&
-    typeof candidate.token === "string" &&
-    /^sha256:[0-9a-f]{64}$/.test(candidate.token)
+    (key === "secretPatternSuppressions" && path.length === 2 && path[0] === "artifacts") ||
+    (key === "supportedSecretReferences" &&
+      path.length === 3 &&
+      (path[0] === "adapterOverrides" || path[0] === "customAdapters") &&
+      path[2] === "mcp")
   );
+}
+
+const REDACTED_OBSERVABLE_KEY = "[REDACTED_KEY]";
+
+function observableKeyRequiresRedaction(
+  key: string,
+  options: ObservableRedactionOptions,
+  path: readonly string[],
+): boolean {
+  return (
+    !isFixedProtocolKey(options.protocolShape, path, key) &&
+    redactObservableText(key, options) !== key
+  );
+}
+
+function observableOutputKey(
+  key: string,
+  options: ObservableRedactionOptions,
+  path: readonly string[],
+  reservedKeys: ReadonlySet<string>,
+  emittedKeys: Set<string>,
+): string {
+  if (!observableKeyRequiresRedaction(key, options, path)) {
+    emittedKeys.add(key);
+    return key;
+  }
+  let suffix = 1;
+  let candidate = REDACTED_OBSERVABLE_KEY;
+  while (reservedKeys.has(candidate) || emittedKeys.has(candidate)) {
+    suffix += 1;
+    candidate = `[REDACTED_KEY_${suffix}]`;
+  }
+  emittedKeys.add(candidate);
+  return candidate;
+}
+
+const AUTHORIZATION_KEYS = [
+  "schemaVersion",
+  "domain",
+  "algorithm",
+  "authorityId",
+  "authorityEpoch",
+  "seal",
+] as const;
+const TARGET_STATE_KEYS = [
+  "state",
+  "fingerprint",
+  "recoverySnapshot",
+  "recoverySnapshotDigest",
+  "recoverySnapshotMode",
+] as const;
+const ACTION_RECEIPT_KEYS = [
+  "actionId",
+  "target",
+  "outcome",
+  "before",
+  "after",
+  "recordedAt",
+  "error",
+] as const;
+const OPERATION_RECEIPT_KEYS = [
+  "schemaVersion",
+  "operationId",
+  "planId",
+  "planDigest",
+  "operation",
+  "baseRevision",
+  "resultingRevision",
+  "outcome",
+  "actionReceipts",
+  "startedAt",
+  "completedAt",
+] as const;
+
+function fixedKeys(keys: readonly string[]): ReadonlySet<string> {
+  return new Set(keys);
+}
+
+const RECEIPT_STRUCTURE_KEYS = new Map<string, ReadonlySet<string>>([
+  ["", fixedKeys(OPERATION_RECEIPT_KEYS)],
+  ["actionReceipts/*", fixedKeys(ACTION_RECEIPT_KEYS)],
+  ["actionReceipts/*/before", fixedKeys(TARGET_STATE_KEYS)],
+  ["actionReceipts/*/after", fixedKeys(TARGET_STATE_KEYS)],
+  ["actionReceipts/*/error", fixedKeys(["code", "message"])],
+]);
+
+const JOURNAL_STRUCTURE_KEYS = new Map<string, ReadonlySet<string>>([
+  [
+    "",
+    fixedKeys([
+      "schemaVersion",
+      "operationId",
+      "sequence",
+      "previousJournalSeal",
+      "plan",
+      "nextRevision",
+      "status",
+      "startedAt",
+      "updatedAt",
+      "actions",
+      "statePublications",
+      "completedReceipt",
+      "authorization",
+    ]),
+  ],
+  ["authorization", fixedKeys(AUTHORIZATION_KEYS)],
+  [
+    "plan",
+    fixedKeys([
+      "schemaVersion",
+      "planId",
+      "operation",
+      "baseRevision",
+      "normalizedInputsDigest",
+      "targetPreconditions",
+      "actions",
+      "expires",
+      "digest",
+      "durableDigest",
+      "authorization",
+    ]),
+  ],
+  ["plan/authorization", fixedKeys(AUTHORIZATION_KEYS)],
+  ["plan/expires", fixedKeys(["policy", "expiresAt"])],
+  ["plan/targetPreconditions/*", fixedKeys(["actionId", "target", "expected"])],
+  ["plan/targetPreconditions/*/expected", fixedKeys(TARGET_STATE_KEYS)],
+  [
+    "plan/actions/*",
+    fixedKeys(["actionId", "kind", "target", "payloadDigest", "payload", "postcondition"]),
+  ],
+  // Durable provider recovery permits only this exact identity payload. Any other nested key is
+  // user-controlled Canonical JSON and must take the ordinary collision-safe redaction path.
+  ["plan/actions/*/payload", fixedKeys(["provider", "service", "name"])],
+  ["plan/actions/*/postcondition", fixedKeys(TARGET_STATE_KEYS)],
+  ["actions/*", fixedKeys(["actionId", "target", "status", "receipt"])],
+  ["actions/*/receipt", fixedKeys(ACTION_RECEIPT_KEYS)],
+  ["actions/*/receipt/before", fixedKeys(TARGET_STATE_KEYS)],
+  ["actions/*/receipt/after", fixedKeys(TARGET_STATE_KEYS)],
+  ["actions/*/receipt/error", fixedKeys(["code", "message"])],
+  ["statePublications/*", fixedKeys(["path", "digest", "mode"])],
+  ["completedReceipt", fixedKeys(OPERATION_RECEIPT_KEYS)],
+  ["completedReceipt/actionReceipts/*", fixedKeys(ACTION_RECEIPT_KEYS)],
+  ["completedReceipt/actionReceipts/*/before", fixedKeys(TARGET_STATE_KEYS)],
+  ["completedReceipt/actionReceipts/*/after", fixedKeys(TARGET_STATE_KEYS)],
+  ["completedReceipt/actionReceipts/*/error", fixedKeys(["code", "message"])],
+]);
+
+function isFixedProtocolKey(
+  shape: ObservableRedactionOptions["protocolShape"],
+  path: readonly string[],
+  key: string,
+): boolean {
+  if (shape === undefined) return false;
+  const structure = shape === "operation-journal" ? JOURNAL_STRUCTURE_KEYS : RECEIPT_STRUCTURE_KEYS;
+  return structure.get(path.join("/"))?.has(key) === true;
+}
+
+function redactReferenceNames(
+  value: unknown,
+  options: ObservableRedactionOptions,
+): readonly string[] | typeof REDACTED_SECRET {
+  const values = strictArrayDataValues(value);
+  if (!values?.every((item): item is string => typeof item === "string")) {
+    return REDACTED_SECRET;
+  }
+  return values.map((name) => {
+    try {
+      cellarerSecretReference(name);
+    } catch {
+      return REDACTED_SECRET;
+    }
+    return redactObservableText(name, options);
+  });
+}
+
+function strictArrayDataValues(value: unknown): unknown[] | null {
+  try {
+    if (!Array.isArray(value)) return null;
+    if (Object.getPrototypeOf(value) !== Array.prototype) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const ownKeys = Reflect.ownKeys(descriptors);
+    if (ownKeys.some((key) => typeof key !== "string")) return null;
+    const length = Reflect.getOwnPropertyDescriptor(value, "length");
+    if (!length || !("value" in length) || !Number.isSafeInteger(length.value)) return null;
+    const elementKeys = Array.from({ length: length.value as number }, (_, index) => String(index));
+    const expectedKeys = [...elementKeys, "length"].sort();
+    const actualKeys = (ownKeys as string[]).sort();
+    if (
+      actualKeys.length !== expectedKeys.length ||
+      actualKeys.some((key, index) => key !== expectedKeys[index])
+    ) {
+      return null;
+    }
+    return elementKeys.map((key) => {
+      const descriptor = descriptors[key];
+      if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+        throw new TypeError("observable array must use enumerable own data elements");
+      }
+      return descriptor.value;
+    });
+  } catch {
+    return null;
+  }
+}
+
+function snapshotMutationAuthorization<Domain extends MutationAuthorizationEnvelope["domain"]>(
+  value: MutationAuthorizationEnvelope<Domain>,
+  domain: Domain,
+): MutationAuthorizationEnvelope<Domain> {
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError("mutation authorization must be a plain object");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const expectedKeys = [
+    "schemaVersion",
+    "domain",
+    "algorithm",
+    "authorityId",
+    "authorityEpoch",
+    "seal",
+  ];
+  const keys = Reflect.ownKeys(descriptors);
+  if (
+    keys.some((key) => typeof key !== "string") ||
+    (keys as string[]).sort().join("\0") !== [...expectedKeys].sort().join("\0")
+  ) {
+    throw new TypeError("mutation authorization must use exact own data properties");
+  }
+  const data = Object.fromEntries(
+    expectedKeys.map((key) => {
+      const descriptor = descriptors[key];
+      if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+        throw new TypeError("mutation authorization must use enumerable own data properties");
+      }
+      return [key, descriptor.value];
+    }),
+  ) as unknown as MutationAuthorizationEnvelope<Domain>;
+  if (
+    data.schemaVersion !== MUTATION_AUTHORIZATION_SCHEMA_VERSION ||
+    data.domain !== domain ||
+    ![
+      EXECUTABLE_MUTATION_PLAN_DOMAIN,
+      DURABLE_MUTATION_PLAN_DOMAIN,
+      OPERATION_JOURNAL_DOMAIN,
+    ].includes(data.domain) ||
+    data.algorithm !== MUTATION_AUTHORIZATION_ALGORITHM ||
+    typeof data.authorityId !== "string" ||
+    data.authorityId.length === 0 ||
+    !Number.isSafeInteger(data.authorityEpoch) ||
+    data.authorityEpoch <= 0 ||
+    typeof data.seal !== "string" ||
+    !/^hmac-sha256:[0-9a-f]{64}$/.test(data.seal)
+  ) {
+    throw new TypeError("mutation authorization is invalid");
+  }
+  return data;
+}
+
+function enumerableDataEntries(value: object): [string, unknown][] | null {
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null && prototype !== Map.prototype) {
+      return null;
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(descriptors);
+    const privateSymbols = new Set([OBSERVABLE_KNOWN_VALUES, OBSERVABLE_PROVIDER_SCOPE]);
+    if (
+      keys.some((key) => typeof key === "symbol" && !privateSymbols.has(key)) ||
+      keys.includes("toJSON")
+    ) {
+      return null;
+    }
+    for (const symbol of privateSymbols) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, symbol);
+      if (descriptor && (!("value" in descriptor) || descriptor.enumerable)) return null;
+    }
+    const entries: [string, unknown][] = [];
+    for (const key of Object.keys(descriptors)) {
+      const descriptor = descriptors[key];
+      if (!descriptor?.enumerable) continue;
+      if (!("value" in descriptor)) return null;
+      entries.push([key, descriptor.value]);
+    }
+    return entries;
+  } catch {
+    return null;
+  }
+}
+
+function isExactTargetAcknowledgement(value: object): value is TargetAcknowledgement {
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return false;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(descriptors);
+    if (keys.length !== 2 || !keys.includes("kind") || !keys.includes("token")) return false;
+    const kind = descriptors.kind;
+    const token = descriptors.token;
+    if (
+      !kind ||
+      !("value" in kind) ||
+      !kind.enumerable ||
+      !token ||
+      !("value" in token) ||
+      !token.enumerable
+    ) {
+      return false;
+    }
+    return (
+      (kind.value === "replace-unowned" ||
+        kind.value === "override-drift" ||
+        kind.value === "revert-drift") &&
+      typeof token.value === "string" &&
+      /^sha256:[0-9a-f]{64}$/.test(token.value)
+    );
+  } catch {
+    return false;
+  }
 }
 
 function isSupportedSecretReference(value: string): boolean {

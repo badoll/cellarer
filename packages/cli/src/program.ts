@@ -3,6 +3,23 @@ import { addCommand } from "./commands/add.js";
 import { agentsCommand } from "./commands/agents.js";
 import { applyCommand } from "./commands/apply.js";
 import { authorityCommand } from "./commands/authority.js";
+import {
+  addAgentMutationCommands,
+  addCollectionMutationCommands,
+  addConfigMutationCommands,
+} from "./commands/control-plane-mutations.js";
+import {
+  agentCommand,
+  collectionCommand,
+  configCommand,
+  diffCommand,
+  discoverySummaryCommand,
+  operationCommand,
+  planCommand,
+  resourceCommand,
+  summaryCommand,
+  verifyCommand,
+} from "./commands/control-plane-read.js";
 import { capabilitiesCommand, schemaCommand } from "./commands/discovery.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { initCommand } from "./commands/init.js";
@@ -48,6 +65,16 @@ const commandFactories: Readonly<Record<string, () => Command>> = {
   ui: uiCommand,
   capabilities: capabilitiesCommand,
   schema: schemaCommand,
+  resource: resourceCommand,
+  agent: () => addAgentMutationCommands(agentCommand()),
+  collection: () => addCollectionMutationCommands(collectionCommand()),
+  config: () => addConfigMutationCommands(configCommand()),
+  diff: diffCommand,
+  verify: verifyCommand,
+  summary: summaryCommand,
+  plan: planCommand,
+  discovery: discoverySummaryCommand,
+  operation: operationCommand,
 };
 
 function registerCommandTree(program: Command): void {

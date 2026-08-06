@@ -5,7 +5,12 @@ import {
   environmentSecretReference,
   parseSecretReference,
   secretReferenceToken,
+  validateControlPlaneConfig,
 } from "../src/index.js";
+import {
+  createAuthorizedMutationPlan,
+  verifyMutationPlanAuthorization,
+} from "../src/protocol/canonical.js";
 import {
   createProviderScope,
   providerScopeForEnv,
@@ -22,6 +27,7 @@ import {
 } from "../src/secrets/observable.js";
 import { encryptVault, vaultPath } from "../src/secrets/vault.js";
 import { ensureBaseDirs, makeTmpEnv } from "./helpers/env.js";
+import { deterministicMutationAuthority } from "./helpers/mutation-authority.js";
 
 const CANARY = "ordinary-canary-value-123";
 
@@ -197,6 +203,83 @@ describe("scoped secret values", () => {
 });
 
 describe("observable secret boundaries", () => {
+  it("preserves sensitive-named metadata only for a validated public config projection", () => {
+    const validated = validateControlPlaneConfig({
+      artifacts: {
+        "rules/style": {
+          secretPatternSuppressions: [
+            { source: "rules/style.md", rule: "github-pat", patternVersion: 1 },
+          ],
+        },
+      },
+      customAdapters: {
+        custom: {
+          mcp: {
+            global: "~/.custom/mcp.json",
+            supportedSecretReferences: ["environment", "cellarer"],
+          },
+        },
+      },
+    });
+    if (!validated.valid) throw new Error("expected valid config fixture");
+    expect(Object.isFrozen(validated.config)).toBe(true);
+    expect(
+      Object.isFrozen(validated.config.artifacts["rules/style"]?.secretPatternSuppressions ?? []),
+    ).toBe(true);
+    expect(
+      Object.isFrozen(validated.config.customAdapters.custom?.mcp?.supportedSecretReferences ?? []),
+    ).toBe(true);
+
+    const trusted = JSON.parse(serializeObservable("cli", { config: validated.config })) as {
+      config: {
+        artifacts: Record<
+          string,
+          { secretPatternSuppressions: Array<{ source: string; rule: string }> }
+        >;
+        customAdapters: Record<string, { mcp: { supportedSecretReferences: string[] } }>;
+      };
+    };
+    expect(trusted.config.artifacts["rules/style"]?.secretPatternSuppressions).toEqual([
+      { source: "rules/style.md", rule: "github-pat", patternVersion: 1 },
+    ]);
+    expect(trusted.config.customAdapters.custom?.mcp.supportedSecretReferences).toEqual([
+      "environment",
+      "cellarer",
+    ]);
+
+    const unverified = JSON.parse(JSON.stringify(validated.config)) as unknown;
+    expect(JSON.parse(serializeObservable("cli", { config: unverified }))).toMatchObject({
+      config: {
+        artifacts: {
+          "rules/style": {
+            secretPatternSuppressions: [
+              { source: "[REDACTED]", rule: "[REDACTED]", patternVersion: "[REDACTED]" },
+            ],
+          },
+        },
+        customAdapters: {
+          custom: { mcp: { supportedSecretReferences: ["[REDACTED]", "[REDACTED]"] } },
+        },
+      },
+    });
+
+    const knownValueOutput = serializeObservable(
+      "cli",
+      { config: validated.config },
+      {
+        knownValues: [createSecretValue("github-pat")],
+      },
+    );
+    expect(knownValueOutput).not.toContain("github-pat");
+    expect(JSON.parse(knownValueOutput)).toMatchObject({
+      config: {
+        artifacts: {
+          "rules/style": { secretPatternSuppressions: [{ rule: "[REDACTED]" }] },
+        },
+      },
+    });
+  });
+
   it.each(["plan", "state"] as const)("rejects secret values at the %s boundary", (boundary) => {
     expect(() => serializeObservable(boundary, { nested: createSecretValue(CANARY) })).toThrow(
       /secret value/i,
@@ -241,6 +324,255 @@ describe("observable secret boundaries", () => {
     expect(encoded).not.toContain(CANARY);
     expect(encoded).not.toContain("secret-observability.test.ts");
     expect(encoded).toContain("[REDACTED]");
+  });
+
+  it("preserves only a factory-minted immutable mutation-authorization snapshot", () => {
+    const t = makeTmpEnv();
+    t.env.mutationAuthority = deterministicMutationAuthority();
+    const plan = createAuthorizedMutationPlan(t.env, t.path("home", ".cellarer"), {
+      schemaVersion: 1,
+      planId: "observable-plan",
+      operation: "apply",
+      baseRevision: 0,
+      normalizedInputs: {},
+      actions: [],
+      targetPreconditions: [],
+      expires: { policy: "none" },
+    });
+
+    expect(Object.isSealed(plan)).toBe(true);
+    expect(Object.isSealed(plan.authorization)).toBe(true);
+    expect(JSON.parse(serializeObservable("cli", { plan }))).toMatchObject({
+      plan: { authorization: plan.authorization },
+    });
+    expect(
+      JSON.parse(
+        serializeObservable("cli", {
+          authorization: { ...plan.authorization, extra: true },
+        }),
+      ),
+    ).toEqual({
+      authorization: "[REDACTED]",
+    });
+    t.cleanup();
+  });
+
+  it("preserves a parsed mutation authorization only after authority verification", () => {
+    const t = makeTmpEnv();
+    t.env.mutationAuthority = deterministicMutationAuthority();
+    const storeRoot = t.path("home", ".cellarer");
+    const created = createAuthorizedMutationPlan(t.env, storeRoot, {
+      schemaVersion: 1,
+      planId: "parsed-observable-plan",
+      operation: "apply",
+      baseRevision: 0,
+      normalizedInputs: {},
+      actions: [],
+      targetPreconditions: [],
+      expires: { policy: "none" },
+    });
+    const parsed = JSON.parse(JSON.stringify(created)) as typeof created;
+
+    expect(JSON.parse(serializeObservable("cli", { plan: parsed }))).toEqual({
+      plan: { ...parsed, authorization: "[REDACTED]" },
+    });
+    expect(verifyMutationPlanAuthorization(t.env, storeRoot, parsed)).toBe(true);
+    expect(JSON.parse(serializeObservable("cli", { plan: parsed }))).toEqual({ plan: parsed });
+    t.cleanup();
+  });
+
+  it("does not execute hostile authorization getters, toJSON, prototypes, or Proxy traps", () => {
+    let getterReads = 0;
+    let toJsonCalls = 0;
+    let proxyTraps = 0;
+    const getterEnvelope = Object.create(null) as Record<string, unknown>;
+    for (const [key, value] of Object.entries({
+      schemaVersion: 1,
+      domain: "executable-plan-v1",
+      algorithm: "HMAC-SHA-256",
+      authorityId: "getter-canary-authority",
+      authorityEpoch: 1,
+      seal: `hmac-sha256:${"b".repeat(64)}`,
+    })) {
+      Object.defineProperty(getterEnvelope, key, {
+        enumerable: true,
+        get() {
+          getterReads += 1;
+          if (getterReads >= 3) throw new Error("third getter canary");
+          return value;
+        },
+      });
+    }
+    Object.defineProperty(getterEnvelope, "toJSON", {
+      enumerable: false,
+      value() {
+        toJsonCalls += 1;
+        return { seal: "getter-canary-leak" };
+      },
+    });
+    const proxyEnvelope = new Proxy(getterEnvelope, {
+      get() {
+        proxyTraps += 1;
+        throw new Error("proxy get trap");
+      },
+      getOwnPropertyDescriptor() {
+        proxyTraps += 1;
+        throw new Error("proxy descriptor trap");
+      },
+      getPrototypeOf() {
+        proxyTraps += 1;
+        throw new Error("proxy prototype trap");
+      },
+      ownKeys() {
+        proxyTraps += 1;
+        throw new Error("proxy ownKeys trap");
+      },
+    });
+
+    expect(JSON.parse(serializeObservable("cli", { authorization: getterEnvelope }))).toEqual({
+      authorization: "[REDACTED]",
+    });
+    expect(JSON.parse(serializeObservable("cli", { authorization: proxyEnvelope }))).toEqual({
+      authorization: "[REDACTED]",
+    });
+    expect(JSON.parse(serializeObservable("plan", { authorization: proxyEnvelope }))).toEqual({
+      authorization: "[REDACTED]",
+    });
+    expect(getterReads).toBe(0);
+    expect(toJsonCalls).toBe(0);
+    expect(proxyTraps).toBe(0);
+  });
+
+  it("redacts known values and credential patterns from nested observable object keys", () => {
+    const known = createSecretValue(CANARY);
+    const pattern = "ghp_0123456789abcdefghijklmnopqrstuvwx";
+    const map = new Map<string, unknown>();
+    Object.defineProperty(map, `map-${CANARY}`, { enumerable: true, value: "map-value" });
+    const encoded = serializeObservable(
+      "cli",
+      {
+        nested: {
+          deep: {
+            "[REDACTED_KEY]": "collision-sentinel",
+            [CANARY]: "known-key",
+            [`prefix-${CANARY}-suffix`]: "contained-known-key",
+            [`credential-${pattern}`]: "detected-key",
+          },
+        },
+        array: [{ [`array-${CANARY}`]: "array-value" }],
+        map,
+      },
+      { knownValues: [known] },
+    );
+    const parsed = JSON.parse(encoded) as {
+      nested: { deep: Record<string, unknown> };
+      array: Array<Record<string, unknown>>;
+      map: Record<string, unknown>;
+    };
+
+    expect(encoded).not.toContain(CANARY);
+    expect(encoded).not.toContain(pattern);
+    expect(Object.keys(parsed.nested.deep)).toHaveLength(4);
+    expect(new Set(Object.keys(parsed.nested.deep)).size).toBe(4);
+    expect(Object.keys(parsed.array[0] ?? {})).toHaveLength(1);
+    expect(Object.keys(parsed.map)).toHaveLength(1);
+    expect(
+      Object.keys(parsed.nested.deep).filter((key) => key.includes("REDACTED_KEY")),
+    ).toHaveLength(4);
+  });
+
+  it("preserves only fixed journal structure keys and redacts arbitrary durable payload keys", () => {
+    const fixedKeyCanary = "planId";
+    const payloadKeyCanary = "payload-secret-key";
+    let proxyTraps = 0;
+    const hostile = new Proxy(
+      { [fixedKeyCanary]: "hostile-value" },
+      {
+        ownKeys() {
+          proxyTraps += 1;
+          throw new Error("hostile ownKeys");
+        },
+      },
+    );
+    const encoded = serializeObservable(
+      "journal",
+      {
+        plan: {
+          planId: "fixed-id",
+          actions: [
+            {
+              payload: {
+                "[REDACTED_KEY]": "collision-sentinel",
+                [payloadKeyCanary]: "user-payload-value",
+                data: hostile,
+              },
+            },
+          ],
+        },
+      },
+      {
+        knownValues: [createSecretValue(fixedKeyCanary), createSecretValue(payloadKeyCanary)],
+        protocolShape: "operation-journal",
+      },
+    );
+    const parsed = JSON.parse(encoded) as {
+      plan: { planId: string; actions: Array<{ payload: Record<string, unknown> }> };
+    };
+    const payload = parsed.plan.actions[0]?.payload ?? {};
+
+    expect(parsed.plan.planId).toBe("fixed-id");
+    expect(encoded).not.toContain(payloadKeyCanary);
+    expect(Object.keys(payload)).toHaveLength(3);
+    expect(new Set(Object.keys(payload)).size).toBe(3);
+    expect(Object.keys(payload).filter((key) => key.includes("REDACTED_KEY"))).toHaveLength(2);
+    expect(payload.data).toBe("[REDACTED]");
+    expect(proxyTraps).toBeGreaterThan(0);
+  });
+
+  it("preserves JSON omission semantics for undefined optional secret reference names", () => {
+    expect(JSON.parse(serializeObservable("cli", { secretRefs: undefined }))).toEqual({});
+    expect(
+      JSON.parse(serializeObservable("web", { nested: { secretReferenceNames: undefined } })),
+    ).toEqual({ nested: {} });
+  });
+
+  it("fails closed for observable accessor, symbol, toJSON, and Proxy key surfaces", () => {
+    let getterCalls = 0;
+    const accessor = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(accessor, CANARY, {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return CANARY;
+      },
+    });
+    const symbol = { safe: true } as Record<PropertyKey, unknown>;
+    symbol[Symbol(CANARY)] = "symbol-value";
+    const withToJSON = { safe: true } as Record<string, unknown> & { toJSON?: () => unknown };
+    Object.defineProperty(withToJSON, "toJSON", {
+      enumerable: false,
+      value: () => ({ [CANARY]: CANARY }),
+    });
+    const proxy = new Proxy(
+      { [CANARY]: CANARY },
+      {
+        ownKeys() {
+          throw new Error(`proxy-${CANARY}`);
+        },
+      },
+    );
+
+    for (const candidate of [accessor, symbol, withToJSON, proxy]) {
+      const encoded = serializeObservable(
+        "cli",
+        { candidate },
+        {
+          knownValues: [createSecretValue(CANARY)],
+        },
+      );
+      expect(encoded).not.toContain(CANARY);
+    }
+    expect(getterCalls).toBe(0);
   });
 
   it("keeps a provider failure scope local, non-enumerable, and able to redact low-entropy values", async () => {

@@ -15,8 +15,10 @@ import {
   type SecretReference,
   secretReferenceToken,
 } from "../secrets/reference.js";
+import type { SafeRecursiveSnapshot } from "../secrets/safe-tree.js";
 import { sha256 } from "../store/checksum.js";
 import { readMcpArtifact } from "../store/store.js";
+import { fingerprintTarget } from "../target-ownership.js";
 
 // 渲染后的 incoming 集合(agent 无关,plan() 顶层算一次)。
 export interface RenderedMcp {
@@ -36,6 +38,7 @@ export interface McpPlanContext {
   selectedMcp: Artifact[];
   rendered: RenderedMcp;
   strategyOverride?: MergeStrategy;
+  sourceSnapshots?: ReadonlyMap<string, SafeRecursiveSnapshot>;
 }
 
 // 读取 + 通道过滤后的 mcp 制品集合(plan() 顶层调用一次,各 agent 共享)。
@@ -156,6 +159,17 @@ export async function planMcp(ctx: McpPlanContext, adapter: AgentAdapter): Promi
       method: "write",
       contentFingerprint,
     },
+    storeInputs: await Promise.all(
+      ctx.selectedMcp.map(async (artifact) => {
+        const fingerprint =
+          ctx.sourceSnapshots?.get(artifact.sourcePath)?.fingerprint ??
+          (await fingerprintTarget(ctx.env, artifact.sourcePath));
+        if (!fingerprint) {
+          throw new TypeError(`Store input disappeared during planning: ${artifact.id}`);
+        }
+        return { artifactId: artifact.id, path: artifact.sourcePath, fingerprint };
+      }),
+    ),
     secretRefs: [...new Set(ctx.rendered.references.map((reference) => reference.name))],
     accidentalPlaintext: ctx.rendered.accidentalPlaintext,
   };

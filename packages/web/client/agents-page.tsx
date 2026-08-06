@@ -1,25 +1,15 @@
-import type { Capability } from "@cellarer/core";
+import type { ControlPlaneAgentDto, ControlPlaneAgentListDto } from "@cellarer/core";
 import { useEffect, useState } from "react";
 import { apiFetch } from "./api.js";
 import { readApiJson } from "./api-state.js";
 import { RESOURCE_KINDS, resourceKindLabel } from "./product-model.js";
 
-interface AgentInfo {
-  id: string;
-  displayName: string;
-  capabilities: Partial<Record<Capability, string[]>>;
-  detected: boolean;
-  root?: string;
-  enabled?: boolean;
-}
-
-interface AgentsResponse {
-  agents: AgentInfo[];
-  warnings: string[];
-}
+type AgentInfo = ControlPlaneAgentDto;
+type AgentsResponse = ControlPlaneAgentListDto;
 
 interface AdapterFormState {
   adapterId: string;
+  adapterKind: "builtin" | "custom";
   displayName: string;
   rulesGlobal: string;
   mcpGlobal: string;
@@ -40,6 +30,7 @@ const BUILTIN_ADAPTER_ID_SET = new Set<string>(BUILTIN_ADAPTER_IDS);
 
 const EMPTY_ADAPTER_FORM: AdapterFormState = {
   adapterId: "",
+  adapterKind: "custom",
   displayName: "",
   rulesGlobal: "",
   mcpGlobal: "",
@@ -64,8 +55,8 @@ export function AgentsPage() {
     setError(null);
     try {
       const data = await readApiJson<AgentsResponse>(await apiFetch("/api/agents"));
-      setAgents(data.agents);
-      setWarnings(data.warnings);
+      setAgents([...data.agents]);
+      setWarnings([...data.warnings]);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -108,7 +99,10 @@ export function AgentsPage() {
         await apiFetch(`/api/agents/${encodeURIComponent(adapterId)}/adapter`, {
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ adapter: adapterPatch(adapterForm, isBuiltinAdapter(adapterId)) }),
+          body: JSON.stringify({
+            kind: adapterForm.adapterKind,
+            adapter: adapterPatch(adapterForm, adapterForm.adapterKind === "builtin"),
+          }),
         }),
       );
       setAdapterForm(EMPTY_ADAPTER_FORM);
@@ -181,7 +175,9 @@ export function AgentsPage() {
                         {agent.detected ? "detected" : "missing"}
                       </span>
                     </td>
-                    <td className="path-cell mono">{agent.root ?? "not detected"}</td>
+                    <td className="path-cell mono">
+                      {agent.detectionEvidence.root ?? "not detected"}
+                    </td>
                     <td>
                       <div className="capability-strip">{capabilityTags(agent)}</div>
                     </td>
@@ -227,6 +223,21 @@ export function AgentsPage() {
               placeholder="Optional"
               onChange={(event) => setAdapterFormField("displayName", event.target.value)}
             />
+          </label>
+          <label className="field-row stacked">
+            <span>Adapter kind</span>
+            <select
+              value={adapterForm.adapterKind}
+              onChange={(event) =>
+                setAdapterFormField(
+                  "adapterKind",
+                  event.target.value === "builtin" ? "builtin" : "custom",
+                )
+              }
+            >
+              <option value="custom">Custom definition</option>
+              <option value="builtin">Built-in override</option>
+            </select>
           </label>
           <label className="field-row stacked">
             <span>Rules global path</span>
@@ -288,28 +299,29 @@ export function AgentsPage() {
     </div>
   );
 
-  function setAdapterFormField(field: keyof AdapterFormState, value: string) {
+  function setAdapterFormField<K extends keyof AdapterFormState>(
+    field: K,
+    value: AdapterFormState[K],
+  ) {
     setAdapterForm((current) => ({ ...current, [field]: value }));
   }
 }
 
 function capabilityTags(agent: AgentInfo) {
-  const supported = RESOURCE_KINDS.filter((kind) => (agent.capabilities[kind] ?? []).length > 0);
+  const supported = RESOURCE_KINDS.filter(
+    (kind) => (agent.capabilityScopes[kind] ?? []).length > 0,
+  );
   if (supported.length === 0) return <span className="tag neutral">none</span>;
   return supported.map((kind) => (
     <span className="tag blue" key={kind}>
-      {resourceKindLabel(kind)} {(agent.capabilities[kind] ?? []).join("/")}
+      {resourceKindLabel(kind)} {(agent.capabilityScopes[kind] ?? []).join("/")}
     </span>
   ));
 }
 
-function isBuiltinAdapter(adapterId: string): boolean {
-  return BUILTIN_ADAPTER_ID_SET.has(adapterId);
-}
-
 export function adapterPatch(
   form: AdapterFormState,
-  builtin = isBuiltinAdapter(form.adapterId.trim()),
+  builtin = BUILTIN_ADAPTER_ID_SET.has(form.adapterId.trim()),
 ) {
   const displayName = form.displayName.trim();
   const rulesGlobal = form.rulesGlobal.trim();

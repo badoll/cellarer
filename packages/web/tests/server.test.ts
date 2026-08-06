@@ -75,14 +75,13 @@ describe("web server app — page gate / CSP / host", () => {
     seals = 0;
 
     const app = makeApp();
-    const response = await app.request("/api/settings/collections", {
-      method: "PUT",
+    const response = await app.request("/api/collections", {
+      method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        collections: {
-          default: { description: "default" },
-          secure: { description: "injected" },
-        },
+        collectionName: "secure",
+        description: "injected",
+        resourceIds: [],
       }),
     });
 

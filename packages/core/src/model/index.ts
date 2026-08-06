@@ -27,6 +27,12 @@ export interface DesiredTargetEvidence {
   sourceIdentity?: string;
 }
 
+export interface StoreInputEvidence {
+  artifactId: string;
+  path: string;
+  fingerprint: string;
+}
+
 // Collection:制品的场景标签(default / internal / 自定义)。
 export type Collection = string;
 
@@ -62,6 +68,9 @@ export interface PlanAction {
   // 通用文本扫描只认厂商格式,看不到字段名,故由 planner 标记;护栏对其无条件拦截、无逃生通道。
   accidentalPlaintext?: boolean;
   desiredEvidence?: DesiredTargetEvidence;
+  // Signed source preconditions let exact sealed-plan apply validate Store inputs without
+  // replanning. Skills use their stronger no-follow recursive source evidence instead.
+  storeInputs?: StoreInputEvidence[];
   ownership?: TargetOwnershipEvidence;
   replacement?: TargetReplacementApproval;
 }

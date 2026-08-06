@@ -1,4 +1,13 @@
-import { apply, type Capability, type LinkMethod, type SecretMode } from "@cellarer/core";
+import {
+  apply,
+  applyControlPlaneMutationPlan,
+  applyMutationPlan,
+  type Capability,
+  type LinkMethod,
+  type MutationPlan,
+  preflightApplyMutationPlan,
+  type SecretMode,
+} from "@cellarer/core";
 import { Command } from "commander";
 import { parseAgents, resolveContext } from "../context.js";
 import { printMutation } from "../mutation-output.js";
@@ -11,6 +20,7 @@ import {
   executeCliCommand,
 } from "../protocol/execution.js";
 import {
+  assertExternalMutationPlanInput,
   assertNonInteractiveMutationInput,
   CliInputError,
   type CliInvocation,
@@ -18,6 +28,7 @@ import {
 import { readProtectedPassphraseInput } from "./secret.js";
 
 interface ApplyOpts {
+  plan?: unknown;
   agent?: string;
   dir?: string;
   collection?: string;
@@ -36,6 +47,20 @@ interface ApplyOpts {
   json?: boolean;
 }
 
+type DistributionApplyCommandData = Omit<
+  Awaited<ReturnType<typeof applyMutationPlan>>,
+  "operation"
+>;
+type SettingsApplyCommandData = {
+  readonly plan: MutationPlan;
+  readonly changedFields: readonly string[];
+  readonly mutation: Awaited<ReturnType<typeof applyControlPlaneMutationPlan>>["mutation"];
+  readonly receipt?: NonNullable<
+    Awaited<ReturnType<typeof applyControlPlaneMutationPlan>>["receipt"]
+  >;
+};
+type ApplyCommandData = DistributionApplyCommandData | SettingsApplyCommandData;
+
 // 从 --rules/--mcp/--skills 解析显式能力集合。仅交互式 text 路径保留默认全部。
 function selectedCapabilities(opts: ApplyOpts): Capability[] {
   const caps: Capability[] = [];
@@ -49,7 +74,8 @@ function selectedCapabilities(opts: ApplyOpts): Capability[] {
 export function applyCommand(): Command {
   return new Command("apply")
     .description("下发库房资源到 agent(默认全局;指定 --dir 则下发到该工程)")
-    .option("-a, --agent <ids>", "指定 agent(逗号分隔)")
+    .option("--plan <json>", "执行 plan 或 settings dry-run 返回的 exact sealed plan")
+    .option("-a, --agent <ids>", "planning 路径必填的 agent(逗号分隔);--plan 路径不需要")
     .option("--dir <path>", "下发到指定工程目录(否则下发到 agent 家目录)")
     .option("--collection <collection>", "按 collection 过滤")
     .option("--rules", "下发 rules")
@@ -66,10 +92,74 @@ export function applyCommand(): Command {
     .option("--dry-run", "仅预览,不落地")
     .option("--json", "输出完整 Core apply plan/result")
     .action(async (opts: ApplyOpts, command: Command) => {
-      await executeCliCommand(
+      await executeCliCommand<ApplyCommandData>(
         command,
         async (execution) => {
           const invocation = execution.invocation;
+          const suppliedPlan = parseMutationPlanInput(opts.plan, invocation);
+          if (suppliedPlan) {
+            assertSealedPlanInputIsUnambiguous(opts, suppliedPlan.operation, invocation);
+            if (suppliedPlan.operation !== "apply" && suppliedPlan.operation !== "settings") {
+              return commandFailure<ApplyCommandData>({
+                code: "DOMAIN_VALIDATION_FAILED",
+                message: "The sealed plan operation is not supported by apply",
+                details: { coreCode: "INVALID_PLAN" },
+              });
+            }
+            const ctx = await resolveContext({}, "required");
+            if (suppliedPlan.operation === "settings") {
+              execution.event("APPLY_STARTED", { phase: "apply", current: 0, total: 1 });
+              const applied = await applyControlPlaneMutationPlan(ctx.env, suppliedPlan, {
+                storeRoot: ctx.storeRoot,
+              });
+              execution.event("APPLY_COMPLETED", { phase: "apply", current: 1, total: 1 });
+              const data = {
+                plan: applied.plan,
+                changedFields: applied.changedFields,
+                mutation: applied.mutation,
+                ...(applied.receipt ? { receipt: applied.receipt } : {}),
+              };
+              if (applied.operation.ok) return commandSuccess(data);
+              const conflict = applied.operation.conflict;
+              const error = cliErrorFromMutationConflict(conflict);
+              return conflict.code === "INVALID_PLAN" || conflict.code === "INVALID_PLAN_DIGEST"
+                ? commandFailure<ApplyCommandData>(error)
+                : commandFailure(error, data);
+            }
+            const preflight = preflightApplyMutationPlan(ctx.env, suppliedPlan, ctx.storeRoot);
+            if (!preflight.ok) {
+              return commandFailure(cliErrorFromMutationConflict(preflight.conflict));
+            }
+            const secretMode = parseSecretMode(opts.secretMode, invocation);
+            const vaultPassphrase =
+              preflight.requiresCellarerSecretResolution && secretMode === "vault"
+                ? await readProtectedPassphraseInput(opts.vaultPassphraseFd, undefined, {
+                    nonInteractive: invocation.nonInteractive,
+                    invocation,
+                  })
+                : undefined;
+            const snapshotPassphrase = preflight.requiresSnapshotPassphrase
+              ? await readProtectedPassphraseInput(opts.snapshotPassphraseFd, undefined, {
+                  nonInteractive: invocation.nonInteractive,
+                  invocation,
+                })
+              : undefined;
+            execution.event("APPLY_STARTED", { phase: "apply", current: 0, total: 1 });
+            const applied = await applyMutationPlan(ctx.env, suppliedPlan, {
+              storeRoot: ctx.storeRoot,
+              ...(snapshotPassphrase ? { snapshotPassphrase } : {}),
+              ...(secretMode ? { secretMode } : {}),
+              ...(vaultPassphrase ? { vaultPassphrase } : {}),
+              ...(opts.keychainService ? { keychainService: opts.keychainService } : {}),
+            });
+            execution.event("APPLY_COMPLETED", { phase: "apply", current: 1, total: 1 });
+            const { operation: _operation, ...result } = applied;
+            const warnings = commandWarnings(result.plan.warnings, "APPLY_WARNING");
+            const error = applyCommandError(result);
+            return error
+              ? commandFailure(error, result, warnings)
+              : commandSuccess(result, warnings);
+          }
           const secretMode = parseSecretMode(opts.secretMode, invocation);
           const explicitCapabilities = selectedCapabilities(opts);
           assertNonInteractiveMutationInput(
@@ -131,38 +221,104 @@ export function applyCommand(): Command {
           });
           execution.event("APPLY_COMPLETED", { phase: "apply", current: 1, total: 1 });
           const warnings = commandWarnings(result.plan.warnings, "APPLY_WARNING");
-          const operationConflict =
-            result.mutation.result && !result.mutation.result.ok
-              ? cliErrorFromMutationConflict(result.mutation.result.conflict)
-              : undefined;
-          const guarded = result.plan.actions.some(
-            (action) =>
-              action.op === "skip" &&
-              (action.reason?.includes("secret-scan") ||
-                action.reason?.includes("secret-reference")),
-          );
-          const error =
-            operationConflict ??
-            (result.failures.length > 0
-              ? { code: "PARTIAL_FAILURE" as const, message: "Apply reported action failures" }
-              : result.plan.conflicts.length > 0
-                ? { code: "TARGET_CONFLICT" as const, message: "Apply plan is blocked" }
-                : guarded
-                  ? {
-                      code: "POLICY_VIOLATION" as const,
-                      message: "Apply was blocked by a safety guard",
-                    }
-                  : undefined);
+          const error = applyCommandError(result);
           return error ? commandFailure(error, result, warnings) : commandSuccess(result, warnings);
         },
         (outcome) => {
           const result = outcome.data;
-          if (!result) return;
+          if (!result) {
+            if (!outcome.ok) createSafeConsole(outcome.error).error(outcome.error.message);
+            return;
+          }
           const resultConsole = createSafeConsole(result);
+          if ("changedFields" in result) {
+            printMutation(result.mutation, resultConsole);
+            return;
+          }
           printApplyText(result, opts, resultConsole);
         },
       );
     });
+}
+
+function parseMutationPlanInput(
+  value: unknown,
+  invocation: CliInvocation,
+): MutationPlan | undefined {
+  if (value === undefined) return undefined;
+  let parsed: unknown = value;
+  try {
+    if (typeof value === "string") parsed = JSON.parse(value) as unknown;
+  } catch {
+    throw new CliInputError(
+      "INVALID_INPUT",
+      "plan must be valid JSON",
+      { fields: ["plan"] },
+      invocation,
+    );
+  }
+  assertExternalMutationPlanInput(parsed, invocation);
+  return parsed;
+}
+
+function assertSealedPlanInputIsUnambiguous(
+  opts: ApplyOpts,
+  operation: MutationPlan["operation"],
+  invocation: CliInvocation,
+): void {
+  const conflicting = [
+    ["agents", opts.agent],
+    ["dir", opts.dir],
+    ["collection", opts.collection],
+    ["capabilities", opts.rules || opts.mcp || opts.skills ? true : undefined],
+    ["copy", opts.copy],
+    ["mcpOverwrite", opts.mcpOverwrite],
+    ["replaceUnowned", opts.replaceUnowned],
+    ["overrideDrift", opts.overrideDrift],
+    ["dryRun", opts.dryRun],
+    ...(operation === "settings"
+      ? [
+          ["secretMode", opts.secretMode],
+          ["vaultPassphraseFd", opts.vaultPassphraseFd],
+          ["keychainService", opts.keychainService],
+          ["snapshotPassphraseFd", opts.snapshotPassphraseFd],
+        ]
+      : []),
+  ]
+    .filter(([, value]) => value !== undefined)
+    .map(([field]) => field as string);
+  if (conflicting.length === 0) return;
+  throw new CliInputError(
+    "INPUT_AMBIGUITY",
+    "An exact sealed plan cannot be combined with planning inputs",
+    { fields: conflicting.sort() },
+    invocation,
+  );
+}
+
+function applyCommandError(result: Awaited<ReturnType<typeof apply>>) {
+  const operationConflict =
+    result.mutation.result && !result.mutation.result.ok
+      ? cliErrorFromMutationConflict(result.mutation.result.conflict)
+      : undefined;
+  const guarded = result.plan.actions.some(
+    (action) =>
+      action.op === "skip" &&
+      (action.reason?.includes("secret-scan") || action.reason?.includes("secret-reference")),
+  );
+  return (
+    operationConflict ??
+    (result.failures.length > 0
+      ? { code: "PARTIAL_FAILURE" as const, message: "Apply reported action failures" }
+      : result.plan.conflicts.length > 0
+        ? { code: "TARGET_CONFLICT" as const, message: "Apply plan is blocked" }
+        : guarded
+          ? {
+              code: "POLICY_VIOLATION" as const,
+              message: "Apply was blocked by a safety guard",
+            }
+          : undefined)
+  );
 }
 
 function parseSecretMode(

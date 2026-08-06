@@ -1,4 +1,8 @@
-import type { Capability, ResourceCatalogItem, ResourceCatalogResult } from "@cellarer/core";
+import type {
+  Capability,
+  ControlPlaneResourceDto,
+  ControlPlaneResourceListDto,
+} from "@cellarer/core";
 import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "./api.js";
 import { readApiJson } from "./api-state.js";
@@ -42,7 +46,7 @@ function errorMessage(err: unknown): string {
 }
 
 export function ResourcePage(props: { kind: Capability }) {
-  const [state, setState] = useState<ApiState<ResourceCatalogResult>>({
+  const [state, setState] = useState<ApiState<ControlPlaneResourceListDto>>({
     data: null,
     error: null,
     loading: true,
@@ -60,7 +64,7 @@ export function ResourcePage(props: { kind: Capability }) {
 
     setState((current) => ({ ...current, error: null, loading: true }));
     apiFetch(`/api/resources/${props.kind}?${params.toString()}`)
-      .then((response) => readApiJson<ResourceCatalogResult>(response))
+      .then((response) => readApiJson<ControlPlaneResourceListDto>(response))
       .then((data) => {
         if (alive) setState({ data, error: null, loading: false });
       })
@@ -78,7 +82,7 @@ export function ResourcePage(props: { kind: Capability }) {
   const collections = useMemo(() => {
     const names = new Set<string>();
     for (const resource of state.data?.resources ?? []) {
-      for (const item of resource.collections) names.add(item);
+      for (const item of resource.membership.collections) names.add(item);
     }
     return [...names].sort();
   }, [state.data]);
@@ -164,7 +168,7 @@ export function ResourcePage(props: { kind: Capability }) {
   );
 }
 
-function ResourceTable(props: { resources: ResourceCatalogItem[] }) {
+function ResourceTable(props: { resources: readonly ControlPlaneResourceDto[] }) {
   return (
     <div className="table-wrap resource-table-wrap">
       <table className="resource-table">
@@ -189,7 +193,7 @@ function ResourceTable(props: { resources: ResourceCatalogItem[] }) {
   );
 }
 
-function ResourceRow(props: { resource: ResourceCatalogItem }) {
+function ResourceRow(props: { resource: ControlPlaneResourceDto }) {
   return (
     <tr>
       <td>
@@ -206,10 +210,10 @@ function ResourceRow(props: { resource: ResourceCatalogItem }) {
       <td>
         {props.resource.discovered ? (
           <span className="tag neutral">not imported</span>
-        ) : props.resource.collections.length === 0 ? (
+        ) : props.resource.membership.collections.length === 0 ? (
           <span className="muted">default</span>
         ) : (
-          props.resource.collections.map((item) => (
+          props.resource.membership.collections.map((item) => (
             <span className="tag blue" key={item}>
               {item}
             </span>
@@ -218,11 +222,11 @@ function ResourceRow(props: { resource: ResourceCatalogItem }) {
       </td>
       <td className="path-cell mono">{resourceSource(props.resource)}</td>
       <td>
-        {props.resource.syncTargets.length === 0 ? (
+        {props.resource.usage.applied.length === 0 ? (
           <span className="muted">{props.resource.discovered ? "import first" : "none"}</span>
         ) : (
           <div className="table-chip-list">
-            {props.resource.syncTargets.map((target) => (
+            {props.resource.usage.applied.map((target) => (
               <span
                 className={`tag ${RESOURCE_STATE_TONES[target.state]} sync-target-chip`}
                 title={target.target}
@@ -236,10 +240,10 @@ function ResourceRow(props: { resource: ResourceCatalogItem }) {
         )}
       </td>
       <td>
-        {props.resource.secretRefs.length === 0 ? (
+        {props.resource.secretReferenceNames.length === 0 ? (
           <span className="muted">none</span>
         ) : (
-          props.resource.secretRefs.map((ref) => (
+          props.resource.secretReferenceNames.map((ref) => (
             <span className="tag amber mono" key={ref}>
               {ref}
             </span>
@@ -281,7 +285,7 @@ function ResourceStateBadge(props: { state: ResourceState }) {
   );
 }
 
-function WarningList(props: { warnings: string[] }) {
+function WarningList(props: { warnings: readonly string[] }) {
   if (props.warnings.length === 0) return null;
   return (
     <section className="warning-list">
@@ -294,12 +298,8 @@ function WarningList(props: { warnings: string[] }) {
   );
 }
 
-function resourceSource(resource: ResourceCatalogItem): string {
-  if (resource.discovered?.source) return resource.discovered.source;
-  if (resource.sourcePath) return resource.sourcePath;
-  if (resource.provenance?.resolvedUrl) return resource.provenance.resolvedUrl;
-  if (resource.provenance?.source) return resource.provenance.source;
-  return "managed library";
+function resourceSource(resource: ControlPlaneResourceDto): string {
+  return resource.source;
 }
 
 function formatTime(value: string): string {

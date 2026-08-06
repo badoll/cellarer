@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { applyMutationPlan, planApplyMutation } from "../src/engine/apply.js";
+import { apply, applyMutationPlan, planApplyMutation } from "../src/engine/apply.js";
 import { applyRevertMutationPlan, planRevertMutation } from "../src/engine/revert.js";
 import type { Env } from "../src/env.js";
 import type { PlanAction } from "../src/model/index.js";
@@ -16,7 +16,11 @@ import {
   readOperationReceipt,
 } from "../src/protocol/journal.js";
 import type { CanonicalJsonObject, MutationPlan } from "../src/protocol/models.js";
-import { acquireStoreMutationLock } from "../src/protocol/mutation-lock.js";
+import {
+  acquireStoreMutationLock,
+  mutationLockPath,
+  recoveryLockPath,
+} from "../src/protocol/mutation-lock.js";
 import {
   publishStoreRevision,
   readStoreRevision,
@@ -30,6 +34,7 @@ import {
 import { observableKnownValues, serializeObservable } from "../src/secrets/observable.js";
 import { environmentSecretReference } from "../src/secrets/reference.js";
 import { sha256 } from "../src/store/checksum.js";
+import { saveLedger } from "../src/store/ledger.js";
 import { initStore, writeRuleArtifact } from "../src/store/store.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
@@ -735,6 +740,423 @@ describe("exclusive planned apply and revert", () => {
     await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(0);
   });
 
+  it.each([
+    "global",
+    "project",
+  ] as const)("binds every requested %s capability root into normalized inputs", async (scope) => {
+    const scopedOptions = {
+      ...options(),
+      scope,
+      ...(scope === "project" ? { dir: t.env.cwd() } : {}),
+      capabilities: ["rules", "mcp", "skills"] as const,
+    };
+
+    const prepared = await planApplyMutation(t.env, scopedOptions);
+    const inputs = prepared.mutationPlan.normalizedInputs as Record<string, unknown>;
+    const descriptors = inputs.capabilityRootProvenance as
+      | readonly { capability: string; path: string; expected: { state: string } }[]
+      | undefined;
+
+    expect(descriptors?.map(({ capability }) => capability)).toEqual(["mcp", "rules", "skills"]);
+    expect(descriptors?.map(({ path }) => path)).toEqual([
+      t.path("home", ".cellarer", "store", "mcp"),
+      t.path("home", ".cellarer", "store", "rules"),
+      t.path("home", ".cellarer", "store", "skills"),
+    ]);
+    expect(descriptors?.every(({ expected }) => expected.state === "present")).toBe(true);
+  });
+
+  it.each([
+    [
+      "new rule appears",
+      ["rules"] as const,
+      async () => writeRuleArtifact(t.env, storeRoot, "late", "late content"),
+    ],
+    [
+      "MCP root changes in a multi-capability plan",
+      ["rules", "mcp"] as const,
+      async () =>
+        t.env.fs.writeFile(
+          t.path("home", ".cellarer", "store", "mcp", "late.json"),
+          '{"command":"late"}\n',
+        ),
+    ],
+    [
+      "empty root becomes missing",
+      ["mcp"] as const,
+      async () => t.env.fs.rm(t.path("home", ".cellarer", "store", "mcp"), { recursive: true }),
+    ],
+    [
+      "root ownership metadata changes",
+      ["rules"] as const,
+      async () => t.env.fs.chmod(t.path("home", ".cellarer", "store", "rules"), 0o700),
+    ],
+  ] as const)("rejects capability-root provenance drift when %s", async (_name, capabilities, drift) => {
+    const prepared = await planApplyMutation(t.env, {
+      ...options(),
+      capabilities: [...capabilities],
+    });
+    await drift();
+
+    const result = await applyMutationPlan(t.env, prepared.mutationPlan, {
+      storeRoot,
+      options: { ...options(), capabilities: [...capabilities] },
+    });
+
+    expect(result.operation).toMatchObject({ ok: false, conflict: { code: "INVALID_PLAN" } });
+    await expect(readOperationJournal(t.env, storeRoot)).resolves.toBeNull();
+    await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(0);
+    await expect(t.env.fs.lstat(target())).rejects.toThrow();
+  });
+
+  it("rejects a missing capability root that appears after planning", async () => {
+    const mcpRoot = t.path("home", ".cellarer", "store", "mcp");
+    await t.env.fs.rm(mcpRoot, { recursive: true });
+    const mcpOptions = { ...options(), capabilities: ["mcp" as const] };
+    const prepared = await planApplyMutation(t.env, mcpOptions);
+    const descriptor = (prepared.mutationPlan.normalizedInputs as Record<string, unknown>)
+      .capabilityRootProvenance as
+      | readonly { capability: string; expected: { state: string } }[]
+      | undefined;
+    expect(descriptor).toEqual([
+      expect.objectContaining({ capability: "mcp", expected: { state: "absent" } }),
+    ]);
+
+    await t.env.fs.mkdir(mcpRoot, { recursive: true });
+    const result = await applyMutationPlan(t.env, prepared.mutationPlan, {
+      storeRoot,
+      options: mcpOptions,
+    });
+
+    expect(result.operation).toMatchObject({ ok: false, conflict: { code: "INVALID_PLAN" } });
+    await expect(readOperationJournal(t.env, storeRoot)).resolves.toBeNull();
+    await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(0);
+  });
+
+  it("preflights serialized-plan provenance before recovery, revision, target, lock, or journal observation", async () => {
+    const prepared = await planApplyMutation(t.env, options());
+    await writeRuleArtifact(t.env, storeRoot, "late", "late content");
+    const recoveryPath = recoveryLockPath(storeRoot);
+    const journalPath = operationJournalPath(storeRoot);
+    const revisionPath = storeRevisionPath(storeRoot);
+    const lockPath = mutationLockPath(storeRoot);
+    const targetPath = target();
+    const counts = { recovery: 0, journal: 0, revision: 0, target: 0, lock: 0 };
+    const baseFs = t.env.fs;
+    const env: Env = {
+      ...t.env,
+      fs: {
+        ...baseFs,
+        async readFile(path) {
+          if (path === recoveryPath) counts.recovery += 1;
+          if (path === journalPath) counts.journal += 1;
+          if (path === revisionPath) counts.revision += 1;
+          return baseFs.readFile(path);
+        },
+        async lstat(path) {
+          if (path === targetPath) counts.target += 1;
+          return baseFs.lstat(path);
+        },
+        async writeFileExclusive(path, data, opts) {
+          if (path === lockPath) counts.lock += 1;
+          return baseFs.writeFileExclusive(path, data, opts);
+        },
+      },
+    };
+
+    const result = await applyMutationPlan(env, prepared.mutationPlan, {
+      storeRoot,
+      options: options(),
+    });
+
+    expect(result.operation).toMatchObject({ ok: false, conflict: { code: "INVALID_PLAN" } });
+    expect(counts).toEqual({ recovery: 0, journal: 0, revision: 0, target: 0, lock: 0 });
+  });
+
+  it("allows only mutation-lock acquisition and cleanup when provenance drifts in the preflight-to-lock window", async () => {
+    const prepared = await planApplyMutation(t.env, options());
+    const recoveryPath = recoveryLockPath(storeRoot);
+    const journalPath = operationJournalPath(storeRoot);
+    const revisionPath = storeRevisionPath(storeRoot);
+    const lockPath = mutationLockPath(storeRoot);
+    const targetPath = target();
+    const counts = {
+      recovery: 0,
+      journal: 0,
+      revision: 0,
+      target: 0,
+      lockAcquire: 0,
+      lockCleanup: 0,
+      publications: 0,
+    };
+    const baseFs = t.env.fs;
+    let injected = false;
+    const env: Env = {
+      ...t.env,
+      fs: {
+        ...baseFs,
+        async readFile(path) {
+          if (path === recoveryPath) counts.recovery += 1;
+          if (path === journalPath) counts.journal += 1;
+          if (path === revisionPath) counts.revision += 1;
+          return baseFs.readFile(path);
+        },
+        async lstat(path) {
+          if (path === targetPath) counts.target += 1;
+          return baseFs.lstat(path);
+        },
+        async writeFileExclusive(path, data, opts) {
+          const acquired = await baseFs.writeFileExclusive(path, data, opts);
+          if (path === lockPath) {
+            counts.lockAcquire += 1;
+            if (acquired && !injected) {
+              injected = true;
+              await writeRuleArtifact(t.env, storeRoot, "aba", "changed after preflight");
+            }
+          }
+          return acquired;
+        },
+        async rm(path, opts) {
+          if (path === lockPath) counts.lockCleanup += 1;
+          return baseFs.rm(path, opts);
+        },
+        async publishFileAtomically(path, data, opts) {
+          counts.publications += 1;
+          return baseFs.publishFileAtomically(path, data, opts);
+        },
+      },
+    };
+
+    const result = await applyMutationPlan(env, prepared.mutationPlan, {
+      storeRoot,
+      options: options(),
+    });
+
+    expect(result.operation).toMatchObject({ ok: false, conflict: { code: "INVALID_PLAN" } });
+    expect(counts).toEqual({
+      recovery: 0,
+      journal: 0,
+      revision: 0,
+      target: 0,
+      lockAcquire: 1,
+      lockCleanup: 1,
+      publications: 0,
+    });
+    await expect(t.env.fs.lstat(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each([
+    "ancestor ABA",
+    "root ABA",
+  ])("uses one anchored capability snapshot and fails closed on injected %s before Store reads", async () => {
+    const baseFs = t.env.fs;
+    let anchoredCalls = 0;
+    let capabilityReads = 0;
+    const capabilityRoot = t.path("home", ".cellarer", "store", "rules");
+    const env: Env = {
+      ...t.env,
+      fs: {
+        ...baseFs,
+        async snapshotPathNoFollow() {
+          anchoredCalls += 1;
+          throw Object.assign(new Error("injected anchored snapshot ABA"), {
+            code: "CELLARER_SNAPSHOT_STALE",
+          });
+        },
+        async readdir(path) {
+          if (path === capabilityRoot) capabilityReads += 1;
+          return baseFs.readdir(path);
+        },
+        async readFile(path) {
+          if (path.startsWith(`${capabilityRoot}/`)) capabilityReads += 1;
+          return baseFs.readFile(path);
+        },
+        async readFileBytes(path) {
+          if (path.startsWith(`${capabilityRoot}/`)) capabilityReads += 1;
+          return baseFs.readFileBytes(path);
+        },
+      } as Env["fs"],
+    };
+
+    await expect(planApplyMutation(env, options())).rejects.toThrow(/snapshot|ABA|stale/i);
+    expect(anchoredCalls).toBeGreaterThan(0);
+    expect(capabilityReads).toBe(0);
+    await expect(readOperationJournal(t.env, storeRoot)).resolves.toBeNull();
+    await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(0);
+  });
+
+  it("rejects a plan when effective configuration changes without advancing revision", async () => {
+    const prepared = await planApplyMutation(t.env, options());
+    const configPath = t.path("home", ".cellarer", "config.json");
+    const config = JSON.parse(await t.env.fs.readFile(configPath)) as {
+      defaults: { method: string };
+    };
+    config.defaults.method = config.defaults.method === "copy" ? "symlink" : "copy";
+    await t.env.fs.writeFile(configPath, JSON.stringify(config, null, 2));
+
+    const result = await applyReceipt(prepared.mutationPlan);
+
+    expect(result.operation).toMatchObject({
+      ok: false,
+      conflict: { code: "INVALID_PLAN" },
+    });
+    await expect(t.env.fs.lstat(target())).rejects.toThrow();
+    await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(0);
+    await expect(readOperationJournal(t.env, storeRoot)).resolves.toBeNull();
+  });
+
+  it.each([
+    [
+      "missing-to-global-owner",
+      async () =>
+        saveLedger(t.env, storeRoot, {
+          version: 2,
+          owners: [
+            {
+              agent: "codex",
+              scope: "global",
+              capability: "rules",
+              target: t.path("home", ".codex", "AGENTS.md"),
+              artifactIds: ["rules/style"],
+              receipt: {
+                method: "write",
+                fingerprint: `sha256:${"b".repeat(64)}`,
+                backup: null,
+                generated: true,
+                appliedAt: "2026-06-30T08:00:00.000Z",
+              },
+            },
+          ],
+        }),
+    ],
+    ["present-to-missing", async () => t.env.fs.rm(t.path("home", ".cellarer", "state.json"))],
+    [
+      "present-bytes-change",
+      async () => {
+        await t.env.fs.writeFile(
+          t.path("home", ".cellarer", "state.json"),
+          '{\n  "version": 2,\n  "owners": []\n}\n',
+        );
+      },
+    ],
+  ] as const)("rejects %s ledger provenance drift before any apply journal", async (_case, drift) => {
+    if (_case.startsWith("present-")) {
+      await t.env.fs.writeFile(
+        t.path("home", ".cellarer", "state.json"),
+        '{"version":2,"owners":[]}\n',
+      );
+    }
+    const prepared = await planApplyMutation(t.env, options());
+    await drift();
+
+    const result = await applyReceipt(prepared.mutationPlan);
+
+    expect(result.operation).toMatchObject({ ok: false, conflict: { code: "INVALID_PLAN" } });
+    await expect(t.env.fs.lstat(target())).rejects.toThrow();
+    await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(0);
+    await expect(readOperationJournal(t.env, storeRoot)).resolves.toBeNull();
+  });
+
+  it("binds project-owner ledger decisions before the terminal gitignore action", async () => {
+    const projectDir = t.path("project-ledger-binding");
+    await t.env.fs.mkdir(projectDir, { recursive: true });
+    const projectOptions = { ...options(), scope: "project" as const, dir: projectDir };
+    const prepared = await planApplyMutation(t.env, projectOptions);
+    await saveLedger(t.env, storeRoot, {
+      version: 2,
+      owners: [
+        {
+          agent: "codex",
+          scope: "project",
+          projectRoot: projectDir,
+          capability: "rules",
+          target: t.path("project-ledger-binding", "CODEX.md"),
+          artifactIds: ["rules/style"],
+          receipt: {
+            method: "write",
+            fingerprint: `sha256:${"a".repeat(64)}`,
+            backup: null,
+            generated: true,
+            appliedAt: "2026-06-30T08:00:00.000Z",
+          },
+        },
+      ],
+    });
+
+    const result = await applyMutationPlan(t.env, prepared.mutationPlan, {
+      storeRoot,
+      options: projectOptions,
+    });
+
+    expect(result.operation).toMatchObject({ ok: false, conflict: { code: "INVALID_PLAN" } });
+    await expect(t.env.fs.lstat(t.path("project-ledger-binding", ".gitignore"))).rejects.toThrow();
+    await expect(readOperationJournal(t.env, storeRoot)).resolves.toBeNull();
+  });
+
+  it("rejects a ledger symlink without reading its external target", async () => {
+    const prepared = await planApplyMutation(t.env, options());
+    const externalLedger = t.path("external-ledger.json");
+    const ledgerPath = t.path("home", ".cellarer", "state.json");
+    await t.env.fs.writeFile(externalLedger, '{"version":2,"owners":[]}\n');
+    await t.env.fs.symlink(externalLedger, ledgerPath, "file");
+    let externalReads = 0;
+    const readFile = t.env.fs.readFile;
+    const readFileBytes = t.env.fs.readFileBytes;
+    const env: Env = {
+      ...t.env,
+      fs: {
+        ...t.env.fs,
+        async readFile(path) {
+          if (path === externalLedger || path === ledgerPath) externalReads += 1;
+          return readFile(path);
+        },
+        async readFileBytes(path) {
+          if (path === externalLedger || path === ledgerPath) externalReads += 1;
+          return readFileBytes(path);
+        },
+      },
+    };
+
+    const result = await applyMutationPlan(env, prepared.mutationPlan, {
+      storeRoot,
+      options: options(),
+    });
+
+    expect(result.operation).toMatchObject({ ok: false, conflict: { code: "INVALID_PLAN" } });
+    expect(externalReads).toBe(0);
+    await expect(t.env.fs.readFile(externalLedger)).resolves.toBe('{"version":2,"owners":[]}\n');
+    await expect(readOperationJournal(t.env, storeRoot)).resolves.toBeNull();
+  });
+
+  it("keeps legacy plan-and-apply bound to the ledger snapshot without replanning", async () => {
+    const lockPath = t.path("home", ".cellarer", "mutation.lock");
+    const writeFileExclusive = t.env.fs.writeFileExclusive;
+    let injected = false;
+    const env: Env = {
+      ...t.env,
+      fs: {
+        ...t.env.fs,
+        async writeFileExclusive(path, data, writeOptions) {
+          const acquired = await writeFileExclusive(path, data, writeOptions);
+          if (acquired && path === lockPath && !injected) {
+            injected = true;
+            await saveLedger(t.env, storeRoot, { version: 2, owners: [] });
+          }
+          return acquired;
+        },
+      },
+    };
+
+    const result = await apply(env, options());
+
+    expect(result.mutation?.result).toMatchObject({
+      ok: false,
+      conflict: { code: "INVALID_PLAN" },
+    });
+    await expect(t.env.fs.lstat(target())).rejects.toThrow();
+    await expect(readOperationJournal(t.env, storeRoot)).resolves.toBeNull();
+  });
+
   it("retries apply planning when the revision changes across observed inputs", async () => {
     const observedTarget = target();
     const originalLstat = t.env.fs.lstat;
@@ -783,7 +1205,7 @@ describe("exclusive planned apply and revert", () => {
     const drifted = await applyReceipt(prepared.mutationPlan);
     expect(drifted.operation).toMatchObject({
       ok: false,
-      conflict: { code: "INVALID_PLAN" },
+      conflict: { code: "TARGET_PRECONDITION_CONFLICT" },
     });
     await expect(t.env.fs.readFile(target())).resolves.toBe("external change");
   });

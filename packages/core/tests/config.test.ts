@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  type CellarerConfig,
   initialConfigText,
   loadAdapterSpecs,
   loadConfig,
@@ -26,11 +27,11 @@ const SAMPLE = JSON.stringify({
     "rules/coding-style": { collections: ["default"] },
     "mcp/company-gateway": { collections: ["internal"] },
   },
-  agents: {
+  adapterOverrides: {
     cursor: { enabled: true },
     codex: { mcp: { mergeStrategy: "merge" } },
   },
-  adapters: {
+  customAdapters: {
     "claude-code": {
       rules: { global: "~/custom-claude/CLAUDE.md" },
     },
@@ -50,10 +51,10 @@ describe("store/config", () => {
     expect(cfg.defaults.os?.win32?.method).toBe("copy");
     expect(cfg.collections.default?.description).toBe("Default");
     expect(cfg.artifacts["rules/coding-style"]?.collections).toEqual(["default"]);
-    expect(cfg.agents.cursor?.enabled).toBe(true);
-    expect(cfg.agents.codex?.mcp?.mergeStrategy).toBe("merge");
-    expect(cfg.adapters["claude-code"]?.rules?.global).toBe("~/custom-claude/CLAUDE.md");
-    expect(cfg.adapters["my-agent"]?.displayName).toBe("My Agent");
+    expect(cfg.adapterOverrides.cursor?.enabled).toBe(true);
+    expect(cfg.adapterOverrides.codex?.mcp?.mergeStrategy).toBe("merge");
+    expect(cfg.customAdapters["claude-code"]?.rules?.global).toBe("~/custom-claude/CLAUDE.md");
+    expect(cfg.customAdapters["my-agent"]?.displayName).toBe("My Agent");
   });
 
   it("applies defaults for a minimal config", () => {
@@ -64,8 +65,8 @@ describe("store/config", () => {
     expect(cfg.defaults.secretMode).toBe("env");
     expect(cfg.collections).toEqual({});
     expect(cfg.artifacts).toEqual({});
-    expect(cfg.agents).toEqual({});
-    expect(cfg.adapters).toEqual({});
+    expect(cfg.adapterOverrides).toEqual({});
+    expect(cfg.customAdapters).toEqual({});
   });
 
   it("rejects an invalid method (strict schema)", () => {
@@ -86,10 +87,13 @@ describe("store/config", () => {
     ).toThrow();
   });
 
-  it("rejects removed adapter override/custom fields", () => {
-    expect(() => parseConfig(JSON.stringify({ adapterOverrides: {} }))).toThrow();
+  it("accepts split adapter maps and rejects legacy or malformed fields", () => {
+    expect(parseConfig(JSON.stringify({ adapterOverrides: {}, customAdapters: {} }))).toMatchObject(
+      { adapterOverrides: {}, customAdapters: {} },
+    );
     expect(() => parseConfig(JSON.stringify({ customAdapters: [] }))).toThrow();
     expect(() => parseConfig(JSON.stringify({ builtinAdapters: {} }))).toThrow();
+    expect(() => parseConfig(JSON.stringify({ agents: {}, adapters: {} }))).toThrow();
   });
 
   it("rejects removed channel config fields", () => {
@@ -98,6 +102,135 @@ describe("store/config", () => {
     expect(() =>
       parseConfig(JSON.stringify({ artifacts: { "rules/x": { channels: ["common"] } } })),
     ).toThrow();
+  });
+
+  it.each([
+    ["defaults collection", { defaults: { collections: [""] } }],
+    ["artifact collection", { artifacts: { "rules/style": { collections: [""] } } }],
+    ["adapter display name", { adapterOverrides: { custom: { displayName: "" } } }],
+    ["global detection path", { adapterOverrides: { custom: { detect: { global: [""] } } } }],
+    ["project detection path", { adapterOverrides: { custom: { detect: { project: [""] } } } }],
+    ["global rules path", { customAdapters: { custom: { rules: { global: "" } } } }],
+    ["project rules path", { customAdapters: { custom: { rules: { project: "" } } } }],
+    ["global MCP path", { adapterOverrides: { custom: { mcp: { global: "" } } } }],
+    ["project MCP path", { adapterOverrides: { custom: { mcp: { project: "" } } } }],
+    ["MCP servers key", { adapterOverrides: { custom: { mcp: { serversKey: "" } } } }],
+    ["MCP dialect env key", { adapterOverrides: { custom: { mcp: { dialect: { envKey: "" } } } } }],
+    ["MCP dialect URL key", { adapterOverrides: { custom: { mcp: { dialect: { urlKey: "" } } } } }],
+    [
+      "MCP dialect type field",
+      { adapterOverrides: { custom: { mcp: { dialect: { typeField: "" } } } } },
+    ],
+    [
+      "MCP dialect stdio type",
+      { adapterOverrides: { custom: { mcp: { dialect: { stdioType: "" } } } } },
+    ],
+    [
+      "MCP dialect remote type",
+      { adapterOverrides: { custom: { mcp: { dialect: { remoteType: "" } } } } },
+    ],
+    ["global skills path", { customAdapters: { custom: { skills: { global: "" } } } }],
+    ["project skills path", { customAdapters: { custom: { skills: { project: "" } } } }],
+    ["collection name", { collections: { "": {} } }],
+    ["artifact ID", { artifacts: { "": {} } }],
+    ["adapter override ID", { adapterOverrides: { "": { enabled: true } } }],
+    ["custom adapter ID", { customAdapters: { "": { rules: { global: "RULES.md" } } } }],
+  ])("rejects an empty canonical string for %s", (_field, config) => {
+    expect(() => parseConfig(JSON.stringify(config))).toThrow();
+  });
+
+  it.each([
+    " ",
+    "agent id",
+    "agent\nname",
+    "agent\u007fname",
+    "-agent",
+    "agent-",
+    ".agent",
+    "agent/name",
+    "agent:name",
+    "__proto__",
+    "prototype",
+    "constructor",
+  ])("rejects unsafe adapter map key %j", (agentId) => {
+    for (const field of ["adapterOverrides", "customAdapters"] as const) {
+      const value =
+        field === "adapterOverrides"
+          ? { enabled: true }
+          : { rules: { global: "~/.agent/RULES.md" } };
+      const config = { [field]: Object.fromEntries([[agentId, value]]) };
+      expect(() => parseConfig(JSON.stringify(config))).toThrow();
+    }
+  });
+
+  it.each([
+    "agents-md",
+    "claude-code",
+    "codex",
+    "cursor",
+    "gemini-cli",
+    "opencode",
+    "windsurf",
+    "custom_agent.v2",
+  ])("keeps defined and canonical adapter id %s valid", (agentId) => {
+    const parsed = parseConfig(
+      JSON.stringify({
+        adapterOverrides: { [agentId]: { enabled: true } },
+        customAdapters: { [agentId]: { rules: { global: "~/.agent/RULES.md" } } },
+      }),
+    );
+    expect(parsed.adapterOverrides).toHaveProperty(agentId);
+    expect(parsed.customAdapters).toHaveProperty(agentId);
+  });
+
+  it.each([
+    "C:/x",
+    "C:x",
+    "c:/x",
+    "//server/share",
+    "\\\\server\\share",
+    "\\\\?\\C:\\x",
+    "/absolute",
+    "./rules/style.md",
+    "rules/./style.md",
+    "rules/../style.md",
+    "../rules/style.md",
+    "rules//style.md",
+    "rules/style.md/",
+    "rules:style.md",
+    "rules/%2e%2e/style.md",
+    "rules/%2Fstyle.md",
+  ])("rejects non-portable or non-normalized suppression source %s", (source) => {
+    expect(() =>
+      parseConfig(
+        JSON.stringify({
+          artifacts: {
+            "rules/style": {
+              secretPatternSuppressions: [{ source, rule: "github-pat", patternVersion: 1 }],
+            },
+          },
+        }),
+      ),
+    ).toThrow();
+  });
+
+  it.each([
+    "rules/style.md",
+    "rules/nested/style.v2-guide.md",
+    ".hidden/style-file.md",
+    "rules/100%-style.md",
+  ])("accepts normalized store-relative suppression source %s", (source) => {
+    expect(
+      parseConfig(
+        JSON.stringify({
+          artifacts: {
+            "rules/style": {
+              secretPatternSuppressions: [{ source, rule: "github-pat", patternVersion: 1 }],
+            },
+          },
+        }),
+      ).artifacts["rules/style"]?.secretPatternSuppressions?.[0]?.source,
+    ).toBe(source);
   });
 
   describe("loadConfig from disk", () => {
@@ -111,7 +244,7 @@ describe("store/config", () => {
     it("returns packaged defaults when config.json is absent", async () => {
       const cfg = await loadConfig(t.env, t.path("store"));
       expect(cfg.defaults.method).toBe("symlink");
-      expect(cfg.adapters).toEqual({});
+      expect(cfg.customAdapters).toEqual({});
       const adapters = await loadAdapterSpecs(t.env, t.path("store"));
       expect(adapters.specs.map((a) => a.id)).toContain("codex");
     });
@@ -128,8 +261,8 @@ describe("store/config", () => {
       const storeRoot = t.path("store");
       await t.env.fs.mkdir(storeRoot, { recursive: true });
       const cfg = parseConfig(await initialConfigText(t.env));
-      cfg.agents.codex = { enabled: false };
-      cfg.adapters["my-agent"] = {
+      cfg.adapterOverrides.codex = { enabled: false };
+      cfg.customAdapters["my-agent"] = {
         displayName: "My Agent",
         rules: { global: "~/.my-agent/RULES.md" },
       };
@@ -137,8 +270,45 @@ describe("store/config", () => {
       await saveConfig(t.env, storeRoot, cfg);
 
       const loaded = await loadConfig(t.env, storeRoot);
-      expect(loaded.agents.codex?.enabled).toBe(false);
-      expect(loaded.adapters["my-agent"]?.rules?.global).toBe("~/.my-agent/RULES.md");
+      expect(loaded.adapterOverrides.codex?.enabled).toBe(false);
+      expect(loaded.customAdapters["my-agent"]?.rules?.global).toBe("~/.my-agent/RULES.md");
+    });
+
+    it("rejects an invalid runtime config before persistence effects", async () => {
+      const storeRoot = t.path("store");
+      await t.env.fs.mkdir(storeRoot, { recursive: true });
+      const path = t.path("store", "config.json");
+      await t.env.fs.writeFile(path, SAMPLE);
+      const before = await t.env.fs.readFile(path);
+      const invalid = {
+        ...parseConfig(SAMPLE),
+        defaults: { ...parseConfig(SAMPLE).defaults, collections: [""] },
+      } as CellarerConfig;
+
+      await expect(saveConfig(t.env, storeRoot, invalid)).rejects.toThrow();
+      expect(await t.env.fs.readFile(path)).toBe(before);
+    });
+
+    it("rejects a non-portable runtime suppression source before persistence effects", async () => {
+      const storeRoot = t.path("store");
+      await t.env.fs.mkdir(storeRoot, { recursive: true });
+      const path = t.path("store", "config.json");
+      await t.env.fs.writeFile(path, SAMPLE);
+      const before = await t.env.fs.readFile(path);
+      const valid = parseConfig(SAMPLE);
+      const invalid = {
+        ...valid,
+        artifacts: {
+          ...valid.artifacts,
+          "rules/unsafe": {
+            collections: [],
+            secretPatternSuppressions: [{ source: "C:/x", rule: "github-pat", patternVersion: 1 }],
+          },
+        },
+      } as CellarerConfig;
+
+      await expect(saveConfig(t.env, storeRoot, invalid)).rejects.toThrow();
+      expect(await t.env.fs.readFile(path)).toBe(before);
     });
 
     it("exposes packaged built-in adapter ids for settings", async () => {

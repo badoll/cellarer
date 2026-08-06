@@ -141,25 +141,35 @@ describe("cli program wiring", () => {
     }
   });
 
-  it("registers all commands (M4 + add)", () => {
+  it("registers all executable command roots", () => {
     const program = buildProgram();
     const names = program.commands.map((c) => c.name()).sort();
     expect(names).toEqual(
       [
         "add",
+        "agent",
         "agents",
         "apply",
         "authority",
         "capabilities",
+        "collection",
+        "config",
+        "diff",
+        "discovery",
         "doctor",
         "init",
         "ls",
+        "operation",
+        "plan",
+        "resource",
         "revert",
         "scan",
         "schema",
         "secret",
         "status",
+        "summary",
         "ui",
+        "verify",
       ].sort(),
     );
   });
@@ -182,7 +192,9 @@ describe("cli program wiring", () => {
       process.env.CELLARER_HOME = storeRoot;
       console.log = (message?: unknown) => logs.push(String(message));
 
-      await buildProgram().parseAsync(["node", "cellarer", "init"], { from: "node" });
+      await buildProgram().parseAsync(["node", "cellarer", "init", "--agent", "codex"], {
+        from: "node",
+      });
 
       expect(logs.join("\n")).toMatch(/operation operation-.+, revision 1/);
       await expect(fs.readFile(join(storeRoot, "revision.json"), "utf8")).resolves.toContain(
@@ -286,7 +298,7 @@ describe("cli program wiring", () => {
     }
   });
 
-  it("scan exposes conflict/select/dry-run/json flags", () => {
+  it("scan exposes conflict/exact-select/dry-run/json flags", () => {
     const program = buildProgram();
     const scan = program.commands.find((c) => c.name() === "scan");
     const flags = scan?.options.map((o) => o.long) ?? [];

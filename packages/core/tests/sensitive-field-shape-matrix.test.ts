@@ -5,7 +5,11 @@ import {
   scanStructuredFileSecretFindings,
   scanStructuredSecretFindings,
 } from "../src/secrets/detector.js";
-import { REDACTED_SECRET, serializeObservable } from "../src/secrets/observable.js";
+import {
+  createSecretValue,
+  REDACTED_SECRET,
+  serializeObservable,
+} from "../src/secrets/observable.js";
 import { makeTmpEnv } from "./helpers/env.js";
 
 const SENSITIVE_FIELD_NAMES = [
@@ -238,6 +242,10 @@ describe("observable sensitive field shape matrix", () => {
     const parsed = JSON.parse(serializeObservable(boundary, payload)) as Record<string, unknown[]>;
 
     for (const field of SENSITIVE_FIELD_NAMES) {
+      if (field === "authorization") {
+        expect(parsed[field]).toBe(REDACTED_SECRET);
+        continue;
+      }
       expect(parsed[field]).toEqual([
         REDACTED_SECRET,
         REDACTED_SECRET,
@@ -280,14 +288,73 @@ describe("observable sensitive field shape matrix", () => {
       }),
     );
 
-    expect(parsed[field]).toEqual([
-      REDACTED_SECRET,
-      REDACTED_SECRET,
-      REDACTED_SECRET,
-      REDACTED_SECRET,
-      { nested: REDACTED_SECRET },
-      "${ENV_VAR}",
-    ]);
+    expect(parsed[field]).toEqual(
+      field === "secretRefs"
+        ? REDACTED_SECRET
+        : [
+            REDACTED_SECRET,
+            REDACTED_SECRET,
+            REDACTED_SECRET,
+            REDACTED_SECRET,
+            { nested: REDACTED_SECRET },
+            "${ENV_VAR}",
+          ],
+    );
+  });
+
+  it.each([
+    "cli",
+    "web",
+  ] as const)("preserves strict reference-name DTO arrays at the %s boundary", (boundary) => {
+    const parsed = JSON.parse(
+      serializeObservable(
+        boundary,
+        {
+          secretReferenceNames: ["CTX_TOKEN", "github-token"],
+          secretRefs: ["ANOTHER_TOKEN"],
+        },
+        { knownValues: [createSecretValue("KNOWN_ACTIVE_VALUE")] },
+      ),
+    );
+
+    expect(parsed).toEqual({
+      secretReferenceNames: ["CTX_TOKEN", "github-token"],
+      secretRefs: ["ANOTHER_TOKEN"],
+    });
+  });
+
+  it("redacts known active values and fails closed for hostile reference-name arrays", () => {
+    const getterArray = ["SAFE_NAME"];
+    Object.defineProperty(getterArray, "0", {
+      enumerable: true,
+      get() {
+        return "GETTER_VALUE";
+      },
+    });
+    const toJsonArray = ["SAFE_NAME"] as string[] & { toJSON?: () => string[] };
+    toJsonArray.toJSON = () => ["TO_JSON_VALUE"];
+    const proxyArray = new Proxy(["SAFE_NAME"], {
+      ownKeys() {
+        throw new Error("proxy ownKeys must not escape");
+      },
+    });
+    const parsed = JSON.parse(
+      serializeObservable(
+        "cli",
+        {
+          secretReferenceNames: ["CTX_TOKEN", "KNOWN_ACTIVE_VALUE"],
+          getterNames: { secretReferenceNames: getterArray },
+          proxyNames: { secretReferenceNames: proxyArray },
+          toJsonNames: { secretReferenceNames: toJsonArray },
+        },
+        { knownValues: [createSecretValue("KNOWN_ACTIVE_VALUE")] },
+      ),
+    );
+
+    expect(parsed.secretReferenceNames).toEqual(["CTX_TOKEN", REDACTED_SECRET]);
+    expect(parsed.getterNames.secretReferenceNames).toBe(REDACTED_SECRET);
+    expect(parsed.proxyNames.secretReferenceNames).toBe(REDACTED_SECRET);
+    expect(parsed.toJsonNames.secretReferenceNames).toBe(REDACTED_SECRET);
   });
 
   it.each([

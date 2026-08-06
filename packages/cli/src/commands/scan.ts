@@ -4,6 +4,7 @@ import {
   type PresentedOperationResult,
   type ScanItem,
   type ScanPlan,
+  type ScanSelection,
   type SecretMode,
   scanPlan,
 } from "@cellarer/core";
@@ -33,7 +34,7 @@ interface ScanOpts {
   skills?: boolean;
   intoCollection?: string;
   conflict?: string;
-  select?: string;
+  select?: unknown;
   dryRun?: boolean;
   json?: boolean;
   secretMode?: string;
@@ -58,7 +59,7 @@ function resolveCaps(opts: ScanOpts): ("rules" | "mcp" | "skills")[] | undefined
 }
 
 // 扫描回写(import):agent/目录现有配置 → 规范化 + 脱敏 → 写库房。
-// scan 默认即非交互(无确认提示):用 --dry-run 预览、--select 缩小范围。
+// scan 默认即非交互(无确认提示):用 --dry-run 预览、完整 kind/name/source selector 缩小范围。
 export function scanCommand(resolve = resolveContext): Command {
   return new Command("scan")
     .description("扫描 agent 现有 rules/mcp/skills 回写库房(密钥自动脱敏为占位符)")
@@ -69,7 +70,7 @@ export function scanCommand(resolve = resolveContext): Command {
     .option("--skills", "仅扫 skills")
     .option("--into-collection <collection>", "给导入资源归入 collection")
     .option("--conflict <strategy>", "冲突策略:keep-theirs(默认)| keep-mine | copy")
-    .option("--select <names>", "仅导入这些资源名(逗号分隔)")
+    .option("--select <json>", "精确 selector JSON 数组：kind/name/source")
     .option("--dry-run", "仅预览发现项,不写库房")
     .option("--secret-mode <mode>", "密钥来源:env(默认)| vault | keychain")
     .option("--vault-passphrase-fd <number>", "从继承的文件描述符读取 vault 口令")
@@ -80,6 +81,7 @@ export function scanCommand(resolve = resolveContext): Command {
         command,
         async (execution) => {
           const invocation = execution.invocation;
+          const selectItems = parseExactSelections(opts.select, invocation);
           const capabilities = resolveCaps(opts);
           assertNonInteractiveMutationInput(
             "scan",
@@ -124,12 +126,7 @@ export function scanCommand(resolve = resolveContext): Command {
             intoCollection: opts.intoCollection,
             conflict: opts.conflict as ConflictStrategy | undefined,
             capabilities,
-            select: opts.select
-              ? opts.select
-                  .split(",")
-                  .map((value) => value.trim())
-                  .filter(Boolean)
-              : undefined,
+            selectItems,
             secretMode,
             vaultPassphrase,
             keychainService: opts.keychainService,
@@ -168,6 +165,53 @@ export function scanCommand(resolve = resolveContext): Command {
         },
       );
     });
+}
+
+function parseExactSelections(
+  value: unknown,
+  invocation: CliInvocation,
+): ScanSelection[] | undefined {
+  if (value === undefined) return undefined;
+  let parsed: unknown = value;
+  if (typeof value === "string") {
+    try {
+      parsed = JSON.parse(value) as unknown;
+    } catch {
+      throw ambiguousSelector(invocation);
+    }
+  }
+  if (!Array.isArray(parsed)) throw ambiguousSelector(invocation);
+  return parsed.map((selector) => {
+    if (selector === null || typeof selector !== "object" || Array.isArray(selector)) {
+      throw ambiguousSelector(invocation);
+    }
+    const record = selector as Record<string, unknown>;
+    const keys = Object.keys(record).sort();
+    if (
+      keys.join("\0") !== ["kind", "name", "source"].sort().join("\0") ||
+      !["rules", "mcp", "skills"].includes(String(record.kind)) ||
+      typeof record.name !== "string" ||
+      record.name.length === 0 ||
+      typeof record.source !== "string" ||
+      record.source.length === 0
+    ) {
+      throw ambiguousSelector(invocation);
+    }
+    return {
+      kind: record.kind as ScanSelection["kind"],
+      name: record.name,
+      source: record.source,
+    };
+  });
+}
+
+function ambiguousSelector(invocation: CliInvocation): CliInputError {
+  return new CliInputError(
+    "INVALID_INPUT",
+    "mutating scan selection requires complete kind, name, and source selectors",
+    { fields: ["select"], reason: "AMBIGUOUS_SELECTOR" },
+    invocation,
+  );
 }
 
 function parseSecretMode(

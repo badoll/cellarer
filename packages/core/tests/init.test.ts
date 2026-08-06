@@ -26,7 +26,7 @@ describe("store/initStore", () => {
     ).toBe(true);
     const json = await t.env.fs.readFile(t.path("home", ".cellarer", "config.json"));
     const cfg = parseConfig(json);
-    expect(cfg.adapters).toEqual({});
+    expect(cfg.customAdapters).toEqual({});
     const reg = await loadRegistry(t.env, storeRoot);
     expect(reg.get("claude-code")).toBeDefined();
     expect(reg.get("codex")).toBeDefined();
@@ -85,6 +85,18 @@ describe("store/initStore", () => {
     expect((await t.env.fs.lstat(t.path("home", ".cellarer", "config.json"))).mode & 0o777).toBe(
       0o600,
     );
+  });
+
+  it("persists exactly the explicit first-run agent target set", async () => {
+    const result = await initializeStore(t.env, storeRoot, { agentTargets: ["codex"] });
+
+    expect(result.operation).toMatchObject({ ok: true });
+    const config = parseConfig(await t.env.fs.readFile(t.path("home", ".cellarer", "config.json")));
+    expect(config.adapterOverrides.codex).toEqual({ enabled: true });
+    const registry = await loadRegistry(t.env, storeRoot);
+    for (const adapter of registry.list()) {
+      expect(config.adapterOverrides[adapter.id]?.enabled).toBe(adapter.id === "codex");
+    }
   });
 
   it("does not leave a truncated config when config publication fails with EIO", async () => {

@@ -34,19 +34,18 @@ export function SettingsPage() {
   async function addCollection() {
     const name = newCollection.trim();
     if (!settings || !name) return;
-    const collections = Object.fromEntries(
-      settings.collections.map((item) => [item.name, { description: item.description }]),
-    );
-    collections.default ??= { description: "Default collection" };
-    collections[name] = { description: newCollectionDescription.trim() || undefined };
     setSaving(true);
     setError(null);
     try {
       await readApiJson<unknown>(
-        await apiFetch("/api/settings/collections", {
-          method: "PUT",
+        await apiFetch("/api/collections", {
+          method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ collections }),
+          body: JSON.stringify({
+            collectionName: name,
+            description: newCollectionDescription.trim() || undefined,
+            resourceIds: [],
+          }),
         }),
       );
       setNewCollection("");

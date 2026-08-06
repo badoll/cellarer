@@ -99,3 +99,47 @@ export async function assertSafeAtomicPublicationPath(
     throw new Error(`safety: ${label} final path is a symlink: "${path}"`);
   }
 }
+
+// Read-side equivalent of the atomic publication guard. Provenance must never be computed by
+// following a Store alias, a reparse-point ancestor, or a final symlink into an external tree.
+// The returned path is the canonical lexical path used by the signed descriptor; callers still
+// capture the node through FsLike's no-follow snapshot primitives to close final-node races.
+export async function assertSafeStoreObservationPath(
+  env: Env,
+  path: string,
+  root: string,
+  label: string,
+): Promise<string> {
+  const normalizedRoot = resolve(env.cwd(), root);
+  const normalizedPath = resolve(env.cwd(), path);
+  if (normalizedPath === normalizedRoot || !isWithinRoot(normalizedRoot, normalizedPath)) {
+    throw new Error(`safety: ${label} must remain inside the Store root`);
+  }
+
+  const rootStat = await lstatOrNull(env, normalizedRoot);
+  if (!rootStat?.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new Error(
+      `safety: ${label} root is missing, not a directory, or a symlink: "${normalizedRoot}"`,
+    );
+  }
+  const realRoot = await env.fs.realpath(normalizedRoot);
+  const relativePath = relative(normalizedRoot, normalizedPath);
+  const segments = relativePath.split(sep);
+  let current = normalizedRoot;
+  for (const [index, segment] of segments.entries()) {
+    current = join(current, segment);
+    const stat = await lstatOrNull(env, current);
+    if (!stat) break;
+    if (stat.isSymbolicLink()) {
+      throw new Error(`safety: ${label} has an unsafe symlink or reparse point at "${current}"`);
+    }
+    if (index < segments.length - 1 && !stat.isDirectory()) {
+      throw new Error(`safety: ${label} ancestor is not a directory: "${current}"`);
+    }
+    const realNode = await env.fs.realpath(current);
+    if (!isWithinRoot(realRoot, realNode)) {
+      throw new Error(`safety: ${label} resolves outside Store root at "${current}"`);
+    }
+  }
+  return normalizedPath;
+}

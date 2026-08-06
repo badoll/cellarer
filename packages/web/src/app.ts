@@ -6,46 +6,53 @@
 //   - core-first(不变量 1):路由只解析参数 + 调 core,不写业务逻辑。
 import {
   type ActivityAction,
-  type AdapterPatchConfig,
   apply,
   applyScan,
   type Capability,
   type ConflictStrategy,
+  ControlPlaneValidationError,
   collectLedgerSecretRefStats,
   collectLedgerSecretRefs,
   type Destination,
   type DiffIdentity,
   dashboardSummary,
-  deleteCustomAdapterConfig,
   diffTarget,
-  discoverySummary,
+  discoverySummaryControlPlane,
   doctor,
   type Env,
   inspectAgents,
   listActivity,
+  listControlPlaneAgents,
+  listControlPlaneResources,
   listMcpArtifacts,
   listRuleArtifacts,
   listSkillArtifacts,
   loadConfig,
   loadLedger,
-  loadRegistry,
+  mutateAgentAdapter,
+  mutateBuiltinAgent,
+  mutateCollection,
+  mutateControlPlaneSettings,
+  mutateCustomAdapter,
   mutationPresentation,
+  parseAgentAdapterMutationBody,
+  parseAgentEnabledMutationBody,
+  parseCollectionCreateMutationBody,
+  parseCollectionDefaultsMutationBody,
+  parseCollectionMembersMutationBody,
+  parseCollectionUpdateMutationBody,
+  parseControlPlaneSettingsMutationBody,
   planApplyMutation,
-  resourceCatalog,
   revert,
   type ScanSelection,
   type Scope,
   StoreMutationConflictError,
-  saveCollections,
-  saveDefaults,
   scanPlan,
   serializeSafeObservable,
   serializeSafeWebObservable,
-  setAgentEnabled,
   settingsSummary,
   status,
-  upsertAdapterConfig,
-  verify,
+  verifyControlPlane,
 } from "@cellarer/core";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -78,7 +85,6 @@ interface ScanBody {
   dir?: string;
   capabilities?: Capability[];
   conflict?: ConflictStrategy;
-  select?: string[];
   selectItems?: ScanSelection[];
   intoCollection?: string;
 }
@@ -89,7 +95,6 @@ interface ImportBody {
   dir?: string;
   capabilities?: Capability[];
   conflict?: ConflictStrategy;
-  select?: string[];
   selectItems?: ScanSelection[];
   intoCollection?: string;
 }
@@ -163,6 +168,36 @@ function requireDirForDestination(destination: string | undefined, dir: string |
   }
 }
 
+function validateScanRequestSelection(body: ScanBody | ImportBody): void {
+  if (Object.hasOwn(body, "select")) {
+    throw new HTTPException(400, {
+      message: 'unexpected field "select"; use exact "selectItems" selectors',
+    });
+  }
+  if (body.selectItems === undefined) return;
+  if (!Array.isArray(body.selectItems)) {
+    throw new HTTPException(400, { message: '"selectItems" must be an array' });
+  }
+  for (const [index, selection] of body.selectItems.entries()) {
+    const keys =
+      typeof selection === "object" && selection !== null && !Array.isArray(selection)
+        ? Object.keys(selection).sort()
+        : [];
+    if (
+      keys.join("\0") !== ["kind", "name", "source"].sort().join("\0") ||
+      !["rules", "mcp", "skills"].includes(selection?.kind) ||
+      typeof selection?.name !== "string" ||
+      selection.name.length === 0 ||
+      typeof selection?.source !== "string" ||
+      selection.source.length === 0
+    ) {
+      throw new HTTPException(400, {
+        message: `"selectItems[${index}]" must be an exact kind/name/source selector`,
+      });
+    }
+  }
+}
+
 function distributeOpts(deps: AppDeps, b: DistributeBody) {
   requireDirForProject(b.scope, b.dir);
   return {
@@ -201,7 +236,6 @@ function scanOpts(deps: AppDeps, b: ScanBody) {
     dir: b.dir,
     capabilities: b.capabilities,
     conflict: parseConflictStrategy(b.conflict),
-    select: b.select,
     selectItems: b.selectItems,
     intoCollection: b.intoCollection,
     secretMode: "env" as const,
@@ -217,7 +251,6 @@ function importOpts(deps: AppDeps, b: ImportBody) {
     dir: b.dir,
     capabilities: b.capabilities,
     conflict: parseConflictStrategy(b.conflict),
-    select: b.select,
     selectItems: b.selectItems,
     intoCollection: b.intoCollection,
     secretMode: "env" as const,
@@ -288,6 +321,13 @@ function parseLimit(raw: string | undefined): number | undefined {
   return value;
 }
 
+function parseOptionalBoolean(raw: string | undefined, field: string): boolean | undefined {
+  if (raw === undefined || raw === "") return undefined;
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  throw new HTTPException(400, { message: `invalid ${field} "${raw}"` });
+}
+
 function summaryOpts(deps: AppDeps, query: (name: string) => string | undefined) {
   const scope = parseScope(query("scope"));
   const dir = query("dir");
@@ -328,6 +368,19 @@ export function createApp(inputDeps: AppDeps) {
     }
     if (err instanceof StoreMutationConflictError) {
       return c.json(redactWebPayload({ error: err.message, conflict: err.conflict }, [err]), 409);
+    }
+    if (err instanceof ControlPlaneValidationError) {
+      return c.json(
+        redactWebPayload(
+          {
+            error: err.message,
+            code: "DOMAIN_VALIDATION_FAILED",
+            details: err.details,
+          },
+          [err],
+        ),
+        400,
+      );
     }
     return c.json(
       redactWebPayload({ error: err instanceof Error ? err.message : String(err) }, [err]),
@@ -378,7 +431,7 @@ export function createApp(inputDeps: AppDeps) {
       const dir = c.req.query("dir");
       requireDirForDestination(destination, dir);
       return c.json(
-        await resourceCatalog(deps.env, {
+        await listControlPlaneResources(deps.env, {
           storeRoot: deps.storeRoot,
           agents: parseCsv(c.req.query("agents")),
           collections: parseCsv(c.req.query("collections")),
@@ -397,7 +450,7 @@ export function createApp(inputDeps: AppDeps) {
       const dir = c.req.query("dir");
       requireDirForDestination(destination, dir);
       return c.json(
-        await resourceCatalog(deps.env, {
+        await listControlPlaneResources(deps.env, {
           storeRoot: deps.storeRoot,
           kind,
           agents: parseCsv(c.req.query("agents")),
@@ -413,7 +466,7 @@ export function createApp(inputDeps: AppDeps) {
       const dir = c.req.query("dir");
       requireDirForDestination(destination, dir);
       return c.json(
-        await discoverySummary(deps.env, {
+        await discoverySummaryControlPlane(deps.env, {
           storeRoot: deps.storeRoot,
           agents: parseCsv(c.req.query("agents")),
           destination,
@@ -439,27 +492,17 @@ export function createApp(inputDeps: AppDeps) {
     })
     // 可用 agent 适配器。
     .get("/api/agents", async (c) => {
-      const [reg, config] = await Promise.all([
-        loadRegistry(deps.env, deps.storeRoot),
-        loadConfig(deps.env, deps.storeRoot),
-      ]);
-      const agents = await Promise.all(
-        reg.list().map(async (a) => {
-          const d = await a.detect(deps.env, "global");
-          return {
-            id: a.id,
-            displayName: a.displayName,
-            capabilities: a.capabilities,
-            detected: d.installed,
-            root: d.root,
-            enabled: config.agents[a.id]?.enabled !== false,
-          };
+      const scope = parseScope(c.req.query("scope")) ?? "global";
+      const dir = c.req.query("dir");
+      requireDirForProject(scope, dir);
+      return c.json(
+        await listControlPlaneAgents(deps.env, {
+          storeRoot: deps.storeRoot,
+          scope,
+          ...(dir ? { dir } : {}),
+          ...(parseCsv(c.req.query("agents")) ? { agents: parseCsv(c.req.query("agents")) } : {}),
         }),
       );
-      return c.json({
-        agents,
-        warnings: reg.warnings,
-      });
     })
     // Dashboard first-screen state. Core owns counts, coverage, readiness, and activity semantics.
     .get("/api/summary", async (c) => {
@@ -502,6 +545,7 @@ export function createApp(inputDeps: AppDeps) {
     })
     .post("/api/import/plan", async (c) => {
       const body = await c.req.json<ImportBody>();
+      validateScanRequestSelection(body);
       const result = await scanPlan(deps.env, importOpts(deps, body));
       const response = c.json(result);
       responseKnownValueSources.set(response, result);
@@ -509,6 +553,7 @@ export function createApp(inputDeps: AppDeps) {
     })
     .post("/api/import/apply", async (c) => {
       const body = await c.req.json<ImportBody>();
+      validateScanRequestSelection(body);
       const result = await applyScan(deps.env, importOpts(deps, body));
       const response = c.json(result);
       responseKnownValueSources.set(response, result);
@@ -534,6 +579,7 @@ export function createApp(inputDeps: AppDeps) {
     // 扫描预览(只读;ScanItem 不含真值,secretRefs 只列名)。
     .post("/api/scan", async (c) => {
       const body = await c.req.json<ScanBody>();
+      validateScanRequestSelection(body);
       const result = await scanPlan(deps.env, scanOpts(deps, body));
       const response = c.json(result);
       responseKnownValueSources.set(response, result);
@@ -542,6 +588,7 @@ export function createApp(inputDeps: AppDeps) {
     // 扫描导入:仍由 core 负责脱敏、冲突裁决、写前护栏与 collection 打标。
     .post("/api/scan/apply", async (c) => {
       const body = await c.req.json<ScanBody>();
+      validateScanRequestSelection(body);
       const result = await applyScan(deps.env, scanOpts(deps, body));
       const response = c.json(result);
       responseKnownValueSources.set(response, result);
@@ -587,7 +634,7 @@ export function createApp(inputDeps: AppDeps) {
       const body = await c.req.json<DistributeBody>();
       const opts = distributeOpts(deps, body);
       return c.json(
-        await verify(deps.env, {
+        await verifyControlPlane(deps.env, {
           storeRoot: opts.storeRoot,
           scope: opts.scope,
           dir: opts.dir,
@@ -602,34 +649,101 @@ export function createApp(inputDeps: AppDeps) {
     .get("/api/settings", async (c) => {
       return c.json(await settingsSummary(deps.env, { storeRoot: deps.storeRoot }));
     })
-    .put("/api/settings/collections", async (c) => {
-      const body = await c.req.json<{ collections: Record<string, { description?: string }> }>();
-      return c.json(await saveCollections(deps.env, deps.storeRoot, body.collections));
+    .put("/api/settings", async (c) => {
+      const body = parseControlPlaneSettingsMutationBody(await c.req.json<unknown>());
+      return c.json(
+        await mutateControlPlaneSettings(deps.env, {
+          storeRoot: deps.storeRoot,
+          action: "update",
+          settings: body.settings,
+          dryRun: body.dryRun,
+        }),
+      );
     })
-    .put("/api/settings/defaults", async (c) => {
-      const body = await c.req.json<{
-        defaults: {
-          method?: "symlink" | "copy";
-          collections?: string[];
-          secretMode?: "env" | "vault" | "keychain";
-        };
-      }>();
-      return c.json(await saveDefaults(deps.env, deps.storeRoot, body.defaults));
+    .post("/api/collections", async (c) => {
+      const body = parseCollectionCreateMutationBody(await c.req.json<unknown>());
+      return c.json(
+        await mutateCollection(deps.env, {
+          storeRoot: deps.storeRoot,
+          action: "create",
+          ...body,
+        }),
+      );
+    })
+    .put("/api/collections/defaults", async (c) => {
+      const body = parseCollectionDefaultsMutationBody(await c.req.json<unknown>());
+      return c.json(
+        await mutateCollection(deps.env, {
+          storeRoot: deps.storeRoot,
+          action: "set-defaults",
+          ...body,
+        }),
+      );
+    })
+    .put("/api/collections/:name/members", async (c) => {
+      const body = parseCollectionMembersMutationBody(await c.req.json<unknown>());
+      return c.json(
+        await mutateCollection(deps.env, {
+          storeRoot: deps.storeRoot,
+          action: "set-members",
+          collectionName: c.req.param("name"),
+          ...body,
+        }),
+      );
+    })
+    .put("/api/collections/:name", async (c) => {
+      const body = parseCollectionUpdateMutationBody(await c.req.json<unknown>());
+      return c.json(
+        await mutateCollection(deps.env, {
+          storeRoot: deps.storeRoot,
+          action: "update",
+          collectionName: c.req.param("name"),
+          ...body,
+        }),
+      );
+    })
+    .delete("/api/collections/:name", async (c) => {
+      const dryRun = parseOptionalBoolean(c.req.query("dryRun"), "dryRun");
+      return c.json(
+        await mutateCollection(deps.env, {
+          storeRoot: deps.storeRoot,
+          action: "delete",
+          collectionName: c.req.param("name"),
+          dryRun,
+        }),
+      );
     })
     .put("/api/agents/:id/enabled", async (c) => {
-      const body = await c.req.json<{ enabled: boolean }>();
+      const body = parseAgentEnabledMutationBody(await c.req.json<unknown>());
       return c.json(
-        await setAgentEnabled(deps.env, deps.storeRoot, c.req.param("id"), body.enabled),
+        await mutateBuiltinAgent(deps.env, {
+          storeRoot: deps.storeRoot,
+          agentId: c.req.param("id"),
+          action: body.enabled ? "enable" : "disable",
+          dryRun: body.dryRun,
+        }),
       );
     })
     .put("/api/agents/:id/adapter", async (c) => {
-      const body = await c.req.json<{ adapter: AdapterPatchConfig }>();
+      const body = parseAgentAdapterMutationBody(await c.req.json<unknown>());
       return c.json(
-        await upsertAdapterConfig(deps.env, deps.storeRoot, c.req.param("id"), body.adapter),
+        await mutateAgentAdapter(deps.env, {
+          storeRoot: deps.storeRoot,
+          agentId: c.req.param("id"),
+          ...body,
+        }),
       );
     })
     .delete("/api/agents/:id/adapter", async (c) => {
-      return c.json(await deleteCustomAdapterConfig(deps.env, deps.storeRoot, c.req.param("id")));
+      const dryRun = parseOptionalBoolean(c.req.query("dryRun"), "dryRun");
+      return c.json(
+        await mutateCustomAdapter(deps.env, {
+          storeRoot: deps.storeRoot,
+          agentId: c.req.param("id"),
+          action: "remove",
+          dryRun,
+        }),
+      );
     })
     // 密钥引用名(只列名,绝不回显真值)——聚合口径走 core helper(不变量 1)。
     .get("/api/secrets", async (c) => {

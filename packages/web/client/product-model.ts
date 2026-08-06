@@ -22,7 +22,7 @@ export function resourceKindLabel(kind: Capability): string {
   return "Rules";
 }
 
-export function summarizeResourceCounts(resources: ResourceCountLike[]): ResourceCounts {
+export function summarizeResourceCounts(resources: readonly ResourceCountLike[]): ResourceCounts {
   const counts: ResourceCounts = {
     managed: 0,
     discovered: 0,

@@ -44,7 +44,7 @@ async function seedStore(
 }
 
 function addReferenceNativeAdapter(config: CellarerConfig): void {
-  config.adapters["reference-native"] = {
+  config.customAdapters["reference-native"] = {
     displayName: "Reference Native",
     mcp: {
       global: "~/.reference-native/mcp.json",
@@ -503,7 +503,7 @@ describe("engine mcp — secret handling (red line)", () => {
     const storeRoot = await seedStore(t, {
       mcp: { c7: { command: "npx", env: { TOKEN: "${CELLARER_SECRET:C7_TOKEN}" } } },
       configure(config) {
-        config.adapters.legacy = {
+        config.customAdapters.legacy = {
           displayName: "Legacy",
           mcp: {
             global: "~/.legacy/mcp.json",
@@ -597,7 +597,7 @@ describe("engine mcp — secret handling (red line)", () => {
     const storeRoot = await seedStore(t, {
       mcp: { nested: server },
       configure(config) {
-        config.adapters.legacy = {
+        config.customAdapters.legacy = {
           displayName: "Legacy",
           mcp: {
             global: "~/.legacy/mcp.json",
@@ -945,7 +945,7 @@ describe("collection filtering across capabilities", () => {
   });
 });
 
-describe("per-agent config (agents.<id>)", () => {
+describe("per-agent config (adapterOverrides.<id>)", () => {
   let t: TmpEnv;
   beforeEach(async () => {
     t = makeTmpEnv();
@@ -953,11 +953,11 @@ describe("per-agent config (agents.<id>)", () => {
   });
   afterEach(() => t.cleanup());
 
-  it("agents.<id>.enabled = false skips that agent entirely", async () => {
+  it("adapterOverrides.<id>.enabled = false skips that agent entirely", async () => {
     const storeRoot = await seedStore(t, {
       mcp: { x: { command: "npx" } },
       configure: (config) => {
-        config.agents["claude-code"] = { enabled: false };
+        config.adapterOverrides["claude-code"] = { enabled: false };
       },
     });
     const p = await plan(t.env, {
@@ -971,11 +971,11 @@ describe("per-agent config (agents.<id>)", () => {
     expect(p.warnings.some((w) => w.includes("disabled"))).toBe(true);
   });
 
-  it("agents.<id>.mcp.mergeStrategy = overwrite is honored (no CLI flag)", async () => {
+  it("adapterOverrides.<id>.mcp.mergeStrategy = overwrite is honored (no CLI flag)", async () => {
     const storeRoot = await seedStore(t, {
       mcp: { only: { command: "y" } },
       configure: (config) => {
-        config.agents["claude-code"] = { mcp: { mergeStrategy: "overwrite" } };
+        config.adapterOverrides["claude-code"] = { mcp: { mergeStrategy: "overwrite" } };
       },
     });
     const target = t.path("home", ".claude", "mcp.json");

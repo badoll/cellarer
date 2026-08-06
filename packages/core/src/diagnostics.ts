@@ -219,7 +219,7 @@ async function inspectAdapter(
   return {
     id: adapter.id,
     displayName: adapter.displayName,
-    enabled: config.agents[adapter.id]?.enabled !== false,
+    enabled: config.adapterOverrides[adapter.id]?.enabled !== false,
     scope: opts.scope,
     detected,
     root,

@@ -108,7 +108,7 @@ describe("engine/plan", () => {
 
   it("skips (not aborts) an escaping config adapter, still planning other agents", async () => {
     const storeRoot = await seedStore(t, { r: "R" }, (config) => {
-      config.adapters.evil = {
+      config.customAdapters.evil = {
         rules: { global: "/etc/evil.md" },
       };
     });

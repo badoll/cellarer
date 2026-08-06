@@ -36,7 +36,9 @@ describe("CLI command protocol migration", () => {
   it("renders read-only command DTOs through one JSON terminal envelope", async () => {
     const root = testRoot("cellarer-cli-read-protocol-");
     process.env.CELLARER_HOME = join(root, "home");
-    await buildProgram().parseAsync(["node", "cellarer", "init"], { from: "node" });
+    await buildProgram().parseAsync(["node", "cellarer", "init", "--agent", "codex"], {
+      from: "node",
+    });
 
     const capture = captureProtocolStreams();
     try {
@@ -63,7 +65,9 @@ describe("CLI command protocol migration", () => {
     const storeRoot = join(root, "home");
     const project = join(root, "project");
     process.env.CELLARER_HOME = storeRoot;
-    await buildProgram().parseAsync(["node", "cellarer", "init"], { from: "node" });
+    await buildProgram().parseAsync(["node", "cellarer", "init", "--agent", "codex"], {
+      from: "node",
+    });
     await fs.mkdir(project, { recursive: true });
     await fs.writeFile(join(storeRoot, "store", "rules", "style.md"), "# style\n", "utf8");
 

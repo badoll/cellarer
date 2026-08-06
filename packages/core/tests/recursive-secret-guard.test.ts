@@ -331,19 +331,19 @@ describe("recursive staged-tree secret guard", () => {
     const storeRoot = await seedFixture(t, fixture, "safe fixture");
     const other = join(storeRoot, "store", "skills", "leaky", "nested", "device");
     await t.env.fs.writeFile(other, "safe");
-    const snapshotTreeNoFollow = t.env.fs.snapshotTreeNoFollow;
+    const snapshotPathNoFollow = t.env.fs.snapshotPathNoFollow;
     const env = {
       ...t.env,
       fs: {
         ...t.env.fs,
-        snapshotTreeNoFollow: async (path: string) => {
-          if (path === join(storeRoot, "store", "skills", "leaky")) {
+        snapshotPathNoFollow: async (anchorRoot: string, path: string) => {
+          if (path === join(storeRoot, "store", "skills")) {
             throw Object.assign(new Error("non regular"), {
               code: "CELLARER_SNAPSHOT_NON_REGULAR",
               path: other,
             });
           }
-          return snapshotTreeNoFollow(path);
+          return snapshotPathNoFollow(anchorRoot, path);
         },
       },
     };
@@ -357,19 +357,19 @@ describe("recursive staged-tree secret guard", () => {
     const fixture = FIXTURES[2];
     const storeRoot = await seedFixture(t, fixture, "safe fixture");
     const unreadable = join(storeRoot, "store", fixture.source);
-    const snapshotTreeNoFollow = t.env.fs.snapshotTreeNoFollow;
+    const snapshotPathNoFollow = t.env.fs.snapshotPathNoFollow;
     const env = {
       ...t.env,
       fs: {
         ...t.env.fs,
-        snapshotTreeNoFollow: async (path: string) => {
-          if (path === join(storeRoot, "store", "skills", "leaky")) {
+        snapshotPathNoFollow: async (anchorRoot: string, path: string) => {
+          if (path === join(storeRoot, "store", "skills")) {
             throw Object.assign(new Error("raw read error"), {
               code: "EACCES",
               path: unreadable,
             });
           }
-          return snapshotTreeNoFollow(path);
+          return snapshotPathNoFollow(anchorRoot, path);
         },
       },
     };
@@ -402,7 +402,7 @@ describe("recursive staged-tree secret guard", () => {
 
     await expect(
       applyMutationPlan(env, prepared.mutationPlan, { storeRoot, options: opts }),
-    ).rejects.toThrow(/recursive secret guard|source changed/i);
+    ).resolves.toMatchObject({ operation: { ok: false, conflict: { code: "INVALID_PLAN" } } });
     await expect(
       readFileOrNull(
         t.env,

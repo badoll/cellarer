@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { CliCommandRequest, CliError, CliErrorCode } from "@cellarer/core";
+import type { CliCommandRequest, CliError, CliErrorCode, MutationPlan } from "@cellarer/core";
 import type { Command } from "commander";
 import { getCommandDefinition } from "./command-registry.js";
 import type { JsonSchema } from "./schemas.js";
@@ -35,7 +35,11 @@ export class CliInputError extends Error {
   constructor(
     code: Extract<
       CliErrorCode,
-      "INVALID_USAGE" | "INVALID_INPUT" | "INPUT_REQUIRED" | "INPUT_AMBIGUITY"
+      | "INVALID_USAGE"
+      | "INVALID_INPUT"
+      | "INPUT_REQUIRED"
+      | "INPUT_AMBIGUITY"
+      | "DOMAIN_VALIDATION_FAILED"
     >,
     message: string,
     details?: Readonly<Record<string, unknown>>,
@@ -189,6 +193,10 @@ async function readAndValidateRequest(
       invocation,
     );
   }
+  if (command === "apply" && isObject(parsed) && isObject(parsed.input)) {
+    const plan = parsed.input.plan;
+    if (plan !== undefined) assertExternalMutationPlanInput(plan, invocation);
+  }
   const issues = validateJsonSchema(parsed, definition.inputSchema);
   if (issues.length > 0) {
     throw new CliInputError(
@@ -199,6 +207,22 @@ async function readAndValidateRequest(
     );
   }
   return parsed as CliCommandRequest<Record<string, unknown>>;
+}
+
+export function assertExternalMutationPlanInput(
+  value: unknown,
+  invocation: CliInvocation,
+): asserts value is MutationPlan {
+  const schema = getCommandDefinition("apply")?.inputSchema.properties?.input?.properties?.plan;
+  if (!schema) throw new TypeError("apply plan schema is not registered");
+  const issues = validateJsonSchema(value, schema, "$.input.plan");
+  if (issues.length === 0) return;
+  throw new CliInputError(
+    "DOMAIN_VALIDATION_FAILED",
+    "The sealed plan is invalid",
+    { coreCode: "INVALID_PLAN", issues },
+    invocation,
+  );
 }
 
 function applyStructuredInput(
@@ -250,30 +274,77 @@ function applyStructuredInput(
   }
 }
 
-function validateJsonSchema(value: unknown, schema: JsonSchema, path = "$"): string[] {
-  const issues: string[] = [];
-  if (schema.const !== undefined && value !== schema.const) issues.push(`${path}: const`);
-  if (schema.enum && !schema.enum.includes(value)) issues.push(`${path}: enum`);
+export function validateJsonSchema(value: unknown, schema: JsonSchema, path = "$"): string[] {
+  try {
+    return validateJsonSchemaUnchecked(value, schema, path);
+  } catch {
+    return [`${path}: validation failed`];
+  }
+}
 
-  if (schema.type === "object") {
-    if (!isObject(value)) return [...issues, `${path}: object`];
+function validateJsonSchemaUnchecked(value: unknown, schema: JsonSchema, path: string): string[] {
+  const issues: string[] = [];
+  if (schema["x-cellarer-opaque"] === true) return issues;
+  if ("const" in schema && !Object.is(value, schema.const)) issues.push(`${path}: const`);
+  if (schema.enum && !schema.enum.some((candidate) => Object.is(candidate, value))) {
+    issues.push(`${path}: enum`);
+  }
+  if (schema.oneOf) {
+    const matches = schema.oneOf.filter(
+      (member) => validateJsonSchema(value, member, path).length === 0,
+    ).length;
+    if (matches !== 1) issues.push(`${path}: oneOf (matched ${matches})`);
+  }
+  if (schema.anyOf) {
+    const matches = schema.anyOf.filter(
+      (member) => validateJsonSchema(value, member, path).length === 0,
+    ).length;
+    if (matches === 0) issues.push(`${path}: anyOf (matched 0)`);
+  }
+  for (const member of schema.allOf ?? []) {
+    issues.push(...validateJsonSchema(value, member, path));
+  }
+  if (schema.not && validateJsonSchema(value, schema.not, path).length === 0) {
+    issues.push(`${path}: not`);
+  }
+  if (schema.if && schema.then && validateJsonSchema(value, schema.if, path).length === 0) {
+    issues.push(...validateJsonSchema(value, schema.then, path));
+  }
+
+  const types = Array.isArray(schema.type) ? schema.type : schema.type ? [schema.type] : [];
+  if (types.length > 0 && !types.some((type) => matchesJsonType(value, type))) {
+    return [...issues, `${path}: type ${types.join(",")}`];
+  }
+
+  if (isObject(value) && (types.includes("object") || schema.properties || schema.required)) {
     const properties = schema.properties ?? {};
-    for (const required of schema.required ?? []) {
-      if (!(required in value)) issues.push(`${path}.${required}: required`);
+    if (schema.minProperties !== undefined && Object.keys(value).length < schema.minProperties) {
+      issues.push(`${path}: minProperties`);
     }
-    if (schema.additionalProperties === false) {
-      for (const key of Object.keys(value)) {
-        if (!(key in properties)) issues.push(`${path}: unexpected property`);
+    for (const required of schema.required ?? []) {
+      if (!Object.hasOwn(value, required)) issues.push(`${path}.${required}: required`);
+    }
+    for (const key of Object.keys(value)) {
+      if (schema.propertyNames) {
+        issues.push(...validateJsonSchema(key, schema.propertyNames, `${path}.${key}`));
+      }
+      if (Object.hasOwn(properties, key)) continue;
+      if (schema.additionalProperties === false) {
+        issues.push(`${path}: unexpected property ${key}`);
+      } else if (typeof schema.additionalProperties === "object") {
+        issues.push(
+          ...validateJsonSchema(value[key], schema.additionalProperties, `${path}.${key}`),
+        );
       }
     }
     for (const [key, propertySchema] of Object.entries(properties)) {
-      if (key in value)
+      if (Object.hasOwn(value, key)) {
         issues.push(...validateJsonSchema(value[key], propertySchema, `${path}.${key}`));
+      }
     }
     return issues;
   }
-  if (schema.type === "array") {
-    if (!Array.isArray(value)) return [...issues, `${path}: array`];
+  if (Array.isArray(value) && types.includes("array")) {
     if (schema.items) {
       value.forEach((item, index) => {
         issues.push(...validateJsonSchema(item, schema.items as JsonSchema, `${path}[${index}]`));
@@ -281,23 +352,27 @@ function validateJsonSchema(value: unknown, schema: JsonSchema, path = "$"): str
     }
     return issues;
   }
-  if (schema.type === "string") {
-    if (typeof value !== "string") return [...issues, `${path}: string`];
+  if (typeof value === "string" && types.includes("string")) {
     if (schema.minLength !== undefined && value.length < schema.minLength) {
       issues.push(`${path}: minLength`);
     }
     if (schema.pattern && !new RegExp(schema.pattern).test(value)) issues.push(`${path}: pattern`);
-  } else if (schema.type === "boolean" && typeof value !== "boolean") {
-    issues.push(`${path}: boolean`);
-  } else if (
-    schema.type === "integer" &&
-    (!Number.isSafeInteger(value) ||
-      (schema.minimum !== undefined && (value as number) < schema.minimum) ||
-      (schema.maximum !== undefined && (value as number) > schema.maximum))
-  ) {
-    issues.push(`${path}: integer`);
+  } else if (typeof value === "number" && Number.isFinite(value)) {
+    if (schema.minimum !== undefined && value < schema.minimum) issues.push(`${path}: minimum`);
+    if (schema.maximum !== undefined && value > schema.maximum) issues.push(`${path}: maximum`);
   }
   return issues;
+}
+
+function matchesJsonType(value: unknown, type: string): boolean {
+  if (type === "null") return value === null;
+  if (type === "object") return isObject(value);
+  if (type === "array") return Array.isArray(value);
+  if (type === "string") return typeof value === "string";
+  if (type === "boolean") return typeof value === "boolean";
+  if (type === "number") return typeof value === "number" && Number.isFinite(value);
+  if (type === "integer") return Number.isSafeInteger(value);
+  return false;
 }
 
 function commandIdentity(command: Command): string {

@@ -191,7 +191,7 @@ async function discoveredResources(
       ? opts.agents
       : registry
           .list()
-          .filter((agent) => config.agents[agent.id]?.enabled !== false)
+          .filter((agent) => config.adapterOverrides[agent.id]?.enabled !== false)
           .map((agent) => agent.id);
   const resources: ResourceCatalogItem[] = [];
   const counts = emptyCounts();

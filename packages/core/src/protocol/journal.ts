@@ -3,7 +3,7 @@ import type { Env, ProtectedJournalTip } from "../env.js";
 import { assertSafeAtomicPublicationPath } from "../fs/safety.js";
 import {
   observableOptionsForEnv,
-  redactObservable,
+  registerObservableMutationAuthorization,
   serializeObservable,
 } from "../secrets/observable.js";
 import { sha256 } from "../store/checksum.js";
@@ -97,17 +97,10 @@ function serializeAuthorizedOperationJournal(
   journal: OperationJournal,
   options: ReturnType<typeof observableOptionsForEnv> & { readonly pretty: true },
 ): string {
-  const redacted = redactObservable("journal", journal, options) as Record<string, unknown>;
-  const redactedPlan = redacted.plan as Record<string, unknown>;
-  // Authorization envelopes are exact-key validated, independently sealed protocol metadata, not
-  // secret values. Preserve only those already-validated envelopes after the generic observable
-  // pass; an arbitrary object under an `authorization` field remains recursively redacted.
-  const publishable = {
-    ...redacted,
-    plan: { ...redactedPlan, authorization: journal.plan.authorization },
-    authorization: journal.authorization,
-  };
-  return JSON.stringify(publishable, null, 2);
+  return serializeObservable("journal", journal, {
+    ...options,
+    protocolShape: "operation-journal",
+  });
 }
 
 export function operationJournalTip(journal: OperationJournal): ProtectedJournalTip {
@@ -165,6 +158,7 @@ export async function publishOperationReceipt(
   const serialized = serializeObservable("receipt", receipt, {
     ...observableOptionsForEnv(env),
     pretty: true,
+    protocolShape: "operation-receipt",
   });
   const published: unknown = JSON.parse(serialized);
   assertOperationReceipt(published);
@@ -464,6 +458,11 @@ function assertOperationJournal(
       throw new Error("completed receipt does not match its operation journal");
     }
   }
+  registerObservableMutationAuthorization(
+    journal.plan.authorization,
+    journal.plan.authorization.domain,
+  );
+  registerObservableMutationAuthorization(journal.authorization, OPERATION_JOURNAL_DOMAIN);
 }
 
 function sealNextOperationJournal(
@@ -506,7 +505,10 @@ function sealNextOperationJournal(
   if (!authority.verify(request, authorization)) {
     throw new TypeError("mutation authority could not verify its journal authorization envelope");
   }
-  return { ...unsigned, authorization };
+  return {
+    ...unsigned,
+    authorization: registerObservableMutationAuthorization(authorization, OPERATION_JOURNAL_DOMAIN),
+  };
 }
 
 function verifyOperationJournalAuthorization(

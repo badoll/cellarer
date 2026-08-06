@@ -160,7 +160,7 @@ describe("adapters/registry (built-ins + key-based config)", () => {
   it("loads a custom adapter from config.json", async () => {
     const storeRoot = await writeConfig(t, {
       version: 1,
-      adapters: {
+      customAdapters: {
         "my-agent": {
           displayName: "My Agent",
           detect: { global: ["~/.myagent"] },
@@ -175,10 +175,10 @@ describe("adapters/registry (built-ins + key-based config)", () => {
     expect(a!.paths(t.env, "global").rules).toBe(t.path("home", ".myagent", "RULES.md"));
   });
 
-  it("patches a built-in adapter through adapters keyed by id", async () => {
+  it("patches a built-in adapter through adapterOverrides keyed by id", async () => {
     const storeRoot = await writeConfig(t, {
       version: 1,
-      adapters: {
+      adapterOverrides: {
         "claude-code": {
           detect: { global: ["~/Library/Application Support/Claude"] },
           rules: { global: "~/Library/Application Support/Claude/CLAUDE.md" },
@@ -198,7 +198,7 @@ describe("adapters/registry (built-ins + key-based config)", () => {
   it("treats a built-in adapter key as a built-in patch", async () => {
     const storeRoot = await writeConfig(t, {
       version: 1,
-      adapters: {
+      adapterOverrides: {
         "claude-code": {
           displayName: "Claude Somewhere Else",
           rules: { global: "~/.fake/CLAUDE.md" },
@@ -216,19 +216,21 @@ describe("adapters/registry (built-ins + key-based config)", () => {
   it("rejects a custom adapter entry without rules, mcp, or skills", async () => {
     const storeRoot = await writeConfig(t, {
       version: 1,
-      adapters: {
+      customAdapters: {
         empty: {
           displayName: "Empty",
         },
       },
     });
-    await expect(loadRegistry(t.env, storeRoot)).rejects.toThrow(/invalid custom adapter "empty"/);
+    await expect(loadRegistry(t.env, storeRoot)).rejects.toThrow(
+      /adapter must declare at least one of rules\/mcp\/skills/,
+    );
   });
 
   it("infers capabilities from declared path templates", async () => {
     const storeRoot = await writeConfig(t, {
       version: 1,
-      adapters: {
+      customAdapters: {
         inferred: {
           displayName: "Inferred Caps",
           rules: { global: "~/.inferred/RULES.md", project: "{dir}/RULES.md" },
@@ -245,7 +247,7 @@ describe("adapters/registry (built-ins + key-based config)", () => {
   it("config adapter honors mcp field dialect", async () => {
     const storeRoot = await writeConfig(t, {
       version: 1,
-      adapters: {
+      customAdapters: {
         quirky: {
           mcp: {
             global: "~/.quirky/mcp.json",
@@ -273,7 +275,7 @@ describe("adapters/registry (built-ins + key-based config)", () => {
   it("rejects a custom mcp adapter that omits reference resolution", async () => {
     const storeRoot = await writeConfig(t, {
       version: 1,
-      adapters: {
+      customAdapters: {
         legacy: {
           mcp: { global: "~/.legacy/mcp.json", format: "json" },
         },
@@ -284,7 +286,7 @@ describe("adapters/registry (built-ins + key-based config)", () => {
 
   describe("path traversal guard (§6.6 分享场景越界防护)", () => {
     async function loadWith(id: string, adapter: unknown) {
-      const storeRoot = await writeConfig(t, { version: 1, adapters: { [id]: adapter } });
+      const storeRoot = await writeConfig(t, { version: 1, customAdapters: { [id]: adapter } });
       return loadRegistry(t.env, storeRoot);
     }
 

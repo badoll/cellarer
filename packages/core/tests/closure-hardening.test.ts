@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { mutateCollection } from "../src/control-plane-mutations.js";
 import { add } from "../src/engine/add.js";
 import { applyMutationPlan, planApplyMutation } from "../src/engine/apply.js";
 import { planGitignoreMutation } from "../src/engine/gitignore-sync.js";
@@ -18,7 +19,6 @@ import { diagnoseMutationRecovery, recoverInterruptedOperation } from "../src/pr
 import * as activeSecretInternals from "../src/secrets/active-values.js";
 import * as observableSecretInternals from "../src/secrets/observable.js";
 import { setStoredSecret } from "../src/secrets/provider.js";
-import { saveCollections } from "../src/settings.js";
 import { sha256 } from "../src/store/checksum.js";
 import { entryKey } from "../src/store/ledger.js";
 import { initStore, writeRuleArtifact } from "../src/store/store.js";
@@ -700,8 +700,12 @@ describe("closure hardening", () => {
     const env: Env = { ...t.env, env: { SECRET_TOKEN: "tiny" } };
 
     await expect(
-      saveCollections(env, storeRoot, {
-        default: { description: "tiny" },
+      mutateCollection(env, {
+        storeRoot,
+        action: "create",
+        collectionName: "tiny-secret-test",
+        description: "tiny",
+        resourceIds: [],
       }),
     ).rejects.toMatchObject({ code: "FINAL_SECRET_BYTE_GUARD" });
 

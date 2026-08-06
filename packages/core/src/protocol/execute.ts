@@ -62,7 +62,9 @@ export async function executeMutationPlan(
     authorizeAction: AuthorizeOperationAction,
   ) => Promise<MutationExecution>,
   options: {
-    readonly validateUnderLock?: () => Promise<void>;
+    readonly validatePreflightBeforeObservation?: () => Promise<OperationResult | null>;
+    readonly validateBeforeObservationUnderLock?: () => Promise<OperationResult | null>;
+    readonly validateUnderLock?: () => Promise<OperationResult | null>;
     readonly authorityLease?: MutationAuthorityLease;
   } = {},
 ): Promise<OperationResult> {
@@ -90,12 +92,16 @@ export async function executeMutationPlan(
     if (!suppliedAuthorityLease) await authorityLease.release();
     return preflight;
   }
-  const activeRecovery = await readStoreRecoveryLockOwner(env, storeRoot);
-  if (activeRecovery) {
-    if (!suppliedAuthorityLease) await authorityLease.release();
-    return recoveryLockConflict(activeRecovery);
+  try {
+    const provenancePreflight = await options.validatePreflightBeforeObservation?.();
+    if (provenancePreflight) {
+      if (!suppliedAuthorityLease) await authorityLease.release();
+      return provenancePreflight;
+    }
+  } catch (error) {
+    if (!suppliedAuthorityLease) await authorityLease.release().catch(() => undefined);
+    throw error;
   }
-
   const operationId = `operation-${env.randomId()}`;
   if (containsObservableKnownValue(operationId, knownValues)) {
     if (!suppliedAuthorityLease) await authorityLease.release();
@@ -112,22 +118,20 @@ export async function executeMutationPlan(
     if (!suppliedAuthorityLease) await authorityLease.release();
     return { ok: false, conflict: acquired.conflict };
   }
-  if (!(await authorityLease.isCurrent().catch(() => false))) {
-    await acquired.lock.release();
-    if (!suppliedAuthorityLease) await authorityLease.release().catch(() => undefined);
-    return invalidPlanResult();
-  }
-  const recoveryAfterAcquire = await readStoreRecoveryLockOwner(env, storeRoot);
-  if (recoveryAfterAcquire) {
-    await acquired.lock.release();
-    if (!suppliedAuthorityLease) await authorityLease.release();
-    return recoveryLockConflict(recoveryAfterAcquire);
-  }
-
-  const startedAt = env.now().toISOString();
   let releaseAttempted = false;
   let journal: OperationJournal | undefined;
   try {
+    if (!(await authorityLease.isCurrent().catch(() => false))) return invalidPlanResult();
+
+    const earliestValidation = await options.validateBeforeObservationUnderLock?.();
+    if (earliestValidation) return earliestValidation;
+
+    const recoveryAfterAcquire = await readStoreRecoveryLockOwner(env, storeRoot);
+    if (recoveryAfterAcquire) return recoveryLockConflict(recoveryAfterAcquire);
+
+    const revisionValidation = await validatePlanRevisionUnderLock(env, storeRoot, plan);
+    if (revisionValidation) return revisionValidation;
+
     const interrupted = await readOperationJournal(env, storeRoot);
     if (interrupted) {
       return {
@@ -142,9 +146,12 @@ export async function executeMutationPlan(
       };
     }
 
+    const startedAt = env.now().toISOString();
+
     const validation = await validatePlanUnderLock(env, storeRoot, plan);
     if (validation) return validation;
-    await options.validateUnderLock?.();
+    const customValidation = await options.validateUnderLock?.();
+    if (customValidation) return customValidation;
 
     const currentRevision = await readStoreRevision(env, storeRoot);
     const resultingRevision = currentRevision + 1;
@@ -485,6 +492,26 @@ async function validatePlanUnderLock(
     }
   }
   return null;
+}
+
+async function validatePlanRevisionUnderLock(
+  env: Env,
+  storeRoot: string,
+  plan: MutationPlan,
+): Promise<OperationResult | null> {
+  const actualRevision = await readStoreRevision(env, storeRoot);
+  if (actualRevision === plan.baseRevision) return null;
+  return {
+    ok: false,
+    conflict: {
+      code: "STALE_REVISION",
+      message: "store revision changed; replan required",
+      planId: "untrusted",
+      expectedRevision: plan.baseRevision,
+      actualRevision,
+      replanRequired: true,
+    },
+  };
 }
 
 function validatePlanIntegrity(plan: MutationPlan): OperationResult | null {

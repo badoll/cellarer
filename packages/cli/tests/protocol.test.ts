@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { CLI_PROTOCOL_VERSION, type CliErrorCode, type CliResultEnvelope } from "@cellarer/core";
 import { describe, expect, it } from "vitest";
+import { buildProgram } from "../src/program.js";
 import {
   commandRegistry,
   getCommandDefinition,
@@ -9,6 +10,7 @@ import {
 import { CLI_EXIT_CODE, exitCodeForError } from "../src/protocol/exit-mapper.js";
 import { createProtocolRenderer } from "../src/protocol/renderer.js";
 import { resolveRequestId } from "../src/protocol/request-id.js";
+import type { JsonSchema } from "../src/protocol/schemas.js";
 
 interface GoldenFixture {
   success: CliResultEnvelope<{ items: never[] }>;
@@ -47,8 +49,8 @@ describe("agent CLI protocol v1 golden boundary", () => {
       stderr: () => {},
     });
 
-    renderer.event({ code: "PLAN_READY", data: { actions: 2 } });
-    renderer.success({ operationId: "operation-1" });
+    renderer.event({ code: "PLAN_READY", data: { phase: "apply", current: 0, total: 2 } });
+    renderer.failure({ code: "EXECUTION_FAILED", message: "apply failed safely" });
 
     const records = stdout
       .join("")
@@ -58,8 +60,8 @@ describe("agent CLI protocol v1 golden boundary", () => {
     expect(records[0]).toEqual(golden.event);
     expect(records.filter((record) => "status" in record)).toHaveLength(1);
     expect(records.at(-1)).toMatchObject({
-      status: "success",
-      data: { operationId: "operation-1" },
+      status: "error",
+      error: { code: "EXECUTION_FAILED" },
     });
     expect(() => renderer.event({ code: "TOO_LATE", data: {} })).toThrow(/terminal result/i);
   });
@@ -203,9 +205,177 @@ describe("agent CLI protocol v1 golden boundary", () => {
     renderer.success(payload);
 
     expect(stdout.join("")).not.toContain(canary);
-    expect(stdout.join("")).toContain("[REDACTED]");
+    expect(JSON.parse(stdout.join(""))).toMatchObject({
+      status: "error",
+      error: { code: "INTERNAL_ERROR" },
+    });
     expect(Object.isFrozen(payload)).toBe(false);
     expect(Object.isFrozen(payload.schema)).toBe(false);
+  });
+
+  it.each([
+    "json",
+    "jsonl",
+  ] as const)("replaces schema-invalid success output with one redacted internal terminal in %s mode", (output) => {
+    const canary = "ghp_0123456789abcdefghijklmnopqrstuvwx";
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const renderer = createProtocolRenderer({
+      command: "status",
+      output,
+      requestId: `req-invalid-success-${output}`,
+      stdout: (chunk) => stdout.push(chunk),
+      stderr: (chunk) => stderr.push(chunk),
+    });
+
+    expect(
+      renderer.success({ items: [], extra: canary } as never, [], { accessToken: canary }),
+    ).toBe(CLI_EXIT_CODE.INTERNAL);
+    expect(stdout).toHaveLength(1);
+    expect(JSON.parse(stdout[0] as string)).toMatchObject({
+      status: "error",
+      error: { code: "INTERNAL_ERROR", message: "Unexpected internal failure" },
+    });
+    expect(stdout.join("") + stderr.join("")).not.toContain(canary);
+    expect(renderer.terminalEmitted).toBe(true);
+  });
+
+  it("keeps valid JSONL prefixes and replaces a schema-invalid event with the terminal failure", () => {
+    const stdout: string[] = [];
+    const renderer = createProtocolRenderer({
+      command: "apply",
+      output: "jsonl",
+      requestId: "req-invalid-event",
+      stdout: (chunk) => stdout.push(chunk),
+      stderr: () => {},
+    });
+
+    renderer.event({ code: "APPLY_STARTED", data: { phase: "apply", current: 0, total: 1 } });
+    renderer.event({ code: "INVALID_EVENT", data: { phase: "apply", current: "zero" } } as never);
+
+    const records = stdout.map((line) => JSON.parse(line));
+    expect(records).toHaveLength(2);
+    expect(records[0]).toMatchObject({ sequence: 1, event: { code: "APPLY_STARTED" } });
+    expect(records[1]).toMatchObject({
+      status: "error",
+      error: { code: "INTERNAL_ERROR" },
+    });
+    expect(records[1]).not.toHaveProperty("event");
+    expect(renderer.terminalEmitted).toBe(true);
+    expect(renderer.internalFailure(new Error("later failure"))).toBe(CLI_EXIT_CODE.INTERNAL);
+    expect(stdout).toHaveLength(2);
+  });
+
+  it("fails closed when a resource reference-name getter cannot produce schema-valid output", () => {
+    const resource = {
+      id: "mcp/context",
+      kind: "mcp",
+      name: "context",
+      source: "store",
+      state: "managed",
+      membership: { collections: [] },
+      selection: { desired: false, collections: [] },
+      validation: { status: "valid", issues: [] },
+      usage: { desired: [], applied: [] },
+    } as Record<string, unknown>;
+    Object.defineProperty(resource, "secretReferenceNames", {
+      enumerable: true,
+      get() {
+        throw new Error("hostile reference getter");
+      },
+    });
+    const stdout: string[] = [];
+    const renderer = createProtocolRenderer({
+      command: "resource.list",
+      output: "json",
+      requestId: "req-hostile-reference-names",
+      stdout: (chunk) => stdout.push(chunk),
+      stderr: () => {},
+    });
+
+    expect(
+      renderer.success({
+        generatedAt: "2026-08-06T00:00:00.000Z",
+        resources: [resource],
+        counts: {
+          managed: 1,
+          discovered: 0,
+          synced: 0,
+          drifted: 0,
+          missing: 0,
+          blocked: 0,
+        },
+        warnings: [],
+      }),
+    ).toBe(CLI_EXIT_CODE.INTERNAL);
+    expect(JSON.parse(stdout[0] as string)).toMatchObject({
+      status: "error",
+      error: { code: "INTERNAL_ERROR" },
+    });
+  });
+
+  it("preserves normal resource reference names through the output schema gate", () => {
+    const stdout: string[] = [];
+    const renderer = createProtocolRenderer({
+      command: "resource.list",
+      output: "json",
+      requestId: "req-valid-reference-names",
+      stdout: (chunk) => stdout.push(chunk),
+      stderr: () => {},
+    });
+
+    expect(
+      renderer.success({
+        generatedAt: "2026-08-06T00:00:00.000Z",
+        resources: [
+          {
+            id: "mcp/context",
+            kind: "mcp",
+            name: "context",
+            source: "store",
+            state: "managed",
+            membership: { collections: [] },
+            selection: { desired: false, collections: [] },
+            validation: { status: "valid", issues: [] },
+            secretReferenceNames: ["CTX_TOKEN"],
+            usage: { desired: [], applied: [] },
+          },
+        ],
+        counts: {
+          managed: 1,
+          discovered: 0,
+          synced: 0,
+          drifted: 0,
+          missing: 0,
+          blocked: 0,
+        },
+        warnings: [],
+      }),
+    ).toBe(CLI_EXIT_CODE.SUCCESS);
+    expect(JSON.parse(stdout[0] as string)).toMatchObject({
+      status: "success",
+      data: { resources: [{ secretReferenceNames: ["CTX_TOKEN"] }] },
+    });
+  });
+
+  it("replaces schema-invalid handled errors without recursively rendering the invalid record", () => {
+    const stdout: string[] = [];
+    const renderer = createProtocolRenderer({
+      command: "status",
+      output: "json",
+      requestId: "req-invalid-error",
+      stdout: (chunk) => stdout.push(chunk),
+      stderr: () => {},
+    });
+
+    expect(renderer.failure({ code: "STALE_REVISION", message: 7, extra: true } as never)).toBe(
+      CLI_EXIT_CODE.INTERNAL,
+    );
+    expect(stdout).toHaveLength(1);
+    expect(JSON.parse(stdout[0] as string)).toMatchObject({
+      status: "error",
+      error: { code: "INTERNAL_ERROR" },
+    });
   });
 
   it("mints a deeply immutable public schema bundle that is safe to reuse", () => {
@@ -305,6 +475,36 @@ describe("agent CLI protocol foundation", () => {
       "ui",
       "capabilities",
       "schema",
+      "resource.list",
+      "resource.show",
+      "agent.list",
+      "agent.show",
+      "agent.enable",
+      "agent.disable",
+      "agent.configure",
+      "agent.reset",
+      "agent.add",
+      "agent.update",
+      "agent.remove",
+      "collection.list",
+      "collection.show",
+      "collection.create",
+      "collection.update",
+      "collection.delete",
+      "collection.members.set",
+      "collection.defaults.set",
+      "config.show",
+      "config.validate",
+      "config.update",
+      "config.reset",
+      "diff",
+      "verify",
+      "summary",
+      "discovery.summary",
+      "operation.list",
+      "operation.show",
+      "operation.recover",
+      "plan",
     ]);
 
     const schemaIds = new Set<string>();
@@ -327,6 +527,16 @@ describe("agent CLI protocol foundation", () => {
     expect(lsOutput?.properties).toHaveProperty("storeEmpty", { type: "boolean" });
   });
 
+  it("recursively closes every public command input, output, and event object schema", () => {
+    for (const definition of commandRegistry) {
+      auditClosedObjects(definition.inputSchema, `${definition.command}.input`);
+      auditClosedObjects(definition.outputSchema, `${definition.command}.output`);
+      if (definition.eventSchema) {
+        auditClosedObjects(definition.eventSchema, `${definition.command}.event`);
+      }
+    }
+  });
+
   it("derives structured input bindings from the same registry metadata as schemas", () => {
     for (const definition of commandRegistry) {
       const inputData = definition.inputSchema.properties?.input;
@@ -336,4 +546,60 @@ describe("agent CLI protocol foundation", () => {
       expect(bindingFields, definition.command).toEqual(schemaFields);
     }
   });
+
+  it("keeps bilingual plan/apply and recovery examples aligned with public help", () => {
+    const documents = [
+      "../../../docs/en/cli-reference.md",
+      "../../../docs/en/getting-started.md",
+      "../../../docs/zh-CN/cli-reference.md",
+      "../../../docs/zh-CN/getting-started.md",
+    ].map((path) => readFileSync(new URL(path, import.meta.url), "utf8"));
+    for (const document of documents) {
+      expect(document).toContain("apply --plan");
+      expect(document).toContain("input.plan");
+      expect(document).toContain("operation recover operation-<id> --dry-run");
+      expect(document).not.toMatch(/does not resubmit the serialized|不会重新提交序列化/);
+    }
+
+    const apply = buildProgram().commands.find((command) => command.name() === "apply");
+    expect(apply?.options.map((option) => option.long)).toEqual(
+      expect.arrayContaining(["--plan", "--dry-run"]),
+    );
+  });
 });
+
+function auditClosedObjects(schema: JsonSchema, path: string): void {
+  if (schema["x-cellarer-opaque"] === true) return;
+  const semanticKeys = Object.keys(schema).filter(
+    (key) => key !== "$id" && key !== "$schema" && key !== "title" && key !== "description",
+  );
+  expect(semanticKeys, `${path} empty branch`).not.toEqual([]);
+  const types = Array.isArray(schema.type) ? schema.type : schema.type ? [schema.type] : [];
+  // Conditional `if` fragments may constrain properties without declaring an object value of
+  // their own. Audit every actual object declaration and every explicit map schema.
+  const isObjectSchema = types.includes("object") || schema.additionalProperties !== undefined;
+  if (isObjectSchema) {
+    expect(schema.additionalProperties, path).toBeDefined();
+    expect(schema.additionalProperties, path).not.toBe(true);
+    if (schema.additionalProperties !== false) {
+      expect(Object.keys(schema.properties ?? {}), `${path} map leaf`).toEqual([]);
+      expect(typeof schema.additionalProperties, `${path} map value schema`).toBe("object");
+    }
+  }
+  for (const [key, child] of Object.entries(schema.properties ?? {})) {
+    auditClosedObjects(child, `${path}.properties.${key}`);
+  }
+  if (schema.items) auditClosedObjects(schema.items, `${path}.items`);
+  if (typeof schema.additionalProperties === "object") {
+    auditClosedObjects(schema.additionalProperties, `${path}.additionalProperties`);
+  }
+  for (const [index, child] of (schema.oneOf ?? []).entries()) {
+    auditClosedObjects(child, `${path}.oneOf[${index}]`);
+  }
+  for (const [index, child] of (schema.allOf ?? []).entries()) {
+    auditClosedObjects(child, `${path}.allOf[${index}]`);
+  }
+  if (schema.if) auditClosedObjects(schema.if, `${path}.if`);
+  if (schema.then) auditClosedObjects(schema.then, `${path}.then`);
+  if (schema.not) auditClosedObjects(schema.not, `${path}.not`);
+}

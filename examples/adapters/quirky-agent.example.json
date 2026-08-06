@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "adapters": {
+  "customAdapters": {
     "quirky-agent": {
       "displayName": "Quirky Agent",
       "detect": {

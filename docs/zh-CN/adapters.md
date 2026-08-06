@@ -3,7 +3,8 @@
 [文档索引](../README.md) | [English](../en/adapters.md)
 
 适配器描述某个 AI agent 的 rules、MCP servers 和 skills 存放位置。cellarer 随包发布内置适配器。
-用户配置只保存一个按 adapter id keyed 的 `adapters` 映射。
+用户配置把内置 patch 与声明式自定义 adapter 分别保存在 `adapterOverrides` 和
+`customAdapters`。
 
 ## 适配器位置
 
@@ -12,12 +13,15 @@
 - 库房配置: `~/.cellarer/config.json`
 - 设置 `CELLARER_HOME` 时: `$CELLARER_HOME/config.json`
 
-要修正内置适配器,写 `adapters["<built-in-id>"]`。要新增 agent,写
-`adapters["<new-id>"]`。对象 key 就是 adapter id,adapter 对象内部不再重复写 `id`。
+内置 adapter 使用 `cellarer agent configure|reset`;自定义 adapter 使用
+`cellarer agent add|update|remove`。这些命令会验证 typed input,并通过带 revision 的
+plan/receipt 修改配置,不需要手工编辑文件。`cellarer config show` 可查看解析后的用户配置。
+对象 key 就是 adapter ID,adapter 对象内部不再重复写 `id`。
 
 ## 配置结构
 
-`cellarer init` 会在缺失时创建 `config.json`,但不会覆盖已有文件。适配器定制结构如下:
+`cellarer init --agent <ids>` 会在缺失时创建 `config.json`,但不会覆盖已有文件,并且只
+启用精确指定的初始 adapter ID。适配器定制结构如下:
 
 ```json
 {
@@ -33,22 +37,13 @@
     }
   },
   "artifacts": {},
-  "agents": {},
-  "adapters": {
-    "claude-code": {
-      "detect": {
-        "global": ["~/Library/Application Support/Claude"]
-      },
-      "rules": {
-        "global": "~/Library/Application Support/Claude/CLAUDE.md"
-      },
-      "mcp": {
-        "global": "~/Library/Application Support/Claude/mcp.json"
-      },
-      "skills": {
-        "global": "~/Library/Application Support/Claude/skills"
-      }
-    },
+  "adapterOverrides": {
+    "codex": {
+      "enabled": true,
+      "displayName": "Codex Local"
+    }
+  },
+  "customAdapters": {
     "my-agent": {
       "displayName": "My Agent",
       "detect": {
@@ -81,14 +76,17 @@
 }
 ```
 
-当 key 命中随包发布的内置适配器时,这个值就是 patch。没有写出的字段继续继承内置适配器,
-所以版本升级时仍能拿到未覆盖字段的修正。Web UI 编辑内置适配器时,应只保存
-`adapters["<built-in-id>"]`;重置默认值时删除这个 key。
+`adapterOverrides["<built-in-id>"]` 是 patch。未指定字段继续继承 packaged built-in,
+因此 package 更新仍能改善未覆盖字段;`enabled` 也位于这个映射。
+`cellarer agent reset <built-in-id>` 会删除整个 override entry。
 
-当 key 没有命中内置适配器时,这个值就是自定义 adapter 定义,并且必须至少声明
-`rules`、`mcp` 或 `skills` 之一。自定义 MCP adapter 还必须声明
+`customAdapters["<new-id>"]` 是完整声明式 adapter,必须至少声明 `rules`、`mcp` 或
+`skills` 之一。自定义 MCP adapter 还必须声明
 `supportedSecretReferences`,且只能列出目标自身能够消费的引用种类。选中内容包含
 不支持的种类时,planning 会跳过该目标;空数组会阻止所有带密钥的 MCP 内容,而不是写入明文。
+
+删除自定义 adapter 前先 disable,并 revert 所有 owned targets;否则 `agent remove` 会
+返回精确依赖证据。
 
 ## 内置密钥引用兼容性
 
@@ -150,5 +148,5 @@ Codex、Cursor、OpenCode 与 Windsurf 都会拒绝 `${ENV_VAR}`。
 ## 配置不足时
 
 当某个 agent 需要非平凡转换、多文件协调,或无法用路径加常见 JSON/TOML MCP 格式表达时,
-优先扩展 schema 或共享 codec。内置适配器改动和新增 agent 条目都放在 `adapters`;
-由 key 决定这个条目是在 patch 内置适配器,还是在定义自定义适配器。
+优先扩展 schema 或共享 codec。内置 patch 只位于 `adapterOverrides`;新的声明式 agent
+只位于 `customAdapters`。

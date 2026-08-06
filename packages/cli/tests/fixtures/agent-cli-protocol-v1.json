@@ -17,7 +17,9 @@
     "event": {
       "code": "PLAN_READY",
       "data": {
-        "actions": 2
+        "phase": "apply",
+        "current": 0,
+        "total": 2
       }
     }
   },

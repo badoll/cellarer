@@ -11,7 +11,12 @@ import type {
   TargetConflict,
   TargetOwnershipEvidence,
 } from "../model/index.js";
-import type { MutationPlan, OperationResult, PlanExpiry } from "../protocol/models.js";
+import type {
+  MutationConflict,
+  MutationPlan,
+  OperationResult,
+  PlanExpiry,
+} from "../protocol/models.js";
 import type { MutationPresentation } from "../protocol/presentation.js";
 import type { SecretMode } from "../secrets/types.js";
 
@@ -63,10 +68,19 @@ export interface PlannedApplyMutation {
   mutationPlan: MutationPlan;
 }
 
+export type ApplyMutationPlanPreflight =
+  | {
+      readonly ok: true;
+      /** True only for CELLARER_SECRET references that use the selected vault/keychain provider. */
+      readonly requiresCellarerSecretResolution: boolean;
+      readonly requiresSnapshotPassphrase: boolean;
+    }
+  | { readonly ok: false; readonly conflict: MutationConflict };
+
 export interface ApplyMutationContext {
   storeRoot: string;
-  /** Caller-owned canonical options; executable authority is never reconstructed from the plan. */
-  options: DistributeOptions;
+  /** Existing argv path supplies its caller-owned options; exact sealed-plan input derives them. */
+  options?: DistributeOptions;
   snapshotPassphrase?: string;
   secretMode?: SecretMode;
   vaultPassphrase?: string;

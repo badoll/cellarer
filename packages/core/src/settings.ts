@@ -1,22 +1,6 @@
-import { join } from "node:path";
 import type { Env } from "./env.js";
-import type { LinkMethod } from "./model/index.js";
-import {
-  executeStorePublicationMutation,
-  unwrapStorePublicationMutation,
-} from "./protocol/store-mutation.js";
-import type { SecretMode } from "./secrets/types.js";
-import {
-  type AdapterBodyConfig,
-  type AdapterPatchConfig,
-  type CellarerConfig,
-  CONFIG_FILENAME,
-  loadConfig,
-  packagedConfigText,
-  parseAdapterBodyConfig,
-  parseAdapterPatchConfig,
-  parsePackagedConfigForSettings,
-} from "./store/config.js";
+import type { CellarerConfig } from "./store/config.js";
+import { loadConfig, packagedConfigText, parsePackagedConfigForSettings } from "./store/config.js";
 import { collectLedgerSecretRefStats, loadLedger } from "./store/ledger.js";
 import { resolveStoreRoot } from "./store/store.js";
 
@@ -39,52 +23,6 @@ export interface SettingsSummary {
   secretRefs: { name: string; ledgerEntryCount: number }[];
 }
 
-export interface DefaultsPatch {
-  method?: LinkMethod;
-  collections?: string[];
-  secretMode?: SecretMode;
-}
-
-function validateCollectionsConfig(config: CellarerConfig): void {
-  const errors: string[] = [];
-
-  if (!config.collections.default) {
-    errors.push("collections.default must exist");
-  }
-
-  if (config.defaults.collections.length === 0) {
-    errors.push("defaults.collections must contain at least one collection");
-  }
-
-  const missingDefaults = config.defaults.collections.filter((name) => !config.collections[name]);
-  if (missingDefaults.length > 0) {
-    errors.push(
-      `defaults.collections contains unknown collection${missingDefaults.length > 1 ? "s" : ""}: ${missingDefaults.join(", ")}`,
-    );
-  }
-
-  if (errors.length > 0) {
-    throw new Error(errors.join("; "));
-  }
-}
-
-async function loadBuiltinAdapterIds(env: Env): Promise<Set<string>> {
-  const packaged = parsePackagedConfigForSettings(await packagedConfigText(env));
-  return new Set(Object.keys(packaged.builtinAdapters));
-}
-
-function validateCustomAdapterConfig(
-  adapterId: string,
-  adapter: AdapterPatchConfig,
-): AdapterBodyConfig {
-  try {
-    return parseAdapterBodyConfig(adapter);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`invalid custom adapter "${adapterId}": ${message}`);
-  }
-}
-
 export async function settingsSummary(
   env: Env,
   opts: SettingsSummaryOptions,
@@ -95,9 +33,7 @@ export async function settingsSummary(
     loadLedger(env, opts.storeRoot),
   ]);
   const builtinAdapterIds = Object.keys(packaged.builtinAdapters);
-  const customAdapterIds = Object.keys(config.adapters).filter(
-    (id) => !builtinAdapterIds.includes(id),
-  );
+  const customAdapterIds = Object.keys(config.customAdapters);
   return {
     storeRoot: opts.storeRoot,
     cellarerHomeActive: resolveStoreRoot(env) === opts.storeRoot && !!env.env.CELLARER_HOME,
@@ -110,109 +46,4 @@ export async function settingsSummary(
     customAdapterIds,
     secretRefs: collectLedgerSecretRefStats(ledger),
   };
-}
-
-export async function saveCollections(
-  env: Env,
-  storeRoot: string,
-  collections: CellarerConfig["collections"],
-): Promise<CellarerConfig> {
-  return publishSettingsConfig(env, storeRoot, "collections", async () => {
-    const config = await loadConfig(env, storeRoot);
-    const next = { ...config, collections };
-    validateCollectionsConfig(next);
-    return next;
-  });
-}
-
-export async function saveDefaults(
-  env: Env,
-  storeRoot: string,
-  patch: DefaultsPatch,
-): Promise<CellarerConfig> {
-  return publishSettingsConfig(env, storeRoot, "defaults", async () => {
-    const config = await loadConfig(env, storeRoot);
-    const next = { ...config, defaults: { ...config.defaults, ...patch } };
-    validateCollectionsConfig(next);
-    return next;
-  });
-}
-
-export async function setAgentEnabled(
-  env: Env,
-  storeRoot: string,
-  agentId: string,
-  enabled: boolean,
-): Promise<CellarerConfig> {
-  return publishSettingsConfig(env, storeRoot, "agent-enabled", async () => {
-    const config = await loadConfig(env, storeRoot);
-    return {
-      ...config,
-      agents: {
-        ...config.agents,
-        [agentId]: { ...config.agents[agentId], enabled },
-      },
-    };
-  });
-}
-
-export async function upsertAdapterConfig(
-  env: Env,
-  storeRoot: string,
-  adapterId: string,
-  adapter: AdapterPatchConfig,
-): Promise<CellarerConfig> {
-  return publishSettingsConfig(env, storeRoot, "adapter-upsert", async () => {
-    const config = await loadConfig(env, storeRoot);
-    const builtinAdapterIds = await loadBuiltinAdapterIds(env);
-    const nextAdapter = builtinAdapterIds.has(adapterId)
-      ? parseAdapterPatchConfig(adapter)
-      : validateCustomAdapterConfig(adapterId, adapter);
-    return { ...config, adapters: { ...config.adapters, [adapterId]: nextAdapter } };
-  });
-}
-
-export async function deleteCustomAdapterConfig(
-  env: Env,
-  storeRoot: string,
-  adapterId: string,
-): Promise<CellarerConfig> {
-  return publishSettingsConfig(env, storeRoot, "adapter-delete", async () => {
-    const builtinAdapterIds = await loadBuiltinAdapterIds(env);
-    if (builtinAdapterIds.has(adapterId)) {
-      throw new Error(`cannot delete built-in adapter "${adapterId}"`);
-    }
-    const config = await loadConfig(env, storeRoot);
-    const adapters = { ...config.adapters };
-    delete adapters[adapterId];
-    return { ...config, adapters };
-  });
-}
-
-async function publishSettingsConfig(
-  env: Env,
-  storeRoot: string,
-  mutationKind: string,
-  prepare: () => Promise<CellarerConfig>,
-): Promise<CellarerConfig> {
-  const result = await executeStorePublicationMutation(
-    env,
-    storeRoot,
-    "settings",
-    mutationKind,
-    async () => {
-      const value = await prepare();
-      return {
-        value,
-        publications: [
-          {
-            path: join(storeRoot, CONFIG_FILENAME),
-            data: `${JSON.stringify(value, null, 2)}\n`,
-            mode: 0o600,
-          },
-        ],
-      };
-    },
-  );
-  return unwrapStorePublicationMutation(result);
 }

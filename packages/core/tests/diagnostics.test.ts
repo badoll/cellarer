@@ -157,7 +157,7 @@ describe("diagnostics", () => {
     await initStore(t.env, storeRoot);
     await writeConfig(t, {
       version: 1,
-      adapters: {
+      customAdapters: {
         blocked: {
           skills: { global: "~/.blocked/skills/child" },
         },
@@ -207,7 +207,7 @@ describe("diagnostics", () => {
   it("reports bad adapter path expansion without throwing", async () => {
     const customStore = await writeConfig(t, {
       version: 1,
-      adapters: {
+      customAdapters: {
         bad: {
           rules: { project: "~/.ssh/owned.md" },
         },

@@ -223,7 +223,7 @@ describe("reference-only secret canary end to end", () => {
 
   it("uses one rotating provider scope across plan, apply, final guard, and afterCommit", async () => {
     const config = await loadConfig(t.env, storeRoot);
-    config.adapters["reference-native"] = {
+    config.customAdapters["reference-native"] = {
       displayName: "Reference Native",
       mcp: {
         global: "~/.reference-native/mcp.json",
@@ -292,7 +292,7 @@ describe("reference-only secret canary end to end", () => {
 
   it("creates one fresh provider scope for an independently applied signed plan", async () => {
     const config = await loadConfig(t.env, storeRoot);
-    config.adapters["reference-native"] = {
+    config.customAdapters["reference-native"] = {
       displayName: "Reference Native",
       mcp: {
         global: "~/.reference-native/mcp.json",
@@ -357,7 +357,7 @@ describe("reference-only secret canary end to end", () => {
 
   it("does not read a provider for malformed MCP that cannot become executable", async () => {
     const config = await loadConfig(t.env, storeRoot);
-    config.adapters["reference-native"] = {
+    config.customAdapters["reference-native"] = {
       displayName: "Reference Native",
       mcp: {
         global: "~/.reference-native/mcp.json",

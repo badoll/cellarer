@@ -127,8 +127,12 @@ credential manager and verifies an exact read-back. No other command provisions
 or rotates a missing authority. On headless systems, the runner must inject the
 protected environment channel documented below.
 
+`init` previews supported/detected/configured agents, but never turns every
+detected agent into a mutation target. The current source CLI requires the
+exact initial target set explicitly in both human and machine invocations:
+
 ```bash
-node packages/cli/dist/bin.js init
+node packages/cli/dist/bin.js init --agent codex,claude-code
 ```
 
 Options:
@@ -136,6 +140,11 @@ Options:
 | Option | Description |
 | --- | --- |
 | `--global` | Accepted for clarity; global store initialization is the current default. |
+| `-a, --agent <ids>` | Required exact comma-separated adapter IDs. Only these agents are enabled in the initial config. |
+
+Omitting `--agent` returns `INPUT_REQUIRED` with the agent inventory and creates
+no product config. An unknown ID returns `INVALID_INPUT`; there is no implicit
+"all detected agents" mutation default.
 
 ## Mutation authority and headless operation
 
@@ -289,6 +298,132 @@ Options:
 | `--dir <path>` | Project scope root. Omit for global scope. |
 | `--json` | Compatibility alias for `--output json`. |
 
+`agents` is the earlier inspection command. The complete control-plane surface
+uses the singular `agent` group below.
+
+## Resource, agent, collection, and config control plane
+
+These commands call the same Core DTOs and services as the overlapping Web
+routes. Read commands never require mutation authority. A control-plane
+`--dry-run` returns `{ plan, changedFields }` and writes nothing. Executing the
+same mutation directly returns `{ plan, changedFields, receipt }`; submitting
+its sealed plan through `apply --plan` returns
+`{ plan, changedFields, mutation, receipt }` on success.
+
+Every `agent`, custom-adapter, `collection`, and `config` mutation supports an
+exact dry-run-to-apply round trip. Extract the complete `data.plan` object from
+the JSON envelope and submit those unchanged bytes to `apply --plan`:
+
+```bash
+PLAN_JSON=$(node packages/cli/dist/bin.js --output json \
+  agent disable codex --dry-run | \
+  node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.stringify(JSON.parse(s).data.plan)))')
+node packages/cli/dist/bin.js --output jsonl apply --plan "$PLAN_JSON"
+```
+
+The same pattern applies to `agent add|update|remove`, collection membership
+and defaults, and `config update|reset`. `apply` consumes the exact
+authority-sealed plan: it does not replan. A changed revision, target,
+configuration, ownership ledger, or artifact membership returns a typed
+conflict with no receipt. Publication data in a settings plan contains only
+reference-safe configuration bytes and is checked again by the final secret
+guard before writing.
+
+### `resource list|show`
+
+```bash
+node packages/cli/dist/bin.js resource list --kind rules --state managed \
+  --source /absolute/path/to/rules.md --no-include-discovered
+node packages/cli/dist/bin.js resource show rules/team-rules
+```
+
+`resource list` accepts `--kind <rules|mcp|skills>`, comma-separated
+`--state`, exact comma-separated `--source`, `--agent`, `--collection`,
+`--destination <user|project>`, `--dir`, and `--no-include-discovered`.
+`resource show` accepts the same query options and requires one immutable
+resource ID such as `rules/team-rules`; a name alone is only a read filter and
+is never a mutation identity.
+
+### `agent list|show|enable|disable|configure|reset|add|update|remove`
+
+```bash
+node packages/cli/dist/bin.js agent list --scope project --dir /workspace/app \
+  --agent codex,claude-code
+node packages/cli/dist/bin.js agent show codex --scope global
+node packages/cli/dist/bin.js agent disable codex --dry-run
+node packages/cli/dist/bin.js agent configure codex \
+  --adapter '{"displayName":"Codex Local"}'
+node packages/cli/dist/bin.js agent add my-agent \
+  --adapter '{"displayName":"My Agent","rules":{"project":"{dir}/.my-agent/RULES.md"}}'
+node packages/cli/dist/bin.js agent update my-agent \
+  --adapter '{"displayName":"My Agent","rules":{"global":"~/.my-agent/RULES.md"}}'
+node packages/cli/dist/bin.js agent remove my-agent
+```
+
+`list` and `show` report supported, detected, configured, and enabled states,
+detection evidence, capability scopes, target paths, and validation issues.
+`configure` and `reset` are for packaged built-ins and persist only
+`adapterOverrides`. `add`, `update`, and `remove` manage `customAdapters`.
+Removal is blocked while owned targets or an enabled desired selection still
+depend on the custom adapter. Every mutation accepts `--dry-run`.
+
+### `collection list|show|create|update|delete|members set|defaults set`
+
+```bash
+node packages/cli/dist/bin.js collection create work \
+  --description "Work resources" --resource rules/team-rules,skills/review
+node packages/cli/dist/bin.js collection members set work \
+  --resource rules/team-rules
+node packages/cli/dist/bin.js collection defaults set --collection default,work
+node packages/cli/dist/bin.js collection show work
+```
+
+Collection membership accepts immutable IDs only. Use `--resource ""` with
+`members set` to clear membership. `update` requires `--description`; `delete`
+is blocked while the collection appears in `defaults.collections`. Mutations
+accept `--dry-run`.
+
+### `config show|validate|update|reset`
+
+```bash
+node packages/cli/dist/bin.js config show
+node packages/cli/dist/bin.js config validate \
+  --config '{"version":1,"defaults":{"method":"copy"}}'
+node packages/cli/dist/bin.js config update \
+  --settings '{"method":"copy","secretMode":"env"}'
+node packages/cli/dist/bin.js config reset --field method,secretMode
+```
+
+`config update` accepts only typed non-secret defaults: `method`, `secretMode`,
+and per-OS `method` under `os`. `config reset` accepts `method`, `secretMode`,
+and `os`; omitting `--field` resets all three. Unknown or secret-shaped fields
+return `INVALID_INPUT` without a write.
+
+### `diff`, `verify`, `discovery summary`, and `operation list|show|recover`
+
+```bash
+node packages/cli/dist/bin.js diff --scope project --dir /workspace/app \
+  --agent codex,claude-code --collection work --rules --method copy
+node packages/cli/dist/bin.js verify --scope project --dir /workspace/app \
+  --agent codex,claude-code --collection work --rules --method copy
+node packages/cli/dist/bin.js discovery summary --destination project \
+  --dir /workspace/app --agent codex,claude-code
+node packages/cli/dist/bin.js operation list --limit 20
+node packages/cli/dist/bin.js operation show operation-<id>
+node packages/cli/dist/bin.js --output json operation recover operation-<id> --dry-run
+node packages/cli/dist/bin.js --output json operation recover operation-<id>
+```
+
+`diff` reports desired-versus-applied actions; `verify` additionally separates
+disk drift, secret-reference readiness, and recovery health. Verification
+supports `--scope`, `--dir`, `--agent`, `--collection`, `--rules`, `--mcp`,
+`--skills`, `--method <symlink|copy>`, and
+`--mcp-strategy <merge|overwrite>`. Operation output is redacted.
+Always diagnose with `operation recover <id> --dry-run` first. Run the same
+command without `--dry-run` only when the diagnosis permits evidence-based
+recovery. A `RECOVERY_REQUIRED` result includes typed recovery evidence; do not
+delete locks or journals manually.
+
 ## `doctor`
 
 Checks store initialization, `config.json`, store directories, adapter loading,
@@ -319,16 +454,19 @@ procedure in [Concepts](concepts.md#concurrency-and-interrupted-operation-recove
 Plans or writes resources to selected agents.
 
 ```bash
-node packages/cli/dist/bin.js apply --dry-run --agent claude-code,codex
+node packages/cli/dist/bin.js --output json plan \
+  --agent claude-code,codex --scope global --rules --mcp --skills
 node packages/cli/dist/bin.js apply --agent claude-code,codex --collection default
-node packages/cli/dist/bin.js --output json apply --dry-run --agent claude-code
+node packages/cli/dist/bin.js --output json apply --dry-run --agent claude-code --rules
+node packages/cli/dist/bin.js --output jsonl apply --plan "$PLAN_JSON"
 ```
 
 Options:
 
 | Option | Description |
 | --- | --- |
-| `-a, --agent <ids>` | Required. Comma-separated agent ids. |
+| `-a, --agent <ids>` | Required only when `apply` plans from these options, including `--dry-run`; omitted for `apply --plan` because the sealed plan already binds its targets. |
+| `--plan <json>` | Apply an exact authority-sealed `data.plan` returned by `plan` or a control-plane mutation dry-run. Cannot be combined with planning inputs or `--dry-run`. |
 | `--dir <path>` | Project scope root. Omit for global scope. |
 | `--collection <collection>` | Filter resources by collection. |
 | `--rules` | Include rules. Interactive text and dry-run may default to all capabilities; a non-interactive write requires at least one explicit capability flag. |
@@ -349,11 +487,24 @@ then repeat the same selection with the exact conflict token in `--replace-unown
 `--override-drift` and provide the snapshot passphrase through hidden input or
 `--snapshot-passphrase-fd`.
 
-Every response includes `mutation.planId`, `planDigest`, `operation`, and
-`baseRevision`. A successful non-dry-run also includes
-`mutation.result.receipt`, with its operation id, resulting revision, outcome,
-and per-action receipts. The CLI plans and applies within one invocation; a
-later non-dry-run invocation does not resubmit the serialized dry-run plan.
+The top-level `plan` command is the serializable planning surface for resource
+distribution; its JSON envelope contains the exact executable plan at
+`data.plan` and the human-readable distribution preview at `data.preview`.
+`apply --dry-run` remains a convenience preview and returns
+`{ plan: <distribution-preview>, entries: [], failures: [], mutation }`; its
+`mutation` has no result or receipt. Executed distribution apply has the same
+top-level fields, with the operation receipt at `mutation.result.receipt`.
+`apply --plan` accepts either
+that distribution plan or an `operation: "settings"` plan returned by any
+agent/adapter/collection/config `--dry-run`. In structured input, place the same
+plan object at `input.plan`; do not also provide agents, capabilities, `dir`,
+acknowledgements, or `dryRun`.
+
+Distribution apply and settings `apply --plan` responses include
+`mutation.planId`, `planDigest`, `operation`, and `baseRevision`. Successful
+receipts contain the operation id, resulting revision, outcome, and per-action
+receipts; direct control-plane mutation responses instead expose that receipt
+at top-level `data.receipt`.
 The public envelope maps Core conflicts to stable CLI errors such as
 `LOCK_CONFLICT`, `STALE_REVISION`, `TARGET_CONFLICT`, and `RECOVERY_REQUIRED`;
 the original Core code remains in redacted error details. These failures exit
@@ -366,7 +517,8 @@ store.
 
 ```bash
 node packages/cli/dist/bin.js scan --agent codex --dry-run
-node packages/cli/dist/bin.js scan --agent codex --into-collection default
+node packages/cli/dist/bin.js scan --agent codex --rules --into-collection default \
+  --select '[{"kind":"rules","name":"team","source":"/absolute/path/AGENTS.md"}]'
 ```
 
 Options:
@@ -380,7 +532,7 @@ Options:
 | `--skills` | Scan only skills. |
 | `--into-collection <collection>` | Tag imported resources with this collection. |
 | `--conflict <strategy>` | `keep-theirs`, `keep-mine`, or `copy`. |
-| `--select <names>` | Comma-separated resource names to import. |
+| `--select <json>` | JSON array of complete `{kind,name,source}` selectors. Every object must contain exactly those three fields. |
 | `--secret-mode <mode>` | Secret source for a mutating import: `env`, `vault`, or `keychain`. Ignored by read-only dry-run, which always uses `env`. |
 | `--vault-passphrase-fd <number>` | Read the vault passphrase from an inherited descriptor for a mutating vault-backed import. |
 | `--keychain-service <name>` | Keychain service for a mutating keychain-backed import; default `cellarer`. |
@@ -394,6 +546,11 @@ vault or keychain mode was requested. A non-dry-run import remains an executable
 mutation and requires authority. A non-interactive write also requires one
 explicit agent and at least one capability flag; dry-run requires the agent but
 may inspect all capabilities when no capability flag is present.
+
+Name-only mutation selection is not supported. Copy the exact `kind`, `name`,
+and `source` values from the dry-run item into `--select`, or provide the same
+array as structured input. Store-side collection commands use immutable IDs
+such as `rules/team`, not the scan tuple.
 
 ## `status`
 

@@ -64,6 +64,19 @@ export interface MutationRecoveryDiagnosis {
   readonly message: string;
 }
 
+export type RequestedMutationRecoveryDiagnosis =
+  | {
+      readonly found: false;
+      readonly operationId: string;
+      readonly status: "not-found";
+      readonly message: string;
+    }
+  | {
+      readonly found: true;
+      readonly operationId: string;
+      readonly diagnosis: MutationRecoveryDiagnosis;
+    };
+
 export interface RecoverInterruptedOperationOptions {
   readonly operationId: string;
   readonly snapshotPassphrase?: string;
@@ -99,6 +112,38 @@ export async function diagnoseMutationRecovery(
   return withCurrentMutationAuthorityLease(env, (authorityLease) =>
     diagnoseMutationRecoveryWithAuthorityLease(env, storeRoot, authorityLease),
   );
+}
+
+export async function diagnoseInterruptedOperation(
+  env: Env,
+  storeRoot: string,
+  operationId: string,
+): Promise<RequestedMutationRecoveryDiagnosis> {
+  return withCurrentMutationAuthorityLease(env, async (authorityLease) => {
+    if (!(await authorityLease.isCurrent().catch(() => false))) {
+      throw new TypeError("mutation authority is not current");
+    }
+    const active = await readOperationJournal(env, storeRoot).catch(() => undefined);
+    if (active === null || (active !== undefined && active.operationId !== operationId)) {
+      return requestedOperationNotFound(operationId);
+    }
+    return {
+      found: true,
+      operationId,
+      diagnosis: await diagnoseMutationRecoveryWithAuthorityLease(env, storeRoot, authorityLease),
+    };
+  });
+}
+
+function requestedOperationNotFound(
+  operationId: string,
+): Extract<RequestedMutationRecoveryDiagnosis, { found: false }> {
+  return {
+    found: false,
+    operationId,
+    status: "not-found",
+    message: "requested operation is not the active recoverable operation",
+  };
 }
 
 async function diagnoseMutationRecoveryWithAuthorityLease(
@@ -567,10 +612,9 @@ async function recoverInterruptedOperationWithProviderState(
   }
   if (journal.operationId !== opts.operationId) {
     return manualRecovery(
-      journal.operationId,
-      journal.plan.actions.map((action) => action.target),
-      `requested operation ${opts.operationId} does not match journal ${journal.operationId}`,
-      journal,
+      opts.operationId,
+      [],
+      "requested operation is not the active recoverable operation",
     );
   }
   if (diagnosis.status === "manual-recovery-required") {

@@ -6,7 +6,7 @@
 // 幂等关键:重复 apply 必须产出与磁盘一致的台账,且不丢失首次备份指针 ——
 //   故复用既有台账条目的 backup;内容未变时保留 appliedAt 并跳过重写(避免 mtime 抖动)。
 
-import { dirname, isAbsolute, join, normalize } from "node:path";
+import { dirname, isAbsolute, join, normalize, relative, sep } from "node:path";
 import { z } from "zod";
 import { appendActivity } from "../activity.js";
 import type { Env, MutationAuthorityLease } from "../env.js";
@@ -15,7 +15,13 @@ import { hashDir } from "../fs/hashDir.js";
 import { linkOrCopy } from "../fs/linkOrCopy.js";
 import { lstatOrNull } from "../fs/probe.js";
 import { assertNotSymbolicLink, isWithinRoot } from "../fs/safety.js";
-import type { DistributePlan, Ledger, LedgerEntry, PlanAction } from "../model/index.js";
+import type {
+  Capability,
+  DistributePlan,
+  Ledger,
+  LedgerEntry,
+  PlanAction,
+} from "../model/index.js";
 import {
   acquireCurrentMutationAuthorityLease,
   assertStrictMutationPlanRuntime,
@@ -45,21 +51,27 @@ import type {
 } from "../protocol/models.js";
 import { mutationPresentation } from "../protocol/presentation.js";
 import { PublicationPostconditionError } from "../protocol/publication.js";
+import { captureStoreProvenance, validateStoreProvenance } from "../protocol/store-mutation.js";
 import { observeAtStableStoreRevision } from "../protocol/store-revision.js";
 import {
   attachProviderScope,
   configureProviderScope,
   createProviderScope,
+  discoverSecretReferences,
   type ProviderScope,
   providerScopeForEnv,
   withProviderScope,
 } from "../secrets/active-values.js";
-import { attachObservableKnownValues, observableKnownValues } from "../secrets/observable.js";
+import {
+  attachObservableKnownValues,
+  containsObservableKnownValue,
+  observableKnownValues,
+} from "../secrets/observable.js";
 import {
   assertSafeRecursiveSnapshotCurrent,
-  captureSafeRecursiveSource,
   installSafeRecursiveSnapshot,
   type SafeRecursiveSnapshot,
+  sliceSafeRecursiveSnapshot,
   UnsafeRecursiveSourceError,
 } from "../secrets/safe-tree.js";
 import { sha256 } from "../store/checksum.js";
@@ -78,6 +90,11 @@ import {
   SnapshotCreationError,
 } from "../target-snapshot.js";
 import {
+  type CapabilityRootCapture,
+  type CapabilityRootProvenanceDescriptor,
+  captureCapabilityRootSnapshots,
+} from "./capability-snapshot.js";
+import {
   assertExecutableGitignoreMutation,
   assertGitignoreMutationMatchesLedger,
   executeGitignoreMutation,
@@ -93,6 +110,7 @@ import type {
   ApplyCallResult,
   ApplyFailure,
   ApplyMutationContext,
+  ApplyMutationPlanPreflight,
   ApplyMutationResult,
   ApplyResult,
   DistributeOptions,
@@ -204,6 +222,17 @@ const executableActionBase = {
   target: z.string().refine(isAbsolute),
   reason: z.string().min(1),
   ownership: ownershipSchema,
+  storeInputs: z
+    .array(
+      z
+        .object({
+          artifactId: z.string().min(1),
+          path: z.string().refine(isAbsolute),
+          fingerprint: signedFingerprintSchema,
+        })
+        .strict(),
+    )
+    .optional(),
   replacement: replacementSchema.optional(),
 };
 const executableApplyActionSchema = z.discriminatedUnion("op", [
@@ -333,6 +362,14 @@ async function planApplyMutationWithAuthorityLease(
   execution: { providerAccess?: "allowed" | "forbidden" },
 ): Promise<PlannedApplyMutation> {
   requireMutationAuthority(env);
+  const requestedCapabilities = opts.capabilities ?? ["rules"];
+  const initialCapabilityRoots = await captureCapabilityRootSnapshots(
+    env,
+    opts.storeRoot,
+    requestedCapabilities,
+  );
+  const provenancePaths = distributionStoreProvenancePaths(env, opts);
+  const initialProvenance = await captureStoreProvenance(env, opts.storeRoot, provenancePaths);
   const config = await loadConfig(env, opts.storeRoot);
   const scope =
     providerScopeForEnv(env) ??
@@ -343,7 +380,26 @@ async function planApplyMutationWithAuthorityLease(
     });
   const operationEnv = providerScopeForEnv(env) ? env : withProviderScope(env, scope);
   const observed = await observeAtStableStoreRevision(operationEnv, opts.storeRoot, async () => {
-    const distributePlan = await plan(operationEnv, opts, execution);
+    const provenanceBefore = await captureStoreProvenance(
+      operationEnv,
+      opts.storeRoot,
+      provenancePaths,
+    );
+    if (canonicalJson(initialProvenance) !== canonicalJson(provenanceBefore)) {
+      throw new TypeError("distribution Store provenance changed while planning");
+    }
+    const capabilityRootsBefore = await captureCapabilityRootSnapshots(
+      operationEnv,
+      opts.storeRoot,
+      requestedCapabilities,
+    );
+    if (!sameCapabilityRootDescriptors(initialCapabilityRoots, capabilityRootsBefore)) {
+      throw new TypeError("distribution capability roots changed while planning");
+    }
+    const distributePlan = await plan(operationEnv, opts, {
+      ...execution,
+      capabilityRootCapture: capabilityRootsBefore,
+    });
     const executable = distributePlan.actions.filter((action) => action.op !== "skip");
     const gitignore =
       opts.scope === "project" && opts.dir
@@ -355,9 +411,30 @@ async function planApplyMutationWithAuthorityLease(
             ...executable.map((action) => action.target),
           ])
         : undefined;
-    return { distributePlan, gitignore };
+    const provenanceAfter = await captureStoreProvenance(
+      operationEnv,
+      opts.storeRoot,
+      provenancePaths,
+    );
+    if (canonicalJson(provenanceBefore) !== canonicalJson(provenanceAfter)) {
+      throw new TypeError("distribution Store provenance changed while planning");
+    }
+    const capabilityRootsAfter = await captureCapabilityRootSnapshots(
+      operationEnv,
+      opts.storeRoot,
+      requestedCapabilities,
+    );
+    if (!sameCapabilityRootDescriptors(capabilityRootsBefore, capabilityRootsAfter)) {
+      throw new TypeError("distribution capability roots changed while planning");
+    }
+    return {
+      distributePlan,
+      gitignore,
+      storeProvenance: provenanceBefore,
+      capabilityRootProvenance: capabilityRootsBefore.descriptors,
+    };
   });
-  const { distributePlan, gitignore } = observed.value;
+  const { distributePlan, gitignore, storeProvenance, capabilityRootProvenance } = observed.value;
   const effectiveSecretMode = opts.secretMode ?? config.defaults.secretMode;
   const effectiveKeychainService = opts.keychainService ?? "cellarer";
   const executable = distributePlan.actions.filter((action) => action.op !== "skip");
@@ -386,6 +463,9 @@ async function planApplyMutationWithAuthorityLease(
     storeRoot: opts.storeRoot,
     scope: opts.scope,
     agents: opts.agents,
+    configFingerprint: sha256(canonicalJson(config)),
+    storeProvenance,
+    capabilityRootProvenance,
     ...(opts.dir ? { dir: opts.dir } : {}),
     ...(opts.capabilities ? { capabilities: opts.capabilities } : {}),
     distributePlan,
@@ -459,39 +539,45 @@ export async function applyMutationPlan(
     try {
       try {
         assertMutationPlanActionAlignment(mutationPlan);
-        trustedOptions = assertTrustedApplyOptions(context);
         decoded = decodeApplyMutation(operationEnv, mutationPlan);
-        assertApplyOptionsMatchTrustedContext(decoded.opts, trustedOptions);
-        const reconstructed = await planApplyMutation(
-          operationEnv,
-          trustedOptions,
-          { planId: mutationPlan.planId, expires: mutationPlan.expires },
-          { providerAccess: "forbidden", authorityLease },
-        );
-        if (canonicalJson(reconstructed.mutationPlan) !== canonicalJson(mutationPlan)) {
-          throw new TypeError("apply mutation plan does not match canonical reconstruction");
+        if (context.options) {
+          trustedOptions = assertTrustedApplyOptions(context);
+          assertApplyOptionsMatchTrustedContext(decoded.opts, trustedOptions);
+        } else {
+          trustedOptions = decoded.opts;
+          if (trustedOptions.storeRoot !== context.storeRoot) {
+            throw new TypeError("apply mutation plan does not match the trusted store context");
+          }
         }
       } catch {
         return invalidApplyMutationResult(scope);
       }
-      const config = await loadConfig(operationEnv, context.storeRoot);
-      const secretMode =
-        context.secretMode ?? trustedOptions.secretMode ?? config.defaults.secretMode;
-      const keychainService =
-        context.keychainService ?? trustedOptions.keychainService ?? "cellarer";
-      configureProviderScope(scope, {
-        secretMode,
-        vaultPassphrase: context.vaultPassphrase ?? trustedOptions.vaultPassphrase,
-        keychainService,
-      });
-      await discoverActiveSecretValuesForActions(operationEnv, decoded.executionPlan.actions, {
-        storeRoot: context.storeRoot,
-        config,
-        secretMode,
-        vaultPassphrase: context.vaultPassphrase ?? trustedOptions.vaultPassphrase,
-        keychainService,
-        requireAvailableReferences: true,
-      });
+      let secretMode = context.secretMode ?? trustedOptions.secretMode ?? "env";
+      let keychainService = context.keychainService ?? trustedOptions.keychainService ?? "cellarer";
+      let lockedCapabilityRoots: CapabilityRootCapture | undefined;
+      const validateApplyProvenance = async (
+        retainLockedSnapshot: boolean,
+      ): Promise<OperationResult | null> => {
+        const current = await captureCapabilityRootSnapshots(
+          operationEnv,
+          context.storeRoot,
+          decoded.opts.capabilities ?? ["rules"],
+        ).catch(() => null);
+        if (
+          !current ||
+          canonicalJson(current.descriptors) !== canonicalJson(decoded.capabilityRootProvenance)
+        ) {
+          return invalidPlanResult();
+        }
+        const provenance = await validateStoreProvenance(
+          operationEnv,
+          context.storeRoot,
+          mutationPlan,
+        );
+        if (provenance) return provenance;
+        if (retainLockedSnapshot) lockedCapabilityRoots = current;
+        return null;
+      };
       const operation = await executeMutationPlan(
         operationEnv,
         context.storeRoot,
@@ -523,21 +609,61 @@ export async function applyMutationPlan(
         },
         {
           authorityLease,
+          validatePreflightBeforeObservation: async () => validateApplyProvenance(false),
+          validateBeforeObservationUnderLock: async () => validateApplyProvenance(true),
           validateUnderLock: async () => {
-            const config = await loadConfig(operationEnv, context.storeRoot);
-            stagedSources = await captureSignedApplySources(
+            const currentConfig = await loadConfig(operationEnv, context.storeRoot);
+            if (sha256(canonicalJson(currentConfig)) !== decoded.configFingerprint) {
+              return invalidPlanResult();
+            }
+            if (!lockedCapabilityRoots) return invalidPlanResult();
+            try {
+              stagedSources = captureSignedApplySources(
+                lockedCapabilityRoots,
+                decoded.executionPlan.actions,
+              );
+            } catch {
+              return invalidPlanResult();
+            }
+            secretMode =
+              context.secretMode ?? trustedOptions.secretMode ?? currentConfig.defaults.secretMode;
+            keychainService =
+              context.keychainService ?? trustedOptions.keychainService ?? "cellarer";
+            configureProviderScope(scope, {
+              secretMode,
+              vaultPassphrase: context.vaultPassphrase ?? trustedOptions.vaultPassphrase,
+              keychainService,
+            });
+            await discoverActiveSecretValuesForActions(
               operationEnv,
               decoded.executionPlan.actions,
+              {
+                storeRoot: context.storeRoot,
+                config: currentConfig,
+                secretMode,
+                vaultPassphrase: context.vaultPassphrase ?? trustedOptions.vaultPassphrase,
+                keychainService,
+                requireAvailableReferences: true,
+              },
             );
+            if (
+              containsObservableKnownValue(
+                JSON.stringify(mutationPlan),
+                observableKnownValues(operationEnv),
+              )
+            ) {
+              throw new TypeError("active secret value is not allowed in signed mutation metadata");
+            }
             await assertRecursiveSecretGuard(operationEnv, decoded.executionPlan.actions, {
               storeRoot: context.storeRoot,
-              config,
+              config: currentConfig,
               secretMode,
               vaultPassphrase: context.vaultPassphrase ?? trustedOptions.vaultPassphrase,
               keychainService,
               requireAvailableReferences: true,
               stagedSources,
             });
+            return null;
           },
         },
       );
@@ -559,6 +685,55 @@ export async function applyMutationPlan(
   } catch (error) {
     throw typeof error === "object" && error !== null ? attachProviderScope(error, scope) : error;
   }
+}
+
+export function preflightApplyMutationPlan(
+  env: Env,
+  mutationPlan: unknown,
+  storeRoot: string,
+): ApplyMutationPlanPreflight {
+  try {
+    assertStrictMutationPlanRuntime(mutationPlan, "apply");
+  } catch {
+    return invalidApplyPlanPreflight();
+  }
+  if (!verifyMutationPlanAuthorization(env, storeRoot, mutationPlan)) {
+    return invalidApplyPlanPreflight();
+  }
+  if (!verifyMutationPlanDigest(mutationPlan)) return invalidApplyDigestPreflight();
+  try {
+    assertMutationPlanActionAlignment(mutationPlan);
+    const decoded = decodeApplyMutation(env, mutationPlan);
+    if (decoded.opts.storeRoot !== storeRoot) return invalidApplyPlanPreflight();
+    return {
+      ok: true,
+      requiresCellarerSecretResolution: discoverSecretReferences(
+        decoded.executionPlan.actions.flatMap((action) =>
+          action.preview?.after ? [action.preview.after] : [],
+        ),
+      ).some((reference) => reference.kind === "cellarer"),
+      requiresSnapshotPassphrase: decoded.executionPlan.actions.some(
+        (action) => action.replacement?.snapshotRequired === true,
+      ),
+    };
+  } catch {
+    return invalidApplyPlanPreflight();
+  }
+}
+
+function invalidApplyPlanPreflight(): Extract<ApplyMutationPlanPreflight, { readonly ok: false }> {
+  const operation = invalidPlanResult();
+  if (operation.ok) throw new TypeError("invalid plan result unexpectedly succeeded");
+  return operation;
+}
+
+function invalidApplyDigestPreflight(): Extract<
+  ApplyMutationPlanPreflight,
+  { readonly ok: false }
+> {
+  const operation = invalidApplyPlanDigestResult();
+  if (operation.ok) throw new TypeError("invalid plan digest result unexpectedly succeeded");
+  return operation;
 }
 
 function assertApplyOptionsMatchTrustedContext(
@@ -648,34 +823,55 @@ function invalidApplyDigestMutationResult(scope: ProviderScope): ApplyMutationRe
   );
 }
 
-async function captureSignedApplySources(
-  env: Env,
+function captureSignedApplySources(
+  roots: CapabilityRootCapture,
   actions: readonly PlanAction[],
-): Promise<Map<string, SafeRecursiveSnapshot>> {
+): Map<string, SafeRecursiveSnapshot> {
   const snapshots = new Map<string, SafeRecursiveSnapshot>();
   for (const action of actions) {
+    for (const input of action.storeInputs ?? []) {
+      const snapshot = snapshotForCapabilityDescendant(roots, action.capability, input.path);
+      if (snapshot.fingerprint !== input.fingerprint) {
+        throw staleApplySource(input.path);
+      }
+      snapshots.set(input.path, snapshot);
+    }
     if (action.op === "skip" || !action.source) continue;
-    if (snapshots.has(action.source)) continue;
+    const snapshot = snapshotForCapabilityDescendant(roots, action.capability, action.source);
     const expected = action.desiredEvidence?.sourceFingerprint;
     const expectedIdentity = action.desiredEvidence?.sourceIdentity;
-    const snapshot = await captureSafeRecursiveSource(env, action.source);
     if (
-      snapshot.kind === "directory" &&
-      expected &&
-      snapshot.fingerprint === expected &&
-      expectedIdentity &&
-      snapshot.identity === expectedIdentity
+      snapshot.kind !== "directory" ||
+      !expected ||
+      snapshot.fingerprint !== expected ||
+      !expectedIdentity ||
+      snapshot.identity !== expectedIdentity
     ) {
-      snapshots.set(action.source, snapshot);
-      continue;
+      throw staleApplySource(action.source);
     }
-    const error = new Error(`apply source changed after planning: ${action.source}`) as Error & {
-      code: string;
-    };
-    error.code = "ESTALE";
-    throw error;
+    snapshots.set(action.source, snapshot);
   }
   return snapshots;
+}
+
+function snapshotForCapabilityDescendant(
+  roots: CapabilityRootCapture,
+  capability: Capability,
+  path: string,
+): SafeRecursiveSnapshot {
+  const root = roots.snapshots.get(capability);
+  if (!root) throw staleApplySource(path);
+  const child = relative(root.rootPath, path);
+  if (!child || child === ".." || child.startsWith(`..${sep}`) || isAbsolute(child)) {
+    throw staleApplySource(path);
+  }
+  return sliceSafeRecursiveSnapshot(root, child.split(sep).join("/"));
+}
+
+function staleApplySource(path: string): Error {
+  return Object.assign(new Error(`apply source changed after planning: ${path}`), {
+    code: "ESTALE",
+  });
 }
 
 async function executeApplyPlan(
@@ -988,12 +1184,22 @@ function decodeApplyMutation(
   opts: DistributeOptions;
   distributePlan: DistributePlan;
   executionPlan: DistributePlan;
+  configFingerprint: string;
+  capabilityRootProvenance: readonly CapabilityRootProvenanceDescriptor[];
 } {
   if (planReceipt.operation !== "apply") {
     throw new TypeError("apply mutation requires an apply plan");
   }
   const input = planReceipt.normalizedInputs as Record<string, unknown>;
-  const inputKeys = ["agents", "distributePlan", "scope", "storeRoot"];
+  const inputKeys = [
+    "agents",
+    "configFingerprint",
+    "capabilityRootProvenance",
+    "distributePlan",
+    "scope",
+    "storeProvenance",
+    "storeRoot",
+  ];
   if ("dir" in input) inputKeys.push("dir");
   if ("capabilities" in input) inputKeys.push("capabilities");
   if (
@@ -1002,6 +1208,10 @@ function decodeApplyMutation(
     (input.scope !== "global" && input.scope !== "project") ||
     !Array.isArray(input.agents) ||
     !input.agents.every((agent) => typeof agent === "string") ||
+    typeof input.configFingerprint !== "string" ||
+    !/^sha256:[0-9a-f]{64}$/.test(input.configFingerprint) ||
+    !Array.isArray(input.storeProvenance) ||
+    !Array.isArray(input.capabilityRootProvenance) ||
     typeof input.distributePlan !== "object" ||
     input.distributePlan === null ||
     !Array.isArray((input.distributePlan as DistributePlan).actions) ||
@@ -1027,6 +1237,26 @@ function decodeApplyMutation(
   ) {
     throw new TypeError("apply mutation plan has invalid normalized inputs");
   }
+  const expectedProvenancePaths = distributionStoreProvenancePaths(env, opts);
+  const actualProvenancePaths = input.storeProvenance.flatMap((descriptor) =>
+    typeof descriptor === "object" &&
+    descriptor !== null &&
+    !Array.isArray(descriptor) &&
+    typeof (descriptor as { path?: unknown }).path === "string"
+      ? [(descriptor as { path: string }).path]
+      : [],
+  );
+  if (
+    actualProvenancePaths.length !== input.storeProvenance.length ||
+    canonicalJson(actualProvenancePaths) !== canonicalJson(expectedProvenancePaths)
+  ) {
+    throw new TypeError("apply mutation plan has invalid Store provenance");
+  }
+  const capabilityRootProvenance = decodeCapabilityRootProvenance(
+    env,
+    opts,
+    input.capabilityRootProvenance,
+  );
   const distributePlan = input.distributePlan as unknown as DistributePlan;
   const actions: PlanAction[] = [];
   const gitignoreActions: MutationPlanAction[] = [];
@@ -1105,7 +1335,74 @@ function decodeApplyMutation(
     opts,
     distributePlan,
     executionPlan: { ...distributePlan, actions },
+    configFingerprint: input.configFingerprint,
+    capabilityRootProvenance,
   };
+}
+
+function decodeCapabilityRootProvenance(
+  env: Env,
+  opts: DistributeOptions,
+  value: unknown,
+): readonly CapabilityRootProvenanceDescriptor[] {
+  if (!Array.isArray(value)) throw new TypeError("invalid capability root provenance");
+  const expectedCapabilities = [...new Set(opts.capabilities ?? ["rules"])].sort((left, right) =>
+    left.localeCompare(right),
+  );
+  const expectedPaths = distributionCapabilityRootPaths(env, opts);
+  if (value.length !== expectedCapabilities.length) {
+    throw new TypeError("invalid capability root provenance");
+  }
+  const parsed = value.map((entry, index) => {
+    if (
+      !hasExactKeys(entry, ["capability", "expected", "path"]) ||
+      entry.capability !== expectedCapabilities[index] ||
+      entry.path !== expectedPaths[index] ||
+      !hasExactKeys(entry.expected, ["state"])
+    ) {
+      if (
+        !hasExactKeys(entry, ["capability", "expected", "path"]) ||
+        entry.capability !== expectedCapabilities[index] ||
+        entry.path !== expectedPaths[index] ||
+        !hasExactKeys(entry.expected, ["fingerprint", "identity", "mode", "state"]) ||
+        entry.expected.state !== "present" ||
+        typeof entry.expected.fingerprint !== "string" ||
+        !/^sha256:[0-9a-f]{64}$/.test(entry.expected.fingerprint) ||
+        typeof entry.expected.identity !== "string" ||
+        !/^sha256:[0-9a-f]{64}$/.test(entry.expected.identity) ||
+        !Number.isSafeInteger(entry.expected.mode) ||
+        (entry.expected.mode as number) < 0
+      ) {
+        throw new TypeError("invalid capability root provenance");
+      }
+    } else if (entry.expected.state !== "absent") {
+      throw new TypeError("invalid capability root provenance");
+    }
+    return entry as unknown as CapabilityRootProvenanceDescriptor;
+  });
+  return parsed;
+}
+
+function distributionStoreProvenancePaths(env: Env, opts: DistributeOptions): string[] {
+  return [join(opts.storeRoot, "config.json"), join(opts.storeRoot, "state.json")]
+    .map((path) => normalize(isAbsolute(path) ? path : join(env.cwd(), path)))
+    .sort((left, right) => left.localeCompare(right));
+}
+
+function distributionCapabilityRootPaths(env: Env, opts: DistributeOptions): string[] {
+  const storeRoot = normalize(
+    isAbsolute(opts.storeRoot) ? opts.storeRoot : join(env.cwd(), opts.storeRoot),
+  );
+  return [...new Set(opts.capabilities ?? ["rules"])]
+    .sort((left, right) => left.localeCompare(right))
+    .map((capability) => join(storeRoot, "store", capability));
+}
+
+function sameCapabilityRootDescriptors(
+  left: CapabilityRootCapture,
+  right: CapabilityRootCapture,
+): boolean {
+  return canonicalJson(left.descriptors) === canonicalJson(right.descriptors);
 }
 
 function hasExactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
@@ -1140,6 +1437,7 @@ function isExecutableApplyActionSemanticallyValid(
     return false;
   }
   const artifactIds = action.artifactIds ?? [];
+  const storeInputs = action.storeInputs ?? [];
   if (
     (action.capability === "rules" && action.reason !== artifactIds.join(", ")) ||
     (action.capability === "mcp" &&
@@ -1153,6 +1451,20 @@ function isExecutableApplyActionSemanticallyValid(
   ) {
     return false;
   }
+  if (
+    action.capability !== "skills" &&
+    (storeInputs.length !== artifactIds.length ||
+      new Set(storeInputs.map((input) => input.artifactId)).size !== storeInputs.length ||
+      storeInputs.some(
+        (input) =>
+          !artifactIds.includes(input.artifactId) ||
+          normalize(input.path) !== input.path ||
+          !isWithinRoot(join(opts.storeRoot, "store", action.capability), input.path),
+      ))
+  ) {
+    return false;
+  }
+  if (action.capability === "skills" && storeInputs.length > 0) return false;
   if (
     action.op === "write" &&
     action.desiredEvidence?.contentFingerprint !== sha256(action.preview?.after ?? "")

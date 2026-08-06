@@ -51,6 +51,10 @@ export interface FsLike {
   snapshotTreeNoFollow(path: string): Promise<FileTreeSnapshot>;
   // Identity-only revalidation for an already captured snapshot. This never re-reads content.
   verifyTreeSnapshot(snapshot: FileTreeSnapshot): Promise<boolean>;
+  // Capture one descendant relative to a stable no-follow directory anchor. Implementations
+  // validate every ancestor before reading bytes and revalidate every opened identity afterward.
+  // A descendant proven stably absent returns null.
+  snapshotPathNoFollow(anchorRoot: string, path: string): Promise<FileTreeSnapshot | null>;
   writeFile(path: string, data: string, opts?: { mode?: number }): Promise<void>;
   writeFileBytes(path: string, data: Uint8Array, opts?: { mode?: number }): Promise<void>;
   // Publish fully-written owner evidence only when path does not already exist.

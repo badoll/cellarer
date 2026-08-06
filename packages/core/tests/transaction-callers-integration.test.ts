@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { mutateCollection, mutateControlPlaneSettings } from "../src/control-plane-mutations.js";
 import { applyMutationPlan, planApplyMutation } from "../src/engine/apply.js";
 import type { Env } from "../src/env.js";
 import { createAuthorizedMutationPlan } from "../src/protocol/canonical.js";
@@ -11,7 +12,6 @@ import type { MutationPlan, OperationActionReceipt } from "../src/protocol/model
 import { mutationPresentation } from "../src/protocol/presentation.js";
 import { recoverInterruptedOperation } from "../src/protocol/recovery.js";
 import { publishStoreRevision, readStoreRevision } from "../src/protocol/store-revision.js";
-import { saveCollections, saveDefaults } from "../src/settings.js";
 import { sha256 } from "../src/store/checksum.js";
 import { initStore, writeRuleArtifact } from "../src/store/store.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
@@ -85,7 +85,7 @@ describe("transaction caller integration", () => {
       planId: "untrusted",
       result: {
         ok: false,
-        conflict: { code: "INVALID_PLAN" },
+        conflict: { code: "TARGET_PRECONDITION_CONFLICT" },
       },
     });
   });
@@ -243,15 +243,21 @@ describe("transaction caller integration", () => {
       },
     };
 
-    const first = saveCollections(firstEnv, storeRoot, {
-      default: { description: "Default" },
-      work: { description: "Work" },
+    const first = mutateCollection(firstEnv, {
+      storeRoot,
+      action: "create",
+      collectionName: "work",
+      description: "Work",
+      resourceIds: [],
     });
     await publicationStarted;
-    await expect(saveDefaults(t.env, storeRoot, { method: "copy" })).rejects.toMatchObject({
-      code: "LOCK_CONFLICT",
-      conflict: { code: "LOCK_CONFLICT" },
-    });
+    await expect(
+      mutateControlPlaneSettings(t.env, {
+        storeRoot,
+        action: "update",
+        settings: { method: "copy" },
+      }),
+    ).rejects.toMatchObject({ code: "LOCK_CONFLICT", conflict: { code: "LOCK_CONFLICT" } });
     releasePublication();
     await first;
 
@@ -261,7 +267,11 @@ describe("transaction caller integration", () => {
   it("makes a previously planned apply stale after a settings commit", async () => {
     const prepared = await planApplyMutation(t.env, applyOptions(), { planId: "before-settings" });
 
-    await saveDefaults(t.env, storeRoot, { method: "copy" });
+    await mutateControlPlaneSettings(t.env, {
+      storeRoot,
+      action: "update",
+      settings: { method: "copy" },
+    });
     const result = await applyMutationPlan(t.env, prepared.mutationPlan, {
       storeRoot,
       options: applyOptions(),

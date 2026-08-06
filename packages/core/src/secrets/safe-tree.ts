@@ -8,7 +8,9 @@ export type UnsafeRecursiveSourceReason =
   | "non-regular"
   | "unreadable"
   | "stale"
-  | "unsupported";
+  | "unsupported"
+  | "timeout"
+  | "budget-exceeded";
 
 export class UnsafeRecursiveSourceError extends Error {
   readonly code = "UNSAFE_RECURSIVE_SOURCE" as const;
@@ -17,7 +19,11 @@ export class UnsafeRecursiveSourceError extends Error {
     readonly path: string,
     readonly reason: UnsafeRecursiveSourceReason,
   ) {
-    super(`recursive source rejected at ${path}: ${reason}`);
+    super(
+      `recursive source snapshot rejected at ${path}: ${
+        reason === "symbolic-link" ? "symbolic-link/symlink" : reason
+      }`,
+    );
     this.name = "UnsafeRecursiveSourceError";
   }
 }
@@ -78,6 +84,59 @@ export async function captureSafeRecursiveSource(
   } catch (error) {
     throw normalizeSnapshotError(rootPath, error);
   }
+  return safeRecursiveSnapshotFromTree(tree);
+}
+
+/** Capture one Store descendant without exposing a split validation/read sequence to Core. */
+export async function captureAnchoredSafeRecursiveSource(
+  env: Env,
+  anchorRoot: string,
+  rootPath: string,
+): Promise<SafeRecursiveSnapshot | null> {
+  let tree: FileTreeSnapshot | null;
+  try {
+    tree = await env.fs.snapshotPathNoFollow(anchorRoot, rootPath);
+  } catch (error) {
+    throw normalizeSnapshotError(rootPath, error);
+  }
+  return tree ? safeRecursiveSnapshotFromTree(tree) : null;
+}
+
+/** Derive a child artifact from already captured bytes; no filesystem observation occurs here. */
+export function sliceSafeRecursiveSnapshot(
+  snapshot: SafeRecursiveSnapshot,
+  relativePath: string,
+): SafeRecursiveSnapshot {
+  if (
+    relativePath.length === 0 ||
+    relativePath.startsWith("/") ||
+    relativePath.endsWith("/") ||
+    relativePath
+      .split("/")
+      .some((segment) => segment.length === 0 || segment === "." || segment === "..")
+  ) {
+    throw new UnsafeRecursiveSourceError(snapshot.rootPath, "stale");
+  }
+  const prefix = `${relativePath}/`;
+  const nodes = snapshot.tree.nodes.flatMap((node) => {
+    if (node.relativePath === relativePath) return [{ ...node, relativePath: "" }];
+    if (!node.relativePath.startsWith(prefix)) return [];
+    return [{ ...node, relativePath: node.relativePath.slice(prefix.length) }];
+  });
+  if (!nodes.some((node) => node.relativePath === "")) {
+    throw new UnsafeRecursiveSourceError(
+      join(snapshot.rootPath, ...relativePath.split("/")),
+      "stale",
+    );
+  }
+  return safeRecursiveSnapshotFromTree({
+    rootPath: join(snapshot.rootPath, ...relativePath.split("/")),
+    nodes,
+  });
+}
+
+function safeRecursiveSnapshotFromTree(tree: FileTreeSnapshot): SafeRecursiveSnapshot {
+  const rootPath = tree.rootPath;
   const root = tree.nodes.find((node) => node.relativePath === "");
   if (!root) throw new UnsafeRecursiveSourceError(rootPath, "stale");
   const files = tree.nodes.flatMap((node) => {
@@ -234,6 +293,10 @@ function normalizeSnapshotError(rootPath: string, error: unknown): UnsafeRecursi
           ? "stale"
           : detail?.code === "CELLARER_SNAPSHOT_UNSUPPORTED"
             ? "unsupported"
-            : "unreadable";
+            : detail?.code === "CELLARER_SNAPSHOT_TIMEOUT"
+              ? "timeout"
+              : detail?.code === "CELLARER_SNAPSHOT_BUDGET_EXCEEDED"
+                ? "budget-exceeded"
+                : "unreadable";
   return new UnsafeRecursiveSourceError(path, reason);
 }

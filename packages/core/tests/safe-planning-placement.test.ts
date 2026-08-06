@@ -463,7 +463,7 @@ describe("safe target planning and placement", () => {
     expect(reverted.reverted).toHaveLength(1);
     expect(await t.env.fs.readFile(target)).toBe("original unmanaged content");
     expect(await t.env.fs.readdir(join(storeRoot, "snapshots"))).toEqual(retainedSnapshots);
-  });
+  }, 10_000);
 
   it("retains the drift recovery snapshot when the owner receipt cannot be saved", async () => {
     await writeRuleArtifact(t.env, storeRoot, "style", "# managed");

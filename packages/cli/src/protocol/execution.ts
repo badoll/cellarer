@@ -2,6 +2,8 @@ import {
   type CliError,
   type CliErrorCode,
   type CliWarning,
+  ControlPlaneValidationError,
+  InvalidConfigError,
   type MutationConflict,
   type OperationResult,
   type PresentedOperationResult,
@@ -274,6 +276,29 @@ function snapshotCliBoundaryError(error: unknown): CliBoundaryErrorSnapshot {
     }
     if (error instanceof StoreMutationConflictError) {
       return { kind: "handled", cliError: cliErrorFromMutationConflict(error.conflict) };
+    }
+    if (error instanceof ControlPlaneValidationError) {
+      const message = ownDataProperty(error, "message", true);
+      const details = ownDataProperty(error, "details", true);
+      if (typeof message !== "string") return { kind: "unclassified" };
+      return {
+        kind: "handled",
+        cliError: snapshotCliError({
+          code: "DOMAIN_VALIDATION_FAILED",
+          message,
+          details: details as Readonly<Record<string, unknown>>,
+        }),
+      };
+    }
+    if (error instanceof InvalidConfigError) {
+      return {
+        kind: "handled",
+        cliError: {
+          code: "DOMAIN_VALIDATION_FAILED",
+          message: error.message,
+          details: { configPath: error.configPath },
+        },
+      };
     }
     return { kind: "unclassified" };
   } catch {

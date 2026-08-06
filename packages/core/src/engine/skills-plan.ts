@@ -5,7 +5,11 @@ import { join } from "node:path";
 import type { AgentAdapter } from "../adapters/types.js";
 import type { Env } from "../env.js";
 import type { Artifact, LinkMethod, PlanAction } from "../model/index.js";
-import { captureSafeRecursiveSource, UnsafeRecursiveSourceError } from "../secrets/safe-tree.js";
+import {
+  captureSafeRecursiveSource,
+  type SafeRecursiveSnapshot,
+  UnsafeRecursiveSourceError,
+} from "../secrets/safe-tree.js";
 
 export interface SkillsPlanContext {
   env: Env;
@@ -13,6 +17,7 @@ export interface SkillsPlanContext {
   dir?: string;
   selectedSkills: Artifact[];
   method: LinkMethod;
+  sourceSnapshots?: ReadonlyMap<string, SafeRecursiveSnapshot>;
 }
 
 // 为单个 agent 产出 skills PlanAction(每个 skill 一条;无 skills 能力/无制品 → 无产出)。
@@ -26,7 +31,9 @@ export async function planSkills(
   const op = ctx.method === "copy" ? "copy" : "symlink";
   return Promise.all(
     ctx.selectedSkills.map(async (skill) => {
-      const snapshot = await captureSafeRecursiveSource(ctx.env, skill.sourcePath);
+      const snapshot =
+        ctx.sourceSnapshots?.get(skill.sourcePath) ??
+        (await captureSafeRecursiveSource(ctx.env, skill.sourcePath));
       if (snapshot.kind !== "directory") {
         throw new UnsafeRecursiveSourceError(skill.sourcePath, "non-regular");
       }

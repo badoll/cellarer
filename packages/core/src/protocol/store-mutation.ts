@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import type { Env, MutationAuthorityLease } from "../env.js";
 import { assertSafeAtomicPublicationPath } from "../fs/safety.js";
 import {
@@ -7,18 +8,24 @@ import {
   withProviderScope,
 } from "../secrets/active-values.js";
 import { assertFinalSerializedSecretBytes } from "../secrets/final-bytes.js";
+import { captureAnchoredSafeRecursiveSource } from "../secrets/safe-tree.js";
 import { sha256 } from "../store/checksum.js";
 import { loadConfig } from "../store/config.js";
 import {
   acquireCurrentMutationAuthorityLease,
+  assertStrictMutationPlanRuntime,
   createAuthorizedMutationPlan,
   requireMutationAuthority,
+  verifyMutationPlanAuthorization,
+  verifyMutationPlanDigest,
 } from "./canonical.js";
-import { executeMutationPlan, targetState } from "./execute.js";
+import { executeMutationPlan, invalidPlanResult, targetState } from "./execute.js";
 import type {
   CanonicalJsonObject,
+  CanonicalJsonValue,
   MutationConflict,
   MutationOperation,
+  MutationPlan,
   MutationPlanAction,
   OperationActionReceipt,
   OperationResult,
@@ -40,7 +47,13 @@ export interface PreparedStorePublicationMutation<T> {
 
 export interface StorePublicationMutationResult<T> {
   readonly value: T;
+  readonly plan: MutationPlan;
   readonly operation: OperationResult;
+}
+
+export interface StorePublicationMutationPlan<T> {
+  readonly value: T;
+  readonly plan: MutationPlan;
 }
 
 export interface PreparedStoreMutationAction {
@@ -59,6 +72,23 @@ export interface PreparedStoreActionMutation<T> {
   readonly afterCommit?: () => Promise<void>;
 }
 
+export interface StoreMutationPlanBindings {
+  /** Store paths whose observed bytes/existence influenced planning decisions. */
+  readonly provenancePaths?: readonly string[];
+  /** Domain-safe inputs to bind into the canonical plan in addition to mutationKind. */
+  readonly normalizedInputs?: CanonicalJsonObject;
+  /** Include final guarded publication bytes so the exact serialized plan is executable. */
+  readonly selfContainedPublications?: boolean;
+  /** Domain validation for the final bytes, run while planning and again before/under apply lock. */
+  readonly validatePublications?: (publications: readonly StorePublicationInput[]) => void;
+}
+
+export interface AppliedStorePublicationPlan {
+  readonly plan: MutationPlan;
+  readonly changedFields: readonly string[];
+  readonly operation: OperationResult;
+}
+
 export class StoreMutationConflictError extends Error {
   readonly code: MutationConflict["code"];
 
@@ -75,15 +105,74 @@ export async function executeStorePublicationMutation<T>(
   operation: MutationOperation,
   mutationKind: string,
   prepare: () => Promise<PreparedStorePublicationMutation<T>>,
+  bindings: StoreMutationPlanBindings = {},
 ): Promise<StorePublicationMutationResult<T>> {
-  return executeStoreActionMutation(env, storeRoot, operation, mutationKind, async () => {
-    const prepared = await prepare();
-    return {
-      value: prepared.value,
-      actions: [],
-      publications: prepared.publications,
-    };
-  });
+  return executeStoreActionMutation(
+    env,
+    storeRoot,
+    operation,
+    mutationKind,
+    async () => {
+      const prepared = await prepare();
+      return {
+        value: prepared.value,
+        actions: [],
+        publications: prepared.publications,
+      };
+    },
+    bindings,
+  );
+}
+
+export async function planStorePublicationMutation<T>(
+  env: Env,
+  storeRoot: string,
+  operation: MutationOperation,
+  mutationKind: string,
+  prepare: () => Promise<PreparedStorePublicationMutation<T>>,
+  bindings: StoreMutationPlanBindings = {},
+): Promise<StorePublicationMutationPlan<T>> {
+  return planStoreActionMutation(
+    env,
+    storeRoot,
+    operation,
+    mutationKind,
+    async () => {
+      const prepared = await prepare();
+      return { value: prepared.value, actions: [], publications: prepared.publications };
+    },
+    bindings,
+  );
+}
+
+export async function planStoreActionMutation<T>(
+  env: Env,
+  storeRoot: string,
+  operation: MutationOperation,
+  mutationKind: string,
+  prepare: () => Promise<PreparedStoreActionMutation<T>>,
+  bindings: StoreMutationPlanBindings = {},
+): Promise<StorePublicationMutationPlan<T>> {
+  requireMutationAuthority(env);
+  const authorityLease = await acquireCurrentMutationAuthorityLease(env).catch(() => null);
+  if (!authorityLease) throw new TypeError("mutation authority is not current");
+  if (!(await authorityLease.isCurrent().catch(() => false))) {
+    await authorityLease.release().catch(() => undefined);
+    throw new TypeError("mutation authority is not current");
+  }
+  try {
+    const prepared = await prepareStoreActionMutationPlan(
+      env,
+      storeRoot,
+      operation,
+      mutationKind,
+      prepare,
+      bindings,
+    );
+    return { value: prepared.prepared.value, plan: prepared.plan };
+  } finally {
+    await authorityLease.release();
+  }
 }
 
 export function unwrapStorePublicationMutation<T>(result: StorePublicationMutationResult<T>): T {
@@ -97,7 +186,7 @@ export async function executeStoreActionMutation<T>(
   operation: MutationOperation,
   mutationKind: string,
   prepare: () => Promise<PreparedStoreActionMutation<T>>,
-  execution: { readonly authorityLease?: MutationAuthorityLease } = {},
+  execution: { readonly authorityLease?: MutationAuthorityLease } & StoreMutationPlanBindings = {},
 ): Promise<StorePublicationMutationResult<T>> {
   requireMutationAuthority(env);
   const suppliedLease = execution.authorityLease;
@@ -116,6 +205,7 @@ export async function executeStoreActionMutation<T>(
       mutationKind,
       prepare,
       authorityLease,
+      execution,
     );
   } finally {
     if (!suppliedLease) await authorityLease.release();
@@ -129,65 +219,18 @@ async function executeStoreActionMutationWithAuthorityLease<T>(
   mutationKind: string,
   prepare: () => Promise<PreparedStoreActionMutation<T>>,
   authorityLease: MutationAuthorityLease,
+  bindings: StoreMutationPlanBindings,
 ): Promise<StorePublicationMutationResult<T>> {
   requireMutationAuthority(env);
-  let operationEnv = env;
-  const observed = await observeAtStableStoreRevision(env, storeRoot, async () => {
-    const prepared = await prepare();
-    const publications = normalizePublications(prepared.publications ?? []);
-    if (publications.length > 0 && operation !== "secret-metadata") {
-      operationEnv = await finalStorePublicationEnv(env, storeRoot);
-      const scope = providerScopeForEnv(operationEnv);
-      if (!scope) throw new TypeError("final Store publication has no provider inventory");
-      for (const publication of publications) {
-        assertFinalSerializedSecretBytes(publication.data, scope.knownValues, publication.path);
-      }
-    }
-    const publicationActions = publications.map((publication, index) => ({
-      actionId: publicationActionId(mutationKind, publication, index),
-      kind: "publish-file",
-      target: publication.path,
-      payload: {
-        path: publication.path,
-        digest: publication.digest,
-        mode: publication.mode,
-        ...(publication.currentUserOnly ? { currentUserOnly: true } : {}),
-      },
-      postcondition: { state: "present" as const, fingerprint: publication.digest },
-    }));
-    const plannedActions = [...prepared.actions, ...publicationActions];
-    const preconditions = await Promise.all(
-      plannedActions.map(async (action) => ({
-        actionId: action.actionId,
-        target: action.target,
-        expected: await targetState(operationEnv, action.target),
-      })),
-    );
-    return { prepared, preconditions, publications, publicationActions, plannedActions };
-  });
-  const prepared = observed.value.prepared;
-  const actionIds = new Set(observed.value.plannedActions.map((action) => action.actionId));
-  if (actionIds.size !== observed.value.plannedActions.length) {
-    throw new TypeError("store mutation action ids must be unique");
-  }
-  const plan = createAuthorizedMutationPlan(operationEnv, storeRoot, {
-    schemaVersion: 1,
-    planId: `plan-${env.randomId()}`,
+  const planned = await prepareStoreActionMutationPlan(
+    env,
+    storeRoot,
     operation,
-    baseRevision: observed.revision,
-    normalizedInputs: { mutationKind },
-    targetPreconditions: observed.value.preconditions,
-    actions: observed.value.plannedActions.map(
-      ({ actionId, kind, target, payload, postcondition }) => ({
-        actionId,
-        kind,
-        target,
-        payload,
-        postcondition,
-      }),
-    ),
-    expires: { policy: "none" },
-  });
+    mutationKind,
+    prepare,
+    bindings,
+  );
+  const { operationEnv, plan, prepared, preconditions, publications, publicationActions } = planned;
   const result = await executeMutationPlan(
     operationEnv,
     storeRoot,
@@ -196,11 +239,11 @@ async function executeStoreActionMutationWithAuthorityLease<T>(
       const actionReceipts: OperationActionReceipt[] = [];
       const failedActionIds: string[] = [];
       const rawPublicationData = new Map(
-        observed.value.publications.map((publication) => [publication.digest, publication.data]),
+        publications.map((publication) => [publication.digest, publication.data]),
       );
       const executableActions = [
         ...prepared.actions,
-        ...observed.value.publicationActions.map((action, publicationIndex) => {
+        ...publicationActions.map((action, publicationIndex) => {
           const signedAction = plan.actions[prepared.actions.length + publicationIndex];
           if (
             !signedAction ||
@@ -266,7 +309,7 @@ async function executeStoreActionMutationWithAuthorityLease<T>(
           failedActionIds.push(action.actionId);
           break;
         }
-        const before = observed.value.preconditions[index]?.expected;
+        const before = preconditions[index]?.expected;
         if (!before) throw new Error(`missing store mutation precondition for ${action.actionId}`);
         let failure: { code: string; message: string } | undefined;
         try {
@@ -302,9 +345,464 @@ async function executeStoreActionMutationWithAuthorityLease<T>(
         ...(prepared.afterCommit ? { afterCommit: prepared.afterCommit } : {}),
       };
     },
-    { authorityLease },
+    {
+      authorityLease,
+      ...(bindings.provenancePaths || bindings.validatePublications
+        ? {
+            validatePreflightBeforeObservation: async () => {
+              bindings.validatePublications?.(publications);
+              return bindings.provenancePaths
+                ? validateStoreProvenance(operationEnv, storeRoot, plan)
+                : null;
+            },
+            validateBeforeObservationUnderLock: async () => {
+              bindings.validatePublications?.(publications);
+              return bindings.provenancePaths
+                ? validateStoreProvenance(operationEnv, storeRoot, plan)
+                : null;
+            },
+            validateUnderLock: async () => {
+              const provenance = bindings.provenancePaths
+                ? await validateStoreProvenance(operationEnv, storeRoot, plan)
+                : null;
+              if (provenance) return provenance;
+              bindings.validatePublications?.(publications);
+              return null;
+            },
+          }
+        : {}),
+    },
   );
-  return { value: prepared.value, operation: result };
+  return { value: prepared.value, plan, operation: result };
+}
+
+interface PreparedStoreActionMutationPlan<T> {
+  readonly operationEnv: Env;
+  readonly prepared: PreparedStoreActionMutation<T>;
+  readonly preconditions: readonly {
+    readonly actionId: string;
+    readonly target: string;
+    readonly expected: TargetStateReceipt;
+  }[];
+  readonly publications: readonly NormalizedPublication[];
+  readonly publicationActions: readonly MutationPlanAction[];
+  readonly plan: MutationPlan;
+}
+
+export interface StoreProvenanceDescriptor {
+  readonly path: string;
+  readonly expected: TargetStateReceipt;
+}
+
+async function prepareStoreActionMutationPlan<T>(
+  env: Env,
+  storeRoot: string,
+  operation: MutationOperation,
+  mutationKind: string,
+  prepare: () => Promise<PreparedStoreActionMutation<T>>,
+  bindings: StoreMutationPlanBindings,
+): Promise<PreparedStoreActionMutationPlan<T>> {
+  let operationEnv = env;
+  const initialProvenance = await captureStoreProvenance(
+    env,
+    storeRoot,
+    bindings.provenancePaths ?? [],
+  );
+  const observed = await observeAtStableStoreRevision(env, storeRoot, async () => {
+    const provenanceBefore = await captureStoreProvenance(
+      env,
+      storeRoot,
+      bindings.provenancePaths ?? [],
+    );
+    if (canonicalProvenance(initialProvenance) !== canonicalProvenance(provenanceBefore)) {
+      throw new TypeError("Store mutation provenance changed while planning");
+    }
+    const prepared = await prepare();
+    const publications = normalizePublications(prepared.publications ?? []);
+    bindings.validatePublications?.(publications);
+    if (publications.length > 0 && operation !== "secret-metadata") {
+      operationEnv = await finalStorePublicationEnv(env, storeRoot);
+      const scope = providerScopeForEnv(operationEnv);
+      if (!scope) throw new TypeError("final Store publication has no provider inventory");
+      for (const publication of publications) {
+        assertFinalSerializedSecretBytes(publication.data, scope.knownValues, publication.path);
+      }
+    }
+    const publicationActions: MutationPlanAction[] = publications.map((publication, index) => ({
+      actionId: publicationActionId(mutationKind, publication, index),
+      kind: "publish-file",
+      target: publication.path,
+      payload: {
+        path: publication.path,
+        digest: publication.digest,
+        mode: publication.mode,
+        ...(bindings.selfContainedPublications ? { data: publication.data } : {}),
+        ...(publication.currentUserOnly ? { currentUserOnly: true } : {}),
+      },
+      postcondition: { state: "present", fingerprint: publication.digest },
+    }));
+    const plannedActions = [...prepared.actions, ...publicationActions];
+    const preconditions = await Promise.all(
+      plannedActions.map(async (action) => ({
+        actionId: action.actionId,
+        target: action.target,
+        expected: await targetState(operationEnv, action.target),
+      })),
+    );
+    const provenanceAfter = await captureStoreProvenance(
+      env,
+      storeRoot,
+      bindings.provenancePaths ?? [],
+    );
+    if (JSON.stringify(provenanceBefore) !== JSON.stringify(provenanceAfter)) {
+      throw new TypeError("Store mutation provenance changed while planning");
+    }
+    return {
+      prepared,
+      preconditions,
+      publications,
+      publicationActions,
+      plannedActions,
+      provenance: provenanceBefore,
+    };
+  });
+  const actionIds = new Set(observed.value.plannedActions.map((action) => action.actionId));
+  if (actionIds.size !== observed.value.plannedActions.length) {
+    throw new TypeError("store mutation action ids must be unique");
+  }
+  const plan = createAuthorizedMutationPlan(operationEnv, storeRoot, {
+    schemaVersion: 1,
+    planId: `plan-${env.randomId()}`,
+    operation,
+    baseRevision: observed.revision,
+    normalizedInputs: {
+      mutationKind,
+      ...(bindings.normalizedInputs ?? {}),
+      ...(bindings.provenancePaths
+        ? {
+            storeProvenance: observed.value.provenance as unknown as CanonicalJsonValue,
+          }
+        : {}),
+    },
+    targetPreconditions: observed.value.preconditions,
+    actions: observed.value.plannedActions.map(
+      ({ actionId, kind, target, payload, postcondition }) => ({
+        actionId,
+        kind,
+        target,
+        payload,
+        postcondition,
+      }),
+    ),
+    expires: { policy: "none" },
+  });
+  return {
+    operationEnv,
+    prepared: observed.value.prepared,
+    preconditions: observed.value.preconditions,
+    publications: observed.value.publications,
+    publicationActions: observed.value.publicationActions,
+    plan,
+  };
+}
+
+export async function applyStorePublicationPlan(
+  env: Env,
+  storeRoot: string,
+  plan: MutationPlan,
+  options: {
+    readonly operation: MutationOperation;
+    readonly allowedMutationKinds: readonly string[];
+    readonly requiredTarget: string;
+    readonly requiredProvenancePathsByMutationKind?: Readonly<Record<string, readonly string[]>>;
+    readonly requiredNormalizedInputKeys?: readonly string[];
+    readonly validatePublicationData?: (data: string) => void;
+    readonly validatePlanUnderLock?: (
+      plan: MutationPlan,
+      publication: StorePublicationInput,
+    ) => Promise<OperationResult | null>;
+  },
+): Promise<AppliedStorePublicationPlan> {
+  try {
+    assertStrictMutationPlanRuntime(plan, options.operation);
+  } catch {
+    return { plan, changedFields: [], operation: invalidPlanResult() };
+  }
+  if (!verifyMutationPlanAuthorization(env, storeRoot, plan)) {
+    return { plan, changedFields: [], operation: invalidPlanResult() };
+  }
+  if (!verifyMutationPlanDigest(plan)) {
+    return { plan, changedFields: [], operation: invalidPlanResult() };
+  }
+  const decoded = decodeSelfContainedPublicationPlan(plan, options);
+  if (!decoded) return { plan, changedFields: [], operation: invalidPlanResult() };
+  options.validatePublicationData?.(decoded.data);
+
+  const authorityLease = await acquireCurrentMutationAuthorityLease(env).catch(() => null);
+  if (!authorityLease || !(await authorityLease.isCurrent().catch(() => false))) {
+    await authorityLease?.release().catch(() => undefined);
+    return { plan, changedFields: [], operation: invalidPlanResult() };
+  }
+  try {
+    const provenancePreflight = await validateStoreProvenance(env, storeRoot, plan);
+    if (provenancePreflight) {
+      return { plan, changedFields: [], operation: provenancePreflight };
+    }
+    let operationEnv = await finalStorePublicationEnv(env, storeRoot);
+    assertFinalSerializedSecretBytes(
+      decoded.data,
+      providerScopeForEnv(operationEnv)?.knownValues ?? [],
+      decoded.action.target,
+    );
+    const operation = await executeMutationPlan(
+      operationEnv,
+      storeRoot,
+      plan,
+      async (_operationId, record, authorizeAction) => {
+        const authorized = await authorizeAction(decoded.action.actionId);
+        if (!authorized.ok)
+          return {
+            actionReceipts: [authorized.receipt],
+            failedActionIds: [decoded.action.actionId],
+          };
+        await assertSafeAtomicPublicationPath(
+          operationEnv,
+          decoded.action.target,
+          storeRoot,
+          "store publication",
+        );
+        await operationEnv.fs.publishFileAtomically(decoded.action.target, decoded.data, {
+          mode: decoded.mode,
+        });
+        await verifySignedFilePublication(operationEnv, decoded.action);
+        const after = await targetState(operationEnv, decoded.action.target);
+        const receipt: OperationActionReceipt = {
+          actionId: decoded.action.actionId,
+          target: decoded.action.target,
+          outcome: sameTargetState(authorized.before, after) ? "unchanged" : "applied",
+          before: authorized.before,
+          after,
+          recordedAt: operationEnv.now().toISOString(),
+        };
+        await record(receipt);
+        return { actionReceipts: [receipt] };
+      },
+      {
+        authorityLease,
+        validatePreflightBeforeObservation: async () => {
+          options.validatePublicationData?.(decoded.data);
+          return validateStoreProvenance(operationEnv, storeRoot, plan);
+        },
+        validateBeforeObservationUnderLock: async () => {
+          options.validatePublicationData?.(decoded.data);
+          return validateStoreProvenance(operationEnv, storeRoot, plan);
+        },
+        validateUnderLock: async () => {
+          const provenance = await validateStoreProvenance(operationEnv, storeRoot, plan);
+          if (provenance) return provenance;
+          options.validatePublicationData?.(decoded.data);
+          const domainValidation = await options.validatePlanUnderLock?.(plan, {
+            path: decoded.action.target,
+            data: decoded.data,
+            mode: decoded.mode,
+          });
+          if (domainValidation) return domainValidation;
+          const finalProvenance = await validateStoreProvenance(operationEnv, storeRoot, plan);
+          if (finalProvenance) return finalProvenance;
+          operationEnv = await finalStorePublicationEnv(operationEnv, storeRoot);
+          assertFinalSerializedSecretBytes(
+            decoded.data,
+            providerScopeForEnv(operationEnv)?.knownValues ?? [],
+            decoded.action.target,
+          );
+          return null;
+        },
+      },
+    );
+    return { plan, changedFields: decoded.changedFields, operation };
+  } finally {
+    await authorityLease.release();
+  }
+}
+
+function decodeSelfContainedPublicationPlan(
+  plan: MutationPlan,
+  options: {
+    readonly allowedMutationKinds: readonly string[];
+    readonly requiredTarget: string;
+    readonly requiredProvenancePathsByMutationKind?: Readonly<Record<string, readonly string[]>>;
+    readonly requiredNormalizedInputKeys?: readonly string[];
+  },
+): {
+  readonly action: MutationPlanAction;
+  readonly data: string;
+  readonly mode: number;
+  readonly changedFields: readonly string[];
+} | null {
+  const inputs = plan.normalizedInputs;
+  if (
+    !hasExactKeys(inputs, [
+      "changedFields",
+      "mutationKind",
+      "storeProvenance",
+      ...(options.requiredNormalizedInputKeys ?? []),
+    ])
+  ) {
+    return null;
+  }
+  const mutationKind = inputs.mutationKind;
+  const changedFields = inputs.changedFields;
+  const provenance = decodeStoreProvenance(plan);
+  if (
+    typeof mutationKind !== "string" ||
+    !options.allowedMutationKinds.includes(mutationKind) ||
+    !Array.isArray(changedFields) ||
+    !changedFields.every((field) => typeof field === "string" && field.length > 0) ||
+    new Set(changedFields).size !== changedFields.length ||
+    !provenance
+  ) {
+    return null;
+  }
+  const requiredProvenance = options.requiredProvenancePathsByMutationKind?.[mutationKind];
+  if (
+    requiredProvenance &&
+    provenance
+      .map(({ path }) => path)
+      .sort()
+      .join("\0") !== [...requiredProvenance].sort().join("\0")
+  ) {
+    return null;
+  }
+  const action = plan.actions[0];
+  const precondition = plan.targetPreconditions[0];
+  if (
+    plan.actions.length !== 1 ||
+    plan.targetPreconditions.length !== 1 ||
+    !action ||
+    !precondition ||
+    action.kind !== "publish-file" ||
+    action.target !== options.requiredTarget ||
+    precondition.actionId !== action.actionId ||
+    precondition.target !== action.target ||
+    !action.postcondition ||
+    action.postcondition.state !== "present" ||
+    !hasExactKeys(action.payload, ["data", "digest", "mode", "path"])
+  ) {
+    return null;
+  }
+  const { data, digest, mode, path } = action.payload;
+  if (
+    typeof data !== "string" ||
+    typeof digest !== "string" ||
+    typeof mode !== "number" ||
+    mode !== 0o600 ||
+    path !== action.target ||
+    sha256(data) !== digest ||
+    action.postcondition.fingerprint !== digest ||
+    action.actionId !==
+      publicationActionId(mutationKind, { path: action.target, data, digest, mode }, 0)
+  ) {
+    return null;
+  }
+  return { action, data, mode, changedFields };
+}
+
+export async function captureStoreProvenance(
+  env: Env,
+  storeRoot: string,
+  paths: readonly string[],
+): Promise<readonly StoreProvenanceDescriptor[]> {
+  const normalizedRoot = resolve(env.cwd(), storeRoot);
+  const normalized = paths
+    .map((path) => resolve(env.cwd(), path))
+    .sort((a, b) => a.localeCompare(b));
+  if (new Set(normalized).size !== normalized.length) {
+    throw new TypeError("Store mutation provenance paths must be unique");
+  }
+  const provenance: StoreProvenanceDescriptor[] = [];
+  // Each real snapshot worker has an explicit total-byte/output budget. Keep the path set
+  // sequential so several individually bounded large snapshots cannot multiply peak IPC memory.
+  for (const path of normalized) {
+    const snapshot = await captureAnchoredSafeRecursiveSource(env, normalizedRoot, path);
+    provenance.push(
+      snapshot
+        ? {
+            path,
+            expected: { state: "present" as const, fingerprint: snapshot.fingerprint },
+          }
+        : { path, expected: { state: "absent" as const } },
+    );
+  }
+  return provenance;
+}
+
+export function decodeStoreProvenance(
+  plan: MutationPlan,
+): readonly StoreProvenanceDescriptor[] | null {
+  const value = plan.normalizedInputs.storeProvenance;
+  if (!Array.isArray(value)) return null;
+  const decoded: StoreProvenanceDescriptor[] = [];
+  for (const descriptor of value) {
+    if (
+      !hasExactKeys(descriptor, ["expected", "path"]) ||
+      typeof descriptor.path !== "string" ||
+      descriptor.path.length === 0 ||
+      !isTargetStateReceipt(descriptor.expected)
+    ) {
+      return null;
+    }
+    decoded.push({ path: descriptor.path, expected: descriptor.expected });
+  }
+  if (new Set(decoded.map(({ path }) => path)).size !== decoded.length) return null;
+  return decoded;
+}
+
+export async function validateStoreProvenance(
+  env: Env,
+  storeRoot: string,
+  plan: MutationPlan,
+): Promise<OperationResult | null> {
+  const provenance = decodeStoreProvenance(plan);
+  if (!provenance) return invalidPlanResult();
+  let current: readonly StoreProvenanceDescriptor[];
+  try {
+    current = await captureStoreProvenance(
+      env,
+      storeRoot,
+      provenance.map(({ path }) => path),
+    );
+  } catch {
+    return invalidPlanResult();
+  }
+  if (canonicalProvenance(provenance) !== canonicalProvenance(current)) return invalidPlanResult();
+  return null;
+}
+
+function canonicalProvenance(provenance: readonly StoreProvenanceDescriptor[]): string {
+  return JSON.stringify(
+    provenance.map(({ path, expected }) =>
+      expected.state === "absent"
+        ? { path, expected: { state: "absent" } }
+        : { path, expected: { state: "present", fingerprint: expected.fingerprint } },
+    ),
+  );
+}
+
+function isTargetStateReceipt(value: unknown): value is TargetStateReceipt {
+  if (!isPlainRecord(value)) return false;
+  if (value.state === "absent") return hasExactKeys(value, ["state"]);
+  if (value.state !== "present" || typeof value.fingerprint !== "string") return false;
+  return hasExactKeys(value, ["fingerprint", "state"]);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  return (
+    isPlainRecord(value) && Object.keys(value).sort().join("\0") === [...keys].sort().join("\0")
+  );
 }
 
 async function finalStorePublicationEnv(env: Env, storeRoot: string): Promise<Env> {
