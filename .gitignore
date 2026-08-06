@@ -5,6 +5,7 @@ docs/dev/
 .pnpm-store/
 *.tsbuildinfo
 .turbo/
+artifacts/
 .claude/
 .agents/
 .DS_Store

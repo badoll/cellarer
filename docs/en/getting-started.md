@@ -2,13 +2,30 @@
 
 [Documentation index](../README.md) | [简体中文](../zh-CN/getting-started.md)
 
-cellarer is currently used from source. The packages are still `private: true`
-with version `0.0.0`.
+cellarer is currently used from source. Package metadata is prepared at
+`0.1.0-alpha.0`, but no package has been published yet.
 
 ## Prerequisites
 
 - Node.js `>=20.19`
 - pnpm `10.12.1`
+- Ubuntu, macOS, or Windows
+
+## npm Installation (After Publication)
+
+The npm packages are not published yet. Once `@cellarer/cli` is published, the
+supported installation and one-shot commands will be:
+
+```bash
+npm install --global @cellarer/cli
+cellarer --help
+npx @cellarer/cli --help
+```
+
+The CLI installation brings in the synchronized release set: `@cellarer/core`
+contains runtime logic and packaged adapter configuration, `@cellarer/web`
+contains the server and built client assets, and `@cellarer/cli` contains the
+compiled executable. Until publication, use the source build below.
 
 ## Build the CLI
 
@@ -18,8 +35,8 @@ pnpm build
 node packages/cli/dist/bin.js --help
 ```
 
-The examples below use the built CLI path. After a public package is released,
-the same command surface is expected to be available through the `cellarer` bin.
+The examples below use the built CLI path. After publication, the same command
+surface will be available through the `cellarer` bin.
 
 ## Initialize the Store
 

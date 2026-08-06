@@ -8,7 +8,22 @@ import { CliInputError } from "../protocol/input.js";
 interface InitOpts {
   readonly global?: boolean;
   readonly agent?: string;
+  readonly dryRun?: boolean;
 }
+
+type InitCommandData =
+  | {
+      readonly dryRun: true;
+      readonly storeRoot: string;
+      readonly agentTargets: string[];
+      readonly inventory: Awaited<ReturnType<typeof listControlPlaneAgents>>;
+    }
+  | {
+      readonly storeRoot: string;
+      readonly createdConfig: boolean;
+      readonly operation: ReturnType<typeof publicOperationResult>;
+      readonly inventory: Awaited<ReturnType<typeof listControlPlaneAgents>>;
+    };
 
 // 初始化库房:委托给 core 并发安全 initializer(不变量 1:CLI 不写 fs 业务逻辑)。
 export function initCommand(): Command {
@@ -16,8 +31,9 @@ export function initCommand(): Command {
     .description("初始化库房(全局)")
     .option("--global", "初始化全局库房(默认)")
     .option("-a, --agent <ids>", "明确启用的 agent targets，逗号分隔")
+    .option("--dry-run", "仅验证初始化目标，不创建或修改库房")
     .action(async (opts: InitOpts, command: Command) => {
-      await executeCliCommand(
+      await executeCliCommand<InitCommandData>(
         command,
         async ({ invocation }) => {
           const preview = await resolveContext({}, "none");
@@ -44,6 +60,14 @@ export function initCommand(): Command {
               invocation,
             );
           }
+          if (opts.dryRun) {
+            return commandSuccess({
+              dryRun: true as const,
+              storeRoot: preview.storeRoot,
+              agentTargets,
+              inventory,
+            });
+          }
           const { env, storeRoot } = await resolveContext({}, "provision");
           const result = await initializeStore(env, storeRoot, { agentTargets });
           const configuredInventory = await listControlPlaneAgents(env, {
@@ -59,6 +83,10 @@ export function initCommand(): Command {
         },
         (outcome) => {
           if (!outcome.ok) return;
+          if ("dryRun" in outcome.data) {
+            console.log(`dry-run: would initialize ${outcome.data.storeRoot}`);
+            return;
+          }
           const note = outcome.data.createdConfig ? "" : " (config.json 已存在,保留)";
           if (!outcome.data.operation.ok) return;
           console.log(

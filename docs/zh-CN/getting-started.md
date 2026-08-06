@@ -2,12 +2,27 @@
 
 [文档索引](../README.md) | [English](../en/getting-started.md)
 
-cellarer 当前从源码运行。workspace 包仍是 `private: true`,版本仍是 `0.0.0`。
+cellarer 当前从源码运行。Package metadata 已准备为 `0.1.0-alpha.0`,但尚未发布。
 
 ## 前置要求
 
 - Node.js `>=20.19`
 - pnpm `10.12.1`
+- Ubuntu、macOS 或 Windows
+
+## npm 安装（发布后）
+
+npm package 尚未发布。`@cellarer/cli` 发布后,支持的安装与单次运行命令为:
+
+```bash
+npm install --global @cellarer/cli
+cellarer --help
+npx @cellarer/cli --help
+```
+
+CLI 安装会带入同步版本的发布包组:`@cellarer/core` 包含运行时逻辑与随包 adapter
+配置,`@cellarer/web` 包含 server 与已构建 client assets,`@cellarer/cli` 包含已编译
+的可执行入口。正式发布前请使用下面的源码构建方式。
 
 ## 构建 CLI
 
@@ -17,8 +32,8 @@ pnpm build
 node packages/cli/dist/bin.js --help
 ```
 
-下面的示例都使用构建后的 CLI 路径。公开包发布后,同一套命令面预期会通过
-`cellarer` bin 暴露。
+下面的示例都使用构建后的 CLI 路径。发布后,同一套命令面将通过 `cellarer` bin
+暴露。
 
 ## 初始化库房
 

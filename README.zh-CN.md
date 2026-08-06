@@ -11,8 +11,22 @@ cellarer 适合同时使用多个 AI coding agent 的本机开发环境。它统
 - MCP server 定义,并按各 agent 原生 JSON / TOML 格式写回
 - skills 目录
 
-当前仓库仍处于发布前状态。workspace 包仍是 `private: true`,版本仍是 `0.0.0`,
+当前仓库仍处于发布前状态。Package metadata 已准备为 `0.1.0-alpha.0`,但尚未发布;
 因此在 npm 发布 checklist 完成前,请从源码构建后运行。
+
+## 安装状态与运行要求
+
+cellarer 要求 Node.js `>=20.19`,支持 Ubuntu、macOS 和 Windows。以下命令是计划中
+的 npm 使用界面,但在 `@cellarer/cli` 发布前无法使用:
+
+```bash
+npm install --global @cellarer/cli
+npx @cellarer/cli --help
+```
+
+发布包组包含 `@cellarer/core`（运行时逻辑与随包 adapter 配置）、
+`@cellarer/web`（server 输出与已构建 dashboard assets）和 `@cellarer/cli`
+（`cellarer` 可执行 bin）。Package 尚未发布期间请使用下面的源码工作流。
 
 ## 快速开始
 
@@ -102,7 +116,8 @@ pnpm lint
 pnpm typecheck
 ```
 
-CI 预期在 Ubuntu、macOS、Windows 三个平台运行这些检查。
+CI 使用 Node 20.19 在 Ubuntu、macOS、Windows 上运行这些检查与 installed-artifact
+readiness gate。
 
 ## 许可
 

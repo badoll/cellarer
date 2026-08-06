@@ -11,6 +11,10 @@
   },
   "scripts": {
     "build": "turbo run build",
+    "artifact:pack": "node scripts/artifact-release-gate.mjs --pack-only",
+    "release:readiness": "node scripts/artifact-release-gate.mjs",
+    "version:check": "node scripts/prepare-version.mjs --check",
+    "version:prepare": "node scripts/prepare-version.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "biome check .",

@@ -948,11 +948,13 @@ describe("secrets/resolver", () => {
     expect(out.value?.use((value) => value)).toBe("npx");
   });
 
-  it("resolves ${CELLARER_SECRET:name} from vault", async () => {
+  it("uses the encrypted vault fallback when no native SecretStore is available", async () => {
     t = makeTmpEnv();
     await ensureBaseDirs(t);
     const storeRoot = t.path("home", ".cellarer");
+    expect(t.env.secretStore).toBeUndefined();
     await saveVault(t.env, storeRoot, { COMPANY_TOKEN: REAL }, "p");
+    expect(await t.env.fs.readFile(vaultPath(storeRoot))).not.toContain(REAL);
     const out = await resolveSecretValue(t.env, storeRoot, "${CELLARER_SECRET:COMPANY_TOKEN}", {
       mode: "vault",
       vaultPassphrase: "p",

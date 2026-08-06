@@ -14,6 +14,10 @@ import {
 
 type SecretStore = NonNullable<Env["secretStore"]>;
 
+export type KeychainAvailability =
+  | { readonly available: true; readonly store: SecretStore }
+  | { readonly available: false; readonly reason: "module-unavailable" };
+
 // @napi-rs/keyring 的 Entry 类型(只取用到的同步方法,避免给 core 引入类型依赖)。
 export interface KeyringEntry {
   getPassword(): string | null;
@@ -23,6 +27,7 @@ export interface KeyringEntry {
 export type EntryCtor = new (service: string, account: string) => KeyringEntry;
 
 const require = createRequire(import.meta.url);
+type KeyringLoader = () => { Entry: EntryCtor };
 
 // getPassword 在「无此条目」时返回 null;真错误(keychain 锁定/瞬时故障)会抛。
 // 判别式映射(横评 §5.1):null → {found:false};字符串 → {found:true,value};抛错 → {error} ——
@@ -70,14 +75,19 @@ function createProtectedKeychainStore(
 }
 
 // 构造 keychain SecretStore;native 模块加载失败(Linux headless 等)→ null,调用方降级 vault。
-export function tryKeychainStore(): SecretStore | null {
+export function loadKeychainStore(
+  load: KeyringLoader = () => require("@napi-rs/keyring") as { Entry: EntryCtor },
+): KeychainAvailability {
   try {
-    // 懒加载:require 在 try 内,加载失败被捕获,不波及 CLI 其余命令。
-    const { Entry } = require("@napi-rs/keyring") as { Entry: EntryCtor };
-    return createKeychainStore(Entry);
+    return { available: true, store: createKeychainStore(load().Entry) };
   } catch {
-    return null;
+    return { available: false, reason: "module-unavailable" };
   }
+}
+
+export function tryKeychainStore(): SecretStore | null {
+  const availability = loadKeychainStore();
+  return availability.available ? availability.store : null;
 }
 
 export function tryAuthorityCredentialStore(): SecretStore | null {

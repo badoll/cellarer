@@ -87,14 +87,11 @@ importers:
   packages/cli:
     dependencies:
       '@cellarer/core':
-        specifier: workspace:*
+        specifier: 0.1.0-alpha.0
         version: link:../core
       '@cellarer/web':
-        specifier: workspace:*
+        specifier: 0.1.0-alpha.0
         version: link:../web
-      '@napi-rs/keyring':
-        specifier: 'catalog:'
-        version: 1.3.0
       commander:
         specifier: 'catalog:'
         version: 15.0.0
@@ -105,6 +102,10 @@ importers:
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
+    optionalDependencies:
+      '@napi-rs/keyring':
+        specifier: 'catalog:'
+        version: 1.3.0
 
   packages/core:
     dependencies:
@@ -128,7 +129,7 @@ importers:
   packages/web:
     dependencies:
       '@cellarer/core':
-        specifier: workspace:*
+        specifier: 0.1.0-alpha.0
         version: link:../core
       '@hono/node-server':
         specifier: 'catalog:'

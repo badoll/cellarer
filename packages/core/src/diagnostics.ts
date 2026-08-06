@@ -66,6 +66,13 @@ export interface DoctorReport {
   mutationRecovery: MutationRecoveryPresentation;
   agents: AgentDoctorReport[];
   warnings: string[];
+  limitations: EnvironmentLimitation[];
+}
+
+export interface EnvironmentLimitation {
+  capability: "native-keychain";
+  code: "KEYCHAIN_MODULE_UNAVAILABLE" | "KEYCHAIN_SMOKE_ISOLATION_UNAVAILABLE";
+  reason: "module-unavailable" | "credential-store-not-isolated";
 }
 
 export async function inspectAgents(
@@ -167,6 +174,24 @@ export async function doctor(env: Env, opts: InspectAgentsOptions): Promise<Doct
     mutationRecovery,
     agents,
     warnings,
+    limitations:
+      env.nativeKeychainReadiness === "credential-store-not-isolated"
+        ? [
+            {
+              capability: "native-keychain",
+              code: "KEYCHAIN_SMOKE_ISOLATION_UNAVAILABLE",
+              reason: "credential-store-not-isolated",
+            },
+          ]
+        : env.secretStore
+          ? []
+          : [
+              {
+                capability: "native-keychain",
+                code: "KEYCHAIN_MODULE_UNAVAILABLE",
+                reason: "module-unavailable",
+              },
+            ],
   };
 }
 

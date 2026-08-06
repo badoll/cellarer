@@ -1,6 +1,4 @@
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
-import { startServer } from "@cellarer/web";
+import { startServer, WEB_CLIENT_ASSET_ROOT } from "@cellarer/web";
 import { Command } from "commander";
 import { resolveContext } from "../context.js";
 import { safeConsole as console } from "../output.js";
@@ -49,15 +47,12 @@ export function uiCommand(): Command {
                   label: "UI token",
                   invocation: execution.invocation,
                 });
-          const require = createRequire(import.meta.url);
-          const webPkg = require.resolve("@cellarer/web/package.json");
-          const staticRoot = join(dirname(webPkg), "client", "dist");
           const { env: composedEnv, storeRoot } = await resolveContext({});
           const { secretStore: _secretStore, ...env } = composedEnv;
           const { port: actual } = startServer({
             port,
             token,
-            staticRoot,
+            staticRoot: WEB_CLIENT_ASSET_ROOT,
             env,
             storeRoot,
           });

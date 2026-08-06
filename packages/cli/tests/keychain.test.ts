@@ -7,6 +7,7 @@ import {
   createAuthorityCredentialStore,
   createKeychainStore,
   type EntryCtor,
+  loadKeychainStore,
 } from "../src/keychain.js";
 
 // 用 fake Entry(不依赖真实系统 keychain)验证 keychain SecretStore 的判别式映射:
@@ -32,6 +33,24 @@ function fakeEntryCtor(behavior: (account: string) => string | null | (() => nev
 }
 
 describe("cli/keychain createKeychainStore mapping", () => {
+  it("returns typed unavailability when the optional native module cannot load", () => {
+    const availability = loadKeychainStore(() => {
+      throw new Error("native binding unavailable");
+    });
+
+    expect(availability).toEqual({ available: false, reason: "module-unavailable" });
+    expect(JSON.stringify(availability)).not.toContain("native binding unavailable");
+  });
+
+  it("creates a store from a controlled optional native module", async () => {
+    const Entry = fakeEntryCtor(() => null);
+    const availability = loadKeychainStore(() => ({ Entry }));
+
+    expect(availability.available).toBe(true);
+    if (!availability.available) throw new Error("expected fake keychain availability");
+    await expect(availability.store.get("cellarer", "K")).resolves.toEqual({ found: false });
+  });
+
   it("maps a found password to {found:true,value}", async () => {
     const store = createKeychainStore(fakeEntryCtor(() => "s3cret-value"));
     expect(await store.get("cellarer", "K")).toEqual({ found: true, value: "s3cret-value" });

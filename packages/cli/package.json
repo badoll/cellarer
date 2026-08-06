@@ -1,12 +1,14 @@
 {
   "name": "@cellarer/cli",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0-alpha.0",
   "type": "module",
   "description": "多 AI agent 的 skills / mcp / rules 全局统一管理 CLI",
   "license": "MIT",
   "bin": {
     "cellarer": "./dist/bin.js"
+  },
+  "exports": {
+    "./package.json": "./package.json"
   },
   "files": [
     "dist"
@@ -14,15 +16,20 @@
   "engines": {
     "node": ">=20.19"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && node ../../scripts/ensure-cli-bin.mjs",
     "typecheck": "tsc -b"
   },
   "dependencies": {
-    "@cellarer/core": "workspace:*",
-    "@cellarer/web": "workspace:*",
-    "@napi-rs/keyring": "catalog:",
+    "@cellarer/core": "0.1.0-alpha.0",
+    "@cellarer/web": "0.1.0-alpha.0",
     "commander": "catalog:"
+  },
+  "optionalDependencies": {
+    "@napi-rs/keyring": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",

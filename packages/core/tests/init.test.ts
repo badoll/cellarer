@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../src/env.js";
-import { initializeStore, loadRegistry, parseConfig } from "../src/index.js";
+import { initializeStore, loadRegistry, PACKAGED_CONFIG_PATH, parseConfig } from "../src/index.js";
 import { readOperationJournal } from "../src/protocol/journal.js";
 import { acquireStoreMutationLock } from "../src/protocol/mutation-lock.js";
 import { diagnoseMutationRecovery, recoverInterruptedOperation } from "../src/protocol/recovery.js";
@@ -33,6 +33,7 @@ describe("store/initStore", () => {
   });
 
   it("the packaged config template parses cleanly against the schema (no drift)", async () => {
+    expect(PACKAGED_CONFIG_PATH).not.toContain(t.env.cwd());
     const r = await initStore(t.env, storeRoot);
     expect(r.createdConfig).toBe(true);
     const cfg = parseConfig(await t.env.fs.readFile(t.path("home", ".cellarer", "config.json")));

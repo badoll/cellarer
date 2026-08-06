@@ -1473,14 +1473,28 @@ const legacyCommandRegistry = [
     command: "init",
     mutability: "write",
     requiredFeatures: ["mutation-authority", "exact-agent-targets"],
-    input: jsonSchema.object({ global: jsonSchema.boolean(), agents: stringArray }),
-    bindings: [option("global"), option("agents", "agent", joinList)],
-    output: dataObject(["storeRoot", "createdConfig", "operation", "inventory"], {
-      storeRoot: jsonSchema.string(),
-      createdConfig: jsonSchema.boolean(),
-      operation: presentedOperationResult,
-      inventory: agentListOutput,
+    input: jsonSchema.object({
+      global: jsonSchema.boolean(),
+      agents: stringArray,
+      dryRun: jsonSchema.boolean(),
     }),
+    bindings: [option("global"), option("agents", "agent", joinList), option("dryRun")],
+    output: {
+      oneOf: [
+        dataObject(["dryRun", "storeRoot", "agentTargets", "inventory"], {
+          dryRun: { const: true },
+          storeRoot: jsonSchema.string(),
+          agentTargets: stringArray,
+          inventory: agentListOutput,
+        }),
+        dataObject(["storeRoot", "createdConfig", "operation", "inventory"], {
+          storeRoot: jsonSchema.string(),
+          createdConfig: jsonSchema.boolean(),
+          operation: presentedOperationResult,
+          inventory: agentListOutput,
+        }),
+      ],
+    },
   }),
   defineCommand({
     command: "add",
@@ -1737,15 +1751,32 @@ const legacyCommandRegistry = [
     mutability: "read",
     input: scopeInput(),
     bindings: scopeBindings(),
-    output: dataObject(["storeRoot", "scope", "checks", "agents", "mutationRecovery"], {
-      storeRoot: jsonSchema.string(),
-      scope: jsonSchema.enumeration(["global", "project"]),
-      dir: jsonSchema.string({ minLength: 1 }),
-      defaultMethod: jsonSchema.enumeration(["symlink", "copy"]),
-      checks: jsonSchema.array(diagnosticCheck),
-      agents: jsonSchema.array(doctorAgent),
-      mutationRecovery: mutationRecoveryPresentation,
-    }),
+    output: dataObject(
+      ["storeRoot", "scope", "checks", "agents", "mutationRecovery", "limitations"],
+      {
+        storeRoot: jsonSchema.string(),
+        scope: jsonSchema.enumeration(["global", "project"]),
+        dir: jsonSchema.string({ minLength: 1 }),
+        defaultMethod: jsonSchema.enumeration(["symlink", "copy"]),
+        checks: jsonSchema.array(diagnosticCheck),
+        agents: jsonSchema.array(doctorAgent),
+        mutationRecovery: mutationRecoveryPresentation,
+        limitations: jsonSchema.array({
+          oneOf: [
+            dataObject(["capability", "code", "reason"], {
+              capability: { const: "native-keychain" },
+              code: { const: "KEYCHAIN_MODULE_UNAVAILABLE" },
+              reason: { const: "module-unavailable" },
+            }),
+            dataObject(["capability", "code", "reason"], {
+              capability: { const: "native-keychain" },
+              code: { const: "KEYCHAIN_SMOKE_ISOLATION_UNAVAILABLE" },
+              reason: { const: "credential-store-not-isolated" },
+            }),
+          ],
+        }),
+      },
+    ),
   }),
   defineCommand({
     command: "ui",

@@ -1,8 +1,9 @@
 import { promises as fs, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { createRealEnv, type Env, initializeStore, type MutationAuthority } from "@cellarer/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { WEB_CLIENT_ASSET_ROOT } from "../src/index.js";
 import { buildServerApp } from "../src/server.js";
 
 // server.ts 组装的完整 app(API + 静态 SPA + 安全加固)的集成测试。
@@ -46,6 +47,11 @@ describe("web server app — page gate / CSP / host", () => {
       storeRoot,
     });
   }
+
+  it("resolves packaged client assets from the Web ESM module location", () => {
+    expect(WEB_CLIENT_ASSET_ROOT.split(sep).slice(-3)).toEqual(["web", "client", "dist"]);
+    expect(WEB_CLIENT_ASSET_ROOT).not.toContain(env.cwd());
+  });
 
   it("injects the preloaded authority into the Web app composition", async () => {
     let seals = 0;

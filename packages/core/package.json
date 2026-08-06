@@ -1,15 +1,16 @@
 {
   "name": "@cellarer/core",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0-alpha.0",
   "type": "module",
   "description": "多 AI agent 的 skills / mcp / rules 全局统一管理核心库(全部业务逻辑)",
   "license": "MIT",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -19,6 +20,9 @@
   ],
   "engines": {
     "node": ">=20.19"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc -b",

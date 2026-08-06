@@ -14,7 +14,7 @@ const startServer = vi.hoisted(() =>
 );
 
 vi.mock("../src/keychain.js", () => ({
-  tryKeychainStore: () => null,
+  loadKeychainStore: () => ({ available: false as const, reason: "module-unavailable" as const }),
   tryAuthorityCredentialStore: () => ({
     async get(service: string, account: string) {
       const value = authorityCredentials.get(`${service}\0${account}`);
@@ -29,7 +29,10 @@ vi.mock("../src/keychain.js", () => ({
   }),
 }));
 
-vi.mock("@cellarer/web", () => ({ startServer }));
+vi.mock("@cellarer/web", () => ({
+  startServer,
+  WEB_CLIENT_ASSET_ROOT: "/tmp/cellarer-test-web-assets",
+}));
 
 const [{ buildProgram }, { commandRegistry }] = await Promise.all([
   import("../src/program.js"),
@@ -735,6 +738,33 @@ describe("CLI command registry protocol conformance", () => {
     });
   }
 
+  it("defines mutually exclusive init dry-run and committed output data", async () => {
+    const definition = commandRegistry.find(({ command }) => command === "init");
+    const dataSchema = definition?.outputSchema.properties?.data;
+    if (!dataSchema) throw new Error("expected init output data schema");
+
+    const dryRun = JSON.parse(
+      (await invoke(["--output", "json", "init", "--agent", "codex", "--dry-run"])).stdout,
+    ) as { data: Record<string, unknown> };
+    expect(validateAgainstSchema(dryRun.data, dataSchema)).toEqual([]);
+
+    const committed = JSON.parse(
+      (await invoke(["--output", "json", "init", "--agent", "codex"])).stdout,
+    ) as { data: Record<string, unknown> };
+    expect(validateAgainstSchema(committed.data, dataSchema)).toEqual([]);
+
+    expect(
+      validateAgainstSchema(
+        { ...committed.data, dryRun: true, agentTargets: ["codex"] },
+        dataSchema,
+      ),
+    ).toContain("$: oneOf");
+    const { operation: _operation, ...missingCommittedField } = committed.data;
+    expect(validateAgainstSchema(missingCommittedField, dataSchema)).toContain("$: oneOf");
+    const { agentTargets: _agentTargets, ...missingDryRunField } = dryRun.data;
+    expect(validateAgainstSchema(missingDryRunField, dataSchema)).toContain("$: oneOf");
+  });
+
   it("rejects unknown nested fields in public operation receipts and distribution plans", async () => {
     const initialized = JSON.parse(
       (await invoke(["--output", "json", "init", "--agent", "codex"])).stdout,
@@ -743,7 +773,7 @@ describe("CLI command registry protocol conformance", () => {
     const initDefinition = commandRegistry.find(({ command }) => command === "init");
     expect(
       validateAgainstSchema(initialized, initDefinition?.outputSchema as JsonSchema),
-    ).toContain("$.data.operation.receipt.unexpectedReceiptField: additional property");
+    ).toContain("$.data: oneOf");
 
     const planned = JSON.parse(
       (await invoke(["--output", "json", "plan", "--agent", "codex"])).stdout,

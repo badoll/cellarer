@@ -67,6 +67,40 @@ describe("diagnostics", () => {
     expect(report.defaultMethod).toBe("symlink");
   });
 
+  it("reports typed keychain unavailability without probing credentials", async () => {
+    await initStore(t.env, storeRoot);
+    const env = { ...t.env, secretStore: undefined };
+
+    const report = await doctor(env, { storeRoot, scope: "global", agents: ["codex"] });
+
+    expect(report.limitations).toContainEqual({
+      capability: "native-keychain",
+      code: "KEYCHAIN_MODULE_UNAVAILABLE",
+      reason: "module-unavailable",
+    });
+  });
+
+  it("reports a typed limitation when native keychain is loaded but cannot be isolated", async () => {
+    await initStore(t.env, storeRoot);
+    const env = {
+      ...t.env,
+      secretStore: {
+        get: async () => ({ found: false as const }),
+        set: async () => undefined,
+        delete: async () => false,
+      },
+      nativeKeychainReadiness: "credential-store-not-isolated" as const,
+    };
+
+    const report = await doctor(env, { storeRoot, scope: "global", agents: ["codex"] });
+
+    expect(report.limitations).toContainEqual({
+      capability: "native-keychain",
+      code: "KEYCHAIN_SMOKE_ISOLATION_UNAVAILABLE",
+      reason: "credential-store-not-isolated",
+    });
+  });
+
   it("reports a pre-release reset diagnostic for legacy ownership state", async () => {
     await initStore(t.env, storeRoot);
     const statePath = join(storeRoot, "state.json");

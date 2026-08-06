@@ -1,7 +1,6 @@
 {
   "name": "@cellarer/web",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0-alpha.0",
   "type": "module",
   "description": "cellarer 本地 Web 控制台(Hono RPC server + React SPA)",
   "license": "MIT",
@@ -22,12 +21,15 @@
   "engines": {
     "node": ">=20.19"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -b && vite build client",
     "typecheck": "tsc -b && tsc -p client/tsconfig.json"
   },
   "dependencies": {
-    "@cellarer/core": "workspace:*",
+    "@cellarer/core": "0.1.0-alpha.0",
     "@hono/node-server": "catalog:",
     "hono": "catalog:"
   },

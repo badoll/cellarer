@@ -13,9 +13,25 @@ coding agents on the same machine. It manages three resource types:
 - MCP server definitions in each agent's native JSON or TOML shape
 - skills directories
 
-The repository is currently pre-release. The workspace packages are still
-`private: true` with version `0.0.0`, so use the source build until the npm
-release checklist is completed.
+The repository is currently pre-release. Package metadata is prepared at
+`0.1.0-alpha.0`, but nothing has been published, so use the source build until
+the npm release checklist is completed.
+
+## Installation Status and Requirements
+
+cellarer requires Node.js `>=20.19` and supports Ubuntu, macOS, and Windows.
+The following commands describe the intended npm interface, but do not work
+until `@cellarer/cli` is published:
+
+```bash
+npm install --global @cellarer/cli
+npx @cellarer/cli --help
+```
+
+The release set contains `@cellarer/core` (runtime logic and packaged adapter
+configuration), `@cellarer/web` (server output and built dashboard assets), and
+`@cellarer/cli` (the executable `cellarer` bin). Use the source workflow below
+while the packages remain unpublished.
 
 ## Quick Start
 
@@ -108,7 +124,8 @@ pnpm lint
 pnpm typecheck
 ```
 
-CI is expected to run these checks on Ubuntu, macOS, and Windows.
+CI runs these checks and the installed-artifact readiness gate on Node 20.19
+across Ubuntu, macOS, and Windows.
 
 ## License
 

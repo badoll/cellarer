@@ -126,6 +126,8 @@ export interface SecretStore {
   delete(service: string, account: string): Promise<boolean>;
 }
 
+export type NativeKeychainReadiness = "module-unavailable" | "credential-store-not-isolated";
+
 export interface CurrentUserOnlyPermissions {
   supported(platform: Platform): boolean;
   set(path: string): Promise<void>;
@@ -209,6 +211,7 @@ export interface Env {
   // 读环境变量(密钥解析用);非 process.env 直读,测试可注入。
   env: Record<string, string | undefined>;
   secretStore?: SecretStore;
+  nativeKeychainReadiness?: NativeKeychainReadiness;
   currentUserOnlyPermissions?: CurrentUserOnlyPermissions;
   // Required only when the protected headless authority environment channel is used. Absence or
   // local kernel-resource contention fails closed; read-only and keychain composition do not use

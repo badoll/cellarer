@@ -176,6 +176,31 @@ describe("cli program wiring", () => {
     );
   });
 
+  it("previews init without creating the isolated store", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "cellarer-cli-init-dry-run-")));
+    const storeRoot = join(root, "store");
+    const oldStore = process.env.CELLARER_HOME;
+    const oldHome = process.env.HOME;
+    try {
+      process.env.CELLARER_HOME = storeRoot;
+      process.env.HOME = join(root, "home");
+
+      await buildProgram().parseAsync(
+        ["node", "cellarer", "init", "--agent", "codex", "--dry-run", "--output", "json"],
+        { from: "node" },
+      );
+
+      expect(machineOutput.join("")).toContain('"dryRun":true');
+      await expect(fs.access(storeRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      if (oldStore === undefined) delete process.env.CELLARER_HOME;
+      else process.env.CELLARER_HOME = oldStore;
+      if (oldHome === undefined) delete process.env.HOME;
+      else process.env.HOME = oldHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("exposes the UI bearer token only through a protected descriptor", () => {
     const ui = buildProgram().commands.find((command) => command.name() === "ui");
     const flags = ui?.options.map((option) => option.long) ?? [];

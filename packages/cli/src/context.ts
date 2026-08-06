@@ -1,7 +1,7 @@
 // CLI 共享上下文:解析公共选项为 core 调用参数。CLI 是薄壳,不写业务逻辑(不变量 1)。
 import { isAbsolute, resolve } from "node:path";
 import { createRealEnv, type Env, resolveStoreRoot, type Scope } from "@cellarer/core";
-import { tryKeychainStore } from "./keychain.js";
+import { loadKeychainStore } from "./keychain.js";
 import {
   attachMutationAuthority,
   canonicalizeStoreRoot,
@@ -45,8 +45,13 @@ export async function resolveContext(
   // keychain(密钥分层第 4 层)经此注入 Env.secretStore;native 不可用则保持 undefined(降级 vault)。
   // 纯只读 dry-run 的 none 模式不加载任何 credential capability。
   if (authorityMode !== "none") {
-    const keychain = tryKeychainStore();
-    if (keychain) env.secretStore = keychain;
+    const keychain = loadKeychainStore();
+    if (keychain.available) {
+      env.secretStore = keychain.store;
+      env.nativeKeychainReadiness = "credential-store-not-isolated";
+    } else {
+      env.nativeKeychainReadiness = keychain.reason;
+    }
   }
   const requestedStoreRoot = resolveStoreRoot(env);
   let storeRoot: string;
