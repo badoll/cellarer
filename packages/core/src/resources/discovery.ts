@@ -3,8 +3,19 @@ import type { AgentAdapter, AgentPaths } from "../adapters/types.js";
 import type { Env } from "../env.js";
 import { lstatOrNull, readdirOrEmpty, readFileOrNull } from "../fs/probe.js";
 import type { Capability, Scope } from "../model/index.js";
+import type {
+  AgentDiscoverySummary,
+  AssertExact,
+  Destination,
+  DiscoverySummaryResult,
+  ExactContract,
+} from "../protocol/client-types.js";
 import { loadConfig } from "../store/config.js";
-import type { Destination } from "./catalog.js";
+
+export type {
+  AgentDiscoverySummary,
+  DiscoverySummaryResult,
+} from "../protocol/client-types.js";
 
 export interface DiscoverySummaryOptions {
   storeRoot: string;
@@ -13,30 +24,9 @@ export interface DiscoverySummaryOptions {
   dir?: string;
 }
 
-export interface AgentDiscoverySummary {
-  agent: string;
-  displayName: string;
-  detected: boolean;
-  root?: string;
-  counts: Record<Capability, number>;
-  warnings: string[];
-}
-
-export interface DiscoverySummaryResult {
-  generatedAt: string;
-  destination: Destination;
-  dir?: string;
-  totals: Record<Capability, number>;
-  agents: AgentDiscoverySummary[];
-  warnings: string[];
-}
-
 const CAPABILITIES: Capability[] = ["rules", "mcp", "skills"];
 
-export async function discoverySummary(
-  env: Env,
-  opts: DiscoverySummaryOptions,
-): Promise<DiscoverySummaryResult> {
+async function discoverySummaryImplementation(env: Env, opts: DiscoverySummaryOptions) {
   const scope: Scope = opts.destination === "project" ? "project" : "global";
   const [config, registry] = await Promise.all([
     loadConfig(env, opts.storeRoot),
@@ -64,22 +54,34 @@ export async function discoverySummary(
     for (const capability of CAPABILITIES) totals[capability] += summary.counts[capability];
   }
 
+  const optionalDir: { dir?: string } = { dir: opts.dir };
   return {
     generatedAt: env.now().toISOString(),
     destination: opts.destination,
-    dir: opts.dir,
+    ...optionalDir,
     totals,
     agents,
     warnings,
-  };
+  } satisfies DiscoverySummaryResult;
 }
+
+export async function discoverySummary(
+  env: Env,
+  opts: DiscoverySummaryOptions,
+): Promise<DiscoverySummaryResult> {
+  return discoverySummaryImplementation(env, opts);
+}
+
+export type DiscoverySummaryProducerContract = AssertExact<
+  ExactContract<Awaited<ReturnType<typeof discoverySummaryImplementation>>, DiscoverySummaryResult>
+>;
 
 async function summarizeAgent(
   env: Env,
   adapter: AgentAdapter,
   scope: Scope,
   dir: string | undefined,
-): Promise<AgentDiscoverySummary> {
+) {
   const warnings: string[] = [];
   let detected = false;
   let root: string | undefined;
@@ -97,11 +99,12 @@ async function summarizeAgent(
     paths = adapter.paths(env, scope, dir);
   } catch (err) {
     warnings.push(`paths failed: ${errorMessage(err)}`);
+    const optionalRoot: { root?: string } = { root };
     return {
       agent: adapter.id,
       displayName: adapter.displayName,
       detected,
-      root,
+      ...optionalRoot,
       counts: zeroCounts(),
       warnings,
     };
@@ -144,15 +147,20 @@ async function summarizeAgent(
     }
   }
 
+  const optionalRoot: { root?: string } = { root };
   return {
     agent: adapter.id,
     displayName: adapter.displayName,
     detected,
-    root,
+    ...optionalRoot,
     counts,
     warnings,
   };
 }
+
+export type AgentDiscoverySummaryProducerContract = AssertExact<
+  ExactContract<Awaited<ReturnType<typeof summarizeAgent>>, AgentDiscoverySummary>
+>;
 
 function zeroCounts(): Record<Capability, number> {
   return { rules: 0, mcp: 0, skills: 0 };

@@ -1,25 +1,38 @@
-import { type ActivityEvent, listActivity } from "./activity.js";
+import { listActivity } from "./activity.js";
 import { loadRegistry } from "./adapters/registry.js";
 import { type AgentDoctorReport, doctor } from "./diagnostics.js";
 import { inCollections, plan } from "./engine/plan.js";
 import { status } from "./engine/status.js";
-import type { DistributeOptions, DriftStatus, StatusItem } from "./engine/types.js";
+import type { DistributeOptions, StatusItem } from "./engine/types.js";
 import type { Env } from "./env.js";
-import type { Capability, Collection, Scope } from "./model/index.js";
+import type { Capability, Scope } from "./model/index.js";
+import type {
+  AssertExact,
+  DashboardAgentReadiness,
+  DashboardCapabilityReadiness,
+  DashboardCoverageGroup,
+  DashboardDriftCounts,
+  DashboardSummaryResult,
+  ExactContract,
+  ExactMutableContract,
+} from "./protocol/client-types.js";
 import { loadConfig } from "./store/config.js";
 import { collectLedgerSecretRefStats, entryKey, loadLedger } from "./store/ledger.js";
 import { listMcpArtifacts, listRuleArtifacts, listSkillArtifacts } from "./store/store.js";
 
 const DASHBOARD_CAPABILITIES: Capability[] = ["rules", "mcp", "skills"];
-const DRIFT_STATUSES: DriftStatus[] = ["ok", "drifted", "missing", "broken-link"];
 
-export type AgentReadinessState =
-  | "disabled"
-  | "not-found"
-  | "detected"
-  | "ready"
-  | "warning"
-  | "unsupported";
+export type {
+  AgentReadinessState,
+  DashboardAgentCounts,
+  DashboardAgentReadiness,
+  DashboardArtifactCounts,
+  DashboardCapabilityReadiness,
+  DashboardCoverageGroup,
+  DashboardDriftCounts,
+  DashboardSecretRefStat,
+  DashboardSummaryResult,
+} from "./protocol/client-types.js";
 
 export interface DashboardSummaryOptions {
   storeRoot: string;
@@ -32,99 +45,13 @@ export interface DashboardSummaryOptions {
   includePlanCoverage?: boolean;
 }
 
-export interface DashboardArtifactCounts {
-  rules: number;
-  mcp: number;
-  skills: number;
-  total: number;
-}
-
-export interface DashboardAgentCounts {
-  registered: number;
-  detected: number;
-  ready: number;
-  warning: number;
-  missing: number;
-}
-
-export type DashboardDriftCounts = Record<DriftStatus, number>;
-
-export interface DashboardCapabilityReadiness {
-  capability: Capability;
-  status: "ready" | "warning" | "unsupported";
-  paths: string[];
-  warnings: string[];
-}
-
-export interface DashboardAgentReadiness {
-  id: string;
-  displayName: string;
-  enabled: boolean;
-  scope: Scope;
-  root?: string;
-  detected: boolean;
-  status: AgentReadinessState;
-  supportedCapabilities: Capability[];
-  capabilities: DashboardCapabilityReadiness[];
-  warnings: string[];
-}
-
-export interface DashboardCoverageGroup {
-  collection: Collection;
-  scope: Scope;
-  percentage: number | null;
-  appliedCount: number;
-  desiredCount: number;
-  driftedCount: number;
-  missingCount: number;
-  brokenLinkCount: number;
-  blockedCount: number;
-  targetsCount: number;
-  artifactsCount: number;
-  lastAppliedAt?: string;
-  emptyReason?: string;
-}
-
-export interface DashboardSecretRefStat {
-  name: string;
-  ledgerEntryCount: number;
-}
-
-export interface DashboardSummaryResult {
-  generatedAt: string;
-  localSafety: {
-    localOnly: true;
-    host: "127.0.0.1";
-    database: false;
-    secrets: "masked";
-  };
-  scope: Scope;
-  dir?: string;
-  collections: string[];
-  capabilities: Capability[];
-  artifactCounts: DashboardArtifactCounts;
-  agentCounts: DashboardAgentCounts;
-  driftCounts: DashboardDriftCounts;
-  secretRefs: DashboardSecretRefStat[];
-  isEmptyStore: boolean;
-  agents: DashboardAgentReadiness[];
-  distributionCoverage: DashboardCoverageGroup[];
-  driftItems: StatusItem[];
-  latestActivity: ActivityEvent[];
-  latestScanSummary?: ActivityEvent;
-  warnings: string[];
-}
-
 interface ArtifactLike {
   id: string;
   kind: Capability;
   collections: string[];
 }
 
-export async function dashboardSummary(
-  env: Env,
-  opts: DashboardSummaryOptions,
-): Promise<DashboardSummaryResult> {
+async function dashboardSummaryImplementation(env: Env, opts: DashboardSummaryOptions) {
   const scope = opts.scope ?? "global";
   const capabilities = opts.capabilities ?? DASHBOARD_CAPABILITIES;
   const [config, registry, ledger, ruleArtifacts, mcpArtifacts, skillArtifacts, statusItems] =
@@ -198,17 +125,22 @@ export async function dashboardSummary(
   };
   const driftCounts = driftCount(statusItems);
   const warnings = [...doctorReport.warnings, ...activity.warnings];
+  const optionalDir: { dir?: string } = { dir: opts.dir };
+  const latestScan = activity.events.find((event) => event.action === "scan-import");
+  const optionalLatestScan: { latestScanSummary?: (typeof activity.events)[number] } = {
+    latestScanSummary: latestScan,
+  };
 
   return {
     generatedAt: env.now().toISOString(),
     localSafety: {
-      localOnly: true,
-      host: "127.0.0.1",
-      database: false,
-      secrets: "masked",
+      localOnly: true as const,
+      host: "127.0.0.1" as const,
+      database: false as const,
+      secrets: "masked" as const,
     },
     scope,
-    dir: opts.dir,
+    ...optionalDir,
     collections,
     capabilities,
     artifactCounts,
@@ -226,10 +158,21 @@ export async function dashboardSummary(
     distributionCoverage: coverage,
     driftItems: statusItems.filter((item) => item.status !== "ok"),
     latestActivity: activity.events,
-    latestScanSummary: activity.events.find((event) => event.action === "scan-import"),
+    ...optionalLatestScan,
     warnings,
   };
 }
+
+export async function dashboardSummary(
+  env: Env,
+  opts: DashboardSummaryOptions,
+): Promise<DashboardSummaryResult> {
+  return dashboardSummaryImplementation(env, opts);
+}
+
+export type DashboardSummaryProducerContract = AssertExact<
+  ExactContract<Awaited<ReturnType<typeof dashboardSummaryImplementation>>, DashboardSummaryResult>
+>;
 
 function dashboardCollections(
   defaults: string[],
@@ -243,39 +186,32 @@ function dashboardCollections(
   return collections.length > 0 ? collections : defaults;
 }
 
-function agentReadiness(agent: AgentDoctorReport): DashboardAgentReadiness {
-  const capabilityRows = DASHBOARD_CAPABILITIES.map((capability) => {
-    const supported = agent.supportedCapabilities.includes(capability);
-    const checks = agent.checks.filter(
-      (check) => check.id === `${agent.id}.${capability}.writable`,
-    );
-    const warnings = checks.filter((check) => check.status !== "ok").map((check) => check.message);
-    return {
-      capability,
-      status: !supported ? "unsupported" : warnings.length > 0 ? "warning" : "ready",
-      paths: targetPaths(agent, capability),
-      warnings,
-    } satisfies DashboardCapabilityReadiness;
-  });
+function agentReadiness(agent: AgentDoctorReport) {
+  const capabilityRows = DASHBOARD_CAPABILITIES.map((capability) =>
+    capabilityReadiness(agent, capability),
+  );
   const warnings = [
     ...agent.warnings,
     ...agent.checks.filter((check) => check.status !== "ok").map((check) => check.message),
   ];
-  const statusState: AgentReadinessState = !agent.enabled
-    ? "disabled"
-    : !agent.detected
-      ? "not-found"
-      : agent.supportedCapabilities.length === 0
-        ? "unsupported"
-        : warnings.length > 0
-          ? "warning"
-          : "ready";
+  const statusState = (
+    !agent.enabled
+      ? "disabled"
+      : !agent.detected
+        ? "not-found"
+        : agent.supportedCapabilities.length === 0
+          ? "unsupported"
+          : warnings.length > 0
+            ? "warning"
+            : "ready"
+  ) as ProducedAgentReadinessState;
+  const baselineRoot: { root?: string } = { root: agent.root };
   return {
     id: agent.id,
     displayName: agent.displayName,
     enabled: agent.enabled,
     scope: agent.scope,
-    root: agent.root,
+    ...baselineRoot,
     detected: agent.detected,
     status: statusState,
     supportedCapabilities: agent.supportedCapabilities,
@@ -283,6 +219,35 @@ function agentReadiness(agent: AgentDoctorReport): DashboardAgentReadiness {
     warnings,
   };
 }
+
+export type DashboardAgentReadinessProducerContract = AssertExact<
+  ExactMutableContract<ReturnType<typeof agentReadiness>, DashboardAgentReadiness>
+>;
+
+function capabilityReadiness(agent: AgentDoctorReport, capability: Capability) {
+  const supported = agent.supportedCapabilities.includes(capability);
+  const checks = agent.checks.filter((check) => check.id === `${agent.id}.${capability}.writable`);
+  const warnings = checks.filter((check) => check.status !== "ok").map((check) => check.message);
+  const status: ProducedCapabilityReadinessState = !supported
+    ? "unsupported"
+    : warnings.length > 0
+      ? "warning"
+      : "ready";
+  return { capability, status, paths: targetPaths(agent, capability), warnings };
+}
+
+export type DashboardCapabilityReadinessProducerContract = AssertExact<
+  ExactContract<ReturnType<typeof capabilityReadiness>, DashboardCapabilityReadiness>
+>;
+
+type ProducedAgentReadinessState =
+  | "disabled"
+  | "not-found"
+  | "detected"
+  | "ready"
+  | "warning"
+  | "unsupported";
+type ProducedCapabilityReadinessState = "ready" | "warning" | "unsupported";
 
 function targetPaths(agent: AgentDoctorReport, capability: Capability): string[] {
   if (capability === "rules" && agent.paths.rules) return [agent.paths.rules];
@@ -306,9 +271,9 @@ async function coverageGroups(
     target: string;
     receipt: { appliedAt: string };
   }[],
-): Promise<DashboardCoverageGroup[]> {
+) {
   const scopes: Scope[] = opts.dir ? ["global", "project"] : ["global"];
-  const groups: DashboardCoverageGroup[] = [];
+  const groups: ReturnType<typeof coverageGroup>[] = [];
   for (const collection of collections) {
     for (const scope of scopes) {
       const p = await plan(env, {
@@ -351,27 +316,51 @@ async function coverageGroups(
         )
         .map((artifact) => artifact.id);
       const lastAppliedAt = latestAppliedAt(ledgerEntries, collection, scope, artifacts);
-      groups.push({
-        collection,
-        scope,
-        percentage,
-        appliedCount,
-        desiredCount,
-        driftedCount,
-        missingCount,
-        brokenLinkCount,
-        blockedCount,
-        targetsCount: new Set(nonSkip.map((action) => action.target)).size,
-        artifactsCount: artifactIds.length,
-        lastAppliedAt,
-        emptyReason:
-          desiredCount === 0
-            ? "No supported desired units for this collection and scope."
-            : undefined,
-      });
+      groups.push(
+        coverageGroup({
+          collection,
+          scope,
+          percentage,
+          appliedCount,
+          desiredCount,
+          driftedCount,
+          missingCount,
+          brokenLinkCount,
+          blockedCount,
+          targetsCount: new Set(nonSkip.map((action) => action.target)).size,
+          artifactsCount: artifactIds.length,
+          lastAppliedAt,
+          emptyReason:
+            desiredCount === 0
+              ? "No supported desired units for this collection and scope."
+              : undefined,
+        }),
+      );
     }
   }
   return groups;
+}
+
+export type DashboardCoverageProducerContract = AssertExact<
+  ExactContract<ReturnType<typeof coverageGroup>, DashboardCoverageGroup>
+>;
+
+function coverageGroup(input: {
+  collection: string;
+  scope: Scope;
+  percentage: number | null;
+  appliedCount: number;
+  desiredCount: number;
+  driftedCount: number;
+  missingCount: number;
+  brokenLinkCount: number;
+  blockedCount: number;
+  targetsCount: number;
+  artifactsCount: number;
+  lastAppliedAt?: string;
+  emptyReason?: string;
+}) {
+  return { ...input };
 }
 
 function latestAppliedAt(
@@ -394,13 +383,15 @@ function latestAppliedAt(
   return times.at(-1);
 }
 
-function driftCount(items: StatusItem[]): DashboardDriftCounts {
-  const counts = Object.fromEntries(
-    DRIFT_STATUSES.map((state) => [state, 0]),
-  ) as DashboardDriftCounts;
+function driftCount(items: StatusItem[]) {
+  const counts = { ok: 0, drifted: 0, missing: 0, "broken-link": 0 };
   for (const item of items) counts[item.status] += 1;
   return counts;
 }
+
+export type DashboardDriftCountsProducerContract = AssertExact<
+  ExactContract<ReturnType<typeof driftCount>, DashboardDriftCounts>
+>;
 
 export function statusIdentityKey(
   item: Pick<StatusItem, "agent" | "scope" | "capability" | "target">,

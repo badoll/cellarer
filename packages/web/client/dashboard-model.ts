@@ -1,8 +1,9 @@
-import type { Capability, Scope } from "@cellarer/core";
+import type { Capability, DriftStatus, Scope } from "@cellarer/core/client-api";
+
+export type { DriftStatus } from "@cellarer/core/client-api";
 
 export const DASHBOARD_CAPABILITIES: Capability[] = ["rules", "mcp", "skills"];
 
-export type DriftStatus = "ok" | "drifted" | "missing" | "broken-link";
 export type MatrixCellState =
   | "applied"
   | "pending"

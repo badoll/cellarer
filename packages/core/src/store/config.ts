@@ -10,6 +10,7 @@ import { atomicWrite } from "../fs/atomicWrite.js";
 import { readFileOrNull } from "../fs/probe.js";
 import type { McpDialect } from "../mcp/model.js";
 import type { Capability, Scope } from "../model/index.js";
+import type { AssertExact, ExactContract, SettingsSummary } from "../protocol/client-types.js";
 import { registerObservablePublicControlPlaneConfig } from "../secrets/observable.js";
 
 export const CONFIG_FILENAME = "config.json";
@@ -64,6 +65,16 @@ const defaultsSchema = z
       .optional(),
   })
   .strict();
+
+type SettingsDefaults = SettingsSummary["defaults"];
+type SettingsDefaultsSchemaInput = Partial<SettingsDefaults>;
+
+export type SettingsDefaultsSchemaInputContract = AssertExact<
+  ExactContract<z.input<typeof defaultsSchema>, SettingsDefaultsSchemaInput>
+>;
+export type SettingsDefaultsSchemaOutputContract = AssertExact<
+  ExactContract<z.output<typeof defaultsSchema>, SettingsDefaults>
+>;
 
 const collectionSchema = z.object({ description: z.string().optional() }).strict();
 const collectionsSchema = z.record(nonEmptyString, collectionSchema);

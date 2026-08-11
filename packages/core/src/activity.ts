@@ -5,14 +5,20 @@ import { z } from "zod";
 import type { Env } from "./env.js";
 import { readFileOrNull } from "./fs/probe.js";
 import type { Capability, Scope } from "./model/index.js";
+import type {
+  ActivityAction,
+  ActivityActor,
+  ActivityEvent,
+  AssertExact,
+  ExactContract,
+} from "./protocol/client-types.js";
 import {
   observableOptionsForEnv,
   redactObservableText,
   serializeObservable,
 } from "./secrets/observable.js";
 
-export type ActivityAction = "apply" | "scan-import" | "revert";
-export type ActivityActor = "you" | "system";
+export type { ActivityAction, ActivityActor, ActivityEvent } from "./protocol/client-types.js";
 
 const actionSchema = z.enum(["apply", "scan-import", "revert"]);
 const actorSchema = z.enum(["you", "system"]);
@@ -45,7 +51,23 @@ const activityEventSchema = z
   })
   .strict();
 
-export type ActivityEvent = z.infer<typeof activityEventSchema>;
+type ActivityEventSchemaInput = Omit<
+  ActivityEvent,
+  "agents" | "capabilities" | "warningsCount" | "resources" | "secretRefs"
+> & {
+  agents?: ActivityEvent["agents"];
+  capabilities?: ActivityEvent["capabilities"];
+  warningsCount?: ActivityEvent["warningsCount"];
+  resources?: Partial<NonNullable<ActivityEvent["resources"]>>;
+  secretRefs?: ActivityEvent["secretRefs"];
+};
+
+export type ActivityEventSchemaInputContract = AssertExact<
+  ExactContract<z.input<typeof activityEventSchema>, ActivityEventSchemaInput>
+>;
+export type ActivityEventSchemaOutputContract = AssertExact<
+  ExactContract<z.output<typeof activityEventSchema>, ActivityEvent>
+>;
 
 export interface ActivityInput {
   actor?: ActivityActor;
@@ -82,11 +104,7 @@ export function activityPath(storeRoot: string): string {
   return join(storeRoot, "activity.jsonl");
 }
 
-export async function appendActivity(
-  env: Env,
-  storeRoot: string,
-  input: ActivityInput,
-): Promise<ActivityEvent> {
+async function appendActivityImplementation(env: Env, storeRoot: string, input: ActivityInput) {
   activityCounter += 1;
   const time = env.now().toISOString();
   const event = activityEventSchema.parse(
@@ -111,7 +129,7 @@ export async function appendActivity(
             }
           : undefined,
         secretRefs: unique(input.secretRefs ?? []),
-      },
+      } satisfies ActivityEvent,
       env,
     ),
   );
@@ -121,6 +139,18 @@ export async function appendActivity(
   await env.fs.appendFile(activityPath(storeRoot), `${serialized}\n`);
   return published;
 }
+
+export async function appendActivity(
+  env: Env,
+  storeRoot: string,
+  input: ActivityInput,
+): Promise<ActivityEvent> {
+  return appendActivityImplementation(env, storeRoot, input);
+}
+
+export type ActivityEventProducerContract = AssertExact<
+  ExactContract<Awaited<ReturnType<typeof appendActivityImplementation>>, ActivityEvent>
+>;
 
 export async function listActivity(
   env: Env,

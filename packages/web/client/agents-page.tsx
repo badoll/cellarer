@@ -1,4 +1,4 @@
-import type { ControlPlaneAgentDto, ControlPlaneAgentListDto } from "@cellarer/core";
+import type { ControlPlaneAgentDto, ControlPlaneAgentListDto } from "@cellarer/core/client-api";
 import { useEffect, useState } from "react";
 import { apiFetch, applyPlannedControlPlaneMutation } from "./api.js";
 import { readApiJson } from "./api-state.js";

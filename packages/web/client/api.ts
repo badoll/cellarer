@@ -1,4 +1,4 @@
-import { CLIENT_API_CONTRACT_ID, CLIENT_API_VERSION } from "@cellarer/core";
+import { CLIENT_API_CONTRACT_ID, CLIENT_API_VERSION } from "@cellarer/core/client-api";
 import { readApiJson } from "./api-state.js";
 
 const SESSION_PATH = "/api/v1/auth/session";

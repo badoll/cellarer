@@ -2,7 +2,7 @@ import type {
   Capability,
   ControlPlaneResourceDto,
   ControlPlaneResourceListDto,
-} from "@cellarer/core";
+} from "@cellarer/core/client-api";
 import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "./api.js";
 import { readApiJson } from "./api-state.js";

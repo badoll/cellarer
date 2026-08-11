@@ -28,6 +28,7 @@ import type {
   TargetOwner,
   TargetOwnershipEvidence,
 } from "../model/index.js";
+import type { AssertExact, ExactContract } from "../protocol/client-types.js";
 import { resolveCurrentResourceArtifact } from "../resources/model.js";
 import {
   attachProviderScope,
@@ -87,14 +88,14 @@ const PLANNERS: Record<Capability, CapabilityPlanner> = {
   skills: planSkillsCapability,
 };
 
-export async function plan(
+async function planImplementation(
   env: Env,
   opts: DistributeOptions,
   execution: {
     providerAccess?: "allowed" | "forbidden";
     capabilityRootCapture?: CapabilityRootCapture;
   } = {},
-): Promise<DistributePlan> {
+) {
   const warnings: string[] = [];
   const actions: PlanAction[] = [];
   const conflicts: TargetConflict[] = [];
@@ -280,12 +281,12 @@ export async function plan(
         });
   const secretReferenceFindings = missingSecretReferences(referenceChecks);
 
-  const distributePlan: DistributePlan = {
+  const distributePlan = {
     actions,
     warnings,
     conflicts,
     ...(duplicateOwnerKeys.length > 0 ? { invalidLedger: true as const } : {}),
-  };
+  } satisfies DistributePlan;
   // Final read-only staging pass covers generated files and recursive Skill trees. A finding
   // blocks the complete batch and publishes location/rule evidence only.
   const secretFindings = await applyRecursiveSecretGuard(operationEnv, distributePlan, opts.scope, {
@@ -309,6 +310,21 @@ export async function plan(
     providerScope,
   );
 }
+
+export async function plan(
+  env: Env,
+  opts: DistributeOptions,
+  execution: {
+    providerAccess?: "allowed" | "forbidden";
+    capabilityRootCapture?: CapabilityRootCapture;
+  } = {},
+): Promise<DistributePlan> {
+  return planImplementation(env, opts, execution);
+}
+
+export type DistributePlanProducerContract = AssertExact<
+  ExactContract<Awaited<ReturnType<typeof planImplementation>>, DistributePlan>
+>;
 
 function attachPlanScopeToError(
   error: unknown,

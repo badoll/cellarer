@@ -1,12 +1,38 @@
-import type { CliErrorCode } from "./cli.js";
-import type { MutationConflict } from "./models.js";
+import type { ClientErrorCode, MutationConflict } from "./client-types.js";
+
+export type {
+  ActivityAction,
+  ActivityActor,
+  ActivityEvent,
+  Capability,
+  ClientErrorCode,
+  ControlPlaneAgentDto,
+  ControlPlaneAgentListDto,
+  ControlPlaneResourceDto,
+  ControlPlaneResourceListDto,
+  DashboardAgentReadiness,
+  DashboardCoverageGroup,
+  DashboardSummaryResult,
+  Destination,
+  DiscoverySummaryResult,
+  DistributePlan,
+  DriftStatus,
+  MutationPlan,
+  ResourceCatalogItem,
+  ResourceCatalogResult,
+  ResourceState,
+  ScanItem,
+  ScanPlan,
+  Scope,
+  SettingsSummary,
+  StatusItem,
+} from "./client-types.js";
 
 export const CLIENT_API_VERSION = "1.0" as const;
 export const CLIENT_API_CONTRACT_ID = "cellarer-local-client-api-v1" as const;
 export const CLIENT_API_MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 
 export type ClientApiVersion = typeof CLIENT_API_VERSION;
-export type ClientErrorCode = CliErrorCode;
 
 export interface ClientWarning {
   readonly code: string;

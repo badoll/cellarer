@@ -1,8 +1,8 @@
-import type { Capability } from "@cellarer/core";
+import type { Capability, Destination, ResourceState } from "@cellarer/core/client-api";
+
+export type { Destination, ResourceState } from "@cellarer/core/client-api";
 
 export type Page = "dashboard" | "skills" | "mcp" | "rules" | "agents" | "settings";
-export type Destination = "user" | "project";
-export type ResourceState = "managed" | "discovered" | "synced" | "drifted" | "missing" | "blocked";
 
 export interface ResourceCountLike {
   state: ResourceState;

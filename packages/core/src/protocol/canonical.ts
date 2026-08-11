@@ -10,6 +10,7 @@ import {
   registerObservableMutationAuthorization,
 } from "../secrets/observable.js";
 import { sha256 } from "../store/checksum.js";
+import type { AssertExact, ExactContract } from "./client-types.js";
 import type {
   DurableMutationPlan,
   MutationAuthorizationEnvelope,
@@ -295,7 +296,7 @@ export function mutationPlanDigest(plan: MutationPlanInput | MutationPlan): stri
   return sha256(canonicalMutationPlan(plan));
 }
 
-export function createMutationPlan(input: MutationPlanInput): MutationPlan {
+function createMutationPlanImplementation(input: MutationPlanInput) {
   assertSupportedMutationPlanRuntime(input);
   const encoded = canonicalMutationPlan(input);
   const snapshot = JSON.parse(encoded) as MutationPlanInput;
@@ -308,12 +309,20 @@ export function createMutationPlan(input: MutationPlanInput): MutationPlan {
       schemaVersion: MUTATION_AUTHORIZATION_SCHEMA_VERSION,
       domain: EXECUTABLE_MUTATION_PLAN_DOMAIN,
       algorithm: MUTATION_AUTHORIZATION_ALGORITHM,
-      authorityId: "unsealed",
-      authorityEpoch: 0,
-      seal: `hmac-sha256:${"0".repeat(64)}`,
+      authorityId: "unsealed" as string,
+      authorityEpoch: 0 as number,
+      seal: `hmac-sha256:${"0".repeat(64)}` as string,
     },
-  });
+  } as const);
 }
+
+export function createMutationPlan(input: MutationPlanInput): MutationPlan {
+  return createMutationPlanImplementation(input);
+}
+
+export type MutationPlanProducerContract = AssertExact<
+  ExactContract<ReturnType<typeof createMutationPlanImplementation>, MutationPlan>
+>;
 
 export function createAuthorizedMutationPlan(
   env: Env,

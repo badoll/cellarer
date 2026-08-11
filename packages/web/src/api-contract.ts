@@ -1,11 +1,29 @@
 import {
   AGENT_ID_PATTERN,
+  type CanonicalJsonValue,
   CLIENT_API_CONTRACT_ID,
   CLIENT_API_VERSION,
   type ClientErrorCode,
   createSafeObservableOpenApiDocument,
   NORMALIZED_STORE_RELATIVE_SOURCE_PATTERN,
 } from "@cellarer/core";
+import type {
+  ActivityEvent,
+  ControlPlaneAgentDto,
+  ControlPlaneAgentListDto,
+  ControlPlaneResourceDto,
+  ControlPlaneResourceListDto,
+  DashboardAgentReadiness,
+  DashboardCoverageGroup,
+  DashboardSummaryResult,
+  DiscoverySummaryResult,
+  DistributePlan,
+  MutationPlan,
+  ScanItem,
+  ScanPlan,
+  SettingsSummary,
+  StatusItem,
+} from "@cellarer/core/client-api";
 
 export type ClientApiMethod = "get" | "post" | "put" | "delete";
 export type ClientApiAuthentication = "public" | "browser-bootstrap" | "authenticated" | "mutation";
@@ -37,6 +55,118 @@ export interface ClientJsonSchema {
   readonly then?: ClientJsonSchema;
   readonly not?: ClientJsonSchema;
 }
+
+type ExactType<Left, Right> =
+  (<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2
+    ? (<Value>() => Value extends Right ? 1 : 2) extends <Value>() => Value extends Left ? 1 : 2
+      ? true
+      : false
+    : false;
+
+type MutableSchemaContract<Value> = Value extends (...args: never[]) => unknown
+  ? Value
+  : Value extends readonly (infer Item)[]
+    ? MutableSchemaContract<Item>[]
+    : Value extends object
+      ? { -readonly [Key in keyof Value]: MutableSchemaContract<Value[Key]> }
+      : Value;
+
+interface ClientComponentContract {
+  readonly JsonValue: CanonicalJsonValue;
+  readonly MutationPlan: MutationPlan;
+  readonly Resource: ControlPlaneResourceDto;
+  readonly Agent: ControlPlaneAgentDto;
+  readonly DashboardAgent: DashboardAgentReadiness;
+  readonly DashboardCoverage: DashboardCoverageGroup;
+  readonly ActivityEvent: ActivityEvent;
+}
+
+type ComponentContract<Reference> = Reference extends `#/components/schemas/${infer Name}`
+  ? Name extends keyof ClientComponentContract
+    ? ClientComponentContract[Name]
+    : unknown
+  : unknown;
+
+type SchemaProperties<Schema> = Schema extends {
+  readonly properties: infer Properties extends Readonly<Record<string, ClientJsonSchema>>;
+}
+  ? Properties
+  : Record<never, never>;
+
+type SchemaRequiredKeys<Schema> = Schema extends {
+  readonly required: readonly (infer Required)[];
+}
+  ? Required & keyof SchemaProperties<Schema>
+  : never;
+
+type SchemaDeclaredObject<Schema> = {
+  [Key in SchemaRequiredKeys<Schema>]-?: InferClientJsonSchema<SchemaProperties<Schema>[Key]>;
+} & {
+  [Key in Exclude<
+    keyof SchemaProperties<Schema>,
+    SchemaRequiredKeys<Schema>
+  >]?: InferClientJsonSchema<SchemaProperties<Schema>[Key]>;
+};
+
+type SchemaAdditionalObject<Schema> = Schema extends {
+  readonly additionalProperties: infer Additional;
+}
+  ? Additional extends false
+    ? unknown
+    : Additional extends ClientJsonSchema
+      ? Record<string, InferClientJsonSchema<Additional>>
+      : Additional extends true
+        ? Record<string, unknown>
+        : unknown
+  : unknown;
+
+type InferClientJsonSchema<Schema> = Schema extends { readonly $ref: infer Reference }
+  ? ComponentContract<Reference>
+  : Schema extends { readonly oneOf: readonly (infer Variant)[] }
+    ? InferClientJsonSchema<Variant>
+    : Schema extends { readonly anyOf: readonly (infer Variant)[] }
+      ? InferClientJsonSchema<Variant>
+      : Schema extends { readonly const: infer Constant }
+        ? Constant
+        : Schema extends { readonly enum: readonly (infer EnumValue)[] }
+          ? EnumValue
+          : Schema extends { readonly type: "string" }
+            ? Schema extends { readonly pattern: "^masked$" }
+              ? "masked"
+              : string
+            : Schema extends { readonly type: "integer" | "number" }
+              ? number
+              : Schema extends { readonly type: "boolean" }
+                ? boolean
+                : Schema extends { readonly type: "null" }
+                  ? null
+                  : Schema extends {
+                        readonly type: readonly (infer Primitive)[];
+                      }
+                    ? Primitive extends "string"
+                      ? string
+                      : Primitive extends "number" | "integer"
+                        ? number
+                        : Primitive extends "boolean"
+                          ? boolean
+                          : Primitive extends "null"
+                            ? null
+                            : never
+                    : Schema extends {
+                          readonly type: "array";
+                          readonly items: infer Items;
+                        }
+                      ? InferClientJsonSchema<Items>[]
+                      : Schema extends { readonly type: "object" }
+                        ? SchemaDeclaredObject<Schema> & SchemaAdditionalObject<Schema>
+                        : unknown;
+
+type ExactSchemaContract<Schema, Contract> = ExactType<
+  MutableSchemaContract<InferClientJsonSchema<Schema>>,
+  MutableSchemaContract<Contract>
+>;
+
+type AssertSchemaContract<Exact extends true> = Exact;
 
 interface ClientApiRouteBaseDefinition {
   readonly operationId: string;
@@ -494,39 +624,109 @@ const CLIENT_ERROR_CODES = [
   "INTERNAL_ERROR",
 ] as const satisfies readonly ClientErrorCode[];
 
-const stringSchema = (options: Pick<ClientJsonSchema, "minLength" | "pattern"> = {}) =>
-  ({ type: "string", ...options }) as const satisfies ClientJsonSchema;
+type StringSchemaOptions = Pick<ClientJsonSchema, "minLength" | "pattern">;
+type ObjectJsonSchema<
+  Properties extends Readonly<Record<string, ClientJsonSchema>>,
+  Required extends readonly (keyof Properties & string)[],
+  Additional extends boolean | ClientJsonSchema,
+> = {
+  readonly type: "object";
+  readonly additionalProperties: Additional;
+  readonly properties: Properties;
+} & (Required extends readonly [] ? unknown : { readonly required: Required });
+
+function stringSchema(): { readonly type: "string" };
+function stringSchema<const Options extends StringSchemaOptions>(
+  options: Options,
+): { readonly type: "string" } & Options;
+function stringSchema(options: StringSchemaOptions = {}) {
+  return { type: "string", ...options } as const satisfies ClientJsonSchema;
+}
 const booleanSchema = { type: "boolean" } as const satisfies ClientJsonSchema;
-const integerSchema = (minimum = 0): ClientJsonSchema => ({ type: "integer", minimum });
-const enumSchema = (values: readonly string[]): ClientJsonSchema => ({ enum: values });
-const arraySchema = (items: ClientJsonSchema): ClientJsonSchema => ({ type: "array", items });
-const objectSchema = (
+const integerSchema = (minimum = 0) =>
+  ({ type: "integer", minimum }) as const satisfies ClientJsonSchema;
+const enumSchema = <const Values extends readonly string[]>(values: Values) =>
+  ({ enum: values }) as const satisfies ClientJsonSchema;
+const arraySchema = <const Items extends ClientJsonSchema>(items: Items) =>
+  ({ type: "array", items }) as const satisfies ClientJsonSchema;
+function objectSchema(): ObjectJsonSchema<Readonly<Record<never, never>>, readonly [], false>;
+function objectSchema<const Properties extends Readonly<Record<string, ClientJsonSchema>>>(
+  properties: Properties,
+): ObjectJsonSchema<Properties, readonly [], false>;
+function objectSchema<
+  const Properties extends Readonly<Record<string, ClientJsonSchema>>,
+  const Required extends readonly (keyof Properties & string)[],
+  const Additional extends boolean | ClientJsonSchema = false,
+>(
+  properties: Properties,
+  required: Required,
+  additionalProperties?: Additional,
+): ObjectJsonSchema<Properties, Required, Additional>;
+function objectSchema(
+  properties: Readonly<Record<string, ClientJsonSchema>>,
+  required: readonly string[],
+  additionalProperties?: boolean | ClientJsonSchema,
+): ClientJsonSchema;
+function objectSchema(
   properties: Readonly<Record<string, ClientJsonSchema>> = {},
   required: readonly string[] = [],
   additionalProperties: boolean | ClientJsonSchema = false,
-): ClientJsonSchema => ({
-  type: "object",
-  additionalProperties,
-  properties,
-  ...(required.length > 0 ? { required } : {}),
-});
+): ClientJsonSchema {
+  return {
+    type: "object",
+    additionalProperties,
+    properties,
+    ...(required.length > 0 ? { required } : {}),
+  };
+}
 
-const jsonScalarSchema: ClientJsonSchema = {
+const jsonScalarSchema = {
   type: ["string", "number", "boolean", "null"],
-};
+} as const satisfies ClientJsonSchema;
+type JsonScalarTypeName = "string" | "number" | "boolean" | "null";
+type ExactJsonScalarTypeList<Types extends readonly string[]> =
+  ExactType<Types[number], JsonScalarTypeName> extends true ? ExactType<Types["length"], 4> : false;
+export type JsonValueScalarTypesSchemaContract = AssertSchemaContract<
+  ExactJsonScalarTypeList<typeof jsonScalarSchema.type>
+>;
 
-function jsonValueSchema(): ClientJsonSchema {
-  return { $ref: "#/components/schemas/JsonValue" };
+function jsonValueSchema() {
+  return { $ref: "#/components/schemas/JsonValue" } as const satisfies ClientJsonSchema;
 }
 
 const jsonDetailMapSchema = objectSchema({}, [], jsonValueSchema());
-const jsonValueDefinitionSchema: ClientJsonSchema = {
+const jsonValueDefinitionSchema = {
   oneOf: [
     jsonScalarSchema,
     arraySchema(jsonValueSchema()),
     objectSchema({}, [], jsonValueSchema()),
   ],
+} as const satisfies ClientJsonSchema;
+type JsonValueSelfReference = {
+  readonly $ref: "#/components/schemas/JsonValue";
 };
+type InferJsonValueDefinitionVariant<Variant, RecursiveValue> = Variant extends {
+  readonly type: "array";
+  readonly items: JsonValueSelfReference;
+}
+  ? readonly RecursiveValue[]
+  : Variant extends {
+        readonly type: "object";
+        readonly additionalProperties: JsonValueSelfReference;
+      }
+    ? Readonly<Record<string, RecursiveValue>>
+    : InferClientJsonSchema<Variant>;
+type InferJsonValueDefinition<Schema, RecursiveValue> = Schema extends {
+  readonly oneOf: readonly (infer Variant)[];
+}
+  ? InferJsonValueDefinitionVariant<Variant, RecursiveValue>
+  : never;
+export type JsonValueSchemaContract = AssertSchemaContract<
+  ExactType<
+    InferJsonValueDefinition<typeof jsonValueDefinitionSchema, CanonicalJsonValue>,
+    CanonicalJsonValue
+  >
+>;
 const nonEmptyStringSchema = stringSchema({ minLength: 1 });
 const agentIdSchema = stringSchema({ minLength: 1, pattern: AGENT_ID_PATTERN });
 const stringArraySchema = arraySchema(nonEmptyStringSchema);
@@ -534,10 +734,13 @@ const capabilitySchema = enumSchema(["rules", "mcp", "skills"]);
 const capabilityArraySchema = arraySchema(capabilitySchema);
 const scopeSchema = enumSchema(["global", "project"]);
 const destinationSchema = enumSchema(["user", "project"]);
-const mutationPlanSchema: ClientJsonSchema = {
+const mutationPlanSchema = {
   $ref: "#/components/schemas/MutationPlan",
-};
+} as const satisfies ClientJsonSchema;
 const mutationPlanDefinitionSchema = createMutationPlanSchema();
+export type MutationPlanSchemaContract = AssertSchemaContract<
+  ExactSchemaContract<typeof mutationPlanDefinitionSchema, MutationPlan>
+>;
 const mutationPlanBodySchema = objectSchema({ mutationPlan: mutationPlanSchema }, ["mutationPlan"]);
 
 const warningSchema = objectSchema(
@@ -1124,12 +1327,10 @@ function bodySchemaFor(operationId: string): ClientJsonSchema {
   }
 }
 
-const nullableSchema = (schema: ClientJsonSchema): ClientJsonSchema => ({
-  oneOf: [schema, { type: "null" }],
-});
-const componentSchema = (name: string): ClientJsonSchema => ({
-  $ref: `#/components/schemas/${name}`,
-});
+const nullableSchema = <const Schema extends ClientJsonSchema>(schema: Schema) =>
+  ({ oneOf: [schema, { type: "null" }] }) as const satisfies ClientJsonSchema;
+const componentSchema = <const Name extends string>(name: Name) =>
+  ({ $ref: `#/components/schemas/${name}` }) as const satisfies ClientJsonSchema;
 
 const appliedReceiptSchema = objectSchema(
   {
@@ -1255,6 +1456,9 @@ const distributePlanDefinitionSchema = objectSchema(
   },
   ["actions", "warnings", "conflicts"],
 );
+export type DistributePlanSchemaContract = AssertSchemaContract<
+  ExactSchemaContract<typeof distributePlanDefinitionSchema, DistributePlan>
+>;
 const distributePlanDataSchema = componentSchema("DistributePlan");
 
 const scanItemSchema = objectSchema(
@@ -1268,6 +1472,9 @@ const scanItemSchema = objectSchema(
   },
   ["kind", "name", "status", "action", "source"],
 );
+export type ScanItemSchemaContract = AssertSchemaContract<
+  ExactSchemaContract<typeof scanItemSchema, ScanItem>
+>;
 
 const scanPlanDefinitionSchema = objectSchema(
   {
@@ -1278,6 +1485,9 @@ const scanPlanDefinitionSchema = objectSchema(
   },
   ["agent", "scope", "items", "warnings"],
 );
+export type ScanPlanSchemaContract = AssertSchemaContract<
+  ExactSchemaContract<typeof scanPlanDefinitionSchema, ScanPlan>
+>;
 const scanPlanDataSchema = componentSchema("ScanPlan");
 
 const revertPlanDataSchema = objectSchema(
@@ -1494,7 +1704,7 @@ const validationIssueSchema = objectSchema(
   { path: nonEmptyStringSchema, message: stringSchema() },
   ["path", "message"],
 );
-const resourceSourceDescriptorSchema: ClientJsonSchema = {
+const resourceSourceDescriptorSchema = {
   oneOf: [
     objectSchema({ type: { const: "local-snapshot" }, capturedFrom: nonEmptyStringSchema }, [
       "type",
@@ -1522,7 +1732,7 @@ const resourceSourceDescriptorSchema: ClientJsonSchema = {
       ["type", "url", "integrity"],
     ),
   ],
-};
+} as const satisfies ClientJsonSchema;
 const resourceValidationEvidenceSchema = objectSchema(
   {
     status: enumSchema(["validated", "backfilled"]),
@@ -1611,6 +1821,9 @@ const resourceDtoDefinitionSchema = objectSchema(
     "usage",
   ],
 );
+export type ControlPlaneResourceSchemaContract = AssertSchemaContract<
+  ExactSchemaContract<typeof resourceDtoDefinitionSchema, ControlPlaneResourceDto>
+>;
 const resourceCountsSchema = objectSchema(
   {
     managed: integerSchema(),
@@ -1622,6 +1835,18 @@ const resourceCountsSchema = objectSchema(
   },
   ["managed", "discovered", "synced", "drifted", "missing", "blocked"],
 );
+const controlPlaneResourceListDataSchema = objectSchema(
+  {
+    generatedAt: nonEmptyStringSchema,
+    resources: arraySchema(componentSchema("Resource")),
+    counts: resourceCountsSchema,
+    warnings: stringArraySchema,
+  },
+  ["generatedAt", "resources", "counts", "warnings"],
+);
+export type ControlPlaneResourceListSchemaContract = AssertSchemaContract<
+  ExactSchemaContract<typeof controlPlaneResourceListDataSchema, ControlPlaneResourceListDto>
+>;
 
 const agentDtoDefinitionSchema = objectSchema(
   {
@@ -1634,11 +1859,14 @@ const agentDtoDefinitionSchema = objectSchema(
     enabled: booleanSchema,
     detectionEvidence: objectSchema({ root: nonEmptyStringSchema }),
     capabilities: capabilityArraySchema,
-    capabilityScopes: objectSchema({
-      rules: arraySchema(scopeSchema),
-      mcp: arraySchema(scopeSchema),
-      skills: arraySchema(scopeSchema),
-    }),
+    capabilityScopes: objectSchema(
+      {
+        rules: arraySchema(scopeSchema),
+        mcp: arraySchema(scopeSchema),
+        skills: arraySchema(scopeSchema),
+      },
+      ["rules", "mcp", "skills"],
+    ),
     targets: arraySchema(
       objectSchema(
         { capability: capabilitySchema, scope: scopeSchema, path: nonEmptyStringSchema },
@@ -1662,6 +1890,22 @@ const agentDtoDefinitionSchema = objectSchema(
     "validationIssues",
   ],
 );
+export type ControlPlaneAgentSchemaContract = AssertSchemaContract<
+  ExactSchemaContract<typeof agentDtoDefinitionSchema, ControlPlaneAgentDto>
+>;
+const controlPlaneAgentListDataSchema = objectSchema(
+  {
+    storeRoot: nonEmptyStringSchema,
+    scope: scopeSchema,
+    dir: nonEmptyStringSchema,
+    agents: arraySchema(componentSchema("Agent")),
+    warnings: stringArraySchema,
+  },
+  ["storeRoot", "scope", "agents", "warnings"],
+);
+export type ControlPlaneAgentListSchemaContract = AssertSchemaContract<
+  ExactSchemaContract<typeof controlPlaneAgentListDataSchema, ControlPlaneAgentListDto>
+>;
 const collectionDtoDefinitionSchema = objectSchema(
   {
     name: nonEmptyStringSchema,
@@ -1716,6 +1960,17 @@ const activityEventDefinitionSchema = objectSchema(
     "secretRefs",
   ],
 );
+export type ActivityEventSchemaContract = AssertSchemaContract<
+  ExactSchemaContract<typeof activityEventDefinitionSchema, ActivityEvent>
+>;
+const activityListDataSchema = objectSchema(
+  { events: arraySchema(componentSchema("ActivityEvent")), warnings: stringArraySchema },
+  ["events", "warnings"],
+);
+type ActivityListData = { events: ActivityEvent[]; warnings: string[] };
+export type ActivityListSchemaContract = AssertSchemaContract<
+  ExactSchemaContract<typeof activityListDataSchema, ActivityListData>
+>;
 const operationSummaryDefinitionSchema = objectSchema(
   {
     operationId: nonEmptyStringSchema,
@@ -1807,6 +2062,17 @@ const statusItemSchema = objectSchema(
   },
   ["artifact", "agent", "scope", "capability", "target", "status"],
 );
+export type StatusItemSchemaContract = AssertSchemaContract<
+  ExactSchemaContract<typeof statusItemSchema, StatusItem>
+>;
+const statusListDataSchema = objectSchema(
+  { generatedAt: nonEmptyStringSchema, items: arraySchema(statusItemSchema) },
+  ["generatedAt", "items"],
+);
+type StatusListData = { generatedAt: string; items: StatusItem[] };
+export type StatusListSchemaContract = AssertSchemaContract<
+  ExactSchemaContract<typeof statusListDataSchema, StatusListData>
+>;
 const desiredAppliedItemSchema = objectSchema(
   {
     agent: nonEmptyStringSchema,
@@ -2154,6 +2420,9 @@ const dashboardAgentDefinitionSchema = objectSchema(
     "warnings",
   ],
 );
+export type DashboardAgentSchemaContract = AssertSchemaContract<
+  ExactSchemaContract<typeof dashboardAgentDefinitionSchema, DashboardAgentReadiness>
+>;
 const dashboardCoverageDefinitionSchema = objectSchema(
   {
     collection: nonEmptyStringSchema,
@@ -2184,6 +2453,9 @@ const dashboardCoverageDefinitionSchema = objectSchema(
     "artifactsCount",
   ],
 );
+export type DashboardCoverageSchemaContract = AssertSchemaContract<
+  ExactSchemaContract<typeof dashboardCoverageDefinitionSchema, DashboardCoverageGroup>
+>;
 const syncTargetUninstallTargetSchema = objectSchema(
   {
     key: nonEmptyStringSchema,
@@ -2585,6 +2857,50 @@ const dashboardSummaryDataSchema = objectSchema(
     "warnings",
   ],
 );
+export type DashboardSummarySchemaContract = AssertSchemaContract<
+  ExactSchemaContract<typeof dashboardSummaryDataSchema, DashboardSummaryResult>
+>;
+
+const settingsSummaryDataSchema = objectSchema(
+  {
+    storeRoot: nonEmptyStringSchema,
+    cellarerHomeActive: booleanSchema,
+    defaults: configDefaultsSchema,
+    collections: arraySchema(
+      objectSchema({ name: nonEmptyStringSchema, description: stringSchema() }, ["name"]),
+    ),
+    builtinAdapterIds: stringArraySchema,
+    customAdapterIds: stringArraySchema,
+    secretRefs: arraySchema(secretRefStatSchema),
+  },
+  [
+    "storeRoot",
+    "cellarerHomeActive",
+    "defaults",
+    "collections",
+    "builtinAdapterIds",
+    "customAdapterIds",
+    "secretRefs",
+  ],
+);
+export type SettingsSummarySchemaContract = AssertSchemaContract<
+  ExactSchemaContract<typeof settingsSummaryDataSchema, SettingsSummary>
+>;
+
+const discoverySummaryDataSchema = objectSchema(
+  {
+    generatedAt: nonEmptyStringSchema,
+    destination: destinationSchema,
+    dir: nonEmptyStringSchema,
+    totals: discoveryCountSchema,
+    agents: arraySchema(discoveryAgentSchema),
+    warnings: stringArraySchema,
+  },
+  ["generatedAt", "destination", "totals", "agents", "warnings"],
+);
+export type DiscoverySummarySchemaContract = AssertSchemaContract<
+  ExactSchemaContract<typeof discoverySummaryDataSchema, DiscoverySummaryResult>
+>;
 
 const mutationRecoveryDiagnosisDataSchema = objectSchema(
   {
@@ -2697,26 +3013,9 @@ function successDataSchemaFor(operationId: string): ClientJsonSchema {
       return openApiDocumentDataSchema;
     case "listResources":
     case "listResourcesByKind":
-      return objectSchema(
-        {
-          generatedAt: nonEmptyStringSchema,
-          resources: arraySchema(componentSchema("Resource")),
-          counts: resourceCountsSchema,
-          warnings: stringArraySchema,
-        },
-        ["generatedAt", "resources", "counts", "warnings"],
-      );
+      return controlPlaneResourceListDataSchema;
     case "listAgents":
-      return objectSchema(
-        {
-          storeRoot: nonEmptyStringSchema,
-          scope: scopeSchema,
-          dir: nonEmptyStringSchema,
-          agents: arraySchema(componentSchema("Agent")),
-          warnings: stringArraySchema,
-        },
-        ["storeRoot", "scope", "agents", "warnings"],
-      );
+      return controlPlaneAgentListDataSchema;
     case "showAgent":
       return objectSchema(
         { agent: nullableSchema(componentSchema("Agent")), warnings: stringArraySchema },
@@ -2769,28 +3068,7 @@ function successDataSchemaFor(operationId: string): ClientJsonSchema {
         "config",
       ]);
     case "getSettings":
-      return objectSchema(
-        {
-          storeRoot: nonEmptyStringSchema,
-          cellarerHomeActive: booleanSchema,
-          defaults: configDefaultsSchema,
-          collections: arraySchema(
-            objectSchema({ name: nonEmptyStringSchema, description: stringSchema() }, ["name"]),
-          ),
-          builtinAdapterIds: stringArraySchema,
-          customAdapterIds: stringArraySchema,
-          secretRefs: arraySchema(secretRefStatSchema),
-        },
-        [
-          "storeRoot",
-          "cellarerHomeActive",
-          "defaults",
-          "collections",
-          "builtinAdapterIds",
-          "customAdapterIds",
-          "secretRefs",
-        ],
-      );
+      return settingsSummaryDataSchema;
     case "validateConfig":
       return objectSchema(
         {
@@ -2801,17 +3079,7 @@ function successDataSchemaFor(operationId: string): ClientJsonSchema {
         ["valid", "issues"],
       );
     case "getDiscoverySummary":
-      return objectSchema(
-        {
-          generatedAt: nonEmptyStringSchema,
-          destination: destinationSchema,
-          dir: nonEmptyStringSchema,
-          totals: discoveryCountSchema,
-          agents: arraySchema(discoveryAgentSchema),
-          warnings: stringArraySchema,
-        },
-        ["generatedAt", "destination", "totals", "agents", "warnings"],
-      );
+      return discoverySummaryDataSchema;
     case "getDiff":
       return objectSchema(
         {
@@ -2822,19 +3090,13 @@ function successDataSchemaFor(operationId: string): ClientJsonSchema {
         ["storeRevision", "status", "items"],
       );
     case "getStatus":
-      return objectSchema(
-        { generatedAt: nonEmptyStringSchema, items: arraySchema(statusItemSchema) },
-        ["generatedAt", "items"],
-      );
+      return statusListDataSchema;
     case "getVerification":
       return verificationDataSchema;
     case "getSummary":
       return dashboardSummaryDataSchema;
     case "listActivity":
-      return objectSchema(
-        { events: arraySchema(componentSchema("ActivityEvent")), warnings: stringArraySchema },
-        ["events", "warnings"],
-      );
+      return activityListDataSchema;
     case "listOperations":
       return objectSchema({ operations: arraySchema(componentSchema("OperationSummary")) }, [
         "operations",
@@ -3065,7 +3327,7 @@ function statusMappingsFor(
   return mappings.sort((left, right) => left.status - right.status);
 }
 
-function createMutationPlanSchema(): ClientJsonSchema {
+function createMutationPlanSchema() {
   const targetState = {
     oneOf: [
       objectSchema({ state: { const: "absent" } }, ["state"]),

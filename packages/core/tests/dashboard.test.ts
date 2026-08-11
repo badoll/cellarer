@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { dashboardSummary } from "../src/index.js";
-import { tagArtifactCollections } from "../src/store/config.js";
+import { loadConfig, saveConfig, tagArtifactCollections } from "../src/store/config.js";
 import { saveLedger } from "../src/store/ledger.js";
 import { initStore, writeMcpArtifact, writeRuleArtifact } from "../src/store/store.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
@@ -33,6 +33,8 @@ describe("dashboard summary", () => {
         desiredCount: 0,
       }),
     );
+    expect(Object.hasOwn(summary, "latestScanSummary")).toBe(true);
+    expect(summary.latestScanSummary).toBeUndefined();
   });
 
   it("requires an explicit project dir before including project coverage", async () => {
@@ -124,6 +126,28 @@ describe("dashboard summary", () => {
 
     expect(ready.agents[0]).toMatchObject({ id: "codex", status: "ready" });
     expect(missing.agents[0]).toMatchObject({ id: "claude-code", status: "not-found" });
+  });
+
+  it("retains the root own-key when agent detection cannot produce a root", async () => {
+    const config = await loadConfig(t.env, storeRoot);
+    config.customAdapters.broken = {
+      detect: { project: ["~/.ssh"] },
+      rules: { project: "{dir}/AGENTS.md" },
+    };
+    await saveConfig(t.env, storeRoot, config);
+    const project = t.path("project");
+    await t.env.fs.mkdir(project, { recursive: true });
+
+    const summary = await dashboardSummary(t.env, {
+      storeRoot,
+      scope: "project",
+      dir: project,
+      agents: ["broken"],
+      includePlanCoverage: false,
+    });
+
+    expect(summary.agents[0]?.root).toBeUndefined();
+    expect(Object.hasOwn(summary.agents[0] ?? {}, "root")).toBe(true);
   });
 
   it("uses explicit collection filters for coverage groups", async () => {

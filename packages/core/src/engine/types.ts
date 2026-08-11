@@ -20,6 +20,8 @@ import type {
 import type { MutationPresentation } from "../protocol/presentation.js";
 import type { SecretMode } from "../secrets/types.js";
 
+export type { DriftStatus, StatusItem } from "../protocol/client-types.js";
+
 export interface DistributeOptions {
   storeRoot: string;
   scope: Scope;
@@ -172,17 +174,6 @@ export interface RevertMutationContext {
 
 export interface RevertMutationResult extends RevertCallResult {
   operation: OperationResult;
-}
-
-export type DriftStatus = "ok" | "drifted" | "missing" | "broken-link";
-
-export interface StatusItem {
-  artifact: string;
-  agent: string;
-  scope: Scope;
-  capability: Capability;
-  target: string;
-  status: DriftStatus;
 }
 
 export interface StatusOptions {

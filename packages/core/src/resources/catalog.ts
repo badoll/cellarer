@@ -5,56 +5,30 @@ import { type ScanItem, scanPlan } from "../engine/scan.js";
 import { status } from "../engine/status.js";
 import type { DriftStatus, StatusItem } from "../engine/types.js";
 import type { Env } from "../env.js";
-import type { Capability, Collection, Scope } from "../model/index.js";
+import type { Capability, Scope } from "../model/index.js";
+import type {
+  AssertExact,
+  Destination,
+  ExactContract,
+  ResourceCatalogCounts,
+  ResourceCatalogItem,
+  ResourceCatalogResult,
+  ResourceState,
+  ResourceSyncTarget,
+} from "../protocol/client-types.js";
 import { loadConfig } from "../store/config.js";
 import { loadLedger } from "../store/ledger.js";
 import { listMcpArtifacts, listRuleArtifacts, listSkillArtifacts } from "../store/store.js";
-import {
-  loadResourceRecord,
-  type ResourceRevision,
-  type ResourceSourceDescriptor,
-} from "./model.js";
+import { loadResourceRecord } from "./model.js";
 
-export type ResourceState = "managed" | "discovered" | "synced" | "drifted" | "missing" | "blocked";
-
-export type Destination = "user" | "project";
-
-export interface ResourceSyncTarget {
-  agent: string;
-  destination: Destination;
-  scope: Scope;
-  target: string;
-  state: Exclude<ResourceState, "managed" | "discovered">;
-  reason?: string;
-}
-
-export interface ResourceCatalogItem {
-  id: string;
-  kind: Capability;
-  name: string;
-  state: ResourceState;
-  collections: Collection[];
-  sourcePath?: string;
-  currentRevision?: ResourceRevision;
-  provenance?: ResourceSourceDescriptor;
-  discovered?: {
-    agent: string;
-    destination: Destination;
-    source: string;
-  };
-  syncTargets: ResourceSyncTarget[];
-  secretRefs: string[];
-  lastActivityAt?: string;
-}
-
-export interface ResourceCatalogCounts {
-  managed: number;
-  discovered: number;
-  synced: number;
-  drifted: number;
-  missing: number;
-  blocked: number;
-}
+export type {
+  Destination,
+  ResourceCatalogCounts,
+  ResourceCatalogItem,
+  ResourceCatalogResult,
+  ResourceState,
+  ResourceSyncTarget,
+} from "../protocol/client-types.js";
 
 export interface ResourceCatalogOptions {
   storeRoot: string;
@@ -66,17 +40,7 @@ export interface ResourceCatalogOptions {
   includeDiscovered?: boolean;
 }
 
-export interface ResourceCatalogResult {
-  generatedAt: string;
-  resources: ResourceCatalogItem[];
-  counts: ResourceCatalogCounts;
-  warnings: string[];
-}
-
-export async function resourceCatalog(
-  env: Env,
-  opts: ResourceCatalogOptions,
-): Promise<ResourceCatalogResult> {
+async function resourceCatalogImplementation(env: Env, opts: ResourceCatalogOptions) {
   const [config, ledger, activity, ruleArtifacts, mcpArtifacts, skillArtifacts, statusItems] =
     await Promise.all([
       loadConfig(env, opts.storeRoot),
@@ -123,35 +87,39 @@ export async function resourceCatalog(
     return true;
   });
 
-  const resources: ResourceCatalogItem[] = [];
+  const resources: ReturnType<typeof catalogItem>[] = [];
   for (const { artifact, record } of filteredArtifacts) {
     const collections = config.artifacts[record.resourceId]?.collections ?? [];
     const syncTargets = statusItems
       .filter((item) => statusMatchesArtifact(item, record.resourceId))
-      .map((item) => ({
-        agent: item.agent,
-        destination: scopeToDestination(item.scope),
-        scope: item.scope,
-        target: item.target,
-        state: statusToResourceState(item.status),
-      }));
+      .map((item) =>
+        resourceSyncTarget(
+          item.agent,
+          scopeToDestination(item.scope),
+          item.scope,
+          item.target,
+          statusToResourceState(item.status),
+        ),
+      );
 
     counts.managed += 1;
     for (const target of syncTargets) counts[target.state] += 1;
 
-    resources.push({
-      id: record.resourceId,
-      kind: record.kind,
-      name: record.name,
-      state: "managed",
-      collections,
-      sourcePath: artifact.sourcePath,
-      currentRevision: record.currentRevision,
-      provenance: record.currentRevision.source,
-      syncTargets,
-      secretRefs: collectArtifactSecretRefs(ledger.owners, record.resourceId),
-      lastActivityAt: lastActivityByArtifact.get(record.resourceId),
-    });
+    resources.push(
+      catalogItem({
+        id: record.resourceId,
+        kind: record.kind,
+        name: record.name,
+        state: "managed",
+        collections,
+        sourcePath: artifact.sourcePath,
+        currentRevision: record.currentRevision,
+        provenance: record.currentRevision.source,
+        syncTargets,
+        secretRefs: collectArtifactSecretRefs(ledger.owners, record.resourceId),
+        lastActivityAt: lastActivityByArtifact.get(record.resourceId),
+      }),
+    );
   }
 
   if (shouldIncludeDiscovered(opts)) {
@@ -169,6 +137,20 @@ export async function resourceCatalog(
   };
 }
 
+export async function resourceCatalog(
+  env: Env,
+  opts: ResourceCatalogOptions,
+): Promise<ResourceCatalogResult> {
+  return resourceCatalogImplementation(env, opts);
+}
+
+export type ResourceCatalogProducerContract = AssertExact<
+  ExactContract<Awaited<ReturnType<typeof resourceCatalogImplementation>>, ResourceCatalogResult>
+>;
+export type ResourceCatalogItemProducerContract = AssertExact<
+  ExactContract<ReturnType<typeof catalogItem>, ResourceCatalogItem>
+>;
+
 function shouldIncludeDiscovered(opts: ResourceCatalogOptions): boolean {
   if (opts.includeDiscovered === false) return false;
   return !opts.collections || opts.collections.length === 0;
@@ -178,11 +160,7 @@ async function discoveredResources(
   env: Env,
   opts: ResourceCatalogOptions,
   config: Awaited<ReturnType<typeof loadConfig>>,
-): Promise<{
-  resources: ResourceCatalogItem[];
-  counts: ResourceCatalogCounts;
-  warnings: string[];
-}> {
+) {
   const destination = opts.destination ?? "user";
   const scope: Scope = destination === "project" ? "project" : "global";
   const registry = await loadRegistry(env, opts.storeRoot);
@@ -193,7 +171,7 @@ async function discoveredResources(
           .list()
           .filter((agent) => config.adapterOverrides[agent.id]?.enabled !== false)
           .map((agent) => agent.id);
-  const resources: ResourceCatalogItem[] = [];
+  const resources: ReturnType<typeof catalogItem>[] = [];
   const counts = emptyCounts();
   const warnings = [...registry.warnings];
 
@@ -224,21 +202,34 @@ function discoveredResourceItem(
   agent: string,
   destination: Destination,
   state: ResourceState,
-): ResourceCatalogItem {
-  return {
+) {
+  return catalogItem({
     id: `discovered:${agent}:${item.kind}:${item.name}:${item.source}`,
     kind: item.kind,
     name: item.name,
     state,
     collections: [],
-    discovered: {
-      agent,
-      destination,
-      source: item.source,
-    },
+    discovered: discoveredDescriptor(agent, destination, item.source),
     syncTargets: [],
     secretRefs: item.secretRefs ?? [],
-  };
+  });
+}
+
+function catalogItem(input: {
+  id: string;
+  kind: Capability;
+  name: string;
+  state: ResourceState;
+  collections: string[];
+  sourcePath?: ResourceCatalogItem["sourcePath"];
+  currentRevision?: ResourceCatalogItem["currentRevision"];
+  provenance?: ResourceCatalogItem["provenance"];
+  discovered?: ResourceCatalogItem["discovered"];
+  syncTargets: ReturnType<typeof resourceSyncTarget>[];
+  secretRefs: string[];
+  lastActivityAt?: string;
+}) {
+  return { ...input };
 }
 
 function addCounts(target: ResourceCatalogCounts, source: ResourceCatalogCounts): void {
@@ -276,7 +267,7 @@ function isConcreteArtifactId(value: string): boolean {
   return /^(rules|mcp|skills)\/[^/*,\s]+$/.test(value);
 }
 
-function emptyCounts(): ResourceCatalogCounts {
+function emptyCounts() {
   return {
     managed: 0,
     discovered: 0,
@@ -286,6 +277,37 @@ function emptyCounts(): ResourceCatalogCounts {
     blocked: 0,
   };
 }
+
+export type ResourceCatalogCountsProducerContract = AssertExact<
+  ExactContract<ReturnType<typeof emptyCounts>, ResourceCatalogCounts>
+>;
+
+function resourceSyncTarget(
+  agent: string,
+  destination: Destination,
+  scope: Scope,
+  target: string,
+  state: "synced" | "drifted" | "missing" | "blocked",
+  reason?: string,
+) {
+  const optionalReason: { reason?: string } = reason === undefined ? {} : { reason };
+  return { agent, destination, scope, target, state, ...optionalReason };
+}
+
+export type ResourceSyncTargetProducerContract = AssertExact<
+  ExactContract<ReturnType<typeof resourceSyncTarget>, ResourceSyncTarget>
+>;
+
+function discoveredDescriptor(agent: string, destination: Destination, source: string) {
+  return { agent, destination, source };
+}
+
+export type DiscoveredResourceProducerContract = AssertExact<
+  ExactContract<
+    ReturnType<typeof discoveredDescriptor>,
+    NonNullable<ResourceCatalogItem["discovered"]>
+  >
+>;
 
 function destinationToScope(destination: Destination | undefined): Scope | undefined {
   if (!destination) return undefined;

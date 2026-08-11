@@ -4,29 +4,42 @@
 import type { Env } from "../env.js";
 import { lstatOrNull } from "../fs/probe.js";
 import type { LedgerEntry } from "../model/index.js";
+import type { AssertExact, ExactContract } from "../protocol/client-types.js";
 import { loadLedger, matchesFilter } from "../store/ledger.js";
 import { fingerprintTarget } from "../target-ownership.js";
-import type { DriftStatus, StatusItem, StatusOptions } from "./types.js";
+import type { StatusItem, StatusOptions } from "./types.js";
 
-export async function status(env: Env, opts: StatusOptions): Promise<StatusItem[]> {
+async function statusImplementation(env: Env, opts: StatusOptions) {
   const ledger = await loadLedger(env, opts.storeRoot);
-  const items: StatusItem[] = [];
+  const items: ReturnType<typeof statusItem>[] = [];
 
   for (const entry of ledger.owners) {
     if (!matchesFilter(entry, opts)) continue;
-    items.push({
-      artifact: entry.artifactIds.join(", "),
-      agent: entry.agent,
-      scope: entry.scope,
-      capability: entry.capability,
-      target: entry.target,
-      status: await checkEntry(env, entry),
-    });
+    items.push(statusItem(entry, await checkEntry(env, entry)));
   }
   return items;
 }
 
-async function checkEntry(env: Env, entry: LedgerEntry): Promise<DriftStatus> {
+export async function status(env: Env, opts: StatusOptions): Promise<StatusItem[]> {
+  return statusImplementation(env, opts);
+}
+
+function statusItem(entry: LedgerEntry, status: Awaited<ReturnType<typeof checkEntry>>) {
+  return {
+    artifact: entry.artifactIds.join(", "),
+    agent: entry.agent,
+    scope: entry.scope,
+    capability: entry.capability,
+    target: entry.target,
+    status,
+  };
+}
+
+export type StatusItemProducerContract = AssertExact<
+  ExactContract<ReturnType<typeof statusItem>, StatusItem>
+>;
+
+async function checkEntry(env: Env, entry: LedgerEntry) {
   const lstat = await lstatOrNull(env, entry.target);
   if (lstat === null) return "missing";
 

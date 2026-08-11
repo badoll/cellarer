@@ -40,6 +40,17 @@ describe("discovery summary", () => {
     expect(summary.totals).toEqual({ rules: 1, mcp: 1, skills: 1 });
   });
 
+  it("retains an own undefined dir key for direct Core consumers", async () => {
+    const summary = await discoverySummary(t.env, {
+      storeRoot,
+      agents: ["codex"],
+      destination: "user",
+    });
+
+    expect(Object.hasOwn(summary, "dir")).toBe(true);
+    expect(summary.dir).toBeUndefined();
+  });
+
   it("returns project discovery only when a project dir is provided", async () => {
     const project = t.path("project");
     await t.env.fs.mkdir(project, { recursive: true });

@@ -1,6 +1,7 @@
 import { promises as fs, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   createRealEnv,
   type Env,
@@ -23,8 +24,17 @@ interface JsonSchema {
   readonly type?: string | readonly string[];
   readonly properties?: Readonly<Record<string, JsonSchema>>;
   readonly required?: readonly string[];
+  readonly exclusiveMaximum?: number;
+  readonly exclusiveMinimum?: number;
+  readonly maximum?: number;
+  readonly maxItems?: number;
+  readonly maxLength?: number;
+  readonly maxProperties?: number;
+  readonly minItems?: number;
   readonly minLength?: number;
   readonly minProperties?: number;
+  readonly minimum?: number;
+  readonly multipleOf?: number;
   readonly pattern?: string;
   readonly propertyNames?: JsonSchema;
   readonly additionalProperties?: boolean | JsonSchema;
@@ -35,7 +45,88 @@ interface JsonSchema {
   readonly if?: JsonSchema;
   readonly then?: JsonSchema;
   readonly not?: JsonSchema;
+  readonly uniqueItems?: boolean;
   readonly $ref?: string;
+}
+
+const forbiddenJsonValueNarrowingKeywords = [
+  "const",
+  "enum",
+  "exclusiveMaximum",
+  "exclusiveMinimum",
+  "maximum",
+  "maxItems",
+  "maxLength",
+  "maxProperties",
+  "minimum",
+  "minItems",
+  "minLength",
+  "minProperties",
+  "multipleOf",
+  "pattern",
+  "propertyNames",
+  "required",
+  "uniqueItems",
+] as const;
+
+function assertExactJsonValueSchemaKeys(
+  schema: JsonSchema,
+  expected: readonly (keyof JsonSchema)[],
+  path: string,
+): void {
+  const actual = Object.keys(schema).sort();
+  const allowed = [...expected].sort();
+  if (JSON.stringify(actual) !== JSON.stringify(allowed)) {
+    throw new Error(`${path}: expected only ${allowed.join(", ")}; received ${actual.join(", ")}`);
+  }
+}
+
+function assertJsonValueReference(schema: JsonSchema | undefined, path: string): void {
+  if (schema === undefined) throw new Error(`${path}: missing recursive JsonValue reference`);
+  assertExactJsonValueSchemaKeys(schema, ["$ref"], path);
+  if (schema.$ref !== "#/components/schemas/JsonValue") {
+    throw new Error(`${path}: must recursively reference JsonValue`);
+  }
+}
+
+function assertCanonicalJsonValueSchema(schema: JsonSchema): void {
+  assertExactJsonValueSchemaKeys(schema, ["oneOf"], "JsonValue");
+  if (schema.oneOf?.length !== 3) {
+    throw new Error("JsonValue: expected scalar, array, and object variants");
+  }
+  const [scalar, array, object] = schema.oneOf;
+  if (scalar === undefined || array === undefined || object === undefined) {
+    throw new Error("JsonValue: missing canonical variant");
+  }
+
+  assertExactJsonValueSchemaKeys(scalar, ["type"], "JsonValue.scalar");
+  if (JSON.stringify(scalar.type) !== JSON.stringify(["string", "number", "boolean", "null"])) {
+    throw new Error("JsonValue.scalar: unexpected scalar type set or order");
+  }
+
+  assertExactJsonValueSchemaKeys(array, ["items", "type"], "JsonValue.array");
+  if (array.type !== "array") throw new Error("JsonValue.array: expected array type");
+  assertJsonValueReference(array.items, "JsonValue.array.items");
+
+  assertExactJsonValueSchemaKeys(
+    object,
+    ["additionalProperties", "properties", "type"],
+    "JsonValue.object",
+  );
+  if (object.type !== "object") throw new Error("JsonValue.object: expected object type");
+  if (object.properties === undefined || Object.keys(object.properties).length !== 0) {
+    throw new Error("JsonValue.object: properties must remain exactly empty");
+  }
+  if (typeof object.additionalProperties !== "object") {
+    throw new Error("JsonValue.object: additionalProperties must be the recursive schema");
+  }
+  assertJsonValueReference(object.additionalProperties, "JsonValue.object.additionalProperties");
+}
+
+function schemaContainsKeyword(value: unknown, keyword: string): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  if (!Array.isArray(value) && Object.hasOwn(value, keyword)) return true;
+  return Object.values(value).some((child) => schemaContainsKeyword(child, keyword));
 }
 
 interface RuntimeRouteDefinition {
@@ -198,6 +289,91 @@ describe("local client route registry", () => {
     for (const [name, schema] of Object.entries(document.components.schemas)) {
       assertClosedJsonSchema(schema, `components.schemas.${name}`);
     }
+  });
+
+  it("publishes only the exact unconstrained recursive JsonValue structure", () => {
+    const document = createClientOpenApiDocument() as {
+      readonly components: { readonly schemas: Record<string, JsonSchema> };
+    };
+    const jsonValue = document.components.schemas.JsonValue as JsonSchema;
+
+    expect(() => assertCanonicalJsonValueSchema(jsonValue)).not.toThrow();
+    for (const keyword of forbiddenJsonValueNarrowingKeywords) {
+      expect(schemaContainsKeyword(jsonValue, keyword), keyword).toBe(false);
+    }
+  });
+
+  it("publishes every canonical agent capability scope as required", () => {
+    const document = createClientOpenApiDocument() as {
+      readonly components: { readonly schemas: Record<string, JsonSchema> };
+    };
+    const agent = document.components.schemas.Agent;
+    const capabilityScopes = agent?.properties?.capabilityScopes;
+
+    expect(agent?.required).toContain("capabilityScopes");
+    expect(capabilityScopes?.required).toEqual(["rules", "mcp", "skills"]);
+  });
+
+  it.each([
+    ["negative number", -1],
+    ["fractional number", 1.5],
+    ["zero", 0],
+    ["empty string", ""],
+    ["array", [null, -1.25, ""]],
+    ["object", { enabled: false, count: 0 }],
+    ["nested value", { values: [null, { amount: -0.5, label: "" }] }],
+  ])("accepts the canonical JsonValue runtime probe: %s", (_name, value) => {
+    const document = createClientOpenApiDocument() as {
+      readonly components: { readonly schemas: Record<string, JsonSchema> };
+    };
+
+    expect(
+      schemaErrors(
+        value,
+        document.components.schemas.JsonValue as JsonSchema,
+        document.components.schemas,
+        "$",
+      ),
+    ).toEqual([]);
+  });
+
+  it("honors a minimum mutation at the existing JSON Schema validator boundary", () => {
+    const document = createClientOpenApiDocument() as {
+      readonly components: { readonly schemas: Record<string, JsonSchema> };
+    };
+    const jsonValue = structuredClone(document.components.schemas.JsonValue);
+    const scalar = jsonValue.oneOf?.[0];
+    if (scalar === undefined) throw new Error("JsonValue scalar variant is missing");
+    Object.assign(scalar, { minimum: 0 });
+    expect(() => assertCanonicalJsonValueSchema(jsonValue)).toThrow(/minimum/u);
+
+    expect(schemaErrors(-1, jsonValue, document.components.schemas, "$.")).not.toEqual([]);
+  });
+
+  it("rejects minLength drift and honors it at the JSON Schema validator boundary", () => {
+    const document = createClientOpenApiDocument() as {
+      readonly components: { readonly schemas: Record<string, JsonSchema> };
+    };
+    const jsonValue = structuredClone(document.components.schemas.JsonValue);
+    const scalar = jsonValue.oneOf?.[0];
+    if (scalar === undefined) throw new Error("JsonValue scalar variant is missing");
+    Object.assign(scalar, { minLength: 1 });
+
+    expect(() => assertCanonicalJsonValueSchema(jsonValue)).toThrow(/minLength/u);
+    expect(schemaErrors("", jsonValue, document.components.schemas, "$")).not.toEqual([]);
+  });
+
+  it("honors a minItems mutation at the existing JSON Schema validator boundary", () => {
+    const document = createClientOpenApiDocument() as {
+      readonly components: { readonly schemas: Record<string, JsonSchema> };
+    };
+    const jsonValue = structuredClone(document.components.schemas.JsonValue);
+    const array = jsonValue.oneOf?.[1];
+    if (array === undefined) throw new Error("JsonValue array variant is missing");
+    Object.assign(array, { minItems: 1 });
+    expect(() => assertCanonicalJsonValueSchema(jsonValue)).toThrow(/minItems/u);
+
+    expect(schemaErrors([], jsonValue, document.components.schemas, "$.")).not.toEqual([]);
   });
 
   it("publishes an explicit closed success DTO for every implemented operation", () => {
@@ -748,6 +924,33 @@ function schemaErrors(
   if (types.length > 0 && !types.some((type) => matchesJsonType(value, type))) {
     return [`${path}: expected ${types.join("|")}`];
   }
+  if (typeof value === "number" && schema.minimum !== undefined && value < schema.minimum) {
+    return [`${path}: expected a number greater than or equal to ${schema.minimum}`];
+  }
+  if (typeof value === "number" && schema.maximum !== undefined && value > schema.maximum) {
+    return [`${path}: expected a number less than or equal to ${schema.maximum}`];
+  }
+  if (
+    typeof value === "number" &&
+    schema.exclusiveMinimum !== undefined &&
+    value <= schema.exclusiveMinimum
+  ) {
+    return [`${path}: expected a number greater than ${schema.exclusiveMinimum}`];
+  }
+  if (
+    typeof value === "number" &&
+    schema.exclusiveMaximum !== undefined &&
+    value >= schema.exclusiveMaximum
+  ) {
+    return [`${path}: expected a number less than ${schema.exclusiveMaximum}`];
+  }
+  if (
+    typeof value === "number" &&
+    schema.multipleOf !== undefined &&
+    !Number.isInteger(value / schema.multipleOf)
+  ) {
+    return [`${path}: expected a multiple of ${schema.multipleOf}`];
+  }
   if (typeof value === "string") {
     if (schema.minLength !== undefined && value.length < schema.minLength) {
       return [`${path}: expected at least ${schema.minLength} characters`];
@@ -755,8 +958,25 @@ function schemaErrors(
     if (schema.pattern !== undefined && !new RegExp(schema.pattern).test(value)) {
       return [`${path}: value does not match pattern`];
     }
+    if (schema.maxLength !== undefined && value.length > schema.maxLength) {
+      return [`${path}: expected at most ${schema.maxLength} characters`];
+    }
   }
   if (Array.isArray(value)) {
+    if (schema.minItems !== undefined && value.length < schema.minItems) {
+      return [`${path}: expected at least ${schema.minItems} items`];
+    }
+    if (schema.maxItems !== undefined && value.length > schema.maxItems) {
+      return [`${path}: expected at most ${schema.maxItems} items`];
+    }
+    if (
+      schema.uniqueItems === true &&
+      value.some((item, index) =>
+        value.slice(0, index).some((other) => isDeepStrictEqual(item, other)),
+      )
+    ) {
+      return [`${path}: expected unique items`];
+    }
     const itemSchema = schema.items;
     return itemSchema
       ? value.flatMap((child, index) =>
@@ -768,6 +988,9 @@ function schemaErrors(
     const record = value as Record<string, unknown>;
     if (schema.minProperties !== undefined && Object.keys(record).length < schema.minProperties) {
       return [`${path}: expected at least ${schema.minProperties} properties`];
+    }
+    if (schema.maxProperties !== undefined && Object.keys(record).length > schema.maxProperties) {
+      return [`${path}: expected at most ${schema.maxProperties} properties`];
     }
     const errors = (schema.required ?? [])
       .filter((key) => !Object.hasOwn(record, key))

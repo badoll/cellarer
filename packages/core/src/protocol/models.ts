@@ -1,91 +1,58 @@
-export const MUTATION_PLAN_SCHEMA_VERSION = 1 as const;
-export const MUTATION_AUTHORIZATION_SCHEMA_VERSION = 1 as const;
-export const MUTATION_AUTHORIZATION_ALGORITHM = "HMAC-SHA-256" as const;
-export const EXECUTABLE_MUTATION_PLAN_DOMAIN = "executable-plan-v1" as const;
-export const DURABLE_MUTATION_PLAN_DOMAIN = "durable-plan-v1" as const;
-export const OPERATION_JOURNAL_DOMAIN = "operation-journal-v1" as const;
+import type {
+  ActionPrecondition,
+  CanonicalJsonObject,
+  MutationAuthorizationDomain,
+  MutationAuthorizationEnvelope,
+  MutationConflict,
+  MutationOperation,
+  MutationPlanInput,
+  OperationJournalStatus,
+  PlanExpiry,
+  StoreRevision,
+  TargetStateReceipt,
+} from "./client-types.js";
+
+export type {
+  ActionPrecondition,
+  CanonicalJsonObject,
+  CanonicalJsonPrimitive,
+  CanonicalJsonValue,
+  ExpiredPlanConflict,
+  InterruptedOperationConflict,
+  InvalidPlanConflict,
+  InvalidPlanDigestConflict,
+  LockConflict,
+  LockOwnerEvidence,
+  ManualRecoveryRequiredConflict,
+  MutationAuthorizationDomain,
+  MutationAuthorizationEnvelope,
+  MutationConflict,
+  MutationOperation,
+  MutationPlan,
+  MutationPlanAction,
+  MutationPlanInput,
+  OperationJournalStatus,
+  PartialFailureConflict,
+  PlanExpiry,
+  StaleRevisionConflict,
+  StoreRevision,
+  TargetPreconditionConflict,
+  TargetStateReceipt,
+} from "./client-types.js";
+
+export const MUTATION_PLAN_SCHEMA_VERSION = 1 as const satisfies MutationPlanInput["schemaVersion"];
+export const MUTATION_AUTHORIZATION_SCHEMA_VERSION =
+  1 as const satisfies MutationAuthorizationEnvelope["schemaVersion"];
+export const MUTATION_AUTHORIZATION_ALGORITHM =
+  "HMAC-SHA-256" as const satisfies MutationAuthorizationEnvelope["algorithm"];
+export const EXECUTABLE_MUTATION_PLAN_DOMAIN =
+  "executable-plan-v1" as const satisfies MutationAuthorizationDomain;
+export const DURABLE_MUTATION_PLAN_DOMAIN =
+  "durable-plan-v1" as const satisfies MutationAuthorizationDomain;
+export const OPERATION_JOURNAL_DOMAIN =
+  "operation-journal-v1" as const satisfies MutationAuthorizationDomain;
 export const OPERATION_JOURNAL_SCHEMA_VERSION = 1 as const;
 export const OPERATION_RECEIPT_SCHEMA_VERSION = 1 as const;
-
-export type StoreRevision = number;
-export type MutationOperation =
-  | "initialize"
-  | "apply"
-  | "revert"
-  | "settings"
-  | "secret-metadata"
-  | "store-import"
-  | "resource-lifecycle"
-  | "sync-uninstall";
-
-export type CanonicalJsonPrimitive = null | boolean | number | string;
-export type CanonicalJsonValue =
-  | CanonicalJsonPrimitive
-  | readonly CanonicalJsonValue[]
-  | CanonicalJsonObject;
-export interface CanonicalJsonObject {
-  readonly [key: string]: CanonicalJsonValue;
-}
-
-export type TargetStateReceipt =
-  | { readonly state: "absent" }
-  | {
-      readonly state: "present";
-      readonly fingerprint: string;
-      readonly recoverySnapshot?: string;
-      readonly recoverySnapshotDigest?: string;
-      readonly recoverySnapshotMode?: number;
-    };
-
-export interface ActionPrecondition {
-  readonly actionId: string;
-  readonly target: string;
-  readonly expected: TargetStateReceipt;
-}
-
-export interface MutationPlanAction {
-  readonly actionId: string;
-  readonly kind: string;
-  readonly target: string;
-  readonly payload: CanonicalJsonObject;
-  readonly postcondition?: TargetStateReceipt;
-}
-
-export type PlanExpiry =
-  | { readonly policy: "none" }
-  | { readonly policy: "expires-at"; readonly expiresAt: string };
-
-export interface MutationPlanInput {
-  readonly schemaVersion: typeof MUTATION_PLAN_SCHEMA_VERSION;
-  readonly planId: string;
-  readonly operation: MutationOperation;
-  readonly baseRevision: StoreRevision;
-  readonly normalizedInputs: CanonicalJsonObject;
-  readonly targetPreconditions: readonly ActionPrecondition[];
-  readonly actions: readonly MutationPlanAction[];
-  readonly expires: PlanExpiry;
-}
-
-export type MutationAuthorizationDomain =
-  | typeof EXECUTABLE_MUTATION_PLAN_DOMAIN
-  | typeof DURABLE_MUTATION_PLAN_DOMAIN
-  | typeof OPERATION_JOURNAL_DOMAIN;
-
-export interface MutationAuthorizationEnvelope<
-  Domain extends MutationAuthorizationDomain = MutationAuthorizationDomain,
-> {
-  readonly schemaVersion: typeof MUTATION_AUTHORIZATION_SCHEMA_VERSION;
-  readonly domain: Domain;
-  readonly algorithm: typeof MUTATION_AUTHORIZATION_ALGORITHM;
-  readonly authorityId: string;
-  readonly authorityEpoch: number;
-  readonly seal: string;
-}
-
-export interface MutationPlan extends MutationPlanInput {
-  readonly digest: string;
-  readonly authorization: MutationAuthorizationEnvelope<typeof EXECUTABLE_MUTATION_PLAN_DOMAIN>;
-}
 
 export interface DurableMutationPlanAction {
   readonly actionId: string;
@@ -113,98 +80,6 @@ export interface DurableMutationPlan {
   readonly durableDigest: string;
   readonly authorization: MutationAuthorizationEnvelope<typeof DURABLE_MUTATION_PLAN_DOMAIN>;
 }
-
-export interface LockOwnerEvidence {
-  readonly operationId: string;
-  readonly processId: number;
-  readonly hostname: string;
-  readonly acquiredAt: string;
-}
-
-export interface LockConflict {
-  readonly code: "LOCK_CONFLICT";
-  readonly message: string;
-  readonly owner: LockOwnerEvidence;
-}
-
-export interface StaleRevisionConflict {
-  readonly code: "STALE_REVISION";
-  readonly message: string;
-  readonly planId: string;
-  readonly expectedRevision: StoreRevision;
-  readonly actualRevision: StoreRevision;
-  readonly replanRequired: true;
-}
-
-export interface ExpiredPlanConflict {
-  readonly code: "EXPIRED_PLAN";
-  readonly message: string;
-  readonly planId: string;
-  readonly expiredAt: string;
-}
-
-export interface InvalidPlanDigestConflict {
-  readonly code: "INVALID_PLAN_DIGEST";
-  readonly message: string;
-  readonly planId: string;
-  readonly expectedDigest: string;
-  readonly actualDigest: string;
-}
-
-export interface InvalidPlanConflict {
-  readonly code: "INVALID_PLAN";
-  readonly message: "mutation plan is invalid";
-}
-
-export interface TargetPreconditionConflict {
-  readonly code: "TARGET_PRECONDITION_CONFLICT";
-  readonly message: string;
-  readonly planId: string;
-  readonly actionId: string;
-  readonly target: string;
-  readonly expected: TargetStateReceipt;
-  readonly actual: TargetStateReceipt;
-}
-
-export type OperationJournalStatus =
-  | "prepared"
-  | "executing"
-  | "publishing-state"
-  | "completed"
-  | "recovery-required";
-
-export interface InterruptedOperationConflict {
-  readonly code: "INTERRUPTED_OPERATION";
-  readonly message: string;
-  readonly operationId: string;
-  readonly journalStatus: OperationJournalStatus;
-}
-
-export interface PartialFailureConflict {
-  readonly code: "PARTIAL_FAILURE";
-  readonly message: string;
-  readonly operationId: string;
-  readonly failedActionIds: readonly string[];
-}
-
-export interface ManualRecoveryRequiredConflict {
-  readonly code: "MANUAL_RECOVERY_REQUIRED";
-  readonly message: string;
-  readonly operationId: string;
-  readonly targets: readonly string[];
-  readonly guidance: string;
-}
-
-export type MutationConflict =
-  | LockConflict
-  | InvalidPlanConflict
-  | StaleRevisionConflict
-  | ExpiredPlanConflict
-  | InvalidPlanDigestConflict
-  | TargetPreconditionConflict
-  | InterruptedOperationConflict
-  | PartialFailureConflict
-  | ManualRecoveryRequiredConflict;
 
 export interface OperationActionFailure {
   readonly code: string;

@@ -1,4 +1,4 @@
-import type { Capability, MutationPlan, ScanItem, ScanPlan } from "@cellarer/core";
+import type { Capability, MutationPlan, ScanItem, ScanPlan } from "@cellarer/core/client-api";
 import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "./api.js";
 import { readApiJson } from "./api-state.js";

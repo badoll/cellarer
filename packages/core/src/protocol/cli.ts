@@ -1,21 +1,10 @@
+import type { CliErrorCode } from "./client-types.js";
+
+export type { CliErrorCode } from "./client-types.js";
+
 export const CLI_PROTOCOL_VERSION = "1.0" as const;
 
 export type CliProtocolVersion = typeof CLI_PROTOCOL_VERSION;
-
-export type CliErrorCode =
-  | "INVALID_USAGE"
-  | "INVALID_INPUT"
-  | "INPUT_REQUIRED"
-  | "INPUT_AMBIGUITY"
-  | "POLICY_VIOLATION"
-  | "DOMAIN_VALIDATION_FAILED"
-  | "STALE_REVISION"
-  | "LOCK_CONFLICT"
-  | "TARGET_CONFLICT"
-  | "EXECUTION_FAILED"
-  | "PARTIAL_FAILURE"
-  | "RECOVERY_REQUIRED"
-  | "INTERNAL_ERROR";
 
 export interface CliWarning {
   readonly code: string;

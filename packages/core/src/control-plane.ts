@@ -10,7 +10,17 @@ import {
   verify,
 } from "./engine/verification.js";
 import type { Env } from "./env.js";
-import type { Capability, Scope } from "./model/index.js";
+import type { Scope } from "./model/index.js";
+import type {
+  AssertExact,
+  ControlPlaneAgentDto,
+  ControlPlaneAgentListDto,
+  ControlPlaneAgentTarget,
+  ControlPlaneResourceDto,
+  ControlPlaneResourceListDto,
+  ControlPlaneValidationIssue,
+  ExactContract,
+} from "./protocol/client-types.js";
 import { listOperationReceipts, readOperationReceipt } from "./protocol/journal.js";
 import type { OperationReceipt } from "./protocol/models.js";
 import { readStoreRevision } from "./protocol/store-revision.js";
@@ -19,7 +29,6 @@ import {
   type ResourceCatalogItem,
   type ResourceCatalogOptions,
   type ResourceState,
-  type ResourceSyncTarget,
   resourceCatalog,
 } from "./resources/catalog.js";
 import {
@@ -36,50 +45,30 @@ import {
   projectPublicControlPlaneConfig,
 } from "./store/config.js";
 
-export interface ControlPlaneValidationIssue {
-  readonly path: string;
-  readonly message: string;
+export type {
+  ControlPlaneAgentDto,
+  ControlPlaneAgentListDto,
+  ControlPlaneAgentTarget,
+  ControlPlaneResourceDesiredUsage,
+  ControlPlaneResourceDto,
+  ControlPlaneResourceListDto,
+  ControlPlaneResourceValidation,
+  ControlPlaneValidationIssue,
+} from "./protocol/client-types.js";
+
+type ReadonlyProducer<Value> = { readonly [Key in keyof Value]: Value[Key] };
+
+function readonlyProducer<Value>(value: Value): ReadonlyProducer<Value> {
+  return value as ReadonlyProducer<Value>;
 }
 
-export interface ControlPlaneResourceValidation {
-  readonly status: "valid" | "warning" | "invalid";
-  readonly issues: readonly ControlPlaneValidationIssue[];
-}
-
-export interface ControlPlaneResourceDesiredUsage {
-  readonly collection: string;
-}
-
-export interface ControlPlaneResourceDto {
-  readonly id: string;
-  readonly kind: Capability;
-  readonly name: string;
-  readonly source: string;
-  readonly state: ResourceState;
-  readonly currentRevision?: ResourceCatalogItem["currentRevision"];
-  readonly provenance?: ResourceCatalogItem["provenance"];
-  readonly discovered?: ResourceCatalogItem["discovered"];
-  readonly membership: { readonly collections: readonly string[] };
-  readonly selection: { readonly desired: boolean; readonly collections: readonly string[] };
-  readonly validation: ControlPlaneResourceValidation;
-  readonly secretReferenceNames: readonly string[];
-  readonly usage: {
-    readonly desired: readonly ControlPlaneResourceDesiredUsage[];
-    readonly applied: readonly ResourceSyncTarget[];
-  };
-  readonly lastActivityAt?: string;
+function readonlyList<Value>(values: Value[]): readonly Value[] {
+  return values;
 }
 
 export interface ControlPlaneResourceQuery extends ResourceCatalogOptions {
   readonly states?: readonly ResourceState[];
   readonly sources?: readonly string[];
-}
-
-export interface ControlPlaneResourceListDto {
-  readonly generatedAt: string;
-  readonly resources: readonly ControlPlaneResourceDto[];
-  readonly counts: ResourceCatalogCounts;
-  readonly warnings: readonly string[];
 }
 
 export interface ControlPlaneResourceDetailDto {
@@ -91,40 +80,11 @@ export interface ControlPlaneResourceDetailOptions extends ControlPlaneResourceQ
   readonly resourceId: string;
 }
 
-export interface ControlPlaneAgentTarget {
-  readonly capability: Capability;
-  readonly scope: Scope;
-  readonly path: string;
-}
-
-export interface ControlPlaneAgentDto {
-  readonly id: string;
-  readonly displayName: string;
-  readonly adapterKind: "built-in" | "custom";
-  readonly supported: true;
-  readonly detected: boolean;
-  readonly configured: boolean;
-  readonly enabled: boolean;
-  readonly detectionEvidence: { readonly root?: string };
-  readonly capabilities: readonly Capability[];
-  readonly capabilityScopes: Readonly<Record<Capability, readonly Scope[]>>;
-  readonly targets: readonly ControlPlaneAgentTarget[];
-  readonly validationIssues: readonly ControlPlaneValidationIssue[];
-}
-
 export interface ControlPlaneAgentOptions {
   readonly storeRoot: string;
   readonly scope: Scope;
   readonly dir?: string;
   readonly agents?: readonly string[];
-}
-
-export interface ControlPlaneAgentListDto {
-  readonly storeRoot: string;
-  readonly scope: Scope;
-  readonly dir?: string;
-  readonly agents: readonly ControlPlaneAgentDto[];
-  readonly warnings: readonly string[];
 }
 
 export interface ControlPlaneAgentDetailOptions extends ControlPlaneAgentOptions {
@@ -220,10 +180,7 @@ export interface ControlPlaneOperationDetailDto {
     | null;
 }
 
-export async function listControlPlaneResources(
-  env: Env,
-  opts: ControlPlaneResourceQuery,
-): Promise<ControlPlaneResourceListDto> {
+async function listControlPlaneResourcesImplementation(env: Env, opts: ControlPlaneResourceQuery) {
   const [catalog, config] = await Promise.all([
     resourceCatalog(env, opts),
     loadConfig(env, opts.storeRoot),
@@ -235,13 +192,27 @@ export async function listControlPlaneResources(
     .map((resource) => resourceDto(resource, selectedCollections))
     .filter((resource) => !opts.states?.length || matchesResourceState(resource, opts.states))
     .filter((resource) => !opts.sources?.length || opts.sources.includes(resource.source));
-  return {
+  return readonlyProducer({
     generatedAt: catalog.generatedAt,
-    resources,
+    resources: readonlyList(resources),
     counts: countResources(resources),
-    warnings: catalog.warnings,
-  };
+    warnings: readonlyList(catalog.warnings),
+  });
 }
+
+export async function listControlPlaneResources(
+  env: Env,
+  opts: ControlPlaneResourceQuery,
+): Promise<ControlPlaneResourceListDto> {
+  return listControlPlaneResourcesImplementation(env, opts);
+}
+
+export type ControlPlaneResourceListProducerContract = AssertExact<
+  ExactContract<
+    Awaited<ReturnType<typeof listControlPlaneResourcesImplementation>>,
+    ControlPlaneResourceListDto
+  >
+>;
 
 function matchesResourceState(
   resource: ControlPlaneResourceDto,
@@ -265,44 +236,76 @@ export async function showControlPlaneResource(
   };
 }
 
-export async function listControlPlaneAgents(
-  env: Env,
-  opts: ControlPlaneAgentOptions,
-): Promise<ControlPlaneAgentListDto> {
+async function listControlPlaneAgentsImplementation(env: Env, opts: ControlPlaneAgentOptions) {
   const [report, config, packaged] = await Promise.all([
     doctor(env, { ...opts, agents: opts.agents ? [...opts.agents] : undefined }),
     loadConfig(env, opts.storeRoot),
     packagedConfigText(env).then(parsePackagedConfigForSettings),
   ]);
   const builtinIds = new Set(Object.keys(packaged.builtinAdapters));
-  return {
+  const agents = report.agents.map((agent) => agentDto(agent, config, builtinIds));
+  return readonlyProducer({
     storeRoot: opts.storeRoot,
     scope: opts.scope,
     ...(opts.dir ? { dir: opts.dir } : {}),
-    agents: report.agents.map((agent) => ({
-      id: agent.id,
-      displayName: agent.displayName,
-      adapterKind: builtinIds.has(agent.id) ? "built-in" : "custom",
-      supported: true,
-      detected: agent.detected,
-      configured:
-        Object.hasOwn(config.adapterOverrides, agent.id) ||
-        Object.hasOwn(config.customAdapters, agent.id),
-      enabled: agent.enabled,
-      detectionEvidence: agent.root ? { root: agent.root } : {},
-      capabilities: agent.supportedCapabilities,
-      capabilityScopes: agent.capabilities,
-      targets: agentTargets(agent.scope, agent.paths),
-      validationIssues: [
+    agents: readonlyList(agents),
+    warnings: readonlyList(report.warnings),
+  });
+}
+
+export async function listControlPlaneAgents(
+  env: Env,
+  opts: ControlPlaneAgentOptions,
+): Promise<ControlPlaneAgentListDto> {
+  return listControlPlaneAgentsImplementation(env, opts);
+}
+
+function agentDto(
+  agent: Awaited<ReturnType<typeof doctor>>["agents"][number],
+  config: Awaited<ReturnType<typeof loadConfig>>,
+  builtinIds: ReadonlySet<string>,
+) {
+  const detectionEvidence: { readonly root?: string } = agent.root ? { root: agent.root } : {};
+  const adapterKind = builtinIds.has(agent.id) ? ("built-in" as const) : ("custom" as const);
+  return readonlyProducer({
+    id: agent.id,
+    displayName: agent.displayName,
+    adapterKind,
+    supported: true as const,
+    detected: agent.detected,
+    configured:
+      Object.hasOwn(config.adapterOverrides, agent.id) ||
+      Object.hasOwn(config.customAdapters, agent.id),
+    enabled: agent.enabled,
+    detectionEvidence,
+    capabilities: readonlyList(agent.supportedCapabilities),
+    capabilityScopes: readonlyProducer({
+      rules: readonlyList(agent.capabilities.rules),
+      mcp: readonlyList(agent.capabilities.mcp),
+      skills: readonlyList(agent.capabilities.skills),
+    }),
+    targets: readonlyList(agentTargets(agent.scope, agent.paths)),
+    validationIssues: readonlyList(
+      [
         ...agent.warnings.map((message) => ({ path: agent.id, message })),
         ...agent.checks
           .filter((check) => check.status !== "ok")
           .map((check) => ({ path: check.path ?? check.id, message: check.message })),
-      ],
-    })),
-    warnings: report.warnings,
-  };
+      ].map((issue) => readonlyProducer(issue)),
+    ),
+  });
 }
+
+export type ControlPlaneAgentDtoProducerContract = AssertExact<
+  ExactContract<ReturnType<typeof agentDto>, ControlPlaneAgentDto>
+>;
+
+export type ControlPlaneAgentListProducerContract = AssertExact<
+  ExactContract<
+    Awaited<ReturnType<typeof listControlPlaneAgentsImplementation>>,
+    ControlPlaneAgentListDto
+  >
+>;
 
 export async function showControlPlaneAgent(
   env: Env,
@@ -427,25 +430,20 @@ export async function showControlPlaneOperation(
   };
 }
 
-function resourceDto(
-  resource: ResourceCatalogItem,
-  selectedCollections: readonly string[],
-): ControlPlaneResourceDto {
+function resourceDto(resource: ResourceCatalogItem, selectedCollections: readonly string[]) {
   const selected = resource.collections.filter((collection) =>
     selectedCollections.includes(collection),
   );
-  const issues: ControlPlaneValidationIssue[] = resource.syncTargets
+  const issues = resource.syncTargets
     .filter((target) => target.state !== "synced")
-    .map((target) => ({
-      path: target.target,
-      message: target.reason ?? `target is ${target.state}`,
-    }));
+    .map((target) => validationIssue(target.target, target.reason ?? `target is ${target.state}`));
   if (resource.state === "blocked" && issues.length === 0) {
-    issues.push({ path: resource.id, message: "resource discovery is blocked" });
+    issues.push(validationIssue(resource.id, "resource discovery is blocked"));
   }
-  const validationStatus =
+  const validationStatus: "valid" | "warning" | "invalid" =
     resource.state === "blocked" ? "invalid" : issues.length > 0 ? "warning" : "valid";
-  return {
+  const desiredUsage = selected.map((collection) => readonlyProducer({ collection }));
+  return readonlyProducer({
     id: resource.id,
     kind: resource.kind,
     name: resource.name,
@@ -454,17 +452,24 @@ function resourceDto(
     ...(resource.currentRevision ? { currentRevision: resource.currentRevision } : {}),
     ...(resource.provenance ? { provenance: resource.provenance } : {}),
     ...(resource.discovered ? { discovered: resource.discovered } : {}),
-    membership: { collections: resource.collections },
-    selection: { desired: selected.length > 0, collections: selected },
-    validation: { status: validationStatus, issues },
-    secretReferenceNames: resource.secretRefs,
-    usage: {
-      desired: selected.map((collection) => ({ collection })),
-      applied: resource.syncTargets,
-    },
+    membership: readonlyProducer({ collections: readonlyList(resource.collections) }),
+    selection: readonlyProducer({
+      desired: selected.length > 0,
+      collections: readonlyList(selected),
+    }),
+    validation: readonlyProducer({ status: validationStatus, issues: readonlyList(issues) }),
+    secretReferenceNames: readonlyList(resource.secretRefs),
+    usage: readonlyProducer({
+      desired: readonlyList(desiredUsage),
+      applied: readonlyList(resource.syncTargets),
+    }),
     ...(resource.lastActivityAt ? { lastActivityAt: resource.lastActivityAt } : {}),
-  };
+  });
 }
+
+export type ControlPlaneResourceDtoProducerContract = AssertExact<
+  ExactContract<ReturnType<typeof resourceDto>, ControlPlaneResourceDto>
+>;
 
 function resourceSource(resource: ResourceCatalogItem): string {
   const provenance = resource.provenance;
@@ -478,8 +483,8 @@ function resourceSource(resource: ResourceCatalogItem): string {
   );
 }
 
-function countResources(resources: readonly ControlPlaneResourceDto[]): ResourceCatalogCounts {
-  const counts: ResourceCatalogCounts = {
+function countResources(resources: readonly ControlPlaneResourceDto[]) {
+  const counts = {
     managed: 0,
     discovered: 0,
     synced: 0,
@@ -494,16 +499,36 @@ function countResources(resources: readonly ControlPlaneResourceDto[]): Resource
   return counts;
 }
 
+export type ControlPlaneResourceCountsProducerContract = AssertExact<
+  ExactContract<ReturnType<typeof countResources>, ResourceCatalogCounts>
+>;
+
 function agentTargets(
   scope: Scope,
   paths: { readonly rules?: string; readonly mcp?: string; readonly skillsDir?: string },
-): ControlPlaneAgentTarget[] {
+) {
   return [
-    ...(paths.rules ? [{ capability: "rules" as const, scope, path: paths.rules }] : []),
-    ...(paths.mcp ? [{ capability: "mcp" as const, scope, path: paths.mcp }] : []),
-    ...(paths.skillsDir ? [{ capability: "skills" as const, scope, path: paths.skillsDir }] : []),
+    ...(paths.rules ? [agentTarget("rules", scope, paths.rules)] : []),
+    ...(paths.mcp ? [agentTarget("mcp", scope, paths.mcp)] : []),
+    ...(paths.skillsDir ? [agentTarget("skills", scope, paths.skillsDir)] : []),
   ];
 }
+
+function agentTarget(capability: "rules" | "mcp" | "skills", scope: Scope, path: string) {
+  return readonlyProducer({ capability, scope, path });
+}
+
+export type ControlPlaneAgentTargetProducerContract = AssertExact<
+  ExactContract<ReturnType<typeof agentTarget>, ControlPlaneAgentTarget>
+>;
+
+function validationIssue(path: string, message: string) {
+  return readonlyProducer({ path, message });
+}
+
+export type ControlPlaneValidationIssueProducerContract = AssertExact<
+  ExactContract<ReturnType<typeof validationIssue>, ControlPlaneValidationIssue>
+>;
 
 function collectionDtos(config: CellarerConfig): ControlPlaneCollectionDto[] {
   const names = new Set([

@@ -2,9 +2,24 @@ import { join } from "node:path";
 import { z } from "zod";
 import type { Env } from "../env.js";
 import type { Artifact, ArtifactKind } from "../model/index.js";
+import type {
+  AssertExact,
+  ExactContract,
+  ResourceRevision,
+  ResourceSourceDescriptor,
+  ResourceValidationCheck,
+  ResourceValidationEvidence,
+} from "../protocol/client-types.js";
 import { scanTextForSecrets } from "../secrets/detector.js";
 import { captureAnchoredSafeRecursiveSource } from "../secrets/safe-tree.js";
 import { sha256 } from "../store/checksum.js";
+
+export type {
+  ResourceRevision,
+  ResourceSourceDescriptor,
+  ResourceValidationCheck,
+  ResourceValidationEvidence,
+} from "../protocol/client-types.js";
 
 export const RESOURCE_MODEL_SCHEMA_VERSION = 1 as const;
 
@@ -91,16 +106,12 @@ export const resourceSourceDescriptorSchema = z.discriminatedUnion("type", [
   urlSourceSchema,
 ]);
 
-export type ResourceSourceDescriptor = z.infer<typeof resourceSourceDescriptorSchema>;
-
 export const resourceValidationCheckSchema = z.enum([
   "content-fingerprint",
   "manifest",
   "adapter-compatibility",
   "secret-scan",
 ]);
-
-export type ResourceValidationCheck = z.infer<typeof resourceValidationCheckSchema>;
 
 export const resourceValidationEvidenceSchema = z
   .object({
@@ -126,8 +137,6 @@ export const resourceValidationEvidenceSchema = z
     }
   });
 
-export type ResourceValidationEvidence = z.infer<typeof resourceValidationEvidenceSchema>;
-
 export const resourceRevisionSchema = z
   .object({
     id: fingerprintSchema,
@@ -137,7 +146,23 @@ export const resourceRevisionSchema = z
   })
   .strict();
 
-export type ResourceRevision = z.infer<typeof resourceRevisionSchema>;
+type ExactSchema<Schema extends z.ZodType, Contract> =
+  ExactContract<z.input<Schema>, Contract> extends true
+    ? ExactContract<z.output<Schema>, Contract>
+    : false;
+
+export type ResourceSourceDescriptorSchemaContract = AssertExact<
+  ExactSchema<typeof resourceSourceDescriptorSchema, ResourceSourceDescriptor>
+>;
+export type ResourceValidationCheckSchemaContract = AssertExact<
+  ExactSchema<typeof resourceValidationCheckSchema, ResourceValidationCheck>
+>;
+export type ResourceValidationEvidenceSchemaContract = AssertExact<
+  ExactSchema<typeof resourceValidationEvidenceSchema, ResourceValidationEvidence>
+>;
+export type ResourceRevisionSchemaContract = AssertExact<
+  ExactSchema<typeof resourceRevisionSchema, ResourceRevision>
+>;
 
 export const resourceRecordSchema = z
   .object({

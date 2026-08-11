@@ -21,9 +21,13 @@
 
 `@cellarer/core/client-api` will point directly to a leaf module whose value and type imports are themselves portable. The root barrel may re-export it for Node callers, but browser code must import the subpath. A new package was rejected because it would add release/version coordination without adding an ownership boundary.
 
-### Enforce portability at the built artifact
+### Enforce portability across the real runtime graph and source/type closure
 
-A production Vite build with `write: false` will inspect emitted module provenance and require that Core contribution equal the approved portable module set. Source grep alone was rejected because type erasure, package conditions, and bundler resolution can change the actual graph.
+A production Vite build with `write: false` will inspect emitted module provenance and require that Core contribution equal the approved portable module set. Every runtime module with a physical real path outside `node_modules` is an independent scan seed, including sibling, workspace, and other out-of-root modules; its violations are unioned with the recursively resolved TypeScript source/type closure. A safe TypeScript alias therefore cannot hide a dangerous Vite runtime target, and a safe Vite target cannot hide a dangerous erased type edge. Inspectable virtual executable modules are scanned and uninspectable first-party virtual modules fail closed. Source grep alone was rejected because type erasure, package conditions, aliases, and bundler resolution can change the actual graph.
+
+### Correct OpenAPI metadata parity exposed by the split
+
+The new exactness checks compare OpenAPI component schemas with canonical Core DTOs and runtime producers. `Agent.capabilityScopes` therefore requires `rules`, `mcp`, and `skills`, matching the three fields always returned by the server. Retaining the previous looser schema was rejected because it would preserve machine-contract drift. This is an OpenAPI metadata correction only: it changes no route, request, operational response payload, or protocol version.
 
 ### Keep DTO helpers pure
 
@@ -32,6 +36,7 @@ The subpath may use types and deterministic pure transformations. It must not im
 ## Risks / Trade-offs
 
 - **[Risk] Future DTO growth imports a Node-only type through a value edge.** → Test the emitted graph and direct dependency closure on every build.
+- **[Compatibility] A schema-only consumer may previously have accepted an Agent missing one capability-scope field.** → Tighten the schema to the shape the canonical producer already always emits and cover it with compile-time and runtime OpenAPI parity tests.
 - **[Trade-off] More public subpaths require deliberate API stewardship.** → Start with one minimal subpath and add roles only when a real consumer requires them.
 
 ## Migration Plan

@@ -23,6 +23,7 @@ import {
   withCurrentMutationAuthorityLease,
 } from "../protocol/canonical.js";
 import { CLIENT_API_MAX_REQUEST_BODY_BYTES } from "../protocol/client.js";
+import type { AssertExact, ExactContract, ScanItem, ScanPlan } from "../protocol/client-types.js";
 import { executeMutationPlan, invalidPlanResult, targetState } from "../protocol/execute.js";
 import type {
   CanonicalJsonObject,
@@ -68,6 +69,8 @@ import {
   writeRuleArtifact,
 } from "../store/store.js";
 
+export type { ScanItem, ScanPlan } from "../protocol/client-types.js";
+
 // 冲突策略:库房已有同名制品时的处理。
 //   keep-theirs:用扫描来的覆盖库房(默认,"收编")。
 //   keep-mine:保留库房,跳过扫描项。
@@ -98,35 +101,24 @@ export interface ScanOptions {
   keychainService?: string;
 }
 
-// 扫描发现的单个候选制品(尚未写库房)。
-export interface ScanItem {
-  kind: "rules" | "mcp" | "skills";
-  // 入库后的制品名(冲突 copy 时已带后缀)。
-  name: string;
-  // 与库房既有制品的关系。
-  status: "new" | "conflict";
-  // 实际入库动作(经冲突策略裁决后)。
-  action: "import" | "skip";
-  // 涉及的密钥引用名(脱敏后,不含真值);供审计与提示存 vault。
-  secretRefs?: string[];
-  // 来源描述(agent 文件路径 / server 名),便于人读。
-  source: string;
-}
-
-export interface ScanPlan {
-  agent: string;
-  scope: Scope;
-  items: ScanItem[];
-  warnings: string[];
-}
-
 // 内部:携带写库房所需的载荷(canonical 内容),不暴露到 ScanItem(避免真值/大对象外泄)。
 interface ScanCandidate {
-  item: ScanItem;
+  item: ReturnType<typeof scanItem>;
   payload:
     | { kind: "rules"; content: string; snapshot: SafeRecursiveSnapshot }
     | { kind: "mcp"; server: McpServer; snapshot: SafeRecursiveSnapshot }
     | { kind: "skills"; snapshot: SafeRecursiveSnapshot; stagedText: string };
+}
+
+function scanItem(input: {
+  kind: "rules" | "mcp" | "skills";
+  name: string;
+  status: "new" | "conflict";
+  action: "import" | "skip";
+  secretRefs?: string[];
+  source: string;
+}) {
+  return { ...input };
 }
 
 class StructuredScanGuardError extends Error {
@@ -179,13 +171,13 @@ async function scanCandidates(
         warnings.push(`rules at ${paths.rules} is cellarer-generated — skipped (not re-absorbed)`);
       } else {
         candidates.push({
-          item: {
+          item: scanItem({
             kind: "rules",
             name: opts.agent,
             status: "new",
             action: "import",
             source: paths.rules,
-          },
+          }),
           payload: { kind: "rules", content, snapshot },
         });
       }
@@ -216,14 +208,14 @@ async function scanCandidates(
           for (const [name, server] of Object.entries(decoded.servers)) {
             const { server: redacted, refs } = redactServerSecrets(server, name);
             candidates.push({
-              item: {
+              item: scanItem({
                 kind: "mcp",
                 name,
                 status: "new",
                 action: "import",
                 source: `${paths.mcp} → ${name}`,
                 secretRefs: refs.length > 0 ? refs : undefined,
-              },
+              }),
               payload: { kind: "mcp", server: redacted, snapshot },
             });
           }
@@ -260,7 +252,13 @@ async function scanCandidates(
           throw new UnsafeRecursiveSourceError(abs, "non-regular");
         }
         candidates.push({
-          item: { kind: "skills", name, status: "new", action: "import", source: abs },
+          item: scanItem({
+            kind: "skills",
+            name,
+            status: "new",
+            action: "import",
+            source: abs,
+          }),
           payload: {
             kind: "skills",
             snapshot,
@@ -498,7 +496,7 @@ function storePayloadText(c: ScanCandidate): string {
 }
 
 // 扫描计划(只读):读目标 → 脱敏 → 冲突裁决 → 写前护栏 → 候选清单。不写库房。
-export async function scanPlan(env: Env, opts: ScanOptions): Promise<ScanPlan> {
+async function scanPlanImplementation(env: Env, opts: ScanOptions) {
   const { scope, operationEnv } = await scanProviderScope(env, opts);
   try {
     const { candidates, warnings } = await scanCandidates(operationEnv, opts);
@@ -523,6 +521,17 @@ export async function scanPlan(env: Env, opts: ScanOptions): Promise<ScanPlan> {
     throw attachScopeToError(error, scope);
   }
 }
+
+export async function scanPlan(env: Env, opts: ScanOptions): Promise<ScanPlan> {
+  return scanPlanImplementation(env, opts);
+}
+
+export type ScanPlanProducerContract = AssertExact<
+  ExactContract<Awaited<ReturnType<typeof scanPlanImplementation>>, ScanPlan>
+>;
+export type ScanItemProducerContract = AssertExact<
+  ExactContract<ReturnType<typeof scanItem>, ScanItem>
+>;
 
 export interface ScanResult {
   plan: ScanPlan;

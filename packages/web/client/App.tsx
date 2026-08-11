@@ -1,12 +1,12 @@
 import type {
   Capability,
+  ControlPlaneResourceDto,
+  ControlPlaneResourceListDto,
   DashboardAgentReadiness,
   DashboardCoverageGroup,
   DashboardSummaryResult,
   DiscoverySummaryResult,
-  ResourceCatalogItem,
-  ResourceCatalogResult,
-} from "@cellarer/core";
+} from "@cellarer/core/client-api";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { AgentsPage } from "./agents-page.js";
@@ -260,7 +260,7 @@ function DashboardShell(props: { onNavigate: (page: Page) => void }) {
     () => apiFetch("/api/v1/summary"),
     [reloadKey],
   );
-  const resourcesState = useApi<ResourceCatalogResult>(
+  const resourcesState = useApi<ControlPlaneResourceListDto>(
     () => apiFetch("/api/v1/resources"),
     [reloadKey],
   );
@@ -749,7 +749,9 @@ function adapterTone(id: string): string {
   return "default";
 }
 
-function countResourcesByKind(resources: ResourceCatalogItem[]): Record<Capability, number> {
+function countResourcesByKind(
+  resources: readonly Pick<ControlPlaneResourceDto, "kind">[],
+): Record<Capability, number> {
   return {
     skills: resources.filter((resource) => resource.kind === "skills").length,
     mcp: resources.filter((resource) => resource.kind === "mcp").length,

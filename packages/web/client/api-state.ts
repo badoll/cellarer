@@ -1,4 +1,4 @@
-import type { ClientErrorCode, ClientWarning } from "@cellarer/core";
+import type { ClientErrorCode, ClientWarning } from "@cellarer/core/client-api";
 
 export class ClientApiError extends Error {
   constructor(
