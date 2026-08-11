@@ -8,5 +8,6 @@ docs/dev/
 artifacts/
 .claude/
 .agents/
+.codex/
 .DS_Store
 skills-lock.json
