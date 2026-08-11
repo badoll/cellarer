@@ -1,52 +1,56 @@
 // @cellarer/web —— 内嵌 Hono server,把 @cellarer/core 暴露为本地 HTTP(Hono RPC 端到端类型)。
 // 安全约束:
-//   - 仅监听 127.0.0.1(见 server.ts);可选访问 token。
+//   - 仅监听 127.0.0.1(见 server.ts)，并强制显式组合 bearer 或 browser-session 认证。
 //   - 密钥不明文回显:web 一律以 secretMode="env" 调 core —— 即便 vault 模式也绝不在 HTTP 响应里解出真值;
 //     plan 的 preview 在 env 模式下只含 ${ENV} 占位,secret-scan 护栏命中还会清空 preview。
 //   - core-first(不变量 1):路由只解析参数 + 调 core,不写业务逻辑。
 import {
   type ActivityAction,
-  apply,
+  applyControlPlaneMutationPlan,
+  applyMutationPlan,
   applyResourceBundleImportPlan,
   applyResourceExportPlan,
   applyResourceRemovePlan,
   applyResourceRenamePlan,
   applyResourceUpdatePlan,
-  applyScan,
+  applyRevertMutationPlan,
+  applyScanMutationPlan,
+  applySyncProfileMutationPlan,
   applySyncProfilePlan,
   applySyncProfileUninstallPlan,
   type Capability,
+  CLIENT_API_CONTRACT_ID,
+  CLIENT_API_MAX_REQUEST_BODY_BYTES,
+  CLIENT_API_VERSION,
   type ConflictStrategy,
   ControlPlaneValidationError,
   checkResourceUpdate,
-  collectLedgerSecretRefStats,
-  collectLedgerSecretRefs,
+  clientErrorFromMutationConflict,
+  clientFailure,
+  clientSuccess,
+  createSafeObservableKnownValueSource,
   createSyncProfile,
   type Destination,
-  type DiffIdentity,
-  dashboardSummary,
   deleteSyncProfile,
-  diffTarget,
+  diagnoseMutationRecovery,
+  diffControlPlane,
   discoverySummaryControlPlane,
-  doctor,
   type Env,
-  inspectAgents,
+  getClientReadiness,
   listActivity,
   listControlPlaneAgents,
+  listControlPlaneCollections,
+  listControlPlaneOperations,
   listControlPlaneResources,
-  listMcpArtifacts,
-  listRuleArtifacts,
-  listSkillArtifacts,
   listSyncProfiles,
-  loadConfig,
-  loadLedger,
+  type MutationConflict,
   type MutationPlan,
   mutateAgentAdapter,
   mutateBuiltinAgent,
   mutateCollection,
   mutateControlPlaneSettings,
   mutateCustomAdapter,
-  mutationPresentation,
+  type PlannedControlPlaneMutationDto,
   parseAgentAdapterMutationBody,
   parseAgentEnabledMutationBody,
   parseCollectionCreateMutationBody,
@@ -60,35 +64,48 @@ import {
   planResourceExport,
   planResourceRemove,
   planResourceRename,
+  planRevertMutation,
+  planScanMutation,
   planSyncProfile,
   planSyncProfileUninstall,
+  recoverInterruptedOperation,
+  resolveClientRequestId,
   resourceDependencyReport,
-  revert,
   type ScanSelection,
   type Scope,
   StoreMutationConflictError,
   type SyncProfileDesiredState,
-  scanPlan,
-  serializeSafeObservable,
   serializeSafeWebObservable,
   settingsSummary,
+  showControlPlaneAgent,
+  showControlPlaneCollection,
+  showControlPlaneConfig,
+  showControlPlaneOperation,
   showSyncProfile,
-  status,
+  statusControlPlane,
+  summaryControlPlane,
   updateSyncProfile,
+  validateControlPlaneConfig,
   validateResourceBundle,
   verifyControlPlane,
   verifySyncProfile,
 } from "@cellarer/core";
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
+import { CLIENT_API_ROUTES, createClientOpenApiDocument } from "./api-contract.js";
 import { hostGuard, safeEqual } from "./security.js";
 
 export interface AppDeps {
   env: Env;
   storeRoot: string;
-  // 可选访问 token:设置后所有 /api 请求需带 `Authorization: Bearer <token>`。
-  token?: string;
+  auth: AppAuthentication;
 }
+
+export type AppAuthentication =
+  | { readonly mode: "trusted-embedded" }
+  | { readonly mode: "bearer"; readonly token: string }
+  | { readonly mode: "browser-session"; readonly sessionId: string };
 
 // 解析下发请求体(web → core DistributeOptions 子集)。
 interface DistributeBody {
@@ -139,12 +156,6 @@ interface SyncBody {
   snapshotPassphrase?: string;
 }
 
-interface InspectBody {
-  scope?: Scope;
-  dir?: string;
-  agents?: string[];
-}
-
 interface RevertBody {
   scope?: Scope;
   dir?: string;
@@ -156,10 +167,13 @@ interface RevertBody {
   dryRun?: boolean;
 }
 
-interface DiffBody {
-  identity: DiffIdentity;
-  dir?: string;
-  collections?: string[];
+interface RevertPlanApplyBody extends RevertBody {
+  mutationPlan: MutationPlan;
+}
+
+interface RecoveryApplyBody {
+  operationId: string;
+  snapshotPassphrase?: string;
 }
 
 interface ResourceIdBody {
@@ -195,15 +209,20 @@ interface ResourceUpdateApplyBody {
   mutationPlan: MutationPlan;
 }
 
-interface ProfileMutationBody {
-  profileId: string;
-  desired: SyncProfileDesiredState;
-  dryRun?: boolean;
+interface ResourceRenameApplyBody extends ResourceRenameBody {
+  mutationPlan: MutationPlan;
 }
 
-interface ProfileUpdateBody {
-  desired: SyncProfileDesiredState;
-  dryRun?: boolean;
+interface ResourceRemoveApplyBody extends ResourceRemoveBody {
+  mutationPlan: MutationPlan;
+}
+
+interface ResourceExportApplyBody extends ResourceExportBody {
+  mutationPlan: MutationPlan;
+}
+
+interface ResourceBundleApplyBody extends ResourceBundleBody {
+  mutationPlan: MutationPlan;
 }
 
 interface ProfileInvocationBody {
@@ -223,24 +242,88 @@ interface ProfileUninstallBody extends ProfileInvocationBody {
   dryRun?: boolean;
 }
 
+interface ProfileUninstallApplyBody extends ProfileInvocationBody {
+  mutationPlan: MutationPlan;
+  targetKeys: string[];
+  acknowledgements?: string[];
+}
+
+interface ControlPlanePlanApplyBody {
+  mutationPlan: MutationPlan;
+}
+
+interface SyncPlanApplyBody {
+  mutationPlan: MutationPlan;
+}
+
+interface ScanPlanApplyBody {
+  mutationPlan: MutationPlan;
+}
+
+type AgentPlanBody =
+  | { action: "set-enabled"; agentId: string; enabled: boolean }
+  | { action: "upsert-adapter"; agentId: string; kind: "builtin" | "custom"; adapter: unknown }
+  | { action: "remove-adapter"; agentId: string };
+
+interface SettingsPlanBody {
+  settings: unknown;
+}
+
+type ProfilePlanBody =
+  | { action: "create" | "update"; profileId: string; desired: SyncProfileDesiredState }
+  | { action: "delete"; profileId: string };
+
+interface ProfileMutationApplyBody {
+  mutationPlan: MutationPlan;
+}
+
+interface CollectionPlanBody {
+  action: "create" | "update" | "delete" | "set-members" | "set-defaults";
+  collectionName?: string;
+  description?: string;
+  resourceIds?: string[];
+  collectionNames?: string[];
+}
+
+class ClientApiInputError extends Error {
+  constructor(
+    message: string,
+    readonly details?: Readonly<Record<string, unknown>>,
+  ) {
+    super(message);
+    this.name = "ClientApiInputError";
+  }
+}
+
+async function parseJsonBody<T>(parse: () => Promise<T>): Promise<T> {
+  try {
+    return await parse();
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new ClientApiInputError("request body is not valid JSON", { fields: ["body"] });
+    }
+    throw error;
+  }
+}
+
 // project scope 必须带 dir,否则 core 会以 server cwd 为工程根,把文件写进进程启动目录(且无 .gitignore 守护)。
 // plan/apply/scan 三个 project 路由共用此守卫(拦在路由层)。
 function requireDirForProject(scope: Scope | undefined, dir: string | undefined): void {
   if ((scope ?? "global") === "project" && !dir) {
-    throw new HTTPException(400, { message: 'scope "project" requires "dir"' });
+    throw new ClientApiInputError('scope "project" requires "dir"', { fields: ["dir"] });
   }
 }
 
 function parseDestination(raw: string | undefined): Destination | undefined {
   if (raw === undefined || raw === "") return undefined;
   if (raw === "user" || raw === "project") return raw;
-  throw new HTTPException(400, { message: `invalid destination "${raw}"` });
+  throw new ClientApiInputError("destination is invalid", { fields: ["destination"] });
 }
 
 function parseConflictStrategy(raw: string | undefined): ConflictStrategy | undefined {
   if (raw === undefined || raw === "") return undefined;
   if (raw === "keep-theirs" || raw === "keep-mine" || raw === "copy") return raw;
-  throw new HTTPException(400, { message: `invalid conflict "${raw}"` });
+  throw new ClientApiInputError("conflict is invalid", { fields: ["conflict"] });
 }
 
 function scopeForDestination(destination: string | undefined): Scope {
@@ -250,19 +333,21 @@ function scopeForDestination(destination: string | undefined): Scope {
 
 function requireDirForDestination(destination: string | undefined, dir: string | undefined): void {
   if (parseDestination(destination) === "project" && !dir) {
-    throw new HTTPException(400, { message: 'destination "project" requires "dir"' });
+    throw new ClientApiInputError('destination "project" requires "dir"', { fields: ["dir"] });
   }
 }
 
 function validateScanRequestSelection(body: ScanBody | ImportBody): void {
   if (Object.hasOwn(body, "select")) {
-    throw new HTTPException(400, {
-      message: 'unexpected field "select"; use exact "selectItems" selectors',
+    throw new ClientApiInputError('unexpected field "select"; use "selectItems"', {
+      fields: ["select"],
     });
   }
   if (body.selectItems === undefined) return;
   if (!Array.isArray(body.selectItems)) {
-    throw new HTTPException(400, { message: '"selectItems" must be an array' });
+    throw new ClientApiInputError('"selectItems" must be an array', {
+      fields: ["selectItems"],
+    });
   }
   for (const [index, selection] of body.selectItems.entries()) {
     const keys =
@@ -277,8 +362,8 @@ function validateScanRequestSelection(body: ScanBody | ImportBody): void {
       typeof selection?.source !== "string" ||
       selection.source.length === 0
     ) {
-      throw new HTTPException(400, {
-        message: `"selectItems[${index}]" must be an exact kind/name/source selector`,
+      throw new ClientApiInputError("selectItems selector is invalid", {
+        fields: [`selectItems[${index}]`],
       });
     }
   }
@@ -300,16 +385,6 @@ function distributeOpts(deps: AppDeps, b: DistributeBody) {
     snapshotPassphrase: b.snapshotPassphrase,
     // 安全红线:web 永远 env 模式,绝不在 HTTP 路径解出真值。
     secretMode: "env" as const,
-  };
-}
-
-function inspectOpts(deps: AppDeps, b: InspectBody) {
-  requireDirForProject(b.scope, b.dir);
-  return {
-    storeRoot: deps.storeRoot,
-    scope: (b.scope ?? "global") as Scope,
-    dir: b.dir,
-    agents: b.agents,
   };
 }
 
@@ -343,6 +418,20 @@ function importOpts(deps: AppDeps, b: ImportBody) {
   };
 }
 
+function revertOpts(deps: AppDeps, body: RevertBody) {
+  requireDirForProject(body.scope, body.dir);
+  return {
+    storeRoot: deps.storeRoot,
+    scope: body.scope,
+    dir: body.dir,
+    agents: body.agents,
+    artifactIds: body.artifactIds,
+    acknowledgements: body.acknowledgements,
+    snapshotPassphrase: body.snapshotPassphrase,
+    keepBackups: body.keepBackups,
+  };
+}
+
 function syncOpts(deps: AppDeps, body: SyncBody) {
   requireDirForDestination(body.destination, body.dir);
   return {
@@ -364,7 +453,7 @@ function syncOpts(deps: AppDeps, body: SyncBody) {
 function parseScope(raw: string | undefined): Scope | undefined {
   if (raw === undefined || raw === "") return undefined;
   if (raw === "global" || raw === "project") return raw;
-  throw new HTTPException(400, { message: `invalid scope "${raw}"` });
+  throw new ClientApiInputError("scope is invalid", { fields: ["scope"] });
 }
 
 function parseCapabilities(raw: string | undefined): Capability[] | undefined {
@@ -372,7 +461,7 @@ function parseCapabilities(raw: string | undefined): Capability[] | undefined {
   if (!values) return undefined;
   for (const value of values) {
     if (value !== "rules" && value !== "mcp" && value !== "skills") {
-      throw new HTTPException(400, { message: `invalid capability "${value}"` });
+      throw new ClientApiInputError("capability is invalid", { fields: ["capabilities"] });
     }
   }
   return values as Capability[];
@@ -383,7 +472,7 @@ function parseActivityActions(raw: string | undefined): ActivityAction[] | undef
   if (!values) return undefined;
   for (const value of values) {
     if (value !== "apply" && value !== "scan-import" && value !== "revert") {
-      throw new HTTPException(400, { message: `invalid activity action "${value}"` });
+      throw new ClientApiInputError("activity action is invalid", { fields: ["actions"] });
     }
   }
   return values as ActivityAction[];
@@ -402,16 +491,9 @@ function parseLimit(raw: string | undefined): number | undefined {
   if (!raw) return undefined;
   const value = Number(raw);
   if (!Number.isInteger(value) || value < 0) {
-    throw new HTTPException(400, { message: `invalid limit "${raw}"` });
+    throw new ClientApiInputError("limit is invalid", { fields: ["limit"] });
   }
   return value;
-}
-
-function parseOptionalBoolean(raw: string | undefined, field: string): boolean | undefined {
-  if (raw === undefined || raw === "") return undefined;
-  if (raw === "true") return true;
-  if (raw === "false") return false;
-  throw new HTTPException(400, { message: `invalid ${field} "${raw}"` });
 }
 
 function summaryOpts(deps: AppDeps, query: (name: string) => string | undefined) {
@@ -453,12 +535,34 @@ function profileInvocationOpts(deps: AppDeps, profileId: string, body: ProfileIn
   };
 }
 
+function clientMutationFailure(requestId: string, conflict: MutationConflict) {
+  const error = clientErrorFromMutationConflict(conflict);
+  const status: 400 | 409 | 500 =
+    error.code === "DOMAIN_VALIDATION_FAILED"
+      ? 400
+      : error.code === "PARTIAL_FAILURE" || error.code === "EXECUTION_FAILED"
+        ? 500
+        : 409;
+  return { body: clientFailure(requestId, error), status };
+}
+
 export function createApp(inputDeps: AppDeps) {
   const { secretStore: _secretStore, ...webEnv } = inputDeps.env;
-  const deps: AppDeps = { ...inputDeps, env: webEnv };
+  const deps: AppDeps = {
+    ...inputDeps,
+    env: webEnv,
+  };
   const app = new Hono();
+  const requestId = (c: { req: { header(name: string): string | undefined } }): string =>
+    resolveClientRequestId(c.req.header("x-request-id"), deps.env.randomId);
   const responseKnownValueSources = new WeakMap<Response, object>();
   const responseCorePayloads = new WeakMap<Response, object>();
+  const authenticationKnownValueSource =
+    deps.auth.mode === "trusted-embedded"
+      ? undefined
+      : createSafeObservableKnownValueSource([
+          deps.auth.mode === "bearer" ? deps.auth.token : deps.auth.sessionId,
+        ]);
   const withCorePayload = <T>(response: T, payload: object): T => {
     responseCorePayloads.set(response as Response, payload);
     return response;
@@ -466,29 +570,47 @@ export function createApp(inputDeps: AppDeps) {
 
   // 统一错误处理:HTTPException 按其状态码;其余(如 JSON 解析失败、core 抛错)→ 400 JSON,不裸 500/栈。
   app.onError((err, c) => {
-    if (err instanceof HTTPException) {
-      return c.json(redactWebPayload({ error: err.message }, [err]), err.status);
-    }
-    if (err instanceof StoreMutationConflictError) {
-      return c.json(redactWebPayload({ error: err.message, conflict: err.conflict }, [err]), 409);
-    }
-    if (err instanceof ControlPlaneValidationError) {
-      return c.json(
-        redactWebPayload(
-          {
-            error: err.message,
+    if (c.req.path.startsWith("/api/v1/")) {
+      const id = requestId(c);
+      if (err instanceof ClientApiInputError) {
+        return c.json(
+          clientFailure(id, {
+            code: "INVALID_INPUT",
+            message: "Request input is invalid",
+            ...(err.details ? { details: err.details } : {}),
+          }),
+          400,
+        );
+      }
+      if (err instanceof HTTPException) {
+        return c.json(
+          clientFailure(id, {
+            code: "INVALID_INPUT",
+            message: "Request input is invalid",
+          }),
+          err.status,
+        );
+      }
+      if (err instanceof StoreMutationConflictError) {
+        const failure = clientMutationFailure(id, err.conflict);
+        return c.json(failure.body, failure.status);
+      }
+      if (err instanceof ControlPlaneValidationError) {
+        return c.json(
+          clientFailure(id, {
             code: "DOMAIN_VALIDATION_FAILED",
+            message: "Request did not satisfy the operation contract",
             details: err.details,
-          },
-          [err],
-        ),
-        400,
+          }),
+          400,
+        );
+      }
+      return c.json(
+        clientFailure(id, { code: "INTERNAL_ERROR", message: "Unexpected internal failure" }),
+        500,
       );
     }
-    return c.json(
-      redactWebPayload({ error: err instanceof Error ? err.message : String(err) }, [err]),
-      400,
-    );
+    return c.notFound();
   });
 
   // Host 白名单(纵深防御:阻止 DNS rebinding —— 攻击者域名解析到 127.0.0.1 借浏览器打本地 API)。
@@ -496,7 +618,7 @@ export function createApp(inputDeps: AppDeps) {
 
   // One response boundary protects every current and future API route, including thin-shell
   // callers that accidentally return a sensitive field from Core.
-  app.use("/api/*", async (c, next) => {
+  app.use("/api/v1/*", async (c, next) => {
     await next();
     if (!c.res.headers.get("content-type")?.includes("application/json")) return;
     const payload = await c.res
@@ -511,9 +633,10 @@ export function createApp(inputDeps: AppDeps) {
       deps.storeRoot,
       observablePayload,
       {
-        knownValueSources: [responseKnownValueSources.get(c.res)].filter(
-          (source): source is object => source !== undefined,
-        ),
+        knownValueSources: [
+          responseKnownValueSources.get(c.res),
+          authenticationKnownValueSource,
+        ].filter((source): source is object => source !== undefined),
       },
     );
     c.res = new Response(serialized, {
@@ -523,531 +646,835 @@ export function createApp(inputDeps: AppDeps) {
     });
   });
 
-  // 访问 token 中间件(设置了才校验);仅保护 /api。用常量时间比较消除时序侧信道。
-  app.use("/api/*", async (c, next) => {
-    if (deps.token) {
-      const auth = c.req.header("Authorization");
-      if (!safeEqual(auth ?? "", `Bearer ${deps.token}`)) {
-        return c.json({ error: "unauthorized" }, 401);
+  app.use("/api/v1/*", async (c, next) => {
+    if (c.req.path === "/api/v1/health") return next();
+    const auth = deps.auth;
+    if (c.req.path === "/api/v1/auth/session") {
+      if (auth.mode !== "browser-session") {
+        return c.json(
+          clientFailure(requestId(c), {
+            code: "POLICY_VIOLATION",
+            message: "Authentication mode does not permit browser bootstrap",
+          }),
+          403,
+        );
+      }
+      const origin = c.req.header("origin");
+      const site = c.req.header("sec-fetch-site");
+      const expected = exactLoopbackOrigin(c.req.header("host"), c.req.url);
+      if (origin !== expected || (site !== "same-origin" && site !== "none")) {
+        return c.json(
+          clientFailure(requestId(c), {
+            code: "POLICY_VIOLATION",
+            message: "Browser session bootstrap was rejected",
+          }),
+          403,
+        );
+      }
+      return next();
+    }
+    if (auth.mode === "trusted-embedded") return next();
+    if (auth.mode === "bearer") {
+      if (!safeEqual(c.req.header("authorization") ?? "", `Bearer ${auth.token}`)) {
+        return c.json(
+          clientFailure(requestId(c), {
+            code: "POLICY_VIOLATION",
+            message: "Authentication required",
+          }),
+          401,
+        );
+      }
+      return next();
+    }
+    if (!safeEqual(readCookie(c.req.header("cookie"), "cellarer_session") ?? "", auth.sessionId)) {
+      return c.json(
+        clientFailure(requestId(c), {
+          code: "POLICY_VIOLATION",
+          message: "Authentication required",
+        }),
+        401,
+      );
+    }
+    if (isMutationMethod(c.req.method)) {
+      const expected = exactLoopbackOrigin(c.req.header("host"), c.req.url);
+      if (c.req.header("origin") !== expected) {
+        return c.json(
+          clientFailure(requestId(c), {
+            code: "POLICY_VIOLATION",
+            message: "Mutation origin was rejected",
+          }),
+          403,
+        );
       }
     }
-    await next();
+    return next();
   });
 
+  app.use(
+    "/api/v1/*",
+    bodyLimit({
+      maxSize: CLIENT_API_MAX_REQUEST_BODY_BYTES,
+      onError: (c) =>
+        c.json(
+          clientFailure(requestId(c), {
+            code: "DOMAIN_VALIDATION_FAILED",
+            message: "Request body exceeds the local client API budget",
+            details: { maxBytes: CLIENT_API_MAX_REQUEST_BODY_BYTES },
+          }),
+          413,
+        ),
+    }),
+  );
+
   const api = app
-    .get("/api/resources", async (c) => {
+    .get("/api/v1/version", (c) =>
+      c.json(
+        clientSuccess(requestId(c), {
+          apiVersion: CLIENT_API_VERSION,
+          contractId: CLIENT_API_CONTRACT_ID,
+        }),
+      ),
+    )
+    .get("/api/v1/openapi.json", (c) => {
+      const payload = clientSuccess(
+        requestId(c),
+        createClientOpenApiDocument(
+          deps.auth.mode === "trusted-embedded" ? undefined : deps.auth.mode,
+        ),
+      );
+      return withCorePayload(c.json(payload), payload);
+    })
+    .get("/api/v1/health", (c) => c.json(clientSuccess(requestId(c), { live: true })))
+    .post("/api/v1/auth/session", (c) => {
+      const auth = deps.auth;
+      if (auth.mode !== "browser-session") {
+        throw new Error("browser session route reached without browser authentication");
+      }
+      return c.json(
+        clientSuccess(requestId(c), {
+          authenticated: true,
+          authMode: "browser-session" as const,
+        }),
+        200,
+        {
+          "set-cookie": browserSessionCookie(auth.sessionId),
+          "cache-control": "no-store",
+        },
+      );
+    })
+    .get("/api/v1/capabilities", (c) =>
+      c.json(
+        clientSuccess(requestId(c), {
+          apiVersion: CLIENT_API_VERSION,
+          contractId: CLIENT_API_CONTRACT_ID,
+          operations: CLIENT_API_ROUTES.map((route) => route.operationId),
+        }),
+      ),
+    )
+    .get("/api/v1/readiness", async (c) => {
+      const readiness = await getClientReadiness(deps.env, deps.storeRoot);
+      return c.json(clientSuccess(requestId(c), readiness), readiness.ready ? 200 : 503);
+    })
+    .get("/api/v1/resources", async (c) => {
       const destination = parseDestination(c.req.query("destination")) ?? "user";
       const dir = c.req.query("dir");
       requireDirForDestination(destination, dir);
-      return c.json(
-        await listControlPlaneResources(deps.env, {
-          storeRoot: deps.storeRoot,
-          agents: parseCsv(c.req.query("agents")),
-          collections: parseCsv(c.req.query("collections")),
-          destination,
-          dir,
-          includeDiscovered: c.req.query("includeDiscovered") !== "false",
-        }),
-      );
+      const data = await listControlPlaneResources(deps.env, {
+        storeRoot: deps.storeRoot,
+        agents: parseCsv(c.req.query("agents")),
+        collections: parseCsv(c.req.query("collections")),
+        destination,
+        dir,
+        includeDiscovered: c.req.query("includeDiscovered") !== "false",
+      });
+      return c.json(clientSuccess(requestId(c), data));
     })
-    .get("/api/resources/:kind", async (c) => {
+    .get("/api/v1/resources/:kind", async (c) => {
       const kind = c.req.param("kind");
       if (kind !== "rules" && kind !== "mcp" && kind !== "skills") {
-        throw new HTTPException(400, { message: `invalid resource kind "${kind}"` });
+        return c.json(
+          clientFailure(requestId(c), {
+            code: "INVALID_INPUT",
+            message: "Request input is invalid",
+            details: { fields: ["kind"] },
+          }),
+          400,
+        );
       }
       const destination = parseDestination(c.req.query("destination")) ?? "user";
       const dir = c.req.query("dir");
       requireDirForDestination(destination, dir);
-      return c.json(
-        await listControlPlaneResources(deps.env, {
-          storeRoot: deps.storeRoot,
-          kind,
-          agents: parseCsv(c.req.query("agents")),
-          collections: parseCsv(c.req.query("collections")),
-          destination,
-          dir,
-          includeDiscovered: c.req.query("includeDiscovered") !== "false",
-        }),
-      );
-    })
-    .get("/api/discovery", async (c) => {
-      const destination = parseDestination(c.req.query("destination")) ?? "user";
-      const dir = c.req.query("dir");
-      requireDirForDestination(destination, dir);
-      return c.json(
-        await discoverySummaryControlPlane(deps.env, {
-          storeRoot: deps.storeRoot,
-          agents: parseCsv(c.req.query("agents")),
-          destination,
-          dir,
-        }),
-      );
-    })
-    // 库房资源总览(三类 + collection 标签)。
-    .get("/api/artifacts", async (c) => {
-      const [config, rules, mcp, skills] = await Promise.all([
-        loadConfig(deps.env, deps.storeRoot),
-        listRuleArtifacts(deps.env, deps.storeRoot),
-        listMcpArtifacts(deps.env, deps.storeRoot),
-        listSkillArtifacts(deps.env, deps.storeRoot),
-      ]);
-      const tag = (id: string) => config.artifacts[id]?.collections ?? [];
-      return c.json({
-        rules: rules.map((a) => ({ id: a.id, name: a.name, collections: tag(a.id) })),
-        mcp: mcp.map((a) => ({ id: a.id, name: a.name, collections: tag(a.id) })),
-        skills: skills.map((a) => ({ id: a.id, name: a.name, collections: tag(a.id) })),
-        collections: Object.keys(config.collections),
+      const data = await listControlPlaneResources(deps.env, {
+        storeRoot: deps.storeRoot,
+        kind,
+        agents: parseCsv(c.req.query("agents")),
+        collections: parseCsv(c.req.query("collections")),
+        destination,
+        dir,
+        includeDiscovered: c.req.query("includeDiscovered") !== "false",
       });
+      return c.json(clientSuccess(requestId(c), data));
     })
-    // 可用 agent 适配器。
-    .get("/api/agents", async (c) => {
+    .get("/api/v1/agents", async (c) => {
+      const scope = parseScope(c.req.query("scope")) ?? "global";
+      const dir = c.req.query("dir");
+      requireDirForProject(scope, dir);
+      const data = await listControlPlaneAgents(deps.env, {
+        storeRoot: deps.storeRoot,
+        scope,
+        ...(dir ? { dir } : {}),
+        ...(parseCsv(c.req.query("agents")) ? { agents: parseCsv(c.req.query("agents")) } : {}),
+      });
+      return c.json(clientSuccess(requestId(c), data));
+    })
+    .get("/api/v1/agents/:id", async (c) => {
       const scope = parseScope(c.req.query("scope")) ?? "global";
       const dir = c.req.query("dir");
       requireDirForProject(scope, dir);
       return c.json(
-        await listControlPlaneAgents(deps.env, {
+        clientSuccess(
+          requestId(c),
+          await showControlPlaneAgent(deps.env, {
+            storeRoot: deps.storeRoot,
+            scope,
+            ...(dir ? { dir } : {}),
+            agentId: c.req.param("id"),
+          }),
+        ),
+      );
+    })
+    .post("/api/v1/agents/plan", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<AgentPlanBody>());
+      let planned: PlannedControlPlaneMutationDto;
+      if (body.action === "set-enabled") {
+        const parsed = parseAgentEnabledMutationBody({ enabled: body.enabled, dryRun: true });
+        planned = await mutateBuiltinAgent(deps.env, {
           storeRoot: deps.storeRoot,
-          scope,
-          ...(dir ? { dir } : {}),
-          ...(parseCsv(c.req.query("agents")) ? { agents: parseCsv(c.req.query("agents")) } : {}),
-        }),
-      );
+          agentId: body.agentId,
+          action: parsed.enabled ? "enable" : "disable",
+          dryRun: true,
+        });
+      } else if (body.action === "upsert-adapter") {
+        const parsed = parseAgentAdapterMutationBody({
+          kind: body.kind,
+          adapter: body.adapter,
+          dryRun: true,
+        });
+        planned = await mutateAgentAdapter(deps.env, {
+          storeRoot: deps.storeRoot,
+          agentId: body.agentId,
+          ...parsed,
+        });
+      } else {
+        planned = await mutateCustomAdapter(deps.env, {
+          storeRoot: deps.storeRoot,
+          agentId: body.agentId,
+          action: "remove",
+          dryRun: true,
+        });
+      }
+      const payload = clientSuccess(requestId(c), planned);
+      return withCorePayload(c.json(payload), payload);
     })
-    // Dashboard first-screen state. Core owns counts, coverage, readiness, and activity semantics.
-    .get("/api/summary", async (c) => {
-      return c.json(await dashboardSummary(deps.env, summaryOpts(deps, c.req.query.bind(c.req))));
+    .get("/api/v1/collections", async (c) =>
+      c.json(
+        clientSuccess(
+          requestId(c),
+          await listControlPlaneCollections(deps.env, { storeRoot: deps.storeRoot }),
+        ),
+      ),
+    )
+    .get("/api/v1/collections/:name", async (c) =>
+      c.json(
+        clientSuccess(
+          requestId(c),
+          await showControlPlaneCollection(deps.env, {
+            storeRoot: deps.storeRoot,
+            collectionName: c.req.param("name"),
+          }),
+        ),
+      ),
+    )
+    .post("/api/v1/collections/plan", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<CollectionPlanBody>());
+      let planned: PlannedControlPlaneMutationDto;
+      if (body.action === "create") {
+        const parsed = parseCollectionCreateMutationBody({
+          collectionName: body.collectionName,
+          description: body.description,
+          resourceIds: body.resourceIds,
+          dryRun: true,
+        });
+        planned = await mutateCollection(deps.env, {
+          storeRoot: deps.storeRoot,
+          action: "create",
+          ...parsed,
+        });
+      } else if (body.action === "update") {
+        if (!body.collectionName) {
+          throw new ControlPlaneValidationError("collection name is required", {
+            fields: ["collectionName"],
+          });
+        }
+        const parsed = parseCollectionUpdateMutationBody({
+          description: body.description,
+          dryRun: true,
+        });
+        planned = await mutateCollection(deps.env, {
+          storeRoot: deps.storeRoot,
+          action: "update",
+          collectionName: body.collectionName,
+          ...parsed,
+        });
+      } else if (body.action === "set-members") {
+        if (!body.collectionName) {
+          throw new ControlPlaneValidationError("collection name is required", {
+            fields: ["collectionName"],
+          });
+        }
+        const parsed = parseCollectionMembersMutationBody({
+          resourceIds: body.resourceIds,
+          dryRun: true,
+        });
+        planned = await mutateCollection(deps.env, {
+          storeRoot: deps.storeRoot,
+          action: "set-members",
+          collectionName: body.collectionName,
+          ...parsed,
+        });
+      } else if (body.action === "set-defaults") {
+        const parsed = parseCollectionDefaultsMutationBody({
+          collectionNames: body.collectionNames,
+          dryRun: true,
+        });
+        planned = await mutateCollection(deps.env, {
+          storeRoot: deps.storeRoot,
+          action: "set-defaults",
+          ...parsed,
+        });
+      } else {
+        if (!body.collectionName) {
+          throw new ControlPlaneValidationError("collection name is required", {
+            fields: ["collectionName"],
+          });
+        }
+        planned = await mutateCollection(deps.env, {
+          storeRoot: deps.storeRoot,
+          action: "delete",
+          collectionName: body.collectionName,
+          dryRun: true,
+        });
+      }
+      const payload = clientSuccess(requestId(c), planned);
+      return withCorePayload(c.json(payload), payload);
     })
-    // Append-only local operation history. Mutating core operations write events.
-    .get("/api/activity", async (c) => {
-      return c.json(
-        await listActivity(deps.env, deps.storeRoot, activityFilter(c.req.query.bind(c.req))),
-      );
+    .post("/api/v1/scan/plan", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<ScanBody>());
+      validateScanRequestSelection(body);
+      const planned = await planScanMutation(deps.env, scanOpts(deps, body));
+      const payload = clientSuccess(requestId(c), planned);
+      return withCorePayload(c.json(payload), payload);
     })
-    // scope-aware agent diagnostics(比 /api/agents 丰富,供 dashboard/diagnostics 使用)。
-    .post("/api/agents/inspect", async (c) => {
-      const body = await c.req.json<InspectBody>();
-      return c.json(await inspectAgents(deps.env, inspectOpts(deps, body)));
-    })
-    // 深度 doctor 检查:store/config/adapter/目标路径写权限。不含密钥真值。
-    .post("/api/doctor", async (c) => {
-      const body = await c.req.json<InspectBody>();
-      return c.json(await doctor(deps.env, inspectOpts(deps, body)));
-    })
-    // 下发预览(dry-run plan)。preview 已是 env 模式渲染(无真值);护栏命中项 op=skip。
-    .post("/api/plan", async (c) => {
-      const body = await c.req.json<DistributeBody>();
-      const prepared = await planApplyMutation(deps.env, distributeOpts(deps, body));
-      const response = c.json({
-        ...prepared.plan,
-        mutation: mutationPresentation(prepared.mutationPlan),
+    .post("/api/v1/scan/apply", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<ScanPlanApplyBody>());
+      const applied = await applyScanMutationPlan(deps.env, body.mutationPlan, {
+        storeRoot: deps.storeRoot,
+        secretMode: "env",
       });
-      responseKnownValueSources.set(response, prepared);
-      return response;
+      if (!applied.operation.ok) {
+        const failure = clientMutationFailure(requestId(c), applied.operation.conflict);
+        return c.json(failure.body, failure.status);
+      }
+      const payload = clientSuccess(requestId(c), applied);
+      return withCorePayload(c.json(payload), payload);
     })
-    // 执行下发。
-    .post("/api/apply", async (c) => {
-      const body = await c.req.json<DistributeBody>();
-      const r = await apply(deps.env, distributeOpts(deps, body));
-      const response = c.json(r);
-      responseKnownValueSources.set(response, r);
-      return response;
-    })
-    .post("/api/import/plan", async (c) => {
-      const body = await c.req.json<ImportBody>();
+    .post("/api/v1/import/plan", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<ImportBody>());
       validateScanRequestSelection(body);
-      const result = await scanPlan(deps.env, importOpts(deps, body));
-      const response = c.json(result);
-      responseKnownValueSources.set(response, result);
-      return response;
+      const planned = await planScanMutation(deps.env, importOpts(deps, body));
+      const payload = clientSuccess(requestId(c), planned);
+      return withCorePayload(c.json(payload), payload);
     })
-    .post("/api/import/apply", async (c) => {
-      const body = await c.req.json<ImportBody>();
-      validateScanRequestSelection(body);
-      const result = await applyScan(deps.env, importOpts(deps, body));
-      const response = c.json(result);
-      responseKnownValueSources.set(response, result);
-      return response;
+    .post("/api/v1/import/apply", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<ScanPlanApplyBody>());
+      const applied = await applyScanMutationPlan(deps.env, body.mutationPlan, {
+        storeRoot: deps.storeRoot,
+        secretMode: "env",
+      });
+      if (!applied.operation.ok) {
+        const failure = clientMutationFailure(requestId(c), applied.operation.conflict);
+        return c.json(failure.body, failure.status);
+      }
+      const payload = clientSuccess(requestId(c), applied);
+      return withCorePayload(c.json(payload), payload);
     })
-    .post("/api/sync/plan", async (c) => {
-      const body = await c.req.json<SyncBody>();
+    .post("/api/v1/revert/plan", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<RevertBody>());
+      const planned = await planRevertMutation(deps.env, revertOpts(deps, body));
+      const payload = clientSuccess(requestId(c), planned);
+      return withCorePayload(c.json(payload), payload);
+    })
+    .post("/api/v1/revert/apply", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<RevertPlanApplyBody>());
+      const options = revertOpts(deps, body);
+      const applied = await applyRevertMutationPlan(deps.env, body.mutationPlan, {
+        storeRoot: deps.storeRoot,
+        options,
+        snapshotPassphrase: body.snapshotPassphrase,
+        keepBackups: body.keepBackups,
+      });
+      if (!applied.operation.ok) {
+        const failure = clientMutationFailure(requestId(c), applied.operation.conflict);
+        return c.json(failure.body, failure.status);
+      }
+      const payload = clientSuccess(requestId(c), applied);
+      return withCorePayload(c.json(payload), payload);
+    })
+    .get("/api/v1/recovery", async (c) => {
+      const payload = clientSuccess(
+        requestId(c),
+        await diagnoseMutationRecovery(deps.env, deps.storeRoot),
+      );
+      return withCorePayload(c.json(payload), payload);
+    })
+    .post("/api/v1/recovery/apply", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<RecoveryApplyBody>());
+      const operation = await recoverInterruptedOperation(deps.env, deps.storeRoot, body);
+      if (!operation.ok) {
+        const failure = clientMutationFailure(requestId(c), operation.conflict);
+        return c.json(failure.body, failure.status);
+      }
+      const payload = clientSuccess(requestId(c), { operation });
+      return withCorePayload(c.json(payload), payload);
+    })
+    .post("/api/v1/mutations/apply", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<ControlPlanePlanApplyBody>());
+      const applied = await applyControlPlaneMutationPlan(deps.env, body.mutationPlan, {
+        storeRoot: deps.storeRoot,
+      });
+      if (!applied.operation.ok) {
+        const failure = clientMutationFailure(requestId(c), applied.operation.conflict);
+        return c.json(failure.body, failure.status);
+      }
+      const payload = clientSuccess(requestId(c), applied);
+      return withCorePayload(c.json(payload), payload);
+    })
+    .post("/api/v1/sync/plan", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<SyncBody>());
       const prepared = await planApplyMutation(deps.env, syncOpts(deps, body));
-      const response = c.json({
-        ...prepared.plan,
-        mutation: mutationPresentation(prepared.mutationPlan),
+      const payload = clientSuccess(requestId(c), prepared);
+      return withCorePayload(c.json(payload), payload);
+    })
+    .post("/api/v1/sync/apply", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<SyncPlanApplyBody>());
+      const applied = await applyMutationPlan(deps.env, body.mutationPlan, {
+        storeRoot: deps.storeRoot,
+        secretMode: "env",
       });
-      responseKnownValueSources.set(response, prepared);
-      return response;
+      if (!applied.operation.ok) {
+        const failure = clientMutationFailure(requestId(c), applied.operation.conflict);
+        return c.json(failure.body, failure.status);
+      }
+      const payload = clientSuccess(requestId(c), applied);
+      return withCorePayload(c.json(payload), payload);
     })
-    .post("/api/sync/apply", async (c) => {
-      const body = await c.req.json<SyncBody>();
-      const result = await apply(deps.env, syncOpts(deps, body));
-      const response = c.json(result);
-      responseKnownValueSources.set(response, result);
-      return response;
-    })
-    // 扫描预览(只读;ScanItem 不含真值,secretRefs 只列名)。
-    .post("/api/scan", async (c) => {
-      const body = await c.req.json<ScanBody>();
-      validateScanRequestSelection(body);
-      const result = await scanPlan(deps.env, scanOpts(deps, body));
-      const response = c.json(result);
-      responseKnownValueSources.set(response, result);
-      return response;
-    })
-    // 扫描导入:仍由 core 负责脱敏、冲突裁决、写前护栏与 collection 打标。
-    .post("/api/scan/apply", async (c) => {
-      const body = await c.req.json<ScanBody>();
-      validateScanRequestSelection(body);
-      const result = await applyScan(deps.env, scanOpts(deps, body));
-      const response = c.json(result);
-      responseKnownValueSources.set(response, result);
-      return response;
-    })
-    // 台账回滚:前端要求 dry-run-first;core 负责受管根安全检查。
-    .post("/api/revert", async (c) => {
-      const body = await c.req.json<RevertBody>();
-      requireDirForProject(body.scope, body.dir);
-      return c.json(
-        await revert(deps.env, {
-          storeRoot: deps.storeRoot,
-          scope: body.scope,
-          dir: body.dir,
-          agents: body.agents,
-          artifactIds: body.artifactIds,
-          acknowledgements: body.acknowledgements,
-          snapshotPassphrase: body.snapshotPassphrase,
-          keepBackups: body.keepBackups,
-          dryRun: body.dryRun,
-        }),
-      );
-    })
-    // Drift diff. Only returns file content when core can reconstruct expected output safely.
-    .post("/api/diff", async (c) => {
-      const body = await c.req.json<DiffBody>();
-      requireDirForProject(body.identity.scope, body.dir);
-      return c.json(
-        await diffTarget(deps.env, {
-          storeRoot: deps.storeRoot,
-          identity: body.identity,
-          dir: body.dir,
-          collections: body.collections,
-        }),
-      );
-    })
-    // 漂移检测。
-    .get("/api/status", async (c) => {
-      const items = await status(deps.env, { storeRoot: deps.storeRoot });
-      return c.json({ items });
-    })
-    .post("/api/verify", async (c) => {
-      const body = await c.req.json<DistributeBody>();
-      const opts = distributeOpts(deps, body);
-      return c.json(
-        await verifyControlPlane(deps.env, {
-          storeRoot: opts.storeRoot,
-          scope: opts.scope,
-          dir: opts.dir,
-          agents: opts.agents,
-          collections: opts.collections,
-          capabilities: opts.capabilities,
-          method: opts.method,
-          mcpStrategy: opts.mcpStrategy,
-        }),
-      );
-    })
-    .post("/api/resource-lifecycle/dependencies", async (c) => {
-      const body = await c.req.json<ResourceIdBody>();
-      return c.json(
+    .post("/api/v1/resources/dependencies", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<ResourceIdBody>());
+      const payload = clientSuccess(
+        requestId(c),
         await resourceDependencyReport(deps.env, {
           storeRoot: deps.storeRoot,
           resourceId: body.resourceId,
         }),
       );
+      return withCorePayload(c.json(payload), payload);
     })
-    .post("/api/resource-lifecycle/check", async (c) => {
-      const body = await c.req.json<ResourceIdBody>();
-      return c.json(
+    .post("/api/v1/resources/update/check", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<ResourceIdBody>());
+      const payload = clientSuccess(
+        requestId(c),
         await checkResourceUpdate(deps.env, {
           storeRoot: deps.storeRoot,
           resourceId: body.resourceId,
         }),
       );
+      return withCorePayload(c.json(payload), payload);
     })
-    .post("/api/resource-lifecycle/update/plan", async (c) => {
-      const body = await c.req.json<ResourceIdBody>();
-      const payload = await planAvailableResourceUpdate(deps.env, {
+    .post("/api/v1/resources/update/plan", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<ResourceIdBody>());
+      const planned = await planAvailableResourceUpdate(deps.env, {
         storeRoot: deps.storeRoot,
         resourceId: body.resourceId,
       });
+      const payload = clientSuccess(requestId(c), planned);
       return withCorePayload(c.json(payload), payload);
     })
-    .post("/api/resource-lifecycle/update/apply", async (c) => {
-      const body = await c.req.json<ResourceUpdateApplyBody>();
-      const payload = await applyResourceUpdatePlan(deps.env, body.mutationPlan, {
+    .post("/api/v1/resources/update/apply", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<ResourceUpdateApplyBody>());
+      const applied = await applyResourceUpdatePlan(deps.env, body.mutationPlan, {
         storeRoot: deps.storeRoot,
       });
+      if (!applied.operation.ok) {
+        const failure = clientMutationFailure(requestId(c), applied.operation.conflict);
+        return c.json(failure.body, failure.status);
+      }
+      const payload = clientSuccess(requestId(c), applied);
       return withCorePayload(c.json(payload), payload);
     })
-    .post("/api/resource-lifecycle/rename", async (c) => {
-      const body = await c.req.json<ResourceRenameBody>();
+    .post("/api/v1/resources/rename/plan", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<ResourceRenameBody>());
+      const planned = await planResourceRename(deps.env, {
+        storeRoot: deps.storeRoot,
+        resourceId: body.resourceId,
+        newName: body.newName,
+        mode: body.mode,
+      });
+      const payload = clientSuccess(requestId(c), planned);
+      return withCorePayload(c.json(payload), payload);
+    })
+    .post("/api/v1/resources/rename/apply", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<ResourceRenameApplyBody>());
       const options = {
         storeRoot: deps.storeRoot,
         resourceId: body.resourceId,
         newName: body.newName,
         mode: body.mode,
       };
-      const planned = await planResourceRename(deps.env, options);
-      if (body.dryRun) return withCorePayload(c.json(planned), planned);
-      const payload = await applyResourceRenamePlan(deps.env, body.mutationPlan ?? planned.plan, {
+      const applied = await applyResourceRenamePlan(deps.env, body.mutationPlan, {
         storeRoot: deps.storeRoot,
         options,
       });
+      if (!applied.operation.ok) {
+        const failure = clientMutationFailure(requestId(c), applied.operation.conflict);
+        return c.json(failure.body, failure.status);
+      }
+      const payload = clientSuccess(requestId(c), applied);
       return withCorePayload(c.json(payload), payload);
     })
-    .post("/api/resource-lifecycle/remove", async (c) => {
-      const body = await c.req.json<ResourceRemoveBody>();
+    .post("/api/v1/resources/remove/plan", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<ResourceRemoveBody>());
+      const planned = await planResourceRemove(deps.env, {
+        storeRoot: deps.storeRoot,
+        resourceId: body.resourceId,
+        cascade: body.cascade,
+      });
+      const payload = clientSuccess(requestId(c), planned);
+      return withCorePayload(c.json(payload), payload);
+    })
+    .post("/api/v1/resources/remove/apply", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<ResourceRemoveApplyBody>());
       const options = {
         storeRoot: deps.storeRoot,
         resourceId: body.resourceId,
         cascade: body.cascade,
       };
-      const planned = await planResourceRemove(deps.env, options);
-      if (body.dryRun) return withCorePayload(c.json(planned), planned);
-      const payload = await applyResourceRemovePlan(deps.env, body.mutationPlan ?? planned.plan, {
+      const applied = await applyResourceRemovePlan(deps.env, body.mutationPlan, {
         storeRoot: deps.storeRoot,
         options,
       });
+      if (!applied.operation.ok) {
+        const failure = clientMutationFailure(requestId(c), applied.operation.conflict);
+        return c.json(failure.body, failure.status);
+      }
+      const payload = clientSuccess(requestId(c), applied);
       return withCorePayload(c.json(payload), payload);
     })
-    .post("/api/resource-lifecycle/export", async (c) => {
-      const body = await c.req.json<ResourceExportBody>();
+    .post("/api/v1/resources/export/plan", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<ResourceExportBody>());
+      const planned = await planResourceExport(deps.env, {
+        storeRoot: deps.storeRoot,
+        resourceId: body.resourceId,
+        bundlePath: body.bundlePath,
+      });
+      const payload = clientSuccess(requestId(c), planned);
+      return withCorePayload(c.json(payload), payload);
+    })
+    .post("/api/v1/resources/export/apply", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<ResourceExportApplyBody>());
       const options = {
         storeRoot: deps.storeRoot,
         resourceId: body.resourceId,
         bundlePath: body.bundlePath,
       };
-      const planned = await planResourceExport(deps.env, options);
-      if (body.dryRun) return withCorePayload(c.json(planned), planned);
-      const payload = await applyResourceExportPlan(deps.env, body.mutationPlan ?? planned.plan, {
+      const applied = await applyResourceExportPlan(deps.env, body.mutationPlan, {
         storeRoot: deps.storeRoot,
         options,
       });
+      if (!applied.operation.ok) {
+        const failure = clientMutationFailure(requestId(c), applied.operation.conflict);
+        return c.json(failure.body, failure.status);
+      }
+      const payload = clientSuccess(requestId(c), applied);
       return withCorePayload(c.json(payload), payload);
     })
-    .post("/api/resource-lifecycle/bundle/validate", async (c) => {
-      const body = await c.req.json<ResourceBundleBody>();
-      return c.json(await validateResourceBundle(deps.env, { bundlePath: body.bundlePath }));
+    .post("/api/v1/resources/bundle/validate", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<ResourceBundleBody>());
+      const payload = clientSuccess(
+        requestId(c),
+        await validateResourceBundle(deps.env, { bundlePath: body.bundlePath }),
+      );
+      return withCorePayload(c.json(payload), payload);
     })
-    .post("/api/resource-lifecycle/import", async (c) => {
-      const body = await c.req.json<ResourceBundleBody>();
+    .post("/api/v1/resources/bundle-import/plan", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<ResourceBundleBody>());
+      const planned = await planResourceBundleImport(deps.env, {
+        storeRoot: deps.storeRoot,
+        bundlePath: body.bundlePath,
+      });
+      const payload = clientSuccess(requestId(c), planned);
+      return withCorePayload(c.json(payload), payload);
+    })
+    .post("/api/v1/resources/bundle-import/apply", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<ResourceBundleApplyBody>());
       const options = { storeRoot: deps.storeRoot, bundlePath: body.bundlePath };
-      const planned = await planResourceBundleImport(deps.env, options);
-      if (body.dryRun) return withCorePayload(c.json(planned), planned);
-      const payload = await applyResourceBundleImportPlan(
-        deps.env,
-        body.mutationPlan ?? planned.plan,
-        {
-          storeRoot: deps.storeRoot,
-          options,
-        },
-      );
+      const applied = await applyResourceBundleImportPlan(deps.env, body.mutationPlan, {
+        storeRoot: deps.storeRoot,
+        options,
+      });
+      if (!applied.operation.ok) {
+        const failure = clientMutationFailure(requestId(c), applied.operation.conflict);
+        return c.json(failure.body, failure.status);
+      }
+      const payload = clientSuccess(requestId(c), applied);
       return withCorePayload(c.json(payload), payload);
     })
-    .get("/api/profiles", async (c) => {
-      return c.json({ profiles: await listSyncProfiles(deps.env, { storeRoot: deps.storeRoot }) });
-    })
-    .get("/api/profiles/:id", async (c) => {
-      return c.json(
-        await showSyncProfile(deps.env, {
-          storeRoot: deps.storeRoot,
-          profileId: c.req.param("id"),
+    .get("/api/v1/profiles", async (c) =>
+      c.json(
+        clientSuccess(requestId(c), {
+          profiles: await listSyncProfiles(deps.env, { storeRoot: deps.storeRoot }),
         }),
-      );
-    })
-    .post("/api/profiles", async (c) => {
-      const body = await c.req.json<ProfileMutationBody>();
-      const payload = await createSyncProfile(deps.env, {
+      ),
+    )
+    .post("/api/v1/profiles/plan", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<ProfilePlanBody>());
+      const options = {
         storeRoot: deps.storeRoot,
         profileId: body.profileId,
-        desired: body.desired,
-        dryRun: body.dryRun,
-      });
+        dryRun: true,
+      };
+      const planned =
+        body.action === "create"
+          ? await createSyncProfile(deps.env, { ...options, desired: body.desired })
+          : body.action === "update"
+            ? await updateSyncProfile(deps.env, { ...options, desired: body.desired })
+            : await deleteSyncProfile(deps.env, options);
+      const payload = clientSuccess(requestId(c), planned);
       return withCorePayload(c.json(payload), payload);
     })
-    .put("/api/profiles/:id", async (c) => {
-      const body = await c.req.json<ProfileUpdateBody>();
-      const payload = await updateSyncProfile(deps.env, {
+    .post("/api/v1/profiles/apply", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<ProfileMutationApplyBody>());
+      const applied = await applySyncProfileMutationPlan(deps.env, body.mutationPlan, {
         storeRoot: deps.storeRoot,
-        profileId: c.req.param("id"),
-        desired: body.desired,
-        dryRun: body.dryRun,
       });
+      if (!applied.operation.ok) {
+        const failure = clientMutationFailure(requestId(c), applied.operation.conflict);
+        return c.json(failure.body, failure.status);
+      }
+      const payload = clientSuccess(requestId(c), applied);
       return withCorePayload(c.json(payload), payload);
     })
-    .delete("/api/profiles/:id", async (c) => {
-      const payload = await deleteSyncProfile(deps.env, {
-        storeRoot: deps.storeRoot,
-        profileId: c.req.param("id"),
-        dryRun: parseOptionalBoolean(c.req.query("dryRun"), "dryRun"),
-      });
-      return withCorePayload(c.json(payload), payload);
-    })
-    .post("/api/sync/profiles/:id/plan", async (c) => {
-      const body = await c.req.json<ProfileInvocationBody>();
-      const payload = await planSyncProfile(
+    .get("/api/v1/profiles/:id", async (c) =>
+      c.json(
+        clientSuccess(
+          requestId(c),
+          await showSyncProfile(deps.env, {
+            storeRoot: deps.storeRoot,
+            profileId: c.req.param("id"),
+          }),
+        ),
+      ),
+    )
+    .post("/api/v1/profiles/:id/sync/plan", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<ProfileInvocationBody>());
+      const planned = await planSyncProfile(
         deps.env,
         profileInvocationOpts(deps, c.req.param("id"), body),
       );
+      const payload = clientSuccess(requestId(c), planned);
       return withCorePayload(c.json(payload), payload);
     })
-    .post("/api/sync/profiles/:id/apply", async (c) => {
-      const body = await c.req.json<ProfileApplyBody>();
-      const payload = await applySyncProfilePlan(
+    .post("/api/v1/profiles/:id/sync/apply", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<ProfileApplyBody>());
+      const applied = await applySyncProfilePlan(
         deps.env,
         body.mutationPlan,
         profileInvocationOpts(deps, c.req.param("id"), body),
       );
+      if (!applied.operation.ok) {
+        const failure = clientMutationFailure(requestId(c), applied.operation.conflict);
+        return c.json(failure.body, failure.status);
+      }
+      const payload = clientSuccess(requestId(c), applied);
       return withCorePayload(c.json(payload), payload);
     })
-    .post("/api/sync/profiles/:id/verify", async (c) => {
-      const body = await c.req.json<ProfileInvocationBody>();
-      return c.json(
+    .post("/api/v1/profiles/:id/verify", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<ProfileInvocationBody>());
+      const payload = clientSuccess(
+        requestId(c),
         await verifySyncProfile(deps.env, profileInvocationOpts(deps, c.req.param("id"), body)),
       );
+      return withCorePayload(c.json(payload), payload);
     })
-    .post("/api/sync/profiles/:id/uninstall", async (c) => {
-      const body = await c.req.json<ProfileUninstallBody>();
-      const options = profileInvocationOpts(deps, c.req.param("id"), body);
+    .post("/api/v1/profiles/:id/uninstall/plan", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<ProfileUninstallBody>());
       const planned = await planSyncProfileUninstall(deps.env, {
-        ...options,
+        ...profileInvocationOpts(deps, c.req.param("id"), body),
         acknowledgements: body.acknowledgements,
       });
-      if (body.dryRun) return withCorePayload(c.json(planned), planned);
-      const payload = await applySyncProfileUninstallPlan(
-        deps.env,
-        body.mutationPlan ?? planned.mutationPlan,
-        {
-          ...options,
-          targetKeys: planned.targetKeys,
-          acknowledgements: body.acknowledgements,
-        },
+      const payload = clientSuccess(requestId(c), planned);
+      return withCorePayload(c.json(payload), payload);
+    })
+    .post("/api/v1/profiles/:id/uninstall/apply", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<ProfileUninstallApplyBody>());
+      const applied = await applySyncProfileUninstallPlan(deps.env, body.mutationPlan, {
+        ...profileInvocationOpts(deps, c.req.param("id"), body),
+        targetKeys: body.targetKeys,
+        acknowledgements: body.acknowledgements,
+      });
+      if (!applied.operation.ok) {
+        const failure = clientMutationFailure(requestId(c), applied.operation.conflict);
+        return c.json(failure.body, failure.status);
+      }
+      const payload = clientSuccess(requestId(c), applied);
+      return withCorePayload(c.json(payload), payload);
+    })
+    .get("/api/v1/config", async (c) => {
+      const payload = clientSuccess(
+        requestId(c),
+        await showControlPlaneConfig(deps.env, { storeRoot: deps.storeRoot }),
       );
       return withCorePayload(c.json(payload), payload);
     })
-    .get("/api/settings", async (c) => {
-      return c.json(await settingsSummary(deps.env, { storeRoot: deps.storeRoot }));
+    .get("/api/v1/settings", async (c) =>
+      c.json(
+        clientSuccess(requestId(c), await settingsSummary(deps.env, { storeRoot: deps.storeRoot })),
+      ),
+    )
+    .post("/api/v1/settings/plan", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<SettingsPlanBody>());
+      const parsed = parseControlPlaneSettingsMutationBody({
+        settings: body.settings,
+        dryRun: true,
+      });
+      const planned = await mutateControlPlaneSettings(deps.env, {
+        storeRoot: deps.storeRoot,
+        action: "update",
+        settings: parsed.settings,
+        dryRun: true,
+      });
+      const payload = clientSuccess(requestId(c), planned);
+      return withCorePayload(c.json(payload), payload);
     })
-    .put("/api/settings", async (c) => {
-      const body = parseControlPlaneSettingsMutationBody(await c.req.json<unknown>());
+    .post("/api/v1/config/validate", async (c) => {
+      const payload = clientSuccess(
+        requestId(c),
+        validateControlPlaneConfig(await parseJsonBody(() => c.req.json())),
+      );
+      return withCorePayload(c.json(payload), payload);
+    })
+    .get("/api/v1/discovery", async (c) => {
+      const destination = parseDestination(c.req.query("destination")) ?? "user";
+      const dir = c.req.query("dir");
+      requireDirForDestination(destination, dir);
       return c.json(
-        await mutateControlPlaneSettings(deps.env, {
-          storeRoot: deps.storeRoot,
-          action: "update",
-          settings: body.settings,
-          dryRun: body.dryRun,
-        }),
+        clientSuccess(
+          requestId(c),
+          await discoverySummaryControlPlane(deps.env, {
+            storeRoot: deps.storeRoot,
+            agents: parseCsv(c.req.query("agents")),
+            destination,
+            dir,
+          }),
+        ),
       );
     })
-    .post("/api/collections", async (c) => {
-      const body = parseCollectionCreateMutationBody(await c.req.json<unknown>());
+    .post("/api/v1/diff", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<DistributeBody>());
       return c.json(
-        await mutateCollection(deps.env, {
-          storeRoot: deps.storeRoot,
-          action: "create",
-          ...body,
-        }),
+        clientSuccess(requestId(c), await diffControlPlane(deps.env, distributeOpts(deps, body))),
       );
     })
-    .put("/api/collections/defaults", async (c) => {
-      const body = parseCollectionDefaultsMutationBody(await c.req.json<unknown>());
+    .get("/api/v1/status", async (c) =>
+      c.json(
+        clientSuccess(
+          requestId(c),
+          await statusControlPlane(deps.env, {
+            storeRoot: deps.storeRoot,
+            scope: parseScope(c.req.query("scope")) ?? "global",
+            dir: c.req.query("dir"),
+          }),
+        ),
+      ),
+    )
+    .post("/api/v1/verify", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<DistributeBody>());
       return c.json(
-        await mutateCollection(deps.env, {
-          storeRoot: deps.storeRoot,
-          action: "set-defaults",
-          ...body,
-        }),
+        clientSuccess(requestId(c), await verifyControlPlane(deps.env, distributeOpts(deps, body))),
       );
     })
-    .put("/api/collections/:name/members", async (c) => {
-      const body = parseCollectionMembersMutationBody(await c.req.json<unknown>());
-      return c.json(
-        await mutateCollection(deps.env, {
-          storeRoot: deps.storeRoot,
-          action: "set-members",
-          collectionName: c.req.param("name"),
-          ...body,
-        }),
-      );
-    })
-    .put("/api/collections/:name", async (c) => {
-      const body = parseCollectionUpdateMutationBody(await c.req.json<unknown>());
-      return c.json(
-        await mutateCollection(deps.env, {
-          storeRoot: deps.storeRoot,
-          action: "update",
-          collectionName: c.req.param("name"),
-          ...body,
-        }),
-      );
-    })
-    .delete("/api/collections/:name", async (c) => {
-      const dryRun = parseOptionalBoolean(c.req.query("dryRun"), "dryRun");
-      return c.json(
-        await mutateCollection(deps.env, {
-          storeRoot: deps.storeRoot,
-          action: "delete",
-          collectionName: c.req.param("name"),
-          dryRun,
-        }),
-      );
-    })
-    .put("/api/agents/:id/enabled", async (c) => {
-      const body = parseAgentEnabledMutationBody(await c.req.json<unknown>());
-      return c.json(
-        await mutateBuiltinAgent(deps.env, {
-          storeRoot: deps.storeRoot,
-          agentId: c.req.param("id"),
-          action: body.enabled ? "enable" : "disable",
-          dryRun: body.dryRun,
-        }),
-      );
-    })
-    .put("/api/agents/:id/adapter", async (c) => {
-      const body = parseAgentAdapterMutationBody(await c.req.json<unknown>());
-      return c.json(
-        await mutateAgentAdapter(deps.env, {
-          storeRoot: deps.storeRoot,
-          agentId: c.req.param("id"),
-          ...body,
-        }),
-      );
-    })
-    .delete("/api/agents/:id/adapter", async (c) => {
-      const dryRun = parseOptionalBoolean(c.req.query("dryRun"), "dryRun");
-      return c.json(
-        await mutateCustomAdapter(deps.env, {
-          storeRoot: deps.storeRoot,
-          agentId: c.req.param("id"),
-          action: "remove",
-          dryRun,
-        }),
-      );
-    })
-    // 密钥引用名(只列名,绝不回显真值)——聚合口径走 core helper(不变量 1)。
-    .get("/api/secrets", async (c) => {
-      const led = await loadLedger(deps.env, deps.storeRoot);
-      const refs = collectLedgerSecretRefStats(led);
-      return c.json({ names: collectLedgerSecretRefs(led), refs });
-    });
+    .get("/api/v1/summary", async (c) =>
+      c.json(
+        clientSuccess(
+          requestId(c),
+          await summaryControlPlane(deps.env, summaryOpts(deps, c.req.query.bind(c.req))),
+        ),
+      ),
+    )
+    .get("/api/v1/activity", async (c) =>
+      c.json(
+        clientSuccess(
+          requestId(c),
+          await listActivity(deps.env, deps.storeRoot, activityFilter(c.req.query.bind(c.req))),
+        ),
+      ),
+    )
+    .get("/api/v1/operations", async (c) =>
+      c.json(
+        clientSuccess(
+          requestId(c),
+          await listControlPlaneOperations(deps.env, {
+            storeRoot: deps.storeRoot,
+            ...(parseLimit(c.req.query("limit"))
+              ? { limit: parseLimit(c.req.query("limit")) }
+              : {}),
+          }),
+        ),
+      ),
+    )
+    .get("/api/v1/operations/:id", async (c) =>
+      c.json(
+        clientSuccess(
+          requestId(c),
+          await showControlPlaneOperation(deps.env, {
+            storeRoot: deps.storeRoot,
+            operationId: c.req.param("id"),
+          }),
+        ),
+      ),
+    );
 
   return api;
 }
 
-export function redactWebPayload(
-  value: unknown,
-  knownValueSources: readonly unknown[] = [value],
-): never {
-  return JSON.parse(serializeSafeObservable("web", value, { knownValueSources })) as never;
+function exactLoopbackOrigin(hostHeader: string | undefined, requestUrl: string): string {
+  const host = hostHeader ?? new URL(requestUrl).host;
+  return `http://${host}`;
+}
+
+function browserSessionCookie(sessionId: string): string {
+  return `cellarer_session=${encodeURIComponent(sessionId)}; HttpOnly; SameSite=Strict; Path=/api/v1`;
+}
+
+function readCookie(header: string | undefined, name: string): string | undefined {
+  for (const item of header?.split(";") ?? []) {
+    const [key, ...rest] = item.trim().split("=");
+    if (key === name) return decodeURIComponent(rest.join("="));
+  }
+  return undefined;
+}
+
+function isMutationMethod(method: string): boolean {
+  return method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE";
 }
 
 // RPC 类型导出:前端 `hc<AppType>(...)` 拿端到端类型。

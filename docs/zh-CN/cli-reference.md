@@ -681,19 +681,26 @@ Headless authority 应由 runner 在确认不存在 active journal 后,把受保
 
 ```bash
 node packages/cli/dist/bin.js ui
-node packages/cli/dist/bin.js ui --port 4317 --token-fd 3 3< /path/to/ui-token
+node packages/cli/dist/bin.js --output json ui --port 0 \
+  --token-fd 3 --lifetime-fd 4 3< /path/to/ui-token 4< /path/to/lifetime-pipe
 ```
 
 选项:
 
 | 选项 | 说明 |
 | --- | --- |
-| `--port <port>` | `1..65535` 范围内的端口,默认 `4317`。 |
-| `--token-fd <number>` | 从编号不小于 `3` 的继承描述符读取可选 bearer token。 |
+| `--port <port>` | `0..65535` 范围内的端口,默认 `4317`;`0` 表示由 OS 分配 loopback 端口。 |
+| `--token-fd <number>` | 选择 managed bearer mode,并从编号不小于 `3` 的继承 descriptor 读取 token。 |
+| `--lifetime-fd <number>` | 该独立继承 ownership descriptor 到达 EOF 时关闭 sidecar。 |
 
 Bearer token 真值不得出现在 argv 或 structured request JSON 中。只传 descriptor
 编号,由 runner-owned 的受保护文件、pipe 或等价通道提供 bytes;示例文件应仅允许 owner
-读取。
+读取。不传 `--token-fd` 时,`ui` 选择内置 browser-session mode;不存在无认证 API fallback。
+
+Machine mode 的 stdout 在 socket 绑定后只包含一条版本化 ready result。其中包含实际
+base URL、PID、API version、contract ID、认证模式与 lifecycle protocol,不包含 token
+或绝对 Store path。Descriptor EOF、programmatic close、SIGINT 与 SIGTERM 共用同一个
+幂等、有界 shutdown 路径。
 
 `ui` 会在启动 server 前 preload 可用 authority,并且只向 Web 注入用于 sealing、current-
 epoch lease 与 protected journal tip 的窄 `MutationAuthority` capability。Web 不会得到

@@ -644,7 +644,7 @@ describe("planned control-plane mutations", () => {
     await expect(loadConfig(t.env, storeRoot)).resolves.toBeDefined();
   });
 
-  it("rejects serialized control-plane provenance drift before recovery, revision, journal, or mutation lock access", async () => {
+  it("returns a typed target conflict when serialized control-plane provenance drifts", async () => {
     const planned = await mutateBuiltinAgent(t.env, {
       storeRoot,
       agentId: "codex",
@@ -658,29 +658,16 @@ describe("planned control-plane mutations", () => {
       `${JSON.stringify({ ...config, adapterOverrides: { codex: { enabled: true } } }, null, 2)}\n`,
       { mode: 0o600 },
     );
-    const counts = { recovery: 0, revision: 0, journal: 0, lock: 0 };
-    const baseFs = t.env.fs;
-    const env = {
-      ...t.env,
-      fs: {
-        ...baseFs,
-        async readFile(path: string) {
-          if (path.endsWith("recovery.lock")) counts.recovery += 1;
-          if (path.endsWith("revision.json")) counts.revision += 1;
-          if (path.endsWith("operations/active.json")) counts.journal += 1;
-          return baseFs.readFile(path);
-        },
-        async writeFileExclusive(path: string, data: string, opts?: { mode?: number }) {
-          if (path.endsWith("mutation.lock")) counts.lock += 1;
-          return baseFs.writeFileExclusive(path, data, opts);
-        },
-      },
-    };
+    const beforeRevision = await readStoreRevision(t.env, storeRoot);
+    const beforeReceipts = await listOperationReceipts(t.env, storeRoot);
+    const applied = await applyControlPlaneMutationPlan(t.env, planned.plan, { storeRoot });
 
-    const applied = await applyControlPlaneMutationPlan(env, planned.plan, { storeRoot });
-
-    expect(applied.operation).toMatchObject({ ok: false, conflict: { code: "INVALID_PLAN" } });
-    expect(counts).toEqual({ recovery: 0, revision: 0, journal: 0, lock: 0 });
+    expect(applied.operation).toMatchObject({
+      ok: false,
+      conflict: { code: "TARGET_PRECONDITION_CONFLICT" },
+    });
+    await expect(readStoreRevision(t.env, storeRoot)).resolves.toBe(beforeRevision);
+    await expect(listOperationReceipts(t.env, storeRoot)).resolves.toEqual(beforeReceipts);
   });
 
   it("rejects ledger provenance drift under the lock without a revision change", async () => {
@@ -978,7 +965,7 @@ describe("planned control-plane mutations", () => {
     });
     expect(
       (await applyControlPlaneMutationPlan(t.env, stale.plan, { storeRoot })).operation,
-    ).toMatchObject({ ok: false, conflict: { code: "INVALID_PLAN" } });
+    ).toMatchObject({ ok: false, conflict: { code: "STALE_REVISION" } });
 
     const fresh = await mutateControlPlaneSettings(t.env, {
       storeRoot,

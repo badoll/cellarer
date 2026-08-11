@@ -1,12 +1,13 @@
+import type { MutationPlan } from "@cellarer/core";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
+  buildImportApplyRequest,
   buildImportRequest,
   ImportDialog,
   importRequestKey,
   isImportProjectDirMissing,
-  selectItemsForPlan,
 } from "../client/import-dialog.js";
 
 describe("ImportDialog", () => {
@@ -56,29 +57,10 @@ describe("ImportDialog", () => {
     expect(importRequestKey(previewed)).not.toBe(importRequestKey(changed));
   });
 
-  it("locks apply selection to importable rows from the preview plan", () => {
-    expect(
-      selectItemsForPlan({
-        agent: "codex",
-        scope: "global",
-        warnings: [],
-        items: [
-          {
-            kind: "rules",
-            name: "team",
-            status: "new",
-            action: "import",
-            source: "/home/.codex/AGENTS.md",
-          },
-          {
-            kind: "mcp",
-            name: "ctx",
-            status: "conflict",
-            action: "skip",
-            source: "/home/.codex/config.toml",
-          },
-        ],
-      }),
-    ).toEqual([{ kind: "rules", name: "team", source: "/home/.codex/AGENTS.md" }]);
+  it("submits the exact mutation plan returned by preview without rebuilding selection", () => {
+    const mutationPlan = { schemaVersion: 1, planId: "plan-import" } as MutationPlan;
+
+    expect(buildImportApplyRequest(mutationPlan)).toEqual({ mutationPlan });
+    expect(buildImportApplyRequest(mutationPlan).mutationPlan).toBe(mutationPlan);
   });
 });

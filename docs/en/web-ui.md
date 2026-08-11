@@ -1,86 +1,86 @@
-# Web UI
+# Web UI and Local Client API
 
 [Documentation index](../README.md) | [简体中文](../zh-CN/web-ui.md)
 
-The Web UI is a local console for inspecting and operating the cellarer store.
-It is a thin shell over `@cellarer/core`.
+The Web UI is a local React console over the versioned Hono client API. Both are
+thin presentation layers over `@cellarer/core`; the browser never writes files
+or reconstructs mutation decisions.
 
 ## Start
+
+For the bundled browser session:
 
 ```bash
 pnpm build
 node packages/cli/dist/bin.js ui
-node packages/cli/dist/bin.js ui --port 4317 --token-fd 3 3< /path/to/ui-token
 ```
 
-The server listens on `127.0.0.1` only.
+For a managed client, pass bearer material and process ownership through
+separate protected inherited descriptors:
 
-## Runtime Shape
-
-```text
-React SPA -> Hono API -> @cellarer/web -> @cellarer/core -> Env -> local files
+```bash
+node packages/cli/dist/bin.js --output json ui --port 0 \
+  --token-fd 3 --lifetime-fd 4 3< /path/to/ui-token 4< /path/to/lifetime-pipe
 ```
 
-The browser does not write files directly. All file operations go through core.
+The server binds only to `127.0.0.1`. Port `0` requests an OS-assigned port; the
+versioned ready result reports the actual base URL only after the socket,
+authentication, static assets, API contract, and Core composition are ready.
 
-## API Surface
+## Versioned Contract
 
-| Route | Purpose |
+Every supported operation is under `/api/v1`. `GET /api/v1/openapi.json`
+returns the implemented OpenAPI 3.1 document in the normal result envelope;
+`GET /api/v1/capabilities` lists the operation IDs. The bundled client negotiates
+the exact API version and contract ID before ordinary requests.
+
+| Route family | Purpose |
 | --- | --- |
-| `GET /api/resources` | Resource catalog, state counts, collections, and sync targets. |
-| `GET /api/resources/:kind` | Resource catalog filtered to `skills`, `mcp`, or `rules`. |
-| `GET /api/discovery` | Existing agent files that can be imported. |
-| `POST /api/doctor` | Read-only diagnostics, including typed mutation recovery evidence. |
-| `POST /api/plan` | Distribution preview with mutation plan identity and base revision. |
-| `POST /api/apply` | Plan and apply distribution through the mutation receipt boundary. |
-| `POST /api/import/plan` | Import preview. |
-| `POST /api/import/apply` | Import selected previewed resources. |
-| `POST /api/sync/plan` | Sync preview. |
-| `POST /api/sync/apply` | Sync previewed resources to agents. |
-| `POST /api/resource-lifecycle/{dependencies,check}` | Read exact dependency or provenance DTOs. |
-| `POST /api/resource-lifecycle/update/{plan,apply}` | Stage/plan or apply a pinned Store-only update. |
-| `POST /api/resource-lifecycle/{rename,remove,export,import}` | Plan or apply the corresponding distinct lifecycle verb. |
-| `POST /api/resource-lifecycle/bundle/validate` | Verify a portable bundle before import. |
-| `GET/POST /api/profiles`, `GET/PUT/DELETE /api/profiles/:id` | Profile list/show/create/update/delete. |
-| `POST /api/sync/profiles/:id/{plan,apply,verify,uninstall}` | Exact profile workflow; project profiles require `workspaceRoot`. |
-| `POST /api/revert` | Preview or apply a ledger revert through the same receipt boundary. |
-| `POST /api/verify` | Desired-versus-applied, applied-versus-disk, and recovery health. |
-| `GET /api/agents` | Registered adapters, enabled state, capabilities, and global detection status. |
-| `GET /api/settings` | Store defaults, collections, adapter ids, and secret references. |
-| `GET /api/status` | Ledger drift status. |
-| `GET /api/secrets` | Secret reference names only. |
+| `GET /api/v1/health` | Minimal unauthenticated transport liveness. |
+| `GET /api/v1/version`, `/capabilities`, `/openapi.json` | Authenticated contract discovery. |
+| `GET /api/v1/readiness` | Typed Store, authority, lock, and recovery blockers; a not-ready result uses HTTP 503 with a success envelope. |
+| `/api/v1/resources`, `/agents`, `/collections`, `/config`, `/settings` | Read-only control-plane DTOs. |
+| `/api/v1/discovery`, `/diff`, `/status`, `/verify`, `/summary`, `/activity`, `/operations` | Discovery, verification, status, and operation evidence. |
+| `/api/v1/{sync,scan,import,revert}/{plan,apply}` | Exact preview/apply workflows. |
+| `/api/v1/resources/*/{plan,apply}` | Resource update, rename, remove, export, and bundle-import workflows. |
+| `/api/v1/profiles/*` | Profile definition, sync, verification, and uninstall workflows. |
+| `GET /api/v1/recovery`, `POST /api/v1/recovery/apply` | Diagnose and apply authorized interrupted-operation recovery. |
 
-Legacy project-scope distribution requests must include `dir`. Profile-based
-project requests must include an absolute `workspaceRoot` on every invocation;
-profiles do not persist machine-local project paths.
+The unversioned `/api/*` surface has been removed and returns not found before
+Core interaction.
 
-## Mutation and Verification Responses
+## Result and Mutation Semantics
 
-Plan responses include a safe `mutation` summary with `planId`, `planDigest`,
-operation, and `baseRevision`. Successful apply and revert responses add an
-operation receipt with the resulting revision and per-action outcomes. Typed
-conflicts and recovery errors expose neither raw plan content nor state
-publication data; the durable journal itself retains only safe references and
-digests for those fields.
+All JSON operations return the stable `apiVersion`, `requestId`, `status`, and
+`warnings` envelope with either `data` or a typed `error`. A planning endpoint
+returns an authority-sealed `MutationPlan`. Its matching apply endpoint accepts
+that exact immutable plan; the browser does not rescan, replan, or infer success
+from HTTP text. A successful apply returns the Core operation receipt, including
+the committed revision and per-action outcomes.
 
-The current local API diagnoses interrupted operations through `/api/doctor`
-and `/api/verify`, but does not expose a write-side recovery route. Do not
-delete a lock by age. Recovery must be performed by a trusted Core caller using
-the exact diagnosed operation id, as described in [Concepts](concepts.md#concurrency-and-interrupted-operation-recovery).
+Project-scoped requests require an explicit project path. Profile invocations
+require `workspaceRoot` when the profile scope is project; machine-local paths
+are not persisted in profile definitions.
 
-`GET /api/status` returns ledger-versus-disk items only. Use
-`POST /api/verify` for the complete report; `healthy` requires both verification
-axes to be `converged` and recovery to be `clean`.
+## Authentication and Ownership
 
-## Security Behavior
+Startup selects exactly one mode:
 
-- API access can be protected with a bearer token.
-- Host headers are checked to reduce DNS rebinding risk.
-- Web distribution always uses `secretMode: "env"`.
-- Secret values are not returned through API responses.
+- Browser mode creates a new random session on every start. The SPA bootstraps
+  it through exact same-origin Host, Origin, and Fetch Metadata checks. The
+  cookie is `HttpOnly`, `SameSite=Strict`, and scoped to `/api/v1`; every
+  mutation requires the exact loopback Origin.
+- Managed mode accepts only `Authorization: Bearer ...`. The token is read from
+  `--token-fd`; it is never accepted from argv, environment fallback, query
+  strings, ready records, logs, or response bodies.
 
-## Current Limits
+Only `/api/v1/health` is public API liveness. Static assets remain
+uncredentialed so the browser can load the shell, while Host and CSP policy
+still cover them. Web receives a narrow in-memory mutation authority and no
+general `SecretStore` or plaintext resolver. Final `/api/v1` serialization
+passes through the reference-only secret guard.
 
-- Import and sync flows are preview-first in the UI.
-- Project-level sync requires an explicit project path.
-- Secret values are never shown; only reference names are displayed.
+Programmatic close, lifetime-descriptor EOF, SIGINT, and SIGTERM share one
+idempotent bounded shutdown path. It stops accepting requests, drains in-flight
+work up to the configured limit, and leaves Core journal evidence intact if a
+mutation is interrupted.

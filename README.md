@@ -72,6 +72,10 @@ Start the local Web console:
 node packages/cli/dist/bin.js ui
 ```
 
+It binds only to `127.0.0.1` and uses a random HttpOnly browser session. Managed
+clients can use protected bearer and lifetime descriptors; see the [Web UI and
+local API guide](docs/en/web-ui.md).
+
 ## Commands
 
 | Command | Purpose |

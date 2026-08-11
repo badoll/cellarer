@@ -115,11 +115,22 @@ rendering.
 
 The Web server:
 
-- listens on `127.0.0.1`
-- supports an optional bearer token
-- validates Host headers as a DNS rebinding defense
-- returns reference-only plans and redacts every JSON response boundary
-- returns secret reference names only
+- listens on `127.0.0.1` and starts in exactly one explicit authentication mode
+- reads managed bearer material only from a protected inherited descriptor, never argv,
+  environment fallback, a URL, a ready record, or an HTTP response
+- gives the bundled browser a new random `HttpOnly`, `SameSite=Strict`, `/api/v1`-scoped
+  session on every start after exact Host, Origin, and Fetch Metadata checks
+- validates exact loopback Host on static, bootstrap, discovery, read, and mutation routes,
+  and requires exact Origin on every browser mutation
+- keeps only `/api/v1/health` unauthenticated; authenticated readiness reports typed
+  Store, authority, lock, and recovery blockers without provider or path details
+- returns reference-only plans and applies the final serialization guard to every
+  `/api/v1` JSON response
+
+The unversioned `/api/*` routes and query-token behavior do not exist. Managed
+ownership uses a separate inherited lifetime descriptor; EOF, programmatic
+close, SIGINT, and SIGTERM enter the same bounded shutdown path. Forced
+connection close never deletes a Core journal or guesses recovery state.
 
 The CLI composition root preloads the Store-scoped mutation authority before it
 starts Web. Web receives only the narrow in-memory `MutationAuthority`

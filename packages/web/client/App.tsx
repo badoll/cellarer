@@ -10,7 +10,7 @@ import type {
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { AgentsPage } from "./agents-page.js";
-import { client } from "./api.js";
+import { apiFetch } from "./api.js";
 import { readApiJson } from "./api-state.js";
 import { DashboardIcon, type DashboardIconName } from "./dashboard-icons.js";
 import { ImportDialog } from "./import-dialog.js";
@@ -256,13 +256,16 @@ function DashboardPage(props: { onNavigate: (page: Page) => void }) {
 function DashboardShell(props: { onNavigate: (page: Page) => void }) {
   const [importOpen, setImportOpen] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
-  const summaryState = useApi<DashboardSummaryResult>(() => client.api.summary.$get(), [reloadKey]);
+  const summaryState = useApi<DashboardSummaryResult>(
+    () => apiFetch("/api/v1/summary"),
+    [reloadKey],
+  );
   const resourcesState = useApi<ResourceCatalogResult>(
-    () => client.api.resources.$get(),
+    () => apiFetch("/api/v1/resources"),
     [reloadKey],
   );
   const discoveryState = useApi<DiscoverySummaryResult>(
-    () => client.api.discovery.$get(),
+    () => apiFetch("/api/v1/discovery"),
     [reloadKey],
   );
   const summary = summaryState.data;

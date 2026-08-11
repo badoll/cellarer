@@ -1,10 +1,12 @@
 import { promises as fs, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
+import { PassThrough } from "node:stream";
 import { createRealEnv, type Env, initializeStore, type MutationAuthority } from "@cellarer/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { WEB_CLIENT_ASSET_ROOT } from "../src/index.js";
-import { buildServerApp } from "../src/server.js";
+import { buildServerApp, type SidecarAuthentication, startServer } from "../src/server.js";
+import { deterministicMutationAuthority } from "./helpers/mutation-authority.js";
 
 // server.ts 组装的完整 app(API + 静态 SPA + 安全加固)的集成测试。
 // 关注 app.ts 覆盖不到的部分:页面级 token 门禁、CSP 响应头、静态页面的 Host 白名单。
@@ -40,8 +42,11 @@ describe("web server app — page gate / CSP / host", () => {
   afterEach(() => fs.rm(root, { recursive: true, force: true }));
 
   function makeApp(token?: string) {
+    const auth: SidecarAuthentication = token
+      ? { mode: "bearer", token }
+      : { mode: "browser-session" };
     return buildServerApp({
-      token,
+      auth,
       staticRoot,
       env,
       storeRoot,
@@ -80,11 +85,15 @@ describe("web server app — page gate / CSP / host", () => {
     await initializeStore(env, storeRoot);
     seals = 0;
 
-    const app = makeApp();
-    const response = await app.request("/api/collections", {
+    const app = makeApp("managed-test-token");
+    const response = await app.request("/api/v1/collections/plan", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer managed-test-token",
+      },
       body: JSON.stringify({
+        action: "create",
         collectionName: "secure",
         description: "injected",
         resourceIds: [],
@@ -102,14 +111,11 @@ describe("web server app — page gate / CSP / host", () => {
     expect(res.headers.get("content-security-policy")).toContain("script-src 'self'");
   });
 
-  it("gates the SPA page behind ?token= when a token is set", async () => {
+  it("serves the static shell without placing managed bearer material in the URL", async () => {
     const app = makeApp("s3cret");
-    // 无 ?token 的匿名页面请求 → 401(阻止拿到内联 token 的 HTML)。
     const anon = await app.request("/");
-    expect(anon.status).toBe(401);
-    // 带正确 ?token → 放行页面。
-    const ok = await app.request("/?token=s3cret");
-    expect(ok.status).toBe(200);
+    expect(anon.status).toBe(200);
+    expect(await anon.text()).not.toContain("s3cret");
   });
 
   it("does NOT gate /assets/* (sub-resources have no ?token; gating them white-screens the SPA)", async () => {
@@ -120,22 +126,152 @@ describe("web server app — page gate / CSP / host", () => {
     expect(await asset.text()).toContain("spa");
   });
 
-  it("still routes /api through Bearer (not ?token) when a token is set", async () => {
+  it("returns not found for legacy API routes before authentication or Core interaction", async () => {
     const app = makeApp("s3cret");
-    // /api 不看 ?token;无 Bearer → 401。
     const noBearer = await app.request("/api/agents");
-    expect(noBearer.status).toBe(401);
+    expect(noBearer.status).toBe(404);
     const withBearer = await app.request("/api/agents", {
       headers: { Authorization: "Bearer s3cret" },
     });
-    expect(withBearer.status).toBe(200);
+    expect(withBearer.status).toBe(404);
   });
 
-  it("does not let a /apiary-style path bypass the page gate (segment prefix, not string prefix)", async () => {
+  it("does not treat an /apiary-style path as an API route", async () => {
     const app = makeApp("s3cret");
-    // /apiary 以 "/api" 开头但不是 API 段;不得借 startsWith 绕过 ?token 门禁。
     const res = await app.request("/apiary");
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(200);
+    expect(await res.text()).not.toContain("s3cret");
+  });
+
+  it("requires a same-origin HttpOnly browser session for versioned API routes", async () => {
+    const app = makeApp();
+    const anonymous = await app.request("/api/v1/version");
+    expect(anonymous.status).toBe(401);
+
+    const bootstrap = await app.request("/api/v1/auth/session", {
+      method: "POST",
+      headers: {
+        host: "127.0.0.1:4317",
+        origin: "http://127.0.0.1:4317",
+        "sec-fetch-site": "same-origin",
+      },
+    });
+    expect(bootstrap.status).toBe(200);
+    expect(await bootstrap.clone().json()).toMatchObject({
+      status: "success",
+      data: { authenticated: true, authMode: "browser-session" },
+    });
+    const cookie = bootstrap.headers.get("set-cookie") ?? "";
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).toContain("SameSite=Strict");
+    expect(cookie).toContain("Path=/api/v1");
+    expect(cookie).not.toContain("s3cret");
+
+    const authenticated = await app.request("/api/v1/version", {
+      headers: { cookie: cookie.split(";")[0] ?? "" },
+    });
+    expect(authenticated.status).toBe(200);
+  });
+
+  it("rejects hostile browser bootstrap and mutation origins", async () => {
+    const app = makeApp();
+    const hostile = await app.request("/api/v1/auth/session", {
+      method: "POST",
+      headers: {
+        host: "127.0.0.1:4317",
+        origin: "https://evil.example.com",
+        "sec-fetch-site": "cross-site",
+      },
+    });
+    expect(hostile.status).toBe(403);
+    expect(await hostile.text()).not.toContain(storeRoot);
+
+    const bootstrap = await app.request("/api/v1/auth/session", {
+      method: "POST",
+      headers: {
+        host: "127.0.0.1:4317",
+        origin: "http://127.0.0.1:4317",
+        "sec-fetch-site": "same-origin",
+      },
+    });
+    const cookie = (bootstrap.headers.get("set-cookie") ?? "").split(";")[0] ?? "";
+    const hostileMutation = await app.request("/api/v1/collections/plan", {
+      method: "POST",
+      headers: {
+        cookie,
+        host: "127.0.0.1:4317",
+        origin: "https://evil.example.com",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        action: "create",
+        collectionName: "csrf",
+        resourceIds: [],
+      }),
+    });
+    expect(hostileMutation.status).toBe(403);
+
+    const missingOrigin = await app.request("/api/v1/collections/plan", {
+      method: "POST",
+      headers: {
+        cookie,
+        host: "127.0.0.1:4317",
+        "content-type": "application/json",
+      },
+      body: "{not-json",
+    });
+    expect(missingOrigin.status).toBe(403);
+  });
+
+  it("keeps browser bootstrap unavailable in managed bearer mode", async () => {
+    const response = await makeApp("managed-token").request("/api/v1/auth/session", {
+      method: "POST",
+      headers: {
+        host: "127.0.0.1:4317",
+        origin: "http://127.0.0.1:4317",
+        "sec-fetch-site": "same-origin",
+      },
+    });
+
+    expect(response.status).toBe(403);
+    expect(await response.text()).not.toContain("managed-token");
+  });
+
+  it("rotates the browser session credential for every server composition", async () => {
+    const bootstrap = async (app: ReturnType<typeof makeApp>) =>
+      app.request("/api/v1/auth/session", {
+        method: "POST",
+        headers: {
+          host: "127.0.0.1:4317",
+          origin: "http://127.0.0.1:4317",
+          "sec-fetch-site": "same-origin",
+        },
+      });
+    const first = await bootstrap(makeApp());
+    const second = await bootstrap(makeApp());
+
+    expect(first.headers.get("set-cookie")).not.toBe(second.headers.get("set-cookie"));
+  });
+
+  it("does not accept an attacker-selected browser session cookie", async () => {
+    const app = makeApp();
+    const response = await app.request("/api/v1/version", {
+      headers: { cookie: "cellarer_session=attacker-fixed-session" },
+    });
+
+    expect(response.status).toBe(401);
+    expect(await response.text()).not.toContain("attacker-fixed-session");
+  });
+
+  it("keeps the bearer credential out of URLs and requires the Authorization header", async () => {
+    const app = makeApp("s3cret");
+    const query = await app.request("/api/v1/version?token=s3cret");
+    expect(query.status).toBe(401);
+    const bearer = await app.request("/api/v1/version", {
+      headers: { Authorization: "Bearer s3cret" },
+    });
+    expect(bearer.status).toBe(200);
+    expect(await (await app.request("/")).text()).not.toContain("s3cret");
   });
 
   it("forbids a non-loopback Host on the static page too", async () => {
@@ -143,4 +279,229 @@ describe("web server app — page gate / CSP / host", () => {
     const res = await app.request("/", { headers: { host: "evil.example.com" } });
     expect(res.status).toBe(403);
   });
+
+  it("publishes readiness after an ephemeral port is actually bound and closes idempotently", async () => {
+    const handle = await startServer({
+      port: 0,
+      auth: { mode: "browser-session" },
+      staticRoot,
+      env,
+      storeRoot,
+    });
+    try {
+      expect(handle.port).toBeGreaterThan(0);
+      expect(handle.ready).toEqual({
+        schemaVersion: 1,
+        apiVersion: "1.0",
+        contractId: "cellarer-local-client-api-v1",
+        lifecycle: "owned-v1",
+        authMode: "browser-session",
+        pid: process.pid,
+        baseUrl: `http://127.0.0.1:${handle.port}`,
+      });
+      const health = await fetch(`${handle.ready.baseUrl}/api/v1/health`);
+      expect(health.status).toBe(200);
+    } finally {
+      await handle.close();
+      await handle.close();
+    }
+  });
+
+  it("does not publish readiness when the packaged SPA entry is missing", async () => {
+    await expect(
+      startServer({
+        port: 0,
+        auth: { mode: "browser-session" },
+        staticRoot: join(root, "missing-dist"),
+        env,
+        storeRoot,
+      }),
+    ).rejects.toThrow("index.html");
+  });
+
+  it("closes the owned sidecar when its lifetime channel reaches EOF", async () => {
+    const lifetime = new PassThrough();
+    const handle = await startServer({
+      port: 0,
+      auth: { mode: "browser-session" },
+      staticRoot,
+      env,
+      storeRoot,
+      lifetime,
+    } as Parameters<typeof startServer>[0] & { lifetime: PassThrough });
+
+    lifetime.end();
+    await expect(
+      Promise.race([
+        handle.closed.then(() => "closed"),
+        new Promise<string>((resolve) => setTimeout(() => resolve("timeout"), 250)),
+      ]),
+    ).resolves.toBe("closed");
+  });
+
+  it("stops accepting and drains an in-flight request before graceful close completes", async () => {
+    const entered = deferred();
+    const release = deferred();
+    const baseFs = env.fs;
+    const drainingEnv: Env = {
+      ...env,
+      fs: {
+        ...baseFs,
+        readdir: async (path) => {
+          if (path === join(storeRoot, "store", "rules")) {
+            entered.resolve();
+            await release.promise;
+          }
+          return baseFs.readdir(path);
+        },
+      },
+    };
+    const handle = await startServer({
+      port: 0,
+      auth: { mode: "bearer", token: "drain-token" },
+      staticRoot,
+      env: drainingEnv,
+      storeRoot,
+      shutdownTimeoutMs: 1_000,
+    });
+    const request = fetch(`${handle.ready.baseUrl}/api/v1/resources/rules`, {
+      headers: { authorization: "Bearer drain-token" },
+    });
+    await entered.promise;
+
+    const closing = handle.close();
+    await expect(
+      Promise.race([
+        closing.then(() => "closed"),
+        new Promise<string>((resolve) => setTimeout(() => resolve("draining"), 25)),
+      ]),
+    ).resolves.toBe("draining");
+    release.resolve();
+
+    expect((await request).status).toBe(200);
+    await closing;
+  });
+
+  it("bounds drain time when an in-flight request cannot complete", async () => {
+    const entered = deferred();
+    const release = deferred();
+    const baseFs = env.fs;
+    const blockedEnv: Env = {
+      ...env,
+      fs: {
+        ...baseFs,
+        readdir: async (path) => {
+          if (path === join(storeRoot, "store", "rules")) {
+            entered.resolve();
+            await release.promise;
+          }
+          return baseFs.readdir(path);
+        },
+      },
+    };
+    const handle = await startServer({
+      port: 0,
+      auth: { mode: "bearer", token: "bounded-token" },
+      staticRoot,
+      env: blockedEnv,
+      storeRoot,
+      shutdownTimeoutMs: 20,
+    });
+    const request = fetch(`${handle.ready.baseUrl}/api/v1/resources/rules`, {
+      headers: { authorization: "Bearer bounded-token" },
+    }).catch(() => undefined);
+    await entered.promise;
+
+    await expect(
+      Promise.race([
+        handle.close().then(() => "closed"),
+        new Promise<string>((resolve) => setTimeout(() => resolve("timeout"), 500)),
+      ]),
+    ).resolves.toBe("closed");
+    release.resolve();
+    await request;
+  });
+
+  it("preserves an active Core journal when bounded shutdown closes its connection", async () => {
+    env.mutationAuthority = deterministicMutationAuthority();
+    await initializeStore(env, storeRoot);
+    const journalPublished = deferred();
+    const releaseJournal = deferred();
+    const baseFs = env.fs;
+    const mutationEnv: Env = {
+      ...env,
+      fs: {
+        ...baseFs,
+        publishFileAtomically: async (path, data, options) => {
+          await baseFs.publishFileAtomically(path, data, options);
+          if (path === join(storeRoot, "operations", "active.json")) {
+            journalPublished.resolve();
+            await releaseJournal.promise;
+          }
+        },
+      },
+    };
+    const handle = await startServer({
+      port: 0,
+      auth: { mode: "bearer", token: "journal-token" },
+      staticRoot,
+      env: mutationEnv,
+      storeRoot,
+      shutdownTimeoutMs: 20,
+    });
+    const headers = {
+      authorization: "Bearer journal-token",
+      "content-type": "application/json",
+    };
+    const plannedResponse = await fetch(`${handle.ready.baseUrl}/api/v1/collections/plan`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        action: "create",
+        collectionName: "shutdown-journal",
+        resourceIds: [],
+      }),
+    });
+    const planned = (await plannedResponse.json()) as {
+      data: { plan: Record<string, unknown> };
+    };
+    const applying = fetch(`${handle.ready.baseUrl}/api/v1/mutations/apply`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ mutationPlan: planned.data.plan }),
+    }).catch(() => undefined);
+    await journalPublished.promise;
+
+    await handle.close();
+    await expect(env.fs.readFile(join(storeRoot, "operations", "active.json"))).resolves.toContain(
+      '"operationId"',
+    );
+
+    releaseJournal.resolve();
+    await applying;
+    await waitUntilAbsent(env, join(storeRoot, "operations", "active.json"));
+  });
 });
+
+function deferred() {
+  let resolve!: () => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+async function waitUntilAbsent(env: Env, path: string): Promise<void> {
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline) {
+    const exists = await env.fs
+      .lstat(path)
+      .then(() => true)
+      .catch((error: unknown) => (error as { code?: string }).code !== "ENOENT");
+    if (!exists) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for path removal: ${path}`);
+}

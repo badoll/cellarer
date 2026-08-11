@@ -1,18 +1,130 @@
-// Hono RPC 客户端:端到端类型来自 server 的 AppType(type-only import,运行时只走 fetch)。
-import { hc } from "hono/client";
-import type { AppType } from "../src/app.js";
+import { CLIENT_API_CONTRACT_ID, CLIENT_API_VERSION } from "@cellarer/core";
+import { readApiJson } from "./api-state.js";
 
-// 启用 --token 时,server 会 401 所有 /api;SPA 从 URL 的 ?token=... 读取并作为 Bearer 头附带,
-// 这样 `cellarer ui --token X` 打开 http://127.0.0.1:port/?token=X 即可用(无 token 时此处为空,不附头)。
-const search = typeof location === "undefined" ? "" : location.search;
-const token = new URLSearchParams(search).get("token");
-const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+const SESSION_PATH = "/api/v1/auth/session";
+const HEALTH_PATH = "/api/v1/health";
+const VERSION_PATH = "/api/v1/version";
+const CAPABILITIES_PATH = "/api/v1/capabilities";
 
-// 同源(server serveStatic + /api 同进程);开发期 vite 代理 /api。
-export const client = hc<AppType>("/", { headers });
+let sessionBootstrap: Promise<void> | undefined;
+let discoveryNegotiation: Promise<ClientApiDiscovery> | undefined;
 
-export function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
-  const nextHeaders = new Headers(init.headers);
-  for (const [key, value] of Object.entries(headers)) nextHeaders.set(key, value);
-  return fetch(input, { ...init, headers: nextHeaders });
+export interface ClientApiDiscovery {
+  readonly apiVersion: typeof CLIENT_API_VERSION;
+  readonly contractId: typeof CLIENT_API_CONTRACT_ID;
+  readonly operations: readonly string[];
+}
+
+export type VersionedClientApiPath = `/api/v1/${string}`;
+export type VersionedClientApiInput = VersionedClientApiPath | URL | Request;
+
+// The bundled SPA has exactly one transport boundary. Credentials remain in an HttpOnly,
+// same-origin cookie; no bearer material is accepted from location/search/argv-derived URLs.
+export async function apiFetch(
+  input: VersionedClientApiInput,
+  init: RequestInit = {},
+): Promise<Response> {
+  const path = localApiPath(input);
+  if (!path.startsWith("/api/v1/")) {
+    throw new Error("Bundled client requests must use a versioned /api/v1 path");
+  }
+  if (path !== HEALTH_PATH && path !== SESSION_PATH) await ensureBrowserSession();
+  if (requiresNegotiation(path)) await negotiateClientApi();
+
+  const requestInit: RequestInit = { ...init, credentials: "same-origin" };
+  let response = await fetch(input, requestInit);
+  if (response.status === 401 && path !== SESSION_PATH) {
+    sessionBootstrap = undefined;
+    discoveryNegotiation = undefined;
+    await ensureBrowserSession();
+    if (requiresNegotiation(path)) await negotiateClientApi();
+    response = await fetch(input, requestInit);
+  }
+  return response;
+}
+
+export async function negotiateClientApi(): Promise<ClientApiDiscovery> {
+  await ensureBrowserSession();
+  discoveryNegotiation ??= Promise.all([
+    fetch(VERSION_PATH, { credentials: "same-origin" }).then((response) =>
+      readApiJson<{ readonly apiVersion: string; readonly contractId: string }>(response),
+    ),
+    fetch(CAPABILITIES_PATH, { credentials: "same-origin" }).then((response) =>
+      readApiJson<{
+        readonly apiVersion: string;
+        readonly contractId: string;
+        readonly operations: readonly string[];
+      }>(response),
+    ),
+  ])
+    .then(([version, capabilities]) => {
+      if (
+        version.apiVersion !== CLIENT_API_VERSION ||
+        version.contractId !== CLIENT_API_CONTRACT_ID ||
+        capabilities.apiVersion !== CLIENT_API_VERSION ||
+        capabilities.contractId !== CLIENT_API_CONTRACT_ID
+      ) {
+        throw new Error("incompatible local client API version or contract");
+      }
+      return {
+        apiVersion: CLIENT_API_VERSION,
+        contractId: CLIENT_API_CONTRACT_ID,
+        operations: capabilities.operations,
+      };
+    })
+    .catch((error: unknown) => {
+      discoveryNegotiation = undefined;
+      throw error;
+    });
+  return discoveryNegotiation;
+}
+
+export async function applyPlannedControlPlaneMutation<T>(
+  planPath: "/api/v1/agents/plan" | "/api/v1/collections/plan" | "/api/v1/settings/plan",
+  input: unknown,
+): Promise<T> {
+  const planned = await readApiJson<{ plan: unknown }>(
+    await apiFetch(planPath, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  );
+  return readApiJson<T>(
+    await apiFetch("/api/v1/mutations/apply", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mutationPlan: planned.plan }),
+    }),
+  );
+}
+
+async function ensureBrowserSession(): Promise<void> {
+  sessionBootstrap ??= fetch(SESSION_PATH, {
+    method: "POST",
+    credentials: "same-origin",
+  }).then((response) => {
+    if (!response.ok) throw new Error(`API session bootstrap failed (${response.status})`);
+  });
+  try {
+    await sessionBootstrap;
+  } catch (error) {
+    sessionBootstrap = undefined;
+    throw error;
+  }
+}
+
+function localApiPath(input: VersionedClientApiInput): string {
+  if (typeof input === "string") return input.split("?", 1)[0] ?? input;
+  if (input instanceof URL) return input.pathname;
+  return new URL(input.url).pathname;
+}
+
+function requiresNegotiation(path: string): boolean {
+  return (
+    path !== HEALTH_PATH &&
+    path !== SESSION_PATH &&
+    path !== VERSION_PATH &&
+    path !== CAPABILITIES_PATH
+  );
 }

@@ -43,8 +43,10 @@ CI=true pnpm release:readiness
 两个命令都会 build、pack 两次、检查确定性内容,并把 tarball 与 `readiness.json` 写入
 已忽略的本地目录 `artifacts/release-readiness/`。Readiness 命令还会把 tarball 安装
 到隔离临时 project,仅从 installed bin 验证 version、protocol、doctor/init、resource
-management、vault fallback 与 loopback Web assets。它不会使用真实 cellarer home、
-agent 配置或 credential store。
+management 与 vault fallback。它还会从 clean project 以端口 `0` 分别启动
+browser-session 和 managed-bearer sidecar,校验单记录 ready result 与 OpenAPI contract、
+完成认证并提供 bundled assets,然后关闭 lifetime descriptor 并要求进程干净退出。它不会
+使用真实 cellarer home、agent 配置或 credential store。
 
 4. 确认每个支持的 Node/OS matrix job 都成功运行了 `pnpm release:readiness`。
 

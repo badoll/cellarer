@@ -190,7 +190,11 @@ place; do not delete them manually.
 
 ```bash
 node packages/cli/dist/bin.js ui
-node packages/cli/dist/bin.js ui --port 4317 --token-fd 3 3< /path/to/ui-token
+node packages/cli/dist/bin.js --output json ui --port 0 \
+  --token-fd 3 --lifetime-fd 4 3< /path/to/ui-token 4< /path/to/lifetime-pipe
 ```
 
-The server listens on `127.0.0.1` only.
+The server listens on `127.0.0.1` only. The first command uses a random bundled
+browser session. The second uses managed bearer authentication and closes when
+the lifetime descriptor reaches EOF; its one machine-output record reports the
+OS-assigned port without exposing the token.

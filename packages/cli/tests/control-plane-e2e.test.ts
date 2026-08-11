@@ -292,7 +292,7 @@ describe("complete CLI control-plane journey", () => {
     await fs.writeFile(join(storeRoot, "store", "rules", "style.md"), "# Style\n", "utf8");
     const env = createRealEnv();
     env.mutationAuthority = deterministicMutationAuthority();
-    const app = createApp({ env, storeRoot });
+    const app = createApp({ env, storeRoot, auth: { mode: "trusted-embedded" } });
 
     const cliResources = protocolTerminal(
       await invoke([
@@ -313,7 +313,7 @@ describe("complete CLI control-plane journey", () => {
     ).data;
     const webResources = await apiJson(
       app.request(
-        `/api/resources/rules?destination=project&dir=${encodeURIComponent(targetProject)}&agents=codex&includeDiscovered=false`,
+        `/api/v1/resources/rules?destination=project&dir=${encodeURIComponent(targetProject)}&agents=codex&includeDiscovered=false`,
       ),
     );
     expect(withoutVolatile(webResources)).toEqual(withoutVolatile(cliResources));
@@ -334,7 +334,7 @@ describe("complete CLI control-plane journey", () => {
     ).data;
     const webAgents = await apiJson(
       app.request(
-        `/api/agents?scope=project&dir=${encodeURIComponent(targetProject)}&agents=codex,claude-code`,
+        `/api/v1/agents?scope=project&dir=${encodeURIComponent(targetProject)}&agents=codex,claude-code`,
       ),
     );
     expect(withoutVolatile(webAgents)).toEqual(withoutVolatile(cliAgents));
@@ -355,7 +355,7 @@ describe("complete CLI control-plane journey", () => {
     ).data;
     const webDiscovery = await apiJson(
       app.request(
-        `/api/discovery?destination=project&dir=${encodeURIComponent(targetProject)}&agents=codex`,
+        `/api/v1/discovery?destination=project&dir=${encodeURIComponent(targetProject)}&agents=codex`,
       ),
     );
     expect(withoutVolatile(webDiscovery)).toEqual(withoutVolatile(cliDiscovery));
@@ -377,7 +377,7 @@ describe("complete CLI control-plane journey", () => {
       ]),
     ).data;
     const webVerify = await apiJson(
-      app.request("/api/verify", {
+      app.request("/api/v1/verify", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -395,10 +395,10 @@ describe("complete CLI control-plane journey", () => {
       await invoke(["--output", "json", "agent", "disable", "codex", "--dry-run"]),
     ).data as { changedFields: string[]; plan: { operation: string; baseRevision: number } };
     const webDisable = (await apiJson(
-      app.request("/api/agents/codex/enabled", {
-        method: "PUT",
+      app.request("/api/v1/agents/plan", {
+        method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ enabled: false, dryRun: true }),
+        body: JSON.stringify({ action: "set-enabled", agentId: "codex", enabled: false }),
       }),
     )) as typeof cliDisable;
     expect(webDisable.changedFields).toEqual(cliDisable.changedFields);
@@ -611,7 +611,9 @@ function protocolRecords(captured: CapturedInvocation): Record<string, unknown>[
 async function apiJson(responsePromise: Promise<Response>): Promise<unknown> {
   const response = await responsePromise;
   expect(response.status, await response.clone().text()).toBe(200);
-  return response.json();
+  const body = (await response.json()) as { status?: string; data?: unknown };
+  expect(body.status).toBe("success");
+  return body.data;
 }
 
 function withoutVolatile(value: unknown): unknown {

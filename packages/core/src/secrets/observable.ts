@@ -72,6 +72,7 @@ const OBSERVABLE_KNOWN_VALUES = Symbol("cellarer.observable-known-values");
 const OBSERVABLE_PROVIDER_SCOPE = Symbol("cellarer.observable-provider-scope");
 const observableMutationAuthorizations = new WeakMap<object, MutationAuthorizationEnvelope>();
 const observablePublicControlPlaneConfigs = new WeakSet<object>();
+const observableOpenApiDocuments = new WeakSet<object>();
 
 export interface ObservableProviderScope {
   readonly knownValues: readonly SecretValue[];
@@ -204,6 +205,15 @@ export function registerObservablePublicControlPlaneConfig<T extends object>(val
   return value;
 }
 
+/**
+ * Internal identity registry for an OpenAPI snapshot that public-boundary has already cloned,
+ * validated, and frozen. Do not expose this generic marker from the package barrel.
+ */
+export function registerObservableOpenApiDocument<T extends object>(value: T): T {
+  observableOpenApiDocuments.add(value);
+  return value;
+}
+
 export function redactObservable(
   boundary: ObservableBoundary,
   value: unknown,
@@ -307,6 +317,9 @@ function redactValue(
     }
     return error;
   }
+  if (observableOpenApiDocuments.has(value)) {
+    return redactPublicJsonDocument(value, options, new WeakSet<object>());
+  }
   if (seen.has(value)) throw new TypeError("observable output cannot contain circular values");
   seen.add(value);
   const currentPublicConfigPath = observablePublicControlPlaneConfigs.has(value)
@@ -380,6 +393,55 @@ function redactValue(
   }
   seen.delete(value);
   return result;
+}
+
+function redactPublicJsonDocument(
+  value: unknown,
+  options: ObservableRedactionOptions,
+  seen: WeakSet<object>,
+): unknown {
+  if (value instanceof SecretValue) return REDACTED_SECRET;
+  if (typeof value === "string") return redactObservableText(value, options);
+  if (value === undefined || value === null || typeof value !== "object") return value;
+  if (value instanceof Date) return redactObservableText(value.toISOString(), options);
+  if (value instanceof Error || seen.has(value)) return REDACTED_SECRET;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    const entries = strictArrayDataValues(value);
+    if (!entries) return REDACTED_SECRET;
+    const result = entries.map((child) => redactPublicJsonDocument(child, options, seen));
+    seen.delete(value);
+    return result;
+  }
+  const entries = enumerableDataEntries(value);
+  if (entries === null) return REDACTED_SECRET;
+  const result: Record<string, unknown> = {};
+  const emittedKeys = new Set<string>();
+  for (const [key, child] of entries) {
+    const redactedKey = redactObservableText(key, options);
+    const outputKey = uniquePublicJsonKey(
+      redactedKey === key ? key : REDACTED_OBSERVABLE_KEY,
+      emittedKeys,
+    );
+    result[outputKey] = redactPublicJsonDocument(child, options, seen);
+  }
+  seen.delete(value);
+  return result;
+}
+
+function uniquePublicJsonKey(key: string, emittedKeys: Set<string>): string {
+  if (!emittedKeys.has(key)) {
+    emittedKeys.add(key);
+    return key;
+  }
+  let suffix = 2;
+  let candidate = `${key}_${suffix}`;
+  while (emittedKeys.has(candidate)) {
+    suffix += 1;
+    candidate = `${key}_${suffix}`;
+  }
+  emittedKeys.add(candidate);
+  return candidate;
 }
 
 function isPublicControlPlaneMetadataField(

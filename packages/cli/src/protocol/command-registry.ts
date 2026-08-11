@@ -1781,16 +1781,29 @@ const legacyCommandRegistry = [
   defineCommand({
     command: "ui",
     mutability: "service",
-    requiredFeatures: ["long-running-process", "protected-secret-channel"],
+    requiredFeatures: ["long-running-process", "protected-secret-channel", "lifetime-channel"],
     input: jsonSchema.object({
-      port: jsonSchema.integer(1, 65_535),
+      port: jsonSchema.integer(0, 65_535),
       tokenFd: jsonSchema.integer(PROTECTED_DESCRIPTOR_MIN, PROTECTED_DESCRIPTOR_MAX),
+      lifetimeFd: jsonSchema.integer(PROTECTED_DESCRIPTOR_MIN, PROTECTED_DESCRIPTOR_MAX),
     }),
-    bindings: [option("port", undefined, stringify), option("tokenFd", undefined, stringify)],
-    output: dataObject(["url", "port"], {
-      url: jsonSchema.string(),
-      port: jsonSchema.integer(1, 65_535),
-    }),
+    bindings: [
+      option("port", undefined, stringify),
+      option("tokenFd", undefined, stringify),
+      option("lifetimeFd", undefined, stringify),
+    ],
+    output: dataObject(
+      ["schemaVersion", "apiVersion", "contractId", "lifecycle", "authMode", "pid", "baseUrl"],
+      {
+        schemaVersion: { const: 1 },
+        apiVersion: { const: "1.0" },
+        contractId: { const: "cellarer-local-client-api-v1" },
+        lifecycle: { const: "owned-v1" },
+        authMode: jsonSchema.enumeration(["bearer", "browser-session"]),
+        pid: jsonSchema.integer(1),
+        baseUrl: jsonSchema.string({ pattern: "^http://127\\.0\\.0\\.1:[1-9][0-9]*$" }),
+      },
+    ),
   }),
   defineCommand({
     command: "capabilities",

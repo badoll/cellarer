@@ -1,5 +1,9 @@
 import { isAbsolute, join, normalize } from "node:path";
-import { applyMutationPlan, planApplyMutation } from "../engine/apply.js";
+import {
+  applyMutationPlan,
+  planApplyMutation,
+  preflightApplyMutationPlan,
+} from "../engine/apply.js";
 import { plan as planDistribution } from "../engine/plan.js";
 import type {
   ApplyMutationResult,
@@ -17,10 +21,14 @@ import type { Env } from "../env.js";
 import type { DistributePlan, SyncProfileTargetEvidence } from "../model/index.js";
 import {
   assertCurrentMutationAuthorityScope,
+  assertStrictMutationPlanRuntime,
   type CurrentMutationAuthorityScope,
   canonicalJson,
+  verifyMutationPlanAuthorization,
+  verifyMutationPlanDigest,
   withCurrentMutationAuthorityScope,
 } from "../protocol/canonical.js";
+import { invalidPlanResult } from "../protocol/execute.js";
 import type { MutationPlan } from "../protocol/models.js";
 import { targetKey } from "../store/ledger.js";
 import {
@@ -102,6 +110,16 @@ export async function applySyncProfilePlan(
 ): Promise<AppliedSyncProfile> {
   return withCurrentMutationAuthorityScope(env, async (authorityScope) => {
     const authorityLease = await assertCurrentMutationAuthorityScope(env, authorityScope);
+    const preflight = preflightApplyMutationPlan(env, mutationPlan, opts.storeRoot);
+    if (!preflight.ok) {
+      const applied = await applyMutationPlan(
+        env,
+        mutationPlan,
+        { storeRoot: opts.storeRoot },
+        { authorityLease },
+      );
+      return { ...applied, profileId: opts.profileId };
+    }
     const resolved = await resolveProfileInvocation(env, opts, authorityScope);
     const applied = await applyMutationPlan(
       env,
@@ -173,6 +191,16 @@ export async function applySyncProfileUninstallPlan(
   opts: ApplySyncProfileUninstallOptions,
 ): Promise<AppliedSyncTargetUninstall> {
   return withCurrentMutationAuthorityScope(env, async (authorityScope) => {
+    await assertCurrentMutationAuthorityScope(env, authorityScope);
+    if (!isAuthorizedSyncUninstallPlan(env, mutationPlan, opts.storeRoot)) {
+      return {
+        targets: [],
+        conflicts: [],
+        mutationPlan,
+        uninstalled: [],
+        operation: invalidPlanResult(),
+      };
+    }
     const resolved = await resolveProfileInvocation(env, opts, authorityScope);
     const desiredPlan = await profileDistributionPlan(env, resolved.distributeOptions);
     const expectedTargetKeys = exactTargetKeys(desiredPlan);
@@ -208,6 +236,22 @@ export async function applySyncProfileUninstallPlan(
       },
     );
   });
+}
+
+function isAuthorizedSyncUninstallPlan(
+  env: Env,
+  mutationPlan: MutationPlan,
+  storeRoot: string,
+): boolean {
+  try {
+    assertStrictMutationPlanRuntime(mutationPlan, "sync-uninstall");
+  } catch {
+    return false;
+  }
+  return (
+    verifyMutationPlanAuthorization(env, storeRoot, mutationPlan) &&
+    verifyMutationPlanDigest(mutationPlan)
+  );
 }
 
 async function resolveProfileInvocation(

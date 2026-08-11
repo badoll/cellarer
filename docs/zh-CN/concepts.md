@@ -115,10 +115,9 @@ outcome,最后原子发布下一份 state 和 revision。未完成的 journal �
    `mutationRecovery.operationId`、status 与 guidance。
 2. 不要按存续时间删除 `mutation.lock`、`recovery.lock` 或
    `operations/active.json`,在评估 recovery evidence 期间也不要编辑受影响的 targets。
-3. 当前 CLI 和 Web API 可诊断 recovery 状态,但没有暴露写侧 recovery 命令。
-   可信的 `@cellarer/core` 调用方必须用诊断得到的精确 operation id 调用
-   `recoverInterruptedOperation(env, storeRoot, { operationId,
-   snapshotPassphrase })`。
+3. 已授权调用方可以通过 CLI recovery 命令或 `POST /api/v1/recovery/apply` 提交诊断得到的
+   精确 operation id。两者都委托 Core `recoverInterruptedOperation`,不会删除 evidence
+   或臆造 recovery state。
 4. Core 仅在所有规划的 after-states 都被证明,且每个必需的 state publication 已存在
    并匹配 durable digest 时完成 finalize。若 digest-only publication 缺失或不匹配,
    Core 不会猜测重建原始 state,而会返回 `MANUAL_RECOVERY_REQUIRED`。Core 只在 target
@@ -149,7 +148,7 @@ Verification 分别报告三类独立信号:
 已 apply 的文件可能只使 `appliedVsDisk` 发生分歧,而 selection 仍匹配。只有
 两个 axes 都是 `converged` 且 recovery 为 `clean` 时,`healthy` 才是 true。CLI
 `status --agent <id> --json` 包含完整的 `verification` 报告;不传 `--agent`
-时,`status` 只报告 ledger-versus-disk items。本地 Web API 通过 `POST /api/verify`
+时,`status` 只报告 ledger-versus-disk items。本地 Web API 通过 `POST /api/v1/verify`
 暴露同一份完整报告。
 
 ## Target 所有权与显式替换

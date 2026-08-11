@@ -15,6 +15,20 @@ cellarer is a TypeScript monorepo with a strict core-first boundary.
 CLI and Web should not implement business logic. They parse input, call core,
 and present results.
 
+## Versioned Local Client and Sidecar
+
+`@cellarer/web` exposes only `/api/v1`. One route registry owns operation IDs,
+methods, paths, authentication requirements, closed request/response schemas,
+and HTTP mappings; the OpenAPI 3.1 document and Hono surface are checked against
+that registry. CLI and HTTP share transport-neutral Core DTOs and error codes.
+
+The sidecar selects managed bearer or bundled browser-session authentication at
+startup, binds loopback, and publishes a ready DTO only after the actual socket
+and composition are ready. Programmatic close, lifetime EOF, SIGINT, and SIGTERM
+share one bounded shutdown path. Sidecars do not add an in-memory mutation
+queue: all processes converge through Core revision, authority, cross-process
+lock, journal, and recovery rules.
+
 ## Core Boundaries
 
 Core receives side effects through `Env`:
@@ -55,7 +69,10 @@ agent files
   -> store writes
 ```
 
-`scanPlan` is read-only. `applyScan` writes to the store.
+The local client boundary uses `planScanMutation` to return a serializable,
+authority-sealed `MutationPlan`. `applyScanMutationPlan` consumes that exact
+plan, rechecks bound source fingerprints, and never rescans or rebuilds
+selection at apply time.
 
 ## Adapters
 

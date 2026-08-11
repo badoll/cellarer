@@ -10,7 +10,23 @@ import type { JsonSchema } from "../src/protocol/schemas.js";
 
 const authorityCredentials = vi.hoisted(() => new Map<string, string>());
 const startServer = vi.hoisted(() =>
-  vi.fn(({ port }: { port?: number }) => ({ port: port ?? 4317 })),
+  vi.fn(async ({ port }: { port?: number }) => {
+    const actualPort = port && port > 0 ? port : 4317;
+    return {
+      port: actualPort,
+      ready: {
+        schemaVersion: 1,
+        apiVersion: "1.0",
+        contractId: "cellarer-local-client-api-v1",
+        lifecycle: "owned-v1",
+        authMode: "bearer",
+        pid: process.pid,
+        baseUrl: `http://127.0.0.1:${actualPort}`,
+      },
+      closed: new Promise<void>(() => undefined),
+      close: vi.fn(async () => undefined),
+    };
+  }),
 );
 
 vi.mock("../src/keychain.js", () => ({
@@ -789,13 +805,53 @@ describe("CLI command registry protocol conformance", () => {
     await initializeStore();
 
     const tokenFd = await protectedDescriptor(context.secretValuePath);
-    await invoke(["--output", "json", "ui", "--port", "4318", "--token-fd", String(tokenFd)]);
+    const lifetimeFd = await protectedDescriptor(context.secretValuePath);
+    const captured = await invoke([
+      "--output",
+      "json",
+      "ui",
+      "--port",
+      "4318",
+      "--token-fd",
+      String(tokenFd),
+      "--lifetime-fd",
+      String(lifetimeFd),
+    ]);
 
     expect(startServer).toHaveBeenCalledOnce();
     expect(startServer).toHaveBeenCalledWith(
-      expect.objectContaining({ token: "test-secret-value" }),
+      expect.objectContaining({
+        auth: { mode: "bearer", token: "test-secret-value" },
+        lifetime: expect.anything(),
+      }),
     );
-    expect(startServer.mock.results[0]?.value).toEqual({ port: 4318 });
+    expect(captured.stderr).toBe("");
+    expect(`${captured.stdout}${captured.stderr}`).not.toContain("test-secret-value");
+    expect(captured.stdout.trim().split("\n")).toHaveLength(1);
+    expect(JSON.parse(captured.stdout)).toMatchObject({
+      status: "success",
+      data: { baseUrl: "http://127.0.0.1:4318", authMode: "bearer" },
+    });
+  });
+
+  it("returns a typed non-disclosing failure when UI startup fails before readiness", async () => {
+    await initializeStore();
+    const canary = "ghp_0123456789abcdefghijklmnopqrstuvwx";
+    startServer.mockRejectedValueOnce(
+      new Error(`sidecar startup failed at ${context.storeRoot} with ${canary}`),
+    );
+
+    const captured = await invoke(["--output", "json", "ui", "--port", "0"]);
+    const observable = `${captured.stdout}${captured.stderr}`;
+    const terminal = JSON.parse(captured.stdout) as {
+      status?: string;
+      error?: { code?: string };
+    };
+
+    expect(terminal).toMatchObject({ status: "error", error: { code: "INTERNAL_ERROR" } });
+    expect(observable).not.toContain(canary);
+    expect(observable).not.toContain(context.storeRoot);
+    expect(observable).not.toContain('"status":"success"');
   });
 
   it("rejects an out-of-range UI port as typed input before starting Web", async () => {

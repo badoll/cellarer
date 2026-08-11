@@ -552,10 +552,6 @@ export async function applyStorePublicationPlan(
     return { plan, changedFields: [], operation: invalidPlanResult() };
   }
   try {
-    const provenancePreflight = await validateStoreProvenance(env, storeRoot, plan);
-    if (provenancePreflight) {
-      return { plan, changedFields: [], operation: provenancePreflight };
-    }
     let operationEnv = await finalStorePublicationEnv(env, storeRoot);
     assertFinalSerializedSecretBytes(
       decoded.data,
@@ -597,14 +593,6 @@ export async function applyStorePublicationPlan(
       },
       {
         authorityLease,
-        validatePreflightBeforeObservation: async () => {
-          options.validatePublicationData?.(decoded.data);
-          return validateStoreProvenance(operationEnv, storeRoot, plan);
-        },
-        validateBeforeObservationUnderLock: async () => {
-          options.validatePublicationData?.(decoded.data);
-          return validateStoreProvenance(operationEnv, storeRoot, plan);
-        },
         validateUnderLock: async () => {
           const provenance = await validateStoreProvenance(operationEnv, storeRoot, plan);
           if (provenance) return provenance;

@@ -12,12 +12,28 @@ import { appendActivity } from "../activity.js";
 import { loadRegistry } from "../adapters/registry.js";
 import type { Env, MutationAuthorityLease } from "../env.js";
 import { lstatOrNull, readdirOrEmpty } from "../fs/probe.js";
+import { assertSafeAtomicPublicationPath } from "../fs/safety.js";
 import { isGenerated } from "../markers.js";
-import { type McpServer, serverToRaw } from "../mcp/model.js";
+import { type McpServer, serverFromRaw, serverToRaw } from "../mcp/model.js";
 import type { Scope } from "../model/index.js";
-import { withCurrentMutationAuthorityLease } from "../protocol/canonical.js";
-import type { OperationResult } from "../protocol/models.js";
-import { executeStoreActionMutation } from "../protocol/store-mutation.js";
+import {
+  assertStrictMutationPlanRuntime,
+  verifyMutationPlanAuthorization,
+  verifyMutationPlanDigest,
+  withCurrentMutationAuthorityLease,
+} from "../protocol/canonical.js";
+import { CLIENT_API_MAX_REQUEST_BODY_BYTES } from "../protocol/client.js";
+import { executeMutationPlan, invalidPlanResult, targetState } from "../protocol/execute.js";
+import type {
+  CanonicalJsonObject,
+  CanonicalJsonValue,
+  MutationPlan,
+  MutationPlanAction,
+  OperationActionReceipt,
+  OperationResult,
+  TargetStateReceipt,
+} from "../protocol/models.js";
+import { planStoreActionMutation } from "../protocol/store-mutation.js";
 import {
   attachProviderScope,
   containsKnownSecretValue,
@@ -25,6 +41,7 @@ import {
   discoverActiveSecretValues,
   inventoryActiveSecretValues,
   type ProviderScope,
+  providerScopeForEnv,
   withProviderScope,
 } from "../secrets/active-values.js";
 import {
@@ -32,6 +49,7 @@ import {
   scanStructuredFileSecretFindings,
   scanTextForSecrets,
 } from "../secrets/detector.js";
+import { assertFinalSerializedSecretBytes } from "../secrets/final-bytes.js";
 import { redactFields } from "../secrets/redactor.js";
 import {
   assertSafeRecursiveSnapshotCurrent,
@@ -112,7 +130,7 @@ interface ScanCandidate {
 }
 
 class StructuredScanGuardError extends Error {
-  constructor() {
+  constructor(readonly plan: ScanPlan) {
     super("structured scan validation failed before protocol publication");
     this.name = "StructuredScanGuardError";
   }
@@ -512,197 +530,736 @@ export interface ScanResult {
   operation: OperationResult;
 }
 
-// applyScan:执行扫描计划,把 action==="import" 的候选写库房(已脱敏 + 过写前护栏)。
-export async function applyScan(env: Env, opts: ScanOptions): Promise<ScanResult> {
+export interface PlannedScanMutation {
+  readonly plan: ScanPlan;
+  readonly mutationPlan: MutationPlan;
+}
+
+export interface ApplyScanMutationPlanOptions {
+  readonly storeRoot: string;
+  readonly secretMode?: "env" | "vault" | "keychain";
+  readonly vaultPassphrase?: string;
+  readonly keychainService?: string;
+}
+
+interface DecodedScanAction {
+  readonly action: MutationPlanAction;
+  readonly item?: ScanItem;
+  readonly sourcePath?: string;
+  readonly sourceFingerprint?: string;
+  readonly data?: string;
+  readonly server?: CanonicalJsonObject;
+}
+
+interface DecodedScanMutation {
+  readonly plan: ScanPlan;
+  readonly projectDir?: string;
+  readonly intoCollection?: string;
+  readonly actions: readonly DecodedScanAction[];
+}
+
+export async function planScanMutation(env: Env, opts: ScanOptions): Promise<PlannedScanMutation> {
   return withCurrentMutationAuthorityLease(env, (authorityLease) =>
-    applyScanWithAuthorityLease(env, opts, authorityLease),
+    planScanMutationWithAuthorityLease(env, opts, authorityLease),
   );
 }
 
-async function applyScanWithAuthorityLease(
+async function planScanMutationWithAuthorityLease(
   env: Env,
   opts: ScanOptions,
   authorityLease: MutationAuthorityLease,
-): Promise<ScanResult> {
-  const { scope, operationEnv } = await scanProviderScope(env, opts);
+  provider?: { readonly scope: ProviderScope; readonly operationEnv: Env },
+): Promise<PlannedScanMutation> {
+  const { scope, operationEnv } = provider ?? (await scanProviderScope(env, opts));
+  const normalizedInputs: {
+    scanPlan: CanonicalJsonValue;
+    projectDir: CanonicalJsonValue;
+    intoCollection: CanonicalJsonValue;
+  } = {
+    scanPlan: null,
+    projectDir: opts.dir ?? null,
+    intoCollection: opts.intoCollection ?? null,
+  };
   try {
-    const scanned = await scanCandidates(operationEnv, opts);
-    const selected = applySelect(scanned.candidates, opts.selectItems);
-    let structuredBlocked = scanned.structuredBlocked;
-    const preflightCandidates = selected.map((candidate) => {
-      const findings = structuredFindingsInScanCandidate(candidate);
-      if (findings.length === 0) return candidate;
-      structuredBlocked = true;
-      scanned.warnings.push(
-        `secret-scan: refusing to import ${candidate.item.kind}/${candidate.item.name} — structured sensitive-field finding(s) [${[
-          ...new Set(findings.map((finding) => `${finding.source}:${finding.rule}`)),
-        ].join(", ")}] (${candidate.item.source})`,
-      );
-      return { ...candidate, item: { ...candidate.item, action: "skip" as const } };
-    });
-    const preflightPlan: ScanPlan = {
-      agent: opts.agent,
-      scope: opts.scope,
-      items: preflightCandidates.map((candidate) => candidate.item),
-      warnings: scanned.warnings,
-    };
-    if (structuredBlocked) {
-      return attachProviderScope(
-        {
-          plan: preflightPlan,
-          imported: [],
-          operation: {
-            ok: false,
-            conflict: { code: "INVALID_PLAN", message: "mutation plan is invalid" },
-          },
-        },
-        scope,
-      );
-    }
-    const transaction = await executeStoreActionMutation(
+    const planned = await planStoreActionMutation(
       operationEnv,
       opts.storeRoot,
       "store-import",
       "scan-import",
       async () => {
-        const current = await scanCandidates(operationEnv, opts);
-        if (current.structuredBlocked) throw new StructuredScanGuardError();
-        const currentSelected = applySelect(current.candidates, opts.selectItems);
+        const scanned = await scanCandidates(operationEnv, opts);
+        const selected = applySelect(scanned.candidates, opts.selectItems);
+        if (scanned.structuredBlocked) {
+          const blocked = selected.map((candidate) => ({
+            ...candidate,
+            item: { ...candidate.item, action: "skip" as const },
+          }));
+          throw new StructuredScanGuardError({
+            agent: opts.agent,
+            scope: opts.scope,
+            items: blocked.map(({ item }) => item),
+            warnings: scanned.warnings,
+          });
+        }
         const existing = await existingNames(operationEnv, opts.storeRoot);
-        const warnings = current.warnings;
+        let structuredBlocked = false;
         const resolved = await guardPlaintext(
           operationEnv,
           opts,
-          resolveConflicts(currentSelected, existing, opts.conflict ?? "keep-theirs", opts.agent),
-          warnings,
+          resolveConflicts(selected, existing, opts.conflict ?? "keep-theirs", opts.agent),
+          scanned.warnings,
           true,
           () => {
-            throw new StructuredScanGuardError();
+            structuredBlocked = true;
           },
         );
+        const scan: ScanPlan = {
+          agent: opts.agent,
+          scope: opts.scope,
+          items: resolved.map(({ item }) => item),
+          warnings: scanned.warnings,
+        };
+        if (structuredBlocked) throw new StructuredScanGuardError(scan);
         const imports = resolved
           .filter((candidate) => candidate.item.action === "import")
-          .map((candidate, index) => {
-            const target = scanImportTarget(opts.storeRoot, candidate.item);
-            const actionId = `scan-${index + 1}-${candidate.item.kind}-${candidate.item.name}`;
-            return { actionId, candidate, target };
-          });
+          .map((candidate, index) => ({
+            actionId: `scan-${index + 1}-${candidate.item.kind}-${candidate.item.name}`,
+            candidate,
+            target: scanImportTarget(opts.storeRoot, candidate.item),
+          }));
         const publications = await scanCollectionPublication(
           operationEnv,
           opts,
           imports.map(({ candidate }) => candidate.item),
         );
-        const importedItems = imports.map(({ candidate }) => candidate.item);
-        const actions = await Promise.all(
-          imports.map(async ({ actionId, candidate, target }) => ({
-            actionId,
-            kind: `scan-${candidate.item.kind}`,
-            target,
-            payload:
-              candidate.payload.kind === "skills"
-                ? {
-                    kind: "skills",
-                    sourceFingerprint: candidate.payload.snapshot.fingerprint,
-                  }
-                : candidate.payload.kind === "rules"
-                  ? { kind: "rules", contentDigest: sha256(candidate.payload.content) }
-                  : JSON.parse(JSON.stringify({ kind: "mcp", server: candidate.payload.server })),
-            postcondition: {
-              state: "present" as const,
-              fingerprint: await scanImportFingerprint(operationEnv, candidate.payload),
-            },
-            execute: async () => {
-              if (candidate.payload.kind === "rules") {
-                await assertSafeRecursiveSnapshotCurrent(operationEnv, candidate.payload.snapshot);
-                await writeRuleArtifact(
-                  operationEnv,
-                  opts.storeRoot,
-                  candidate.item.name,
-                  candidate.payload.content,
-                );
-              } else if (candidate.payload.kind === "mcp") {
-                await assertSafeRecursiveSnapshotCurrent(operationEnv, candidate.payload.snapshot);
-                await writeMcpArtifact(
-                  operationEnv,
-                  opts.storeRoot,
-                  candidate.item.name,
-                  candidate.payload.server,
-                );
-              } else {
-                await assertSafeRecursiveSnapshotCurrent(operationEnv, candidate.payload.snapshot);
-                await installSafeRecursiveSnapshot(
-                  operationEnv,
-                  candidate.payload.snapshot,
-                  target,
-                  true,
-                );
-              }
-            },
-          })),
-        );
+        normalizedInputs.scanPlan = jsonCanonical(scan);
         return {
           value: {
-            plan: {
-              agent: opts.agent,
-              scope: opts.scope,
-              items: resolved.map((candidate) => candidate.item),
-              warnings,
-            },
+            plan: scan,
             imports: imports.map(({ actionId, candidate }) => ({
               actionId,
               item: candidate.item,
             })),
           },
-          actions,
+          actions: await Promise.all(
+            imports.map(async ({ actionId, candidate, target }) => ({
+              actionId,
+              kind: `scan-${candidate.item.kind}`,
+              target,
+              payload: scanMutationActionPayload(candidate),
+              postcondition: {
+                state: "present" as const,
+                fingerprint: await scanImportFingerprint(operationEnv, candidate.payload),
+              },
+              execute: async () => executePlannedCandidate(operationEnv, opts, candidate, target),
+            })),
+          ),
           ...(publications.length > 0 ? { publications } : {}),
-          afterCommit: async () => {
-            try {
-              await appendActivity(operationEnv, opts.storeRoot, {
-                action: "scan-import",
-                scope: opts.scope,
-                projectDir: opts.dir,
-                agents: [opts.agent],
-                capabilities: [...new Set(importedItems.map((item) => item.kind))],
-                affectedCount: importedItems.length,
-                warningsCount: warnings.length,
-                summary: `Imported ${importedItems.length} scanned ${importedItems.length === 1 ? "item" : "items"}`,
-                resources: {
-                  artifactIds: importedItems.map((item) => `${item.kind}/${item.name}`),
-                },
-                secretRefs: importedItems.flatMap((item) => item.secretRefs ?? []),
-              });
-            } catch (err) {
-              warnings.push(
-                `activity log failed: ${err instanceof Error ? err.message : String(err)}`,
-              );
-            }
-          },
         };
+      },
+      {
+        normalizedInputs: normalizedInputs as unknown as CanonicalJsonObject,
+        selfContainedPublications: true,
       },
       { authorityLease },
     );
+    if (
+      new TextEncoder().encode(JSON.stringify({ mutationPlan: planned.plan })).byteLength >
+      CLIENT_API_MAX_REQUEST_BODY_BYTES
+    ) {
+      throw new TypeError("scan mutation plan exceeds the client request body budget");
+    }
+    return attachProviderScope({ plan: planned.value.plan, mutationPlan: planned.plan }, scope);
+  } catch (error) {
+    throw attachScopeToError(error, scope);
+  }
+}
+
+export async function applyScanMutationPlan(
+  env: Env,
+  mutationPlan: MutationPlan,
+  opts: ApplyScanMutationPlanOptions,
+): Promise<ScanResult> {
+  try {
+    assertStrictMutationPlanRuntime(mutationPlan, "store-import");
+  } catch {
+    return invalidScanResult();
+  }
+  if (
+    !verifyMutationPlanAuthorization(env, opts.storeRoot, mutationPlan) ||
+    !verifyMutationPlanDigest(mutationPlan)
+  ) {
+    return invalidScanResult();
+  }
+  const decoded = decodeScanMutationPlan(mutationPlan, opts.storeRoot);
+  if (!decoded) return invalidScanResult();
+  return withCurrentMutationAuthorityLease(env, (authorityLease) =>
+    applyScanMutationPlanWithAuthorityLease(env, mutationPlan, opts, decoded, authorityLease),
+  );
+}
+
+async function applyScanMutationPlanWithAuthorityLease(
+  env: Env,
+  mutationPlan: MutationPlan,
+  opts: ApplyScanMutationPlanOptions,
+  decoded: DecodedScanMutation,
+  authorityLease: MutationAuthorityLease,
+  provider?: { readonly scope: ProviderScope; readonly operationEnv: Env },
+): Promise<ScanResult> {
+  const scanOpts: ScanOptions = {
+    storeRoot: opts.storeRoot,
+    agent: decoded.plan.agent,
+    scope: decoded.plan.scope,
+    ...(decoded.projectDir ? { dir: decoded.projectDir } : {}),
+    ...(opts.secretMode ? { secretMode: opts.secretMode } : {}),
+    ...(opts.vaultPassphrase ? { vaultPassphrase: opts.vaultPassphrase } : {}),
+    ...(opts.keychainService ? { keychainService: opts.keychainService } : {}),
+  };
+  const { scope, operationEnv } = provider ?? (await scanProviderScope(env, scanOpts));
+  try {
+    const responsePlan: ScanPlan = {
+      agent: decoded.plan.agent,
+      scope: decoded.plan.scope,
+      items: decoded.plan.items.map((item) => ({ ...item })),
+      warnings: [...decoded.plan.warnings],
+    };
+    const providerOptions = {
+      secretMode: scanOpts.secretMode ?? scope.mode,
+      vaultPassphrase: scanOpts.vaultPassphrase,
+      keychainService: scanOpts.keychainService ?? scope.service,
+      requireAvailable: true,
+    };
+    const observableTexts = decoded.actions.flatMap(({ data, server }) => [
+      ...(data === undefined ? [] : [data]),
+      ...(server === undefined ? [] : [JSON.stringify(server)]),
+    ]);
+    await discoverActiveSecretValues(
+      operationEnv,
+      opts.storeRoot,
+      observableTexts,
+      providerOptions,
+    );
+    await inventoryActiveSecretValues(operationEnv, opts.storeRoot, providerOptions);
+    const validateSources = () => validateScanMutationSources(operationEnv, decoded.actions);
+    const operation = await executeMutationPlan(
+      operationEnv,
+      opts.storeRoot,
+      mutationPlan,
+      async (_operationId, record, authorizeAction) => {
+        const actionReceipts: OperationActionReceipt[] = [];
+        const failedActionIds: string[] = [];
+        for (const decodedAction of decoded.actions) {
+          const { action } = decodedAction;
+          const authorized = await authorizeAction(action.actionId);
+          if (!authorized.ok) {
+            actionReceipts.push(authorized.receipt);
+            failedActionIds.push(action.actionId);
+            break;
+          }
+          let failure: { readonly code: string; readonly message: string } | undefined;
+          try {
+            await executeDecodedScanAction(operationEnv, opts.storeRoot, decodedAction);
+            await assertScanActionPostcondition(operationEnv, action);
+          } catch (error) {
+            const code = actionFailureCode(error);
+            if (!CONTROLLED_SCAN_ACTION_CODES.has(code)) throw error;
+            failure = { code, message: `filesystem action failed (${code})` };
+            failedActionIds.push(action.actionId);
+          }
+          const after = await targetState(operationEnv, action.target);
+          const receipt: OperationActionReceipt = {
+            actionId: action.actionId,
+            target: action.target,
+            outcome: failure
+              ? "failed"
+              : sameTargetState(authorized.before, after)
+                ? "unchanged"
+                : "applied",
+            before: authorized.before,
+            after,
+            recordedAt: operationEnv.now().toISOString(),
+            ...(failure ? { error: failure } : {}),
+          };
+          await record(receipt);
+          actionReceipts.push(receipt);
+          if (failure) break;
+        }
+        return {
+          actionReceipts,
+          ...(failedActionIds.length > 0 ? { failedActionIds } : {}),
+          afterCommit: async () => {
+            const imported = decoded.actions.flatMap(({ item }) => (item ? [item] : []));
+            await appendActivity(operationEnv, opts.storeRoot, {
+              action: "scan-import",
+              scope: decoded.plan.scope,
+              projectDir: decoded.projectDir,
+              agents: [decoded.plan.agent],
+              capabilities: [...new Set(imported.map(({ kind }) => kind))],
+              affectedCount: imported.length,
+              warningsCount: responsePlan.warnings.length,
+              summary: `Imported ${imported.length} scanned ${imported.length === 1 ? "item" : "items"}`,
+              resources: { artifactIds: imported.map((item) => `${item.kind}/${item.name}`) },
+              secretRefs: imported.flatMap((item) => item.secretRefs ?? []),
+            }).catch((error) => {
+              responsePlan.warnings.push(
+                `activity log failed: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            });
+          },
+        };
+      },
+      {
+        authorityLease,
+        validatePreflightBeforeObservation: validateSources,
+        validateBeforeObservationUnderLock: validateSources,
+        validateUnderLock: async () =>
+          (await validateSources()) ??
+          validateScanCollectionPublication(operationEnv, opts.storeRoot, decoded),
+      },
+    );
     const successfulActionIds = new Set(
-      transaction.operation.ok
-        ? transaction.operation.receipt.actionReceipts
-            .filter((receipt) => receipt.outcome !== "failed")
-            .map((receipt) => receipt.actionId)
-        : (transaction.operation.journal?.actions ?? [])
-            .filter((action) => action.status === "succeeded")
-            .map((action) => action.actionId),
+      operation.ok
+        ? operation.receipt.actionReceipts
+            .filter(({ outcome }) => outcome !== "failed")
+            .map(({ actionId }) => actionId)
+        : (operation.journal?.actions ?? [])
+            .filter(({ status }) => status === "succeeded")
+            .map(({ actionId }) => actionId),
     );
     return attachProviderScope(
       {
-        plan: transaction.value.plan,
-        imported: transaction.value.imports
-          .filter(({ actionId }) => successfulActionIds.has(actionId))
-          .map(({ item }) => item),
-        operation: transaction.operation,
+        plan: responsePlan,
+        imported: decoded.actions
+          .filter(
+            ({ action, item }) => item !== undefined && successfulActionIds.has(action.actionId),
+          )
+          .flatMap(({ item }) => (item ? [item] : [])),
+        operation,
       },
       scope,
     );
   } catch (error) {
     throw attachScopeToError(error, scope);
   }
+}
+
+// applyScan remains the CLI-friendly one-shot operation, but now it composes the same exact
+// serializable plan/apply boundary used by HTTP instead of scanning again during apply.
+export async function applyScan(env: Env, opts: ScanOptions): Promise<ScanResult> {
+  return withCurrentMutationAuthorityLease(env, async (authorityLease) => {
+    try {
+      const provider = await scanProviderScope(env, opts);
+      const planned = await planScanMutationWithAuthorityLease(env, opts, authorityLease, provider);
+      const decoded = decodeScanMutationPlan(planned.mutationPlan, opts.storeRoot);
+      if (!decoded) return invalidScanResult(planned.plan);
+      return await applyScanMutationPlanWithAuthorityLease(
+        env,
+        planned.mutationPlan,
+        opts,
+        decoded,
+        authorityLease,
+        provider,
+      );
+    } catch (error) {
+      if (error instanceof StructuredScanGuardError) {
+        return { plan: error.plan, imported: [], operation: invalidPlanResult() };
+      }
+      throw error;
+    }
+  });
+}
+
+async function executePlannedCandidate(
+  env: Env,
+  opts: ScanOptions,
+  candidate: ScanCandidate,
+  target: string,
+): Promise<void> {
+  if (candidate.payload.kind === "rules") {
+    await assertSafeRecursiveSnapshotCurrent(env, candidate.payload.snapshot);
+    await writeRuleArtifact(env, opts.storeRoot, candidate.item.name, candidate.payload.content);
+  } else if (candidate.payload.kind === "mcp") {
+    await assertSafeRecursiveSnapshotCurrent(env, candidate.payload.snapshot);
+    await writeMcpArtifact(env, opts.storeRoot, candidate.item.name, candidate.payload.server);
+  } else {
+    await assertSafeRecursiveSnapshotCurrent(env, candidate.payload.snapshot);
+    await installSafeRecursiveSnapshot(env, candidate.payload.snapshot, target, true);
+  }
+}
+
+function scanMutationActionPayload(candidate: ScanCandidate): CanonicalJsonObject {
+  const common = {
+    item: jsonCanonical(candidate.item),
+    kind: candidate.payload.kind,
+    sourcePath: candidate.payload.snapshot.rootPath,
+    sourceFingerprint: candidate.payload.snapshot.fingerprint,
+  };
+  if (candidate.payload.kind === "rules") {
+    return {
+      ...common,
+      data: candidate.payload.content,
+      dataDigest: sha256(candidate.payload.content),
+    } as CanonicalJsonObject;
+  }
+  if (candidate.payload.kind === "mcp") {
+    return {
+      ...common,
+      server: jsonCanonical(serverToRaw(candidate.payload.server)),
+    } as CanonicalJsonObject;
+  }
+  return common as CanonicalJsonObject;
+}
+
+function decodeScanMutationPlan(
+  mutationPlan: MutationPlan,
+  storeRoot: string,
+): DecodedScanMutation | null {
+  const inputs = mutationPlan.normalizedInputs;
+  if (!hasExactKeys(inputs, ["intoCollection", "mutationKind", "projectDir", "scanPlan"])) {
+    return null;
+  }
+  if (inputs.mutationKind !== "scan-import" || !isScanPlan(inputs.scanPlan)) return null;
+  if (inputs.projectDir !== null && typeof inputs.projectDir !== "string") return null;
+  if (inputs.intoCollection !== null && typeof inputs.intoCollection !== "string") return null;
+  const scan = inputs.scanPlan;
+  const importedItems = scan.items.filter(({ action }) => action === "import");
+  const expectsCollectionPublication =
+    typeof inputs.intoCollection === "string" && importedItems.length > 0;
+  if (
+    mutationPlan.actions.length !==
+    importedItems.length + (expectsCollectionPublication ? 1 : 0)
+  ) {
+    return null;
+  }
+  const actions: DecodedScanAction[] = [];
+  for (const [index, item] of importedItems.entries()) {
+    const action = mutationPlan.actions[index];
+    if (!action || action.actionId !== `scan-${index + 1}-${item.kind}-${item.name}`) return null;
+    if (
+      action.kind !== `scan-${item.kind}` ||
+      action.target !== scanImportTarget(storeRoot, item)
+    ) {
+      return null;
+    }
+    if (action.postcondition?.state !== "present") return null;
+    const payload = action.payload;
+    const commonKeys = ["item", "kind", "sourceFingerprint", "sourcePath"];
+    if (
+      typeof payload.sourcePath !== "string" ||
+      payload.sourcePath.length === 0 ||
+      typeof payload.sourceFingerprint !== "string" ||
+      payload.kind !== item.kind ||
+      JSON.stringify(payload.item) !== JSON.stringify(item)
+    ) {
+      return null;
+    }
+    if (item.kind === "rules") {
+      if (
+        !hasExactKeys(payload, [...commonKeys, "data", "dataDigest"]) ||
+        typeof payload.data !== "string" ||
+        typeof payload.dataDigest !== "string" ||
+        sha256(payload.data) !== payload.dataDigest ||
+        action.postcondition.fingerprint !== payload.dataDigest
+      ) {
+        return null;
+      }
+      actions.push({
+        action,
+        item,
+        sourcePath: payload.sourcePath,
+        sourceFingerprint: payload.sourceFingerprint,
+        data: payload.data,
+      });
+    } else if (item.kind === "mcp") {
+      if (!hasExactKeys(payload, [...commonKeys, "server"]) || !isPlainRecord(payload.server)) {
+        return null;
+      }
+      const rendered = `${JSON.stringify(serverToRaw(serverFromRaw(payload.server)), null, 2)}\n`;
+      if (action.postcondition.fingerprint !== sha256(rendered)) return null;
+      actions.push({
+        action,
+        item,
+        sourcePath: payload.sourcePath,
+        sourceFingerprint: payload.sourceFingerprint,
+        server: payload.server as CanonicalJsonObject,
+      });
+    } else {
+      if (
+        !hasExactKeys(payload, commonKeys) ||
+        action.postcondition.fingerprint !== payload.sourceFingerprint
+      ) {
+        return null;
+      }
+      actions.push({
+        action,
+        item,
+        sourcePath: payload.sourcePath,
+        sourceFingerprint: payload.sourceFingerprint,
+      });
+    }
+  }
+  if (expectsCollectionPublication) {
+    const action = mutationPlan.actions[importedItems.length];
+    const target = join(storeRoot, CONFIG_FILENAME);
+    if (
+      action?.kind !== "publish-file" ||
+      action.target !== target ||
+      !action.postcondition ||
+      action.postcondition.state !== "present" ||
+      !hasExactKeys(action.payload, ["data", "digest", "mode", "path"]) ||
+      typeof action.payload.data !== "string" ||
+      typeof action.payload.digest !== "string" ||
+      action.payload.path !== target ||
+      action.payload.mode !== 0o600 ||
+      sha256(action.payload.data) !== action.payload.digest ||
+      action.postcondition.fingerprint !== action.payload.digest ||
+      !collectionPublicationContains(
+        action.payload.data,
+        inputs.intoCollection as string,
+        importedItems,
+      )
+    ) {
+      return null;
+    }
+    actions.push({ action, data: action.payload.data });
+  }
+  return {
+    plan: scan,
+    ...(typeof inputs.projectDir === "string" ? { projectDir: inputs.projectDir } : {}),
+    ...(typeof inputs.intoCollection === "string" ? { intoCollection: inputs.intoCollection } : {}),
+    actions,
+  };
+}
+
+async function validateScanMutationSources(
+  env: Env,
+  actions: readonly DecodedScanAction[],
+): Promise<OperationResult | null> {
+  const seen = new Set<string>();
+  for (const { sourcePath, sourceFingerprint } of actions) {
+    if (!sourcePath || !sourceFingerprint || seen.has(sourcePath)) continue;
+    seen.add(sourcePath);
+    let actual: TargetStateReceipt = { state: "absent" };
+    try {
+      const snapshot = await captureSafeRecursiveSource(env, sourcePath);
+      actual = { state: "present", fingerprint: snapshot.fingerprint };
+    } catch {
+      // Missing or unsafe sources remain an absent observation for non-disclosing drift evidence.
+    }
+    if (actual.state === "present" && actual.fingerprint === sourceFingerprint) continue;
+    return {
+      ok: false,
+      conflict: {
+        code: "TARGET_PRECONDITION_CONFLICT",
+        message: "source changed after planning",
+        planId: "untrusted",
+        actionId: "untrusted",
+        target: "untrusted",
+        expected: { state: "present", fingerprint: sourceFingerprint },
+        actual,
+      },
+    };
+  }
+  return null;
+}
+
+async function validateScanCollectionPublication(
+  env: Env,
+  storeRoot: string,
+  decoded: DecodedScanMutation,
+): Promise<OperationResult | null> {
+  if (!decoded.intoCollection) return null;
+  const imported = decoded.actions.flatMap(({ item }) => (item ? [item] : []));
+  if (imported.length === 0) return null;
+  const publication = decoded.actions.find(({ action }) => action.kind === "publish-file");
+  if (!publication?.data) return invalidPlanResult();
+  const expected = await scanCollectionPublication(
+    env,
+    {
+      storeRoot,
+      agent: decoded.plan.agent,
+      scope: decoded.plan.scope,
+      ...(decoded.projectDir ? { dir: decoded.projectDir } : {}),
+      intoCollection: decoded.intoCollection,
+    },
+    imported,
+  );
+  const exact = expected[0];
+  if (
+    expected.length !== 1 ||
+    !exact ||
+    exact.path !== publication.action.target ||
+    exact.mode !== publication.action.payload.mode ||
+    exact.data !== publication.data
+  ) {
+    return invalidPlanResult();
+  }
+  return null;
+}
+
+async function executeDecodedScanAction(
+  env: Env,
+  storeRoot: string,
+  decoded: DecodedScanAction,
+): Promise<void> {
+  const { action, item, sourcePath, sourceFingerprint } = decoded;
+  if (action.kind === "publish-file") {
+    const digest = action.payload.digest;
+    const mode = action.payload.mode;
+    if (
+      typeof decoded.data !== "string" ||
+      typeof digest !== "string" ||
+      typeof mode !== "number" ||
+      sha256(decoded.data) !== digest
+    ) {
+      throw new TypeError("scan collection publication is invalid");
+    }
+    await assertSafeAtomicPublicationPath(env, action.target, storeRoot, "scan publication");
+    assertFinalSerializedSecretBytes(
+      decoded.data,
+      providerScopeForEnv(env)?.knownValues ?? [],
+      action.target,
+    );
+    await env.fs.publishFileAtomically(action.target, decoded.data, { mode });
+    return;
+  }
+  if (!item) throw new TypeError("scan action item is invalid");
+  if (!sourcePath || !sourceFingerprint) throw new TypeError("scan source is invalid");
+  const snapshot = await captureSafeRecursiveSource(env, sourcePath);
+  if (snapshot.fingerprint !== sourceFingerprint) throw staleScanSourceError();
+  if (action.kind === "scan-rules" && decoded.data !== undefined) {
+    await writeRuleArtifact(env, storeRoot, item.name, decoded.data);
+    return;
+  }
+  if (action.kind === "scan-mcp" && decoded.server !== undefined) {
+    await writeMcpArtifact(env, storeRoot, item.name, serverFromRaw(decoded.server));
+    return;
+  }
+  if (action.kind === "scan-skills") {
+    await installSafeRecursiveSnapshot(env, snapshot, action.target, true);
+    return;
+  }
+  throw new TypeError(`unsupported scan action ${action.kind}`);
+}
+
+async function assertScanActionPostcondition(env: Env, action: MutationPlanAction): Promise<void> {
+  if (!action.postcondition) throw new TypeError("scan action has no postcondition");
+  const actual = await targetState(env, action.target);
+  if (sameTargetState(action.postcondition, actual)) return;
+  const error = new Error("scan action does not match its signed postcondition") as Error & {
+    code: string;
+  };
+  error.code =
+    action.kind === "publish-file"
+      ? "PUBLICATION_POSTCONDITION_FAILED"
+      : "ACTION_POSTCONDITION_FAILED";
+  throw error;
+}
+
+function collectionPublicationContains(
+  data: string,
+  collection: string,
+  items: readonly ScanItem[],
+): boolean {
+  try {
+    const parsed = JSON.parse(data) as {
+      artifacts?: Record<string, { collections?: unknown }>;
+    };
+    return items.every(({ kind, name }) => {
+      const collections = parsed.artifacts?.[`${kind}/${name}`]?.collections;
+      return Array.isArray(collections) && collections.includes(collection);
+    });
+  } catch {
+    return false;
+  }
+}
+
+function isScanPlan(value: unknown): value is ScanPlan {
+  if (!isPlainRecord(value) || !hasExactKeys(value, ["agent", "items", "scope", "warnings"])) {
+    return false;
+  }
+  if (
+    typeof value.agent !== "string" ||
+    (value.scope !== "global" && value.scope !== "project") ||
+    !Array.isArray(value.items) ||
+    !Array.isArray(value.warnings) ||
+    !value.warnings.every((warning) => typeof warning === "string")
+  ) {
+    return false;
+  }
+  return value.items.every(isScanItem);
+}
+
+function isScanItem(value: unknown): value is ScanItem {
+  if (!isPlainRecord(value)) return false;
+  const keys =
+    value.secretRefs === undefined
+      ? ["action", "kind", "name", "source", "status"]
+      : ["action", "kind", "name", "secretRefs", "source", "status"];
+  return (
+    hasExactKeys(value, keys) &&
+    (value.kind === "rules" || value.kind === "mcp" || value.kind === "skills") &&
+    typeof value.name === "string" &&
+    (value.status === "new" || value.status === "conflict") &&
+    (value.action === "import" || value.action === "skip") &&
+    typeof value.source === "string" &&
+    (value.secretRefs === undefined ||
+      (Array.isArray(value.secretRefs) && value.secretRefs.every((ref) => typeof ref === "string")))
+  );
+}
+
+function jsonCanonical(value: unknown): CanonicalJsonValue {
+  return JSON.parse(JSON.stringify(value)) as CanonicalJsonValue;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  return (
+    isPlainRecord(value) && Object.keys(value).sort().join("\0") === [...keys].sort().join("\0")
+  );
+}
+
+const CONTROLLED_SCAN_ACTION_CODES = new Set([
+  "EACCES",
+  "EDQUOT",
+  "EFBIG",
+  "EIO",
+  "ENOSPC",
+  "EPERM",
+  "EROFS",
+  "ESTALE",
+  "PUBLICATION_POSTCONDITION_FAILED",
+  "ACTION_POSTCONDITION_FAILED",
+]);
+
+function actionFailureCode(error: unknown): string {
+  const code = (error as { readonly code?: unknown } | null)?.code;
+  return typeof code === "string" ? code : "UNKNOWN_IO_ERROR";
+}
+
+function sameTargetState(left: TargetStateReceipt, right: TargetStateReceipt): boolean {
+  return (
+    left.state === right.state &&
+    (left.state === "absent" ||
+      (right.state === "present" && left.fingerprint === right.fingerprint))
+  );
+}
+
+function staleScanSourceError(): Error & { readonly code: string } {
+  return Object.assign(new Error("scan source changed after planning"), {
+    code: "ESTALE" as const,
+  });
+}
+
+function invalidScanResult(plan: ScanPlan = invalidScanPlan()): ScanResult {
+  return { plan, imported: [], operation: invalidPlanResult() };
+}
+
+function invalidScanPlan(): ScanPlan {
+  return { agent: "untrusted", scope: "global", items: [], warnings: [] };
 }
 
 async function scanProviderScope(

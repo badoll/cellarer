@@ -1,6 +1,6 @@
 import type { SettingsSummary } from "@cellarer/core";
 import { useEffect, useState } from "react";
-import { apiFetch } from "./api.js";
+import { apiFetch, applyPlannedControlPlaneMutation } from "./api.js";
 import { readApiJson } from "./api-state.js";
 
 function errorMessage(err: unknown): string {
@@ -19,7 +19,7 @@ export function SettingsPage() {
     setLoading(true);
     setError(null);
     try {
-      setSettings(await readApiJson<SettingsSummary>(await apiFetch("/api/settings")));
+      setSettings(await readApiJson<SettingsSummary>(await apiFetch("/api/v1/settings")));
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -37,17 +37,12 @@ export function SettingsPage() {
     setSaving(true);
     setError(null);
     try {
-      await readApiJson<unknown>(
-        await apiFetch("/api/collections", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            collectionName: name,
-            description: newCollectionDescription.trim() || undefined,
-            resourceIds: [],
-          }),
-        }),
-      );
+      await applyPlannedControlPlaneMutation("/api/v1/collections/plan", {
+        action: "create",
+        collectionName: name,
+        description: newCollectionDescription.trim() || undefined,
+        resourceIds: [],
+      });
       setNewCollection("");
       setNewCollectionDescription("");
       await load();

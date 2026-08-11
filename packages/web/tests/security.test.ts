@@ -14,8 +14,8 @@ describe("web/security safeEqual", () => {
 });
 
 describe("web/security isLoopbackHost", () => {
-  it("allows loopback hosts (with/without port) and empty", () => {
-    expect(isLoopbackHost("")).toBe(true);
+  it("allows exact loopback hosts (with/without port) and rejects missing authority", () => {
+    expect(isLoopbackHost("")).toBe(false);
     expect(isLoopbackHost("127.0.0.1")).toBe(true);
     expect(isLoopbackHost("127.0.0.1:4317")).toBe(true);
     expect(isLoopbackHost("localhost:4317")).toBe(true);

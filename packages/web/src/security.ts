@@ -18,9 +18,9 @@ export function safeEqual(a: string, b: string): boolean {
 
 // 仅允许本机 Host,挡住 DNS rebinding(攻击者把域名解析到 127.0.0.1 借浏览器发起本地请求)。
 // 精确匹配(剥离端口后全等):不能用 startsWith —— 否则 `127.0.0.1.evil.com` /
-// `localhost.evil.com` 会被误判为本机,防护被击穿(token 可选时 hostGuard 是唯一防线)。
+// `localhost.evil.com` 会被误判为本机，绕过认证前的 authority 边界。
 export function isLoopbackHost(host: string): boolean {
-  if (host === "") return true;
+  if (host === "") return false;
   const h = stripPort(host);
   return h === "127.0.0.1" || h === "localhost" || h === "[::1]";
 }
@@ -37,7 +37,8 @@ function stripPort(host: string): string {
 
 // Host 白名单中间件:非本机 Host → 403。
 export async function hostGuard(c: Context, next: Next): Promise<Response | undefined> {
-  if (!isLoopbackHost(c.req.header("host") ?? "")) {
+  const effectiveHost = c.req.header("host") ?? new URL(c.req.url).host;
+  if (!isLoopbackHost(effectiveHost)) {
     return c.text("forbidden host", 403);
   }
   await next();

@@ -1,4 +1,4 @@
-import type { Capability, ScanItem, ScanPlan, ScanSelection } from "@cellarer/core";
+import type { Capability, MutationPlan, ScanItem, ScanPlan } from "@cellarer/core";
 import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "./api.js";
 import { readApiJson } from "./api-state.js";
@@ -9,7 +9,6 @@ interface ImportPayload {
   destination: Destination;
   dir?: string;
   capabilities?: Capability[];
-  selectItems?: ScanSelection[];
 }
 
 interface ImportRequestInput {
@@ -55,6 +54,7 @@ export function ImportDialog(props: {
   const [destination, setDestination] = useState<Destination>("user");
   const [dir, setDir] = useState("");
   const [plan, setPlan] = useState<ScanPlan | null>(null);
+  const [mutationPlan, setMutationPlan] = useState<MutationPlan | null>(null);
   const [plannedPayload, setPlannedPayload] = useState<ImportPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
@@ -64,6 +64,7 @@ export function ImportDialog(props: {
   useEffect(() => {
     if (!props.open) return;
     setPlan(null);
+    setMutationPlan(null);
     setPlannedPayload(null);
     setError(null);
   }, [props.open, props.kind]);
@@ -83,6 +84,7 @@ export function ImportDialog(props: {
   const hasAgent = request.agent.length > 0;
   const hasCurrentPreview =
     plan !== null &&
+    mutationPlan !== null &&
     plannedPayload !== null &&
     importRequestKey(plannedPayload) === currentRequestKey;
   const canPreview = hasAgent && !dirMissing && !previewing && !applying;
@@ -90,6 +92,7 @@ export function ImportDialog(props: {
 
   function resetPlan() {
     setPlan(null);
+    setMutationPlan(null);
     setPlannedPayload(null);
   }
 
@@ -98,14 +101,18 @@ export function ImportDialog(props: {
     setError(null);
     setPreviewing(true);
     try {
-      const response = await apiFetch("/api/import/plan", {
+      const response = await apiFetch("/api/v1/import/plan", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(request),
       });
-      const nextPlan = await readApiJson<ScanPlan>(response);
+      const nextPlan = await readApiJson<{
+        readonly plan: ScanPlan;
+        readonly mutationPlan: MutationPlan;
+      }>(response);
       if (currentRequestKey !== latestPayloadKey.current) return;
-      setPlan(nextPlan);
+      setPlan(nextPlan.plan);
+      setMutationPlan(nextPlan.mutationPlan);
       setPlannedPayload(request);
     } catch (err) {
       resetPlan();
@@ -116,17 +123,14 @@ export function ImportDialog(props: {
   }
 
   async function applyImport() {
-    if (!plan || !plannedPayload) return;
+    if (!plan || !mutationPlan || !plannedPayload) return;
     setError(null);
     setApplying(true);
     try {
-      const response = await apiFetch("/api/import/apply", {
+      const response = await apiFetch("/api/v1/import/apply", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          ...plannedPayload,
-          selectItems: selectItemsForPlan(plan),
-        }),
+        body: JSON.stringify(buildImportApplyRequest(mutationPlan)),
       });
       await readApiJson<unknown>(response);
       props.onImported();
@@ -234,10 +238,10 @@ export function ImportDialog(props: {
   );
 }
 
-export function selectItemsForPlan(plan: ScanPlan): ScanSelection[] {
-  return plan.items
-    .filter((item) => item.action === "import")
-    .map((item) => ({ kind: item.kind, name: item.name, source: item.source }));
+export function buildImportApplyRequest(mutationPlan: MutationPlan): {
+  readonly mutationPlan: MutationPlan;
+} {
+  return { mutationPlan };
 }
 
 function ImportPlanTable(props: { plan: ScanPlan }) {

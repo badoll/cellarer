@@ -67,6 +67,9 @@ node packages/cli/dist/bin.js revert --agent claude-code,codex
 node packages/cli/dist/bin.js ui
 ```
 
+它只绑定 `127.0.0.1`,并使用随机 HttpOnly browser session。Managed client 可使用
+受保护 bearer 与 lifetime descriptor,详见 [Web UI 与本地 API](docs/zh-CN/web-ui.md)。
+
 ## 命令
 
 | 命令 | 用途 |

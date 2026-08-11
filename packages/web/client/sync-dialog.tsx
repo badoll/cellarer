@@ -1,4 +1,4 @@
-import type { Capability, DistributePlan } from "@cellarer/core";
+import type { Capability, DistributePlan, MutationPlan } from "@cellarer/core";
 import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "./api.js";
 import { readApiJson } from "./api-state.js";
@@ -70,6 +70,7 @@ export function SyncDialog(props: {
   const [destination, setDestination] = useState<Destination>("user");
   const [dir, setDir] = useState("");
   const [plan, setPlan] = useState<DistributePlan | null>(null);
+  const [mutationPlan, setMutationPlan] = useState<MutationPlan | null>(null);
   const [plannedRequest, setPlannedRequest] = useState<SyncRequest | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
@@ -79,6 +80,7 @@ export function SyncDialog(props: {
   useEffect(() => {
     if (!props.open) return;
     setPlan(null);
+    setMutationPlan(null);
     setPlannedRequest(null);
     setError(null);
   }, [props.open, props.kinds, props.collections]);
@@ -98,6 +100,7 @@ export function SyncDialog(props: {
   const hasAgents = request.agents.length > 0;
   const hasCurrentPreview =
     plan !== null &&
+    mutationPlan !== null &&
     plannedRequest !== null &&
     syncRequestKey(plannedRequest) === currentRequestKey;
   const canPreview = hasAgents && !dirMissing && !previewing && !applying;
@@ -105,6 +108,7 @@ export function SyncDialog(props: {
 
   function resetPlan() {
     setPlan(null);
+    setMutationPlan(null);
     setPlannedRequest(null);
   }
 
@@ -114,17 +118,21 @@ export function SyncDialog(props: {
     setPreviewing(true);
     const requestKey = syncRequestKey(request);
     try {
-      const response = await apiFetch("/api/sync/plan", {
+      const response = await apiFetch("/api/v1/sync/plan", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(request),
       });
-      const nextPlan = await readApiJson<DistributePlan>(response);
+      const nextPlan = await readApiJson<{ plan: DistributePlan; mutationPlan: MutationPlan }>(
+        response,
+      );
       if (requestKey !== latestRequestKey.current) return;
-      setPlan(nextPlan);
+      setPlan(nextPlan.plan);
+      setMutationPlan(nextPlan.mutationPlan);
       setPlannedRequest(request);
     } catch (err) {
       setPlan(null);
+      setMutationPlan(null);
       setPlannedRequest(null);
       setError(errorMessage(err));
     } finally {
@@ -133,14 +141,14 @@ export function SyncDialog(props: {
   }
 
   async function applySync() {
-    if (!plannedRequest || !hasCurrentPreview) return;
+    if (!plannedRequest || !mutationPlan || !hasCurrentPreview) return;
     setError(null);
     setApplying(true);
     try {
-      const response = await apiFetch("/api/sync/apply", {
+      const response = await apiFetch("/api/v1/sync/apply", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(plannedRequest),
+        body: JSON.stringify({ mutationPlan }),
       });
       await readApiJson<unknown>(response);
       props.onApplied();

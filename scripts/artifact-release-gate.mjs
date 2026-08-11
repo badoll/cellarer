@@ -1,7 +1,6 @@
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -434,19 +433,53 @@ async function assertVaultFallback(installed) {
 }
 
 async function assertInstalledUi(installed) {
-  const port = await freeLoopbackPort();
-  const child = spawn(installed.bin, ["ui", "--port", String(port)], {
+  await assertInstalledSidecarMode(installed, "browser-session");
+  await assertInstalledSidecarMode(installed, "bearer");
+}
+
+async function assertInstalledSidecarMode(installed, authMode) {
+  const token = "cellarer-installed-sidecar-token-canary";
+  const bearer = authMode === "bearer";
+  const lifetimeFd = bearer ? 4 : 3;
+  const args = [
+    "--output",
+    "json",
+    "ui",
+    "--port",
+    "0",
+    "--lifetime-fd",
+    String(lifetimeFd),
+    ...(bearer ? ["--token-fd", "3"] : []),
+  ];
+  const child = spawn(installed.bin, args, {
     cwd: installed.projectRoot,
     env: installed.env,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", "pipe", "pipe", ...(bearer ? ["pipe"] : [])],
   });
   const exit = childExit(child);
+  const stdout = [];
+  const stderr = [];
+  child.stdout.on("data", (chunk) => stdout.push(chunk));
+  child.stderr.on("data", (chunk) => stderr.push(chunk));
+  if (bearer) child.stdio[3].end(`${token}\n`);
   try {
-    await waitForOutput(child, `http://127.0.0.1:${port}`);
-    const dashboard = await fetch(`http://127.0.0.1:${port}/`);
+    const readyEnvelope = await waitForJsonOutput(child);
+    assert(readyEnvelope.status === "success", `${authMode} sidecar did not publish success`);
+    const ready = readyEnvelope.data;
+    assert(
+      ready?.schemaVersion === 1 &&
+        ready.apiVersion === "1.0" &&
+        ready.contractId === "cellarer-local-client-api-v1" &&
+        ready.lifecycle === "owned-v1" &&
+        ready.authMode === authMode &&
+        Number.isInteger(ready.pid) &&
+        /^http:\/\/127\.0\.0\.1:[1-9][0-9]*$/.test(ready.baseUrl),
+      `${authMode} sidecar ready record is invalid`,
+    );
+    const dashboard = await fetch(`${ready.baseUrl}/`);
     assert(
       dashboard.ok && (await dashboard.text()).includes('<div id="root"></div>'),
-      "installed dashboard asset failed",
+      `${authMode} installed dashboard asset failed`,
     );
     const asset = (
       await fs.readdir(
@@ -454,14 +487,70 @@ async function assertInstalledUi(installed) {
       )
     ).find((name) => name.endsWith(".js"));
     assert(asset, "packed Web JavaScript asset is missing");
-    const staticResponse = await fetch(`http://127.0.0.1:${port}/assets/${asset}`);
+    const staticResponse = await fetch(`${ready.baseUrl}/assets/${asset}`);
     assert(
       staticResponse.ok && (await staticResponse.text()).length > 100,
       "installed static asset failed",
     );
+    const authHeaders = bearer
+      ? { authorization: `Bearer ${token}` }
+      : await bootstrapInstalledBrowserSession(ready.baseUrl);
+    const version = await fetch(`${ready.baseUrl}/api/v1/version`, { headers: authHeaders });
+    const versionBody = await version.json();
+    assert(
+      version.ok &&
+        versionBody.status === "success" &&
+        versionBody.data?.contractId === "cellarer-local-client-api-v1",
+      `${authMode} installed version discovery failed`,
+    );
+    const openApi = await fetch(`${ready.baseUrl}/api/v1/openapi.json`, {
+      headers: authHeaders,
+    });
+    const openApiBody = await openApi.json();
+    assert(
+      openApi.ok &&
+        openApiBody.status === "success" &&
+        openApiBody.data?.openapi === "3.1.0" &&
+        openApiBody.data?.paths?.["/api/v1/auth/session"]?.post &&
+        openApiBody.data?.paths?.["/api/v1/mutations/apply"]?.post,
+      `${authMode} installed OpenAPI contract failed`,
+    );
+
+    child.stdio[lifetimeFd].end();
+    assert(
+      await settlesWithin(exit, 3_000),
+      `${authMode} sidecar did not close after lifetime EOF`,
+    );
+    const result = await exit;
+    assert(
+      result.code === 0 && result.signal === null,
+      `${authMode} sidecar lifetime exit was not clean`,
+    );
+    const observedStdout = Buffer.concat(stdout).toString().trim();
+    const observedStderr = Buffer.concat(stderr).toString();
+    assert(observedStdout.split("\n").length === 1, `${authMode} stdout was not one record`);
+    assert(!observedStdout.includes(token), `${authMode} stdout exposed bearer material`);
+    assert(!observedStderr.includes(token), `${authMode} stderr exposed bearer material`);
   } finally {
     await terminateChild(child, exit);
   }
+}
+
+async function bootstrapInstalledBrowserSession(baseUrl) {
+  const response = await fetch(`${baseUrl}/api/v1/auth/session`, {
+    method: "POST",
+    headers: {
+      origin: baseUrl,
+      "sec-fetch-site": "same-origin",
+    },
+  });
+  const body = await response.json();
+  const cookie = response.headers.get("set-cookie")?.split(";", 1)[0];
+  assert(
+    response.ok && body.status === "success" && cookie,
+    "installed browser-session bootstrap failed",
+  );
+  return { cookie };
 }
 
 function childExit(child) {
@@ -594,35 +683,46 @@ async function walk(root) {
   return files;
 }
 
-async function waitForOutput(child, expected) {
-  await new Promise((resolveReady, reject) => {
-    let output = "";
-    const timeout = setTimeout(() => reject(new Error(`UI startup timed out: ${output}`)), 10_000);
-    const onData = (chunk) => {
-      output += chunk.toString();
-      if (output.includes(expected)) {
-        clearTimeout(timeout);
-        resolveReady();
+async function waitForJsonOutput(child) {
+  return new Promise((resolveReady, reject) => {
+    let stdout = "";
+    let stderr = "";
+    const cleanup = () => {
+      clearTimeout(timeout);
+      child.stdout.off("data", onStdout);
+      child.stderr.off("data", onStderr);
+      child.off("exit", onExit);
+    };
+    const fail = (error) => {
+      cleanup();
+      reject(error);
+    };
+    const onStdout = (chunk) => {
+      stdout += chunk.toString();
+      const newline = stdout.indexOf("\n");
+      if (newline < 0) return;
+      try {
+        const parsed = JSON.parse(stdout.slice(0, newline));
+        cleanup();
+        resolveReady(parsed);
+      } catch (error) {
+        fail(new Error(`UI emitted invalid ready JSON: ${String(error)}`));
       }
     };
-    child.stdout.on("data", onData);
-    child.stderr.on("data", onData);
-    child.once("exit", (code) =>
-      reject(new Error(`UI exited before readiness (${code}): ${output}`)),
+    const onStderr = (chunk) => {
+      stderr += chunk.toString();
+    };
+    const onExit = (code) => {
+      fail(new Error(`UI exited before readiness (${code}): ${stderr}${stdout}`));
+    };
+    const timeout = setTimeout(
+      () => fail(new Error(`UI startup timed out: ${stderr}${stdout}`)),
+      10_000,
     );
+    child.stdout.on("data", onStdout);
+    child.stderr.on("data", onStderr);
+    child.once("exit", onExit);
   });
-}
-
-async function freeLoopbackPort() {
-  const server = createServer();
-  await new Promise((resolveListen, reject) =>
-    server.listen(0, "127.0.0.1", resolveListen).once("error", reject),
-  );
-  const address = server.address();
-  const port = typeof address === "object" && address ? address.port : undefined;
-  await new Promise((resolveClose) => server.close(resolveClose));
-  if (!port) throw new Error("failed to allocate loopback port");
-  return port;
 }
 
 async function sha512(path) {

@@ -1,10 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { activityPath } from "../src/activity.js";
-import { applyScan, scanPlan } from "../src/engine/scan.js";
+import {
+  applyScan,
+  applyScanMutationPlan,
+  planScanMutation,
+  scanPlan,
+} from "../src/engine/scan.js";
 import type { Env } from "../src/env.js";
+import { createAuthorizedMutationPlan } from "../src/protocol/canonical.js";
 import { readOperationJournal } from "../src/protocol/journal.js";
+import type { MutationPlan } from "../src/protocol/models.js";
 import { readStoreRevision } from "../src/protocol/store-revision.js";
 import { observableKnownValues, serializeObservable } from "../src/secrets/observable.js";
+import { sha256 } from "../src/store/checksum.js";
 import { initialConfigText, parseConfig } from "../src/store/config.js";
 import {
   listMcpArtifacts,
@@ -947,5 +955,222 @@ describe("engine/scan — conflict strategy + non-interactive", () => {
       expect.objectContaining({ kind: "rules", name: "claude-code", action: "import" }),
     ]);
     expect(reads).toBe(0);
+  });
+});
+
+describe("engine/scan — serializable mutation plan", () => {
+  let t: TmpEnv;
+
+  beforeEach(async () => {
+    t = makeTmpEnv();
+    await ensureBaseDirs(t);
+  });
+
+  afterEach(() => t.cleanup());
+
+  it("applies the exact authority-sealed scan plan after a JSON round trip", async () => {
+    const storeRoot = await emptyStore(t);
+    const source = t.path("home", ".claude", "CLAUDE.md");
+    await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
+    await t.env.fs.writeFile(source, "# Serializable rules\n");
+    const planned = await planScanMutation(t.env, {
+      storeRoot,
+      agent: "claude-code",
+      scope: "global",
+      capabilities: ["rules"],
+    });
+    const roundTripped = JSON.parse(JSON.stringify(planned.mutationPlan)) as MutationPlan;
+    const applied = await applyScanMutationPlan(t.env, roundTripped, { storeRoot });
+
+    expect(applied.plan).toEqual(planned.plan);
+    expect(applied.imported).toEqual([
+      expect.objectContaining({ kind: "rules", name: "claude-code", action: "import" }),
+    ]);
+    expect(applied.operation).toMatchObject({
+      ok: true,
+      receipt: { planId: roundTripped.planId, planDigest: roundTripped.digest },
+    });
+    expect((await listRuleArtifacts(t.env, storeRoot)).map((item) => item.name)).toContain(
+      "claude-code",
+    );
+  });
+
+  it("rejects a changed signed field before filesystem or provider observation", async () => {
+    const storeRoot = await emptyStore(t);
+    const source = t.path("home", ".claude", "CLAUDE.md");
+    await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
+    await t.env.fs.writeFile(source, "# Authorized rules\n");
+    const planned = await planScanMutation(t.env, {
+      storeRoot,
+      agent: "claude-code",
+      scope: "global",
+      capabilities: ["rules"],
+    });
+    const changed = JSON.parse(JSON.stringify(planned.mutationPlan)) as MutationPlan & {
+      actions: { payload: Record<string, unknown> }[];
+    };
+    const first = changed.actions[0];
+    if (!first) throw new Error("expected one scan action");
+    first.payload.data = "# Attacker changed the signed publication\n";
+    let filesystemEffects = 0;
+    let providerEffects = 0;
+    const rejectingEnv: Env = {
+      ...t.env,
+      fs: new Proxy(t.env.fs, {
+        get(target, property, receiver) {
+          const value = Reflect.get(target, property, receiver);
+          if (typeof value !== "function") return value;
+          return (..._args: unknown[]) => {
+            filesystemEffects += 1;
+            throw new Error(`unexpected filesystem effect: ${String(property)}`);
+          };
+        },
+      }),
+      secretStore: {
+        async get() {
+          providerEffects += 1;
+          throw new Error("unexpected provider effect");
+        },
+        async set() {
+          providerEffects += 1;
+          throw new Error("unexpected provider effect");
+        },
+        async delete() {
+          providerEffects += 1;
+          throw new Error("unexpected provider effect");
+        },
+      },
+    };
+
+    const applied = await applyScanMutationPlan(rejectingEnv, changed, { storeRoot });
+
+    expect(applied).toMatchObject({
+      imported: [],
+      operation: { ok: false, conflict: { code: "INVALID_PLAN" } },
+    });
+    expect(filesystemEffects).toBe(0);
+    expect(providerEffects).toBe(0);
+  });
+
+  it("rejects source drift instead of rescanning a new skill payload", async () => {
+    const storeRoot = await emptyStore(t);
+    const source = t.path("home", ".claude", "skills", "review", "SKILL.md");
+    const target = t.path("home", ".cellarer", "store", "skills", "review");
+    await t.env.fs.mkdir(t.path("home", ".claude", "skills", "review"), { recursive: true });
+    await t.env.fs.writeFile(source, "# Original review skill\n");
+    const planned = await planScanMutation(t.env, {
+      storeRoot,
+      agent: "claude-code",
+      scope: "global",
+      capabilities: ["skills"],
+    });
+
+    await t.env.fs.writeFile(source, "# Changed after preview\n");
+    const applied = await applyScanMutationPlan(t.env, planned.mutationPlan, { storeRoot });
+
+    expect(applied).toMatchObject({
+      imported: [],
+      operation: {
+        ok: false,
+        conflict: { code: "TARGET_PRECONDITION_CONFLICT" },
+      },
+    });
+    await expect(t.env.fs.lstat(target)).rejects.toThrow();
+  });
+
+  it("commits the selected import and collection publication from one sealed plan", async () => {
+    const storeRoot = await emptyStore(t);
+    await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
+    await t.env.fs.writeFile(
+      t.path("home", ".claude", "mcp.json"),
+      JSON.stringify({ mcpServers: { internal: { command: "node", args: ["server.js"] } } }),
+    );
+    const planned = await planScanMutation(t.env, {
+      storeRoot,
+      agent: "claude-code",
+      scope: "global",
+      capabilities: ["mcp"],
+      intoCollection: "team",
+    });
+
+    const applied = await applyScanMutationPlan(
+      t.env,
+      JSON.parse(JSON.stringify(planned.mutationPlan)) as MutationPlan,
+      { storeRoot },
+    );
+    const { loadConfig } = await import("../src/store/config.js");
+
+    expect(
+      applied.operation,
+      JSON.stringify({ operation: applied.operation, plan: planned.mutationPlan }),
+    ).toMatchObject({ ok: true });
+    expect((await loadConfig(t.env, storeRoot)).artifacts["mcp/internal"]?.collections).toEqual([
+      "team",
+    ]);
+  });
+
+  it("rejects an authorized collection publication with unrelated config edits", async () => {
+    const storeRoot = await emptyStore(t);
+    await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
+    await t.env.fs.writeFile(t.path("home", ".claude", "CLAUDE.md"), "# Canonical rules\n");
+    const configPath = t.path("home", ".cellarer", "config.json");
+    const planned = await planScanMutation(t.env, {
+      storeRoot,
+      agent: "claude-code",
+      scope: "global",
+      capabilities: ["rules"],
+      intoCollection: "team",
+    });
+    const publication = planned.mutationPlan.actions.at(-1);
+    if (publication?.kind !== "publish-file") {
+      throw new Error("expected collection publication");
+    }
+    const changedConfig = JSON.parse(String(publication.payload.data)) as {
+      defaults: { method: "copy" | "symlink" };
+    };
+    changedConfig.defaults.method = changedConfig.defaults.method === "copy" ? "symlink" : "copy";
+    const changedData = `${JSON.stringify(changedConfig, null, 2)}\n`;
+    const changedDigest = sha256(changedData);
+    const { authorization: _authorization, digest: _digest, ...input } = planned.mutationPlan;
+    const forged = createAuthorizedMutationPlan(t.env, storeRoot, {
+      ...input,
+      actions: planned.mutationPlan.actions.map((action) =>
+        action.actionId === publication.actionId
+          ? {
+              ...action,
+              payload: { ...action.payload, data: changedData, digest: changedDigest },
+              postcondition: { state: "present", fingerprint: changedDigest },
+            }
+          : action,
+      ),
+    });
+
+    const applied = await applyScanMutationPlan(t.env, forged, { storeRoot });
+
+    expect(applied).toMatchObject({
+      imported: [],
+      operation: { ok: false, conflict: { code: "INVALID_PLAN" } },
+    });
+    await expect(t.env.fs.lstat(configPath)).rejects.toThrow();
+    expect((await listRuleArtifacts(t.env, storeRoot)).map(({ name }) => name)).not.toContain(
+      "claude-code",
+    );
+  });
+
+  it("rejects a scan plan that cannot fit the bounded client apply contract", async () => {
+    const storeRoot = await emptyStore(t);
+    await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
+    await t.env.fs.writeFile(
+      t.path("home", ".claude", "CLAUDE.md"),
+      `# Oversized rules\n${"x".repeat(1024 * 1024)}`,
+    );
+    await expect(
+      planScanMutation(t.env, {
+        storeRoot,
+        agent: "claude-code",
+        scope: "global",
+        capabilities: ["rules"],
+      }),
+    ).rejects.toThrow(/body budget|too large/i);
   });
 });

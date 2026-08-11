@@ -139,23 +139,27 @@ describe("agent CLI structured input boundary", () => {
         JSON.stringify({
           protocolVersion: CLI_PROTOCOL_VERSION,
           command: "ui",
-          input: { port: 4318, tokenFd: 7 },
+          input: { port: 4318, tokenFd: 7, lifetimeFd: 8 },
         }),
     });
     program
       .command("ui")
       .option("--port <port>")
       .option("--token-fd <number>")
-      .action((opts: { port?: string; tokenFd?: string }) => action(opts));
+      .option("--lifetime-fd <number>")
+      .action((opts: { port?: string; tokenFd?: string; lifetimeFd?: string }) => action(opts));
 
     await program.parseAsync(["ui", "--input", "request.json"], { from: "user" });
 
-    expect(action).toHaveBeenCalledWith(expect.objectContaining({ port: "4318", tokenFd: "7" }));
+    expect(action).toHaveBeenCalledWith(
+      expect.objectContaining({ port: "4318", tokenFd: "7", lifetimeFd: "8" }),
+    );
   });
 
   it.each([
     ["secret.ls", { passphraseFd: 2_147_483_648 }, ["secret", "ls"]],
     ["ui", { tokenFd: 2_147_483_648 }, ["ui"]],
+    ["ui", { lifetimeFd: 2_147_483_648 }, ["ui"]],
   ] as const)("rejects an out-of-range %s descriptor in structured input", async (command, input, args) => {
     const action = vi.fn();
     const program = new Command().name("cellarer");
@@ -169,7 +173,11 @@ describe("agent CLI structured input boundary", () => {
         }),
     });
     if (command === "ui") {
-      program.command("ui").option("--token-fd <number>").action(action);
+      program
+        .command("ui")
+        .option("--token-fd <number>")
+        .option("--lifetime-fd <number>")
+        .action(action);
     } else {
       program.command("secret").command("ls").option("--passphrase-fd <number>").action(action);
     }

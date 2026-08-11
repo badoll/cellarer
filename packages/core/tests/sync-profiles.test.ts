@@ -386,6 +386,58 @@ describe("versioned sync profiles", () => {
     30_000,
   );
 
+  it("rejects tampered sync-profile apply plans before product-state observation", async () => {
+    await createSyncProfile(t.env, { storeRoot, profileId: "daily", desired });
+    const planned = await planSyncProfile(t.env, { storeRoot, profileId: "daily" });
+    await applySyncProfilePlan(t.env, planned.mutationPlan, {
+      storeRoot,
+      profileId: "daily",
+    });
+    const uninstall = await planSyncProfileUninstall(t.env, {
+      storeRoot,
+      profileId: "daily",
+    });
+    const tamperedApply = { ...planned.mutationPlan, planId: "plan-tampered-apply" };
+    const tamperedUninstall = {
+      ...uninstall.mutationPlan,
+      planId: "plan-tampered-uninstall",
+    };
+
+    const productReads: string[] = [];
+    const originalFs = t.env.fs;
+    t.env.fs = new Proxy(originalFs, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (typeof value !== "function") return value;
+        return (..._args: unknown[]) => {
+          productReads.push(String(property));
+          throw new Error(`unexpected product read: ${String(property)}`);
+        };
+      },
+    });
+
+    const applied = await applySyncProfilePlan(t.env, tamperedApply, {
+      storeRoot,
+      profileId: "daily",
+    });
+    expect(applied.operation).toMatchObject({
+      ok: false,
+      conflict: { code: "INVALID_PLAN" },
+    });
+    expect(productReads).toEqual([]);
+
+    const removed = await applySyncProfileUninstallPlan(t.env, tamperedUninstall, {
+      storeRoot,
+      profileId: "daily",
+      targetKeys: uninstall.targetKeys,
+    });
+    expect(removed.operation).toMatchObject({
+      ok: false,
+      conflict: { code: "INVALID_PLAN" },
+    });
+    expect(productReads).toEqual([]);
+  }, 30_000);
+
   // This real transaction must finish before fixture teardown; Vitest timeouts do not cancel it.
   it("holds one current authority lease across canonical profile resolution and sync planning", async () => {
     await createSyncProfile(t.env, { storeRoot, profileId: "daily", desired });

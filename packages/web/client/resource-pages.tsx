@@ -63,7 +63,7 @@ export function ResourcePage(props: { kind: Capability }) {
     if (collection.trim()) params.set("collections", collection.trim());
 
     setState((current) => ({ ...current, error: null, loading: true }));
-    apiFetch(`/api/resources/${props.kind}?${params.toString()}`)
+    apiFetch(`/api/v1/resources/${props.kind}?${params.toString()}`)
       .then((response) => readApiJson<ControlPlaneResourceListDto>(response))
       .then((data) => {
         if (alive) setState({ data, error: null, loading: false });

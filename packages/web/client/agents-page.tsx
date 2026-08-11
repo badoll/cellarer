@@ -1,6 +1,6 @@
 import type { ControlPlaneAgentDto, ControlPlaneAgentListDto } from "@cellarer/core";
 import { useEffect, useState } from "react";
-import { apiFetch } from "./api.js";
+import { apiFetch, applyPlannedControlPlaneMutation } from "./api.js";
 import { readApiJson } from "./api-state.js";
 import { RESOURCE_KINDS, resourceKindLabel } from "./product-model.js";
 
@@ -54,7 +54,7 @@ export function AgentsPage() {
     setLoading(true);
     setError(null);
     try {
-      const data = await readApiJson<AgentsResponse>(await apiFetch("/api/agents"));
+      const data = await readApiJson<AgentsResponse>(await apiFetch("/api/v1/agents"));
       setAgents([...data.agents]);
       setWarnings([...data.warnings]);
     } catch (err) {
@@ -72,13 +72,11 @@ export function AgentsPage() {
     setPendingAgentId(agentId);
     setError(null);
     try {
-      await readApiJson<unknown>(
-        await apiFetch(`/api/agents/${encodeURIComponent(agentId)}/enabled`, {
-          method: "PUT",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ enabled }),
-        }),
-      );
+      await applyPlannedControlPlaneMutation("/api/v1/agents/plan", {
+        action: "set-enabled",
+        agentId,
+        enabled,
+      });
       setAgents((current) =>
         current.map((agent) => (agent.id === agentId ? { ...agent, enabled } : agent)),
       );
@@ -95,16 +93,12 @@ export function AgentsPage() {
     setAdapterPending(true);
     setError(null);
     try {
-      await readApiJson<unknown>(
-        await apiFetch(`/api/agents/${encodeURIComponent(adapterId)}/adapter`, {
-          method: "PUT",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            kind: adapterForm.adapterKind,
-            adapter: adapterPatch(adapterForm, adapterForm.adapterKind === "builtin"),
-          }),
-        }),
-      );
+      await applyPlannedControlPlaneMutation("/api/v1/agents/plan", {
+        action: "upsert-adapter",
+        agentId: adapterId,
+        kind: adapterForm.adapterKind,
+        adapter: adapterPatch(adapterForm, adapterForm.adapterKind === "builtin"),
+      });
       setAdapterForm(EMPTY_ADAPTER_FORM);
       await load();
     } catch (err) {
@@ -120,11 +114,10 @@ export function AgentsPage() {
     setAdapterPending(true);
     setError(null);
     try {
-      await readApiJson<unknown>(
-        await apiFetch(`/api/agents/${encodeURIComponent(adapterId)}/adapter`, {
-          method: "DELETE",
-        }),
-      );
+      await applyPlannedControlPlaneMutation("/api/v1/agents/plan", {
+        action: "remove-adapter",
+        agentId: adapterId,
+      });
       setAdapterForm(EMPTY_ADAPTER_FORM);
       await load();
     } catch (err) {

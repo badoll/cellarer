@@ -3,6 +3,7 @@ import {
   type CliErrorCode,
   type CliWarning,
   ControlPlaneValidationError,
+  clientErrorFromMutationConflict,
   InvalidConfigError,
   type MutationConflict,
   type OperationResult,
@@ -228,24 +229,7 @@ export function cliErrorFromOperation(operation: OperationResult): CliError | un
 }
 
 export function cliErrorFromMutationConflict(conflict: MutationConflict): CliError {
-  const details = { coreCode: conflict.code };
-  switch (conflict.code) {
-    case "LOCK_CONFLICT":
-      return { code: "LOCK_CONFLICT", message: conflict.message, details };
-    case "STALE_REVISION":
-      return { code: "STALE_REVISION", message: conflict.message, details };
-    case "TARGET_PRECONDITION_CONFLICT":
-      return { code: "TARGET_CONFLICT", message: conflict.message, details };
-    case "PARTIAL_FAILURE":
-      return { code: "PARTIAL_FAILURE", message: conflict.message, details };
-    case "INTERRUPTED_OPERATION":
-    case "MANUAL_RECOVERY_REQUIRED":
-      return { code: "RECOVERY_REQUIRED", message: conflict.message, details };
-    case "EXPIRED_PLAN":
-    case "INVALID_PLAN":
-    case "INVALID_PLAN_DIGEST":
-      return { code: "DOMAIN_VALIDATION_FAILED", message: conflict.message, details };
-  }
+  return clientErrorFromMutationConflict(conflict);
 }
 
 function snapshotCliBoundaryError(error: unknown): CliBoundaryErrorSnapshot {

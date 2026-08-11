@@ -181,7 +181,10 @@ evidence 并保留 lock/journal;不要手动删除。
 
 ```bash
 node packages/cli/dist/bin.js ui
-node packages/cli/dist/bin.js ui --port 4317 --token-fd 3 3< /path/to/ui-token
+node packages/cli/dist/bin.js --output json ui --port 0 \
+  --token-fd 3 --lifetime-fd 4 3< /path/to/ui-token 4< /path/to/lifetime-pipe
 ```
 
-服务只监听 `127.0.0.1`。
+服务只监听 `127.0.0.1`。第一条命令使用随机的内置 browser session。第二条使用
+managed bearer 认证,并在 lifetime descriptor 到达 EOF 时关闭；唯一 machine-output
+record 会报告 OS 分配的端口,但不会暴露 token。

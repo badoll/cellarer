@@ -129,10 +129,10 @@ operation as follows:
 2. Do not delete `mutation.lock`, `recovery.lock`, or
    `operations/active.json` by age, and do not edit affected targets while
    recovery evidence is being evaluated.
-3. The current CLI and Web API diagnose recovery state but do not expose a
-   write-side recovery command. A trusted `@cellarer/core` caller must invoke
-   `recoverInterruptedOperation(env, storeRoot, { operationId,
-   snapshotPassphrase })` with the exact diagnosed operation id.
+3. An authorized caller may use the CLI recovery command or
+   `POST /api/v1/recovery/apply` with the exact diagnosed operation id. Both
+   delegate to Core `recoverInterruptedOperation`; neither deletes evidence or
+   invents recovery state.
 4. Core finalizes when all planned after-states are proven and every required
    state publication is already present with its durable digest. If a
    digest-only publication is missing or mismatched, Core does not reconstruct
@@ -169,7 +169,7 @@ still matches. `healthy` is true only when both axes are `converged` and
 recovery is `clean`. CLI `status --agent <id> --json` includes the complete
 `verification` report. Without `--agent`, `status` reports only ledger-versus-
 disk items. The local Web API exposes the same full report through
-`POST /api/verify`.
+`POST /api/v1/verify`.
 
 ## Target Ownership and Replacement
 

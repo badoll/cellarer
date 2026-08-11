@@ -25,6 +25,7 @@ import {
   serializeObservable,
   withObservableKnownValues,
 } from "../src/secrets/observable.js";
+import { createSafeObservableOpenApiDocument } from "../src/secrets/public-boundary.js";
 import { encryptVault, vaultPath } from "../src/secrets/vault.js";
 import { ensureBaseDirs, makeTmpEnv } from "./helpers/env.js";
 import { deterministicMutationAuthority } from "./helpers/mutation-authority.js";
@@ -203,6 +204,65 @@ describe("scoped secret values", () => {
 });
 
 describe("observable secret boundaries", () => {
+  it("preserves public schema vocabulary without allowing secret canaries through", () => {
+    const input = {
+      openapi: "3.1.0",
+      info: { title: "test", description: "ghp_0123456789abcdefghijklmnopqrstuvwx" },
+      paths: {},
+      components: {
+        schemas: {
+          Plan: {
+            type: "object",
+            properties: { authorization: { type: "object" } },
+          },
+        },
+        securitySchemes: {
+          localManagedClientAuth: { type: "http", scheme: "bearer" },
+        },
+      },
+    };
+    const document = createSafeObservableOpenApiDocument(input);
+    const encoded = serializeObservable("web", { document });
+
+    expect(encoded).toContain('"authorization":{"type":"object"');
+    expect(encoded).toContain('"scheme":"bearer"');
+    expect(encoded).not.toContain("ghp_0123456789abcdefghijklmnopqrstuvwx");
+    expect(document).not.toBe(input);
+    expect(Object.isFrozen(document)).toBe(true);
+  });
+
+  it("does not let public-document marking bypass low-entropy sensitive fields", () => {
+    expect(() =>
+      createSafeObservableOpenApiDocument({
+        openapi: "3.1.0",
+        info: {
+          title: "test",
+          authorization: { token: "managed-test-token", scheme: "bearer" },
+        },
+        paths: {},
+        components: {},
+      }),
+    ).toThrow(/Sensitive data field/);
+  });
+
+  it("rejects low-entropy values embedded in sensitive JSON Schema properties", () => {
+    expect(() =>
+      createSafeObservableOpenApiDocument({
+        openapi: "3.1.0",
+        info: { title: "test" },
+        paths: {},
+        components: {
+          schemas: {
+            Unsafe: {
+              type: "object",
+              properties: { token: { type: "string", const: "managed-test-token" } },
+            },
+          },
+        },
+      }),
+    ).toThrow(/Sensitive JSON Schema properties/);
+  });
+
   it("preserves sensitive-named metadata only for a validated public config projection", () => {
     const validated = validateControlPlaneConfig({
       artifacts: {

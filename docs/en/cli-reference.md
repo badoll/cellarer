@@ -740,20 +740,29 @@ Starts the local Web console.
 
 ```bash
 node packages/cli/dist/bin.js ui
-node packages/cli/dist/bin.js ui --port 4317 --token-fd 3 3< /path/to/ui-token
+node packages/cli/dist/bin.js --output json ui --port 0 \
+  --token-fd 3 --lifetime-fd 4 3< /path/to/ui-token 4< /path/to/lifetime-pipe
 ```
 
 Options:
 
 | Option | Description |
 | --- | --- |
-| `--port <port>` | Port in the range `1..65535`, default `4317`. |
-| `--token-fd <number>` | Read the optional bearer token from an inherited descriptor numbered `3` or greater. |
+| `--port <port>` | Port in the range `0..65535`, default `4317`; `0` requests an OS-assigned loopback port. |
+| `--token-fd <number>` | Select managed bearer mode and read its token from an inherited descriptor numbered `3` or greater. |
+| `--lifetime-fd <number>` | Shut down when this separate inherited ownership descriptor reaches EOF. |
 
 The bearer token never belongs in argv or structured request JSON. Pass only
 the descriptor number and source its bytes from a runner-owned protected file,
 pipe, or equivalent channel; the example file should be readable only by its
-owner.
+owner. Without `--token-fd`, `ui` selects bundled browser-session mode; there is
+no unauthenticated API fallback.
+
+In machine mode, stdout contains exactly one versioned ready result after the
+socket is bound. It includes the actual base URL, PID, API version, contract ID,
+authentication mode, and lifecycle protocol, but no token or absolute Store
+path. Descriptor EOF, programmatic close, SIGINT, and SIGTERM share the same
+idempotent bounded shutdown path.
 
 `ui` preloads any available authority before starting the server and injects
 only the narrow in-memory `MutationAuthority` capability needed for sealing,

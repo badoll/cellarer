@@ -97,11 +97,20 @@ rendering 前拒绝。
 
 Web server:
 
-- 只监听 `127.0.0.1`
-- 支持可选 bearer token
-- 校验 Host header 以降低 DNS rebinding 风险
-- 返回仅引用 plan,并在所有 JSON 响应边界执行脱敏
-- 只返回密钥引用名
+- 只监听 `127.0.0.1`,并且启动时必须显式选择且只能选择一种认证模式
+- Managed bearer 只从受保护的继承 descriptor 读取,绝不来自 argv、environment
+  fallback、URL、ready record 或 HTTP response
+- 内置 browser 每次启动都会得到新的随机 session;只有精确 Host、Origin 与 Fetch
+  Metadata 检查通过后才设置 `HttpOnly`、`SameSite=Strict`、scope 为 `/api/v1` 的 cookie
+- 静态资源、bootstrap、discovery、read 与 mutation 都校验精确 loopback Host;每个
+  browser mutation 还必须提供精确 Origin
+- 只有 `/api/v1/health` 无需认证;authenticated readiness 只返回 typed Store、
+  authority、lock 与 recovery blockers,不暴露 provider 或 path 细节
+- 返回 reference-only plan,并对每个 `/api/v1` JSON response 应用最终 serialization guard
+
+未版本化 `/api/*` route 与 query-token behavior 均不存在。Managed ownership 使用独立的
+继承 lifetime descriptor;EOF、programmatic close、SIGINT 与 SIGTERM 都进入同一个有界
+shutdown 路径。强制关闭 connection 不会删除 Core journal 或猜测 recovery state。
 
 CLI composition root 会在启动 Web 前 preload Store 范围的 mutation authority。Web
 只得到用于 sealing、current-epoch lease 与 protected journal tip 的窄

@@ -14,6 +14,19 @@ cellarer 是 TypeScript monorepo,并遵守严格的 core-first 边界。
 
 CLI 与 Web 不实现业务逻辑。它们只解析输入、调用 core、展示结果。
 
+## 版本化本地 Client 与 Sidecar
+
+`@cellarer/web` 只暴露 `/api/v1`。单一 route registry 维护 operation ID、method、path、
+认证要求、closed request/response schema 与 HTTP mapping；OpenAPI 3.1 文档和 Hono
+surface 都与该 registry 做 drift check。CLI 与 HTTP 复用 transport-neutral Core DTO
+和 error code。
+
+Sidecar 启动时必须选择 managed bearer 或内置 browser-session 认证,只绑定 loopback，
+并在实际 socket 和 composition 就绪后才发布 ready DTO。Programmatic close、lifetime
+EOF、SIGINT 与 SIGTERM 共用一个有界 shutdown 路径。Sidecar 不增加内存 mutation
+queue；所有进程仍通过 Core revision、authority、跨进程 lock、journal 与 recovery 规则
+收敛。
+
 ## Core 边界
 
 core 通过 `Env` 接收副作用:
@@ -53,7 +66,9 @@ agent files
   -> store writes
 ```
 
-`scanPlan` 只读。`applyScan` 写入库房。
+本地 client boundary 使用 `planScanMutation` 返回可序列化、authority-sealed 的
+`MutationPlan`。`applyScanMutationPlan` 只消费这份精确 plan,重新检查已绑定 source
+fingerprint,不会在 apply 时重新 scan 或重建 selection。
 
 ## 适配器
 

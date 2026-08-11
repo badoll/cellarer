@@ -163,8 +163,12 @@ export {
   revert,
 } from "./engine/revert.js";
 export {
+  type ApplyScanMutationPlanOptions,
   applyScan,
+  applyScanMutationPlan,
   type ConflictStrategy,
+  type PlannedScanMutation,
+  planScanMutation,
   type ScanItem,
   type ScanOptions,
   type ScanPlan,
@@ -295,6 +299,22 @@ export {
   type CliSuccessResultEnvelope,
   type CliWarning,
 } from "./protocol/cli.js";
+export {
+  CLIENT_API_CONTRACT_ID,
+  CLIENT_API_MAX_REQUEST_BODY_BYTES,
+  CLIENT_API_VERSION,
+  type ClientApiVersion,
+  type ClientError,
+  type ClientErrorCode,
+  type ClientErrorResultEnvelope,
+  type ClientResultEnvelope,
+  type ClientSuccessResultEnvelope,
+  type ClientWarning,
+  clientErrorFromMutationConflict,
+  clientFailure,
+  clientSuccess,
+  resolveClientRequestId,
+} from "./protocol/client.js";
 export { targetState } from "./protocol/execute.js";
 export {
   DEFAULT_OPERATION_RECEIPT_RETENTION,
@@ -358,6 +378,11 @@ export {
   mutationRecoveryPresentation,
   type PresentedOperationResult,
 } from "./protocol/presentation.js";
+export {
+  type ClientReadiness,
+  type ClientReadinessBlocker,
+  getClientReadiness,
+} from "./protocol/readiness.js";
 export {
   diagnoseInterruptedOperation,
   diagnoseMutationRecovery,
@@ -492,6 +517,8 @@ export {
   verifySecretReferences,
 } from "./secrets/provider.js";
 export {
+  createSafeObservableKnownValueSource,
+  createSafeObservableOpenApiDocument,
   redactSafeObservableText,
   type SafeObservableOptions,
   serializeSafeObservable,

@@ -1,0 +1,44 @@
+{
+  "version": {
+    "status": 200,
+    "body": {
+      "apiVersion": "1.0",
+      "requestId": "req-golden-version",
+      "status": "success",
+      "warnings": [],
+      "data": {
+        "apiVersion": "1.0",
+        "contractId": "cellarer-local-client-api-v1"
+      }
+    }
+  },
+  "validationError": {
+    "status": 400,
+    "body": {
+      "apiVersion": "1.0",
+      "requestId": "req-golden-validation",
+      "status": "error",
+      "warnings": [],
+      "error": {
+        "code": "INVALID_INPUT",
+        "message": "Request input is invalid",
+        "details": {
+          "fields": ["kind"]
+        }
+      }
+    }
+  },
+  "internalError": {
+    "status": 500,
+    "body": {
+      "apiVersion": "1.0",
+      "requestId": "req-golden-internal",
+      "status": "error",
+      "warnings": [],
+      "error": {
+        "code": "INTERNAL_ERROR",
+        "message": "Unexpected internal failure"
+      }
+    }
+  }
+}

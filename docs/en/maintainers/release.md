@@ -46,9 +46,12 @@ Both commands build, pack twice, inspect deterministic contents, and write
 tarballs plus `readiness.json` under the ignored local directory
 `artifacts/release-readiness/`. The readiness command additionally installs the
 tarballs into an isolated temporary project and exercises version, protocol,
-doctor/init, resource management, vault fallback, and loopback Web assets from
-the installed bin. It never uses the real cellarer home, agent configuration,
-or credential store.
+doctor/init, resource management, and vault fallback from the installed bin. It
+also launches the installed sidecar from the clean project on port `0` in both
+browser-session and managed-bearer modes, validates the one-record ready result
+and OpenAPI contract, authenticates, serves bundled assets, closes the lifetime
+descriptor, and requires a clean exit. It never uses the real cellarer home,
+agent configuration, or credential store.
 
 4. Confirm CI ran `pnpm release:readiness` successfully for every supported
    Node/OS matrix job.
