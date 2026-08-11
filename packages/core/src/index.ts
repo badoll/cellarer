@@ -573,9 +573,12 @@ export {
   parsePackagedConfigForSettings,
 } from "./store/config.js";
 export {
+  InitialAgentSelectionConflictError,
+  type InitializationAgentTargetsValidation,
   type InitializeStoreOptions,
   type InitializeStoreResult,
   initializeStore,
+  validateInitializationAgentTargets,
 } from "./store/initialize.js";
 export {
   addEntries,

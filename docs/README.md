@@ -110,8 +110,10 @@ kinds.
 
 Packaged agents may be adjusted through keyed `adapterOverrides`. New
 declarative agents live under `customAdapters`. An agent is not considered a
-mutation target merely because it was detected; initialization and later
-selections remain explicit.
+mutation target merely because it was detected. Initialization records a
+persistent enabled-agent set used as a discovery and presentation default;
+each later mutation still requires its own exact agent and capability
+selection.
 
 ### Scope and placement
 
@@ -167,14 +169,29 @@ or reports exact manual work.
 
 ### Initialize and inspect
 
-Initialization requires the exact initial agents. It never enables every
-detected agent implicitly:
+Interactive text-mode initialization shows the supported inventory and asks
+which agents to enable; an empty answer explicitly enables none. Automation,
+JSON/JSONL, structured input, non-TTY input, and `--non-interactive` must supply
+exact `--agent` targets or `--no-agent` and never enable every detected agent
+implicitly:
 
 ```bash
+# Interactive selection
+cellarer init
+
+# Deterministic automation
 cellarer init --agent codex,claude-code
+cellarer init --no-agent
 cellarer agents
 cellarer doctor
 ```
+
+Structured callers use `agents: []` for the same explicit empty selection.
+`init` creates or preserves only Cellarer Store/configuration state; it does
+not distribute Rules, MCP definitions, or Skills. Repeating `init` is accepted
+only when the requested set matches the existing enabled-agent set. Use
+`cellarer agent enable <agent>` and `cellarer agent disable <agent>` to change
+an initialized Store.
 
 `doctor` is read-only. It checks Store layout, configuration, adapter loading,
 agent detection, target write access, authority availability, locks, and

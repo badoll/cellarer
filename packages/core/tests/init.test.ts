@@ -100,6 +100,45 @@ describe("store/initStore", () => {
     }
   });
 
+  it("persists an explicit empty first-run agent target set", async () => {
+    const result = await initializeStore(t.env, storeRoot, { agentTargets: [] });
+
+    expect(result.operation).toMatchObject({ ok: true });
+    const config = parseConfig(await t.env.fs.readFile(t.path("home", ".cellarer", "config.json")));
+    const registry = await loadRegistry(t.env, storeRoot);
+    for (const adapter of registry.list()) {
+      expect(config.adapterOverrides[adapter.id]?.enabled).toBe(false);
+    }
+  });
+
+  it("accepts a repeated agent target set regardless of order", async () => {
+    await initializeStore(t.env, storeRoot, { agentTargets: ["codex", "claude-code"] });
+    const configPath = t.path("home", ".cellarer", "config.json");
+    const before = await t.env.fs.readFile(configPath);
+
+    const result = await initializeStore(t.env, storeRoot, {
+      agentTargets: ["claude-code", "codex"],
+    });
+
+    expect(result).toMatchObject({ createdConfig: false, operation: { ok: true } });
+    await expect(t.env.fs.readFile(configPath)).resolves.toBe(before);
+  });
+
+  it("rejects a repeated agent target set that conflicts with persisted activation", async () => {
+    await initializeStore(t.env, storeRoot, { agentTargets: ["codex"] });
+    const configPath = t.path("home", ".cellarer", "config.json");
+    const before = await t.env.fs.readFile(configPath);
+
+    await expect(
+      initializeStore(t.env, storeRoot, { agentTargets: ["claude-code"] }),
+    ).rejects.toMatchObject({
+      name: "InitialAgentSelectionConflictError",
+      currentAgentTargets: ["codex"],
+      requestedAgentTargets: ["claude-code"],
+    });
+    await expect(t.env.fs.readFile(configPath)).resolves.toBe(before);
+  });
+
   it("does not leave a truncated config when config publication fails with EIO", async () => {
     const configPath = t.path("home", ".cellarer", "config.json");
     const writeFile = t.env.fs.writeFile;

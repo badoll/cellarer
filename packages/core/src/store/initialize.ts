@@ -29,6 +29,34 @@ export interface InitializeStoreOptions {
   readonly agentTargets?: readonly string[];
 }
 
+export interface InitializationAgentTargetsValidation {
+  readonly initialized: boolean;
+  readonly agentTargets: readonly string[];
+}
+
+export class InitialAgentSelectionConflictError extends Error {
+  readonly currentAgentTargets: readonly string[];
+  readonly requestedAgentTargets: readonly string[];
+
+  constructor(currentAgentTargets: readonly string[], requestedAgentTargets: readonly string[]) {
+    super(
+      "init agent targets differ from the existing enabled-agent set; use cellarer agent enable/disable",
+    );
+    this.name = "InitialAgentSelectionConflictError";
+    this.currentAgentTargets = currentAgentTargets;
+    this.requestedAgentTargets = requestedAgentTargets;
+  }
+}
+
+export async function validateInitializationAgentTargets(
+  env: Env,
+  storeRoot: string,
+  agentTargets: readonly string[],
+): Promise<InitializationAgentTargetsValidation> {
+  const existingConfig = await readFileOrNull(env, join(storeRoot, CONFIG_FILENAME));
+  return validateAgentTargetsForConfig(env, existingConfig, agentTargets);
+}
+
 export async function initializeStore(
   env: Env,
   storeRoot: string,
@@ -48,6 +76,9 @@ export async function initializeStore(
       async () => {
         const configPath = join(storeRoot, CONFIG_FILENAME);
         const existingConfig = await readFileOrNull(env, configPath);
+        if (opts.agentTargets !== undefined) {
+          await validateAgentTargetsForConfig(env, existingConfig, opts.agentTargets);
+        }
         const createdConfig = existingConfig === null;
         const configData =
           existingConfig ?? (await initialConfigWithAgentTargets(env, opts.agentTargets));
@@ -126,6 +157,41 @@ export async function initializeStore(
     }
     return { ...transaction.value, operation: transaction.operation };
   });
+}
+
+async function validateAgentTargetsForConfig(
+  env: Env,
+  existingConfig: string | null,
+  agentTargets: readonly string[],
+): Promise<InitializationAgentTargetsValidation> {
+  if (new Set(agentTargets).size !== agentTargets.length) {
+    throw new TypeError("initial agent targets must be unique");
+  }
+  const packaged = parsePackagedConfigForSettings(await packagedConfigText(env));
+  const builtinIds = Object.keys(packaged.builtinAdapters);
+  const config = existingConfig === null ? null : parseConfig(existingConfig);
+  const known = new Set([...builtinIds, ...Object.keys(config?.customAdapters ?? {})]);
+  const unknown = agentTargets.filter((agentId) => !known.has(agentId));
+  if (unknown.length > 0) {
+    throw new TypeError(`unknown initial agent target: ${unknown.join(", ")}`);
+  }
+
+  const requestedAgentTargets = sortedAgentTargets(agentTargets);
+  if (config === null) {
+    return { initialized: false, agentTargets: requestedAgentTargets };
+  }
+
+  const currentAgentTargets = sortedAgentTargets(
+    [...known].filter((agentId) => config.adapterOverrides[agentId]?.enabled !== false),
+  );
+  if (currentAgentTargets.join("\0") !== requestedAgentTargets.join("\0")) {
+    throw new InitialAgentSelectionConflictError(currentAgentTargets, requestedAgentTargets);
+  }
+  return { initialized: true, agentTargets: currentAgentTargets };
+}
+
+function sortedAgentTargets(agentTargets: readonly string[]): string[] {
+  return [...agentTargets].sort((left, right) => left.localeCompare(right));
 }
 
 async function initialConfigWithAgentTargets(

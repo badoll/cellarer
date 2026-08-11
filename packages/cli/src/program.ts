@@ -22,7 +22,7 @@ import {
 } from "./commands/control-plane-read.js";
 import { capabilitiesCommand, schemaCommand } from "./commands/discovery.js";
 import { doctorCommand } from "./commands/doctor.js";
-import { initCommand } from "./commands/init.js";
+import { type InitAgentSelector, initCommand } from "./commands/init.js";
 import { lsCommand } from "./commands/ls.js";
 import {
   addResourceLifecycleCommands,
@@ -40,7 +40,10 @@ import { CLI_PACKAGE_VERSION } from "./version.js";
 
 // 程序构造与执行分离:buildProgram 便于测试(可注入 args)。
 // CLI 是薄壳:每个子命令一文件,只解析参数并调用 @cellarer/core(不变量 1)。
-export function buildProgram(inputIo?: CliInputBoundaryIo): Command {
+export function buildProgram(
+  inputIo?: CliInputBoundaryIo,
+  initAgentSelector?: InitAgentSelector,
+): Command {
   const program = new Command();
 
   program
@@ -50,13 +53,12 @@ export function buildProgram(inputIo?: CliInputBoundaryIo): Command {
 
   installCliInputBoundary(program, inputIo);
 
-  registerCommandTree(program);
+  registerCommandTree(program, initAgentSelector);
 
   return program;
 }
 
 const commandFactories: Readonly<Record<string, () => Command>> = {
-  init: initCommand,
   add: addCommand,
   agents: agentsCommand,
   ls: lsCommand,
@@ -84,11 +86,15 @@ const commandFactories: Readonly<Record<string, () => Command>> = {
   operation: operationCommand,
 };
 
-function registerCommandTree(program: Command): void {
+function registerCommandTree(program: Command, initAgentSelector?: InitAgentSelector): void {
+  const factories: Readonly<Record<string, () => Command>> = {
+    ...commandFactories,
+    init: () => initCommand(initAgentSelector),
+  };
   const registryRoots = [
     ...new Set(commandRegistry.map(({ command }) => command.split(".", 1)[0] as string)),
   ];
-  const unregisteredFactories = Object.keys(commandFactories).filter(
+  const unregisteredFactories = Object.keys(factories).filter(
     (command) => !registryRoots.includes(command),
   );
   if (unregisteredFactories.length > 0) {
@@ -97,7 +103,7 @@ function registerCommandTree(program: Command): void {
     );
   }
   for (const root of registryRoots) {
-    const factory = commandFactories[root];
+    const factory = factories[root];
     if (!factory) throw new Error(`registered command ${root} has no command factory`);
     program.addCommand(factory());
   }

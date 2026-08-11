@@ -84,7 +84,7 @@ export function installCliInputBoundary(
       nonInteractive:
         globals.nonInteractive === true ||
         output !== "text" ||
-        inputSource === "-" ||
+        inputSource !== undefined ||
         !io.stdinIsTTY,
       ...(inputSource === undefined ? {} : { inputSource }),
     };

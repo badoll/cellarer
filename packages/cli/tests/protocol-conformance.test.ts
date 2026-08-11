@@ -764,6 +764,12 @@ describe("CLI command registry protocol conformance", () => {
     ) as { data: Record<string, unknown> };
     expect(validateAgainstSchema(dryRun.data, dataSchema)).toEqual([]);
 
+    const emptyDryRun = JSON.parse(
+      (await invoke(["--output", "json", "init", "--no-agent", "--dry-run"])).stdout,
+    ) as { data: { agentTargets: unknown[] } };
+    expect(emptyDryRun.data.agentTargets).toEqual([]);
+    expect(validateAgainstSchema(emptyDryRun.data, dataSchema)).toEqual([]);
+
     const committed = JSON.parse(
       (await invoke(["--output", "json", "init", "--agent", "codex"])).stdout,
     ) as { data: Record<string, unknown> };

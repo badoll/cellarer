@@ -1,15 +1,25 @@
-import { initializeStore, listControlPlaneAgents } from "@cellarer/core";
-import { Command } from "commander";
+import { createInterface } from "node:readline/promises";
+import {
+  type ControlPlaneAgentListDto,
+  InitialAgentSelectionConflictError,
+  initializeStore,
+  listControlPlaneAgents,
+  validateInitializationAgentTargets,
+} from "@cellarer/core";
+import { Command, Option } from "commander";
 import { resolveContext } from "../context.js";
 import { safeConsole as console } from "../output.js";
 import { commandSuccess, executeCliCommand, publicOperationResult } from "../protocol/execution.js";
-import { CliInputError } from "../protocol/input.js";
+import { CliInputError, type CliInvocation } from "../protocol/input.js";
 
 interface InitOpts {
   readonly global?: boolean;
   readonly agent?: string;
+  readonly noAgent?: boolean;
   readonly dryRun?: boolean;
 }
+
+export type InitAgentSelector = (inventory: ControlPlaneAgentListDto) => Promise<string>;
 
 type InitCommandData =
   | {
@@ -26,30 +36,35 @@ type InitCommandData =
     };
 
 // 初始化库房:委托给 core 并发安全 initializer(不变量 1:CLI 不写 fs 业务逻辑)。
-export function initCommand(): Command {
+export function initCommand(selectAgents: InitAgentSelector = selectInitAgents): Command {
   return new Command("init")
     .description("初始化库房(全局)")
     .option("--global", "初始化全局库房(默认)")
     .option("-a, --agent <ids>", "明确启用的 agent targets，逗号分隔")
+    .addOption(explicitNoAgentOption())
     .option("--dry-run", "仅验证初始化目标，不创建或修改库房")
     .action(async (opts: InitOpts, command: Command) => {
       await executeCliCommand<InitCommandData>(
         command,
         async ({ invocation }) => {
+          assertUnambiguousAgentIntent(opts, invocation);
+          assertExplicitArgvAgentList(opts, command, invocation);
           const preview = await resolveContext({}, "none");
           const inventory = await listControlPlaneAgents(preview.env, {
             storeRoot: preview.storeRoot,
             scope: "global",
           });
-          const agentTargets = parseAgentTargets(opts.agent);
-          if (agentTargets.length === 0) {
+          let selection: string | false | undefined = opts.noAgent ? false : opts.agent;
+          if (selection === undefined && invocation.nonInteractive) {
             throw new CliInputError(
               "INPUT_REQUIRED",
-              "init requires explicit agent targets",
+              "init requires explicit agent target intent",
               { fields: ["agents"], inventory },
               invocation,
             );
           }
+          selection ??= await selectAgents(inventory);
+          const agentTargets = parseAgentTargets(selection);
           const knownAgentIds = new Set(inventory.agents.map((agent) => agent.id));
           const unknown = agentTargets.filter((agentId) => !knownAgentIds.has(agentId));
           if (unknown.length > 0) {
@@ -60,6 +75,7 @@ export function initCommand(): Command {
               invocation,
             );
           }
+          await validateAgentTargets(preview.env, preview.storeRoot, agentTargets, invocation);
           if (opts.dryRun) {
             return commandSuccess({
               dryRun: true as const,
@@ -69,7 +85,12 @@ export function initCommand(): Command {
             });
           }
           const { env, storeRoot } = await resolveContext({}, "provision");
-          const result = await initializeStore(env, storeRoot, { agentTargets });
+          let result: Awaited<ReturnType<typeof initializeStore>>;
+          try {
+            result = await initializeStore(env, storeRoot, { agentTargets });
+          } catch (error) {
+            throw mapSelectionConflict(error, invocation);
+          }
           const configuredInventory = await listControlPlaneAgents(env, {
             storeRoot,
             scope: "global",
@@ -102,8 +123,88 @@ export function initCommand(): Command {
     });
 }
 
-function parseAgentTargets(value: string | undefined): string[] {
-  if (value === undefined) return [];
+async function selectInitAgents(inventory: ControlPlaneAgentListDto): Promise<string> {
+  console.log("Supported agents (detected status is evidence, not automatic activation):");
+  for (const agent of inventory.agents) {
+    console.log(`  ${agent.id}: detected=${agent.detected ? "yes" : "no"}`);
+  }
+  const readline = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await readline.question(
+      "Enable agents (comma-separated IDs; press Enter to enable none): ",
+    );
+  } finally {
+    readline.close();
+  }
+}
+
+async function validateAgentTargets(
+  env: Parameters<typeof validateInitializationAgentTargets>[0],
+  storeRoot: string,
+  agentTargets: readonly string[],
+  invocation: CliInvocation,
+): Promise<void> {
+  try {
+    await validateInitializationAgentTargets(env, storeRoot, agentTargets);
+  } catch (error) {
+    throw mapSelectionConflict(error, invocation);
+  }
+}
+
+function mapSelectionConflict(error: unknown, invocation: CliInvocation): unknown {
+  if (!(error instanceof InitialAgentSelectionConflictError)) return error;
+  return new CliInputError(
+    "DOMAIN_VALIDATION_FAILED",
+    error.message,
+    {
+      currentAgentTargets: error.currentAgentTargets,
+      requestedAgentTargets: error.requestedAgentTargets,
+      commands: ["cellarer agent enable <agent>", "cellarer agent disable <agent>"],
+    },
+    invocation,
+  );
+}
+
+function explicitNoAgentOption(): Option {
+  const option = new Option("--no-agent", "明确不启用任何 agent");
+  // Commander treats --no-* as a negation of the positive option by default. Here it is an
+  // independent explicit-empty intent so --agent and --no-agent remain distinguishable.
+  option.negate = false;
+  return option;
+}
+
+function assertUnambiguousAgentIntent(opts: InitOpts, invocation: CliInvocation): void {
+  if (opts.agent === undefined || opts.noAgent !== true) return;
+  throw new CliInputError(
+    "INPUT_AMBIGUITY",
+    "init accepts either --agent or --no-agent, not both",
+    { fields: ["agents"] },
+    invocation,
+  );
+}
+
+function assertExplicitArgvAgentList(
+  opts: InitOpts,
+  command: Command,
+  invocation: CliInvocation,
+): void {
+  if (
+    opts.agent === undefined ||
+    command.getOptionValueSource("agent") !== "cli" ||
+    parseAgentTargets(opts.agent).length > 0
+  ) {
+    return;
+  }
+  throw new CliInputError(
+    "INVALID_INPUT",
+    "--agent requires at least one agent ID; use --no-agent to enable none",
+    { fields: ["agents"] },
+    invocation,
+  );
+}
+
+function parseAgentTargets(value: string | false): string[] {
+  if (value === false) return [];
   const targets = value
     .split(",")
     .map((agentId) => agentId.trim())

@@ -92,8 +92,9 @@ Adapter 描述如何探测一个 agent，以及它在 global/project scope 下�
 和 skills 的位置。它还声明 capability、codec、路径模板与精确支持的密钥引用类型。
 
 随包 agent 通过按 key 的 `adapterOverrides` 调整；新的声明式 agent 位于
-`customAdapters`。探测到 agent 不等于自动把它作为 mutation 目标；初始化和后续选择
-始终必须明确。
+`customAdapters`。探测到 agent 不等于自动把它作为 mutation 目标。初始化记录持久化的
+enabled-agent 集合，作为 discovery 和展示的默认范围；后续每次 mutation 仍须单独明确
+agent 与 capability。
 
 ### Scope 与落地方式
 
@@ -142,13 +143,25 @@ unowned-existing 或 invalid-owner。
 
 ### 初始化与检查
 
-初始化要求明确给出初始 agent，不会隐式启用所有探测到的 agent：
+交互式文本初始化会展示支持的 agent inventory 并询问启用范围；直接回车表示明确不启用
+任何 agent。自动化、JSON/JSONL、structured input、非 TTY 输入及 `--non-interactive`
+必须给出精确的 `--agent` 或 `--no-agent`，不会隐式启用所有探测到的 agent：
 
 ```bash
+# 交互选择
+cellarer init
+
+# 确定性自动化
 cellarer init --agent codex,claude-code
+cellarer init --no-agent
 cellarer agents
 cellarer doctor
 ```
+
+Structured caller 使用 `agents: []` 表示相同的明确空选择。`init` 只创建或保留 Cellarer
+Store/configuration state，不会向 agent 下发 Rules、MCP definitions 或 Skills。重复执行
+`init` 时，请求集合必须与现有 enabled-agent 集合一致；若要修改已初始化 Store，请使用
+`cellarer agent enable <agent>` 和 `cellarer agent disable <agent>`。
 
 `doctor` 是只读命令，检查 Store 布局、配置、adapter 加载、agent 探测、目标写权限、
 authority、锁与恢复证据。它诊断中断 operation，但不会自行删除或修复证据。
