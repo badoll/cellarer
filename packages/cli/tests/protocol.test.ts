@@ -564,12 +564,9 @@ describe("agent CLI protocol foundation", () => {
   });
 
   it("keeps bilingual plan/apply and recovery examples aligned with public help", () => {
-    const documents = [
-      "../../../docs/en/cli-reference.md",
-      "../../../docs/en/getting-started.md",
-      "../../../docs/zh-CN/cli-reference.md",
-      "../../../docs/zh-CN/getting-started.md",
-    ].map((path) => readFileSync(new URL(path, import.meta.url), "utf8"));
+    const documents = ["../../../docs/README.md", "../../../docs/README.zh-CN.md"].map((path) =>
+      readFileSync(new URL(path, import.meta.url), "utf8"),
+    );
     for (const document of documents) {
       expect(document).toContain("apply --plan");
       expect(document).toContain("input.plan");

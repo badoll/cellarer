@@ -1,0 +1,24 @@
+schema: spec-driven
+
+context: |
+  Cellarer is a local-first manager for AI-agent rules, MCP configuration, and
+  skills. It is a TypeScript ESM monorepo for Node.js >=20.19: @cellarer/core
+  owns business logic, @cellarer/cli is the command boundary, and @cellarer/web
+  provides the loopback API and React client. Core effects use injected Env;
+  mutations are plan/apply, ownership-ledgered, recoverable, and reference-only
+  for secrets. OpenSpec is the sole state for planned product behavior.
+
+rules:
+  proposal:
+    - State the user-visible problem, outcome, non-goals, affected capabilities, and compatibility impact.
+    - Prefer the smallest coherent change; do not include implementation progress or validation evidence.
+  specs:
+    - Describe stable accepted behavior only, using normative requirements and independently testable scenarios.
+    - Keep release status, platform evidence, task completion, and historical decisions out of current specs.
+  design:
+    - Preserve Core-first composition, injected Env effects, plan/apply authority, adapter boundaries, ownership recovery, and reference-only secrets.
+    - Record meaningful trade-offs and rejected alternatives without repeating the proposal or task list.
+  tasks:
+    - Group work into independently verifiable deliverables and include relevant tests, public docs, and OpenSpec validation.
+    - User-visible behavior updates keep English and Simplified Chinese public documentation aligned.
+    - Completion checkboxes report implementation work only; archive and remote Git actions remain separate explicit steps.

@@ -1,3 +1,5 @@
+# managed-sidecar-lifecycle Specification
+
 ## Purpose
 
 Define deterministic startup, authenticated readiness, ownership, shutdown, and installed-artifact behavior for the managed local sidecar.
@@ -52,12 +54,8 @@ All sidecar mutation requests MUST use the existing store-scoped Core mutation p
 - **THEN** the cross-process Core protocol permits at most one current commit and neither process can bypass the store lock
 
 ### Requirement: Managed sidecar behavior works from installed artifacts
-The packed CLI and Web packages MUST support sidecar startup, readiness, authentication, API contract discovery, static assets, and shutdown from an unrelated working directory on the current Phase 4 macOS development target using supported Node 20. Tests MUST use isolated home and store paths and MUST NOT access real agent configuration or credential stores. Ubuntu and Windows artifact execution MAY be deferred to later release hardening and MUST remain explicitly unverified until fresh evidence exists.
+The packed CLI and Web packages MUST support sidecar startup, readiness, authentication, API contract discovery, static assets, and shutdown from an unrelated working directory on every documented supported Node and operating-system combination. Tests MUST use isolated home and store paths and MUST NOT access real agent configuration or credential stores.
 
 #### Scenario: Installed artifact lifecycle smoke test
-- **WHEN** the packed release set is installed in a clean temporary project on the current macOS target using supported Node 20
+- **WHEN** the packed release set is installed in a clean temporary project on a documented supported runtime
 - **THEN** a test launches on port `0`, validates the ready record and API contract, authenticates, serves the SPA, closes the lifetime channel, and observes a clean exit
-
-#### Scenario: Deferred operating-system evidence
-- **WHEN** Ubuntu or Windows artifact execution has not been run for this change
-- **THEN** the missing platform evidence does not block Phase 4 closure and the project does not claim that this change verified those targets

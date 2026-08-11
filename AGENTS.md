@@ -1,87 +1,66 @@
 # AGENTS.md — cellarer Engineering Guide
 
-This file is the project-level guide for AI coding agents working in this
-repository. Product documentation starts at [docs/README.md](docs/README.md);
-stable architecture and concepts live under `docs/en/` and `docs/zh-CN/`.
+Repository instructions for coding agents. Keep this file short: product usage
+and design rationale belong in public documentation; accepted behavior belongs
+in OpenSpec.
 
-## Project
+## Read only what the task needs
 
-cellarer is a local-first manager for AI agent `skills`, MCP server
-configuration, and rules. It is a TypeScript monorepo:
+- For product context or commands, start with `README.md` (English) or
+  `README.zh-CN.md` (中文), then open the relevant section of
+  `docs/README.md` or `docs/README.zh-CN.md`.
+- Read one language by default. Compare both only when changing public docs.
+- Before a behavior change, run `openspec list --json`, read the matching active
+  change artifacts, and open only the current specs for the affected capability.
+- Do not read `openspec/changes/archive/**` unless the task explicitly asks for
+  history or the current artifacts lack required context.
 
-- `@cellarer/core`: all business logic.
-- `@cellarer/cli`: command-line parsing and presentation.
-- `@cellarer/web`: local Hono API and React Web console.
+## Architecture invariants
 
-## Architecture Invariants
+1. **Core first**: business logic belongs in `@cellarer/core`; CLI and Web are
+   thin input and presentation shells.
+2. **Effects through `Env`**: Core filesystem, home, cwd, platform, environment,
+   clock, and secret-store access come from `packages/core/src/env.ts`, not
+   direct `process`, `os`, or `node:fs` calls in business logic.
+3. **Plan before apply**: mutations first produce an inspectable plan; dry-run
+   does not write; apply executes the unchanged authorized plan and records it.
+4. **Agents through adapters**: extend `AgentAdapter` or declarative adapter
+   config instead of adding agent-ID branches to engines.
+5. **Convergent and recoverable**: repeated apply converges; material writes,
+   ownership, receipts, and recovery state remain representable in the ledger.
+6. **Reference-only secrets**: never persist plaintext secret values in Store
+   artifacts, generated targets, logs, responses, argv, or recovery evidence.
 
-1. **Core first**: put business logic in `@cellarer/core`. CLI and Web should be
-   thin shells that parse input and present output.
-2. **Effects through `Env`**: core file system, home, cwd, platform, environment,
-   clock, and secret-store access must come from `packages/core/src/env.ts`.
-   Do not read `process`, `os`, or `node:fs` directly from core business logic.
-3. **Plan/apply split**: distribution first produces a `DistributePlan`; dry-run
-   returns the plan only; apply executes the plan and records results.
-4. **Agents through adapters**: add agent support via `AgentAdapter` or
-   declarative adapter config. Do not scatter agent-id branches through engines.
-5. **Idempotent and revertible**: repeated apply should converge. Every write
-   that matters to revert/status must be represented in `state.json`.
-6. **No plaintext secrets**: store artifacts and generated outputs must not
-   contain plaintext secrets. Use `${ENV_VAR}` or `${CELLARER_SECRET:name}`
-   references, vault, or keychain-backed resolution. MCP/secret changes need
-   tests that assert plaintext values are not written.
+## Change workflow
 
-## Development Workflow
+- Preserve unrelated and uncommitted work. Prefer TDD for behavior changes,
+  temporary directories, and injected or fake `Env` objects for filesystem tests.
+- Iterate with the narrowest relevant check, then run the applicable full gate:
 
-- Prefer TDD for behavior changes. Use Vitest, temporary directories, and
-  injected/fake `Env` objects for file-system logic.
-- Use the repository tooling:
-  - `pnpm build`
-  - `pnpm test`
-  - `pnpm lint`
-  - `pnpm typecheck`
-- Run the narrowest relevant check while iterating, then run the full relevant
-  gate before claiming completion.
-- Preserve unrelated user changes. The worktree may contain in-progress Web UI
-  or documentation edits from another task.
+  ```bash
+  pnpm build
+  pnpm test
+  pnpm lint
+  pnpm typecheck
+  ```
 
-## Code Style
+- OpenSpec is the sole state for planned product or behavior changes:
+  `openspec/config.yaml` defines artifact rules, `openspec/specs/**` defines
+  accepted behavior, and `openspec/changes/**` holds active work until validated
+  and archived. Do not create a parallel roadmap or completion ledger.
+- Purely editorial documentation changes do not require an OpenSpec change.
+  Keep active artifacts aligned when scope changes; archive only after
+  implementation and validation are complete.
 
-- ESM + NodeNext: relative imports in TypeScript source use `.js` suffixes.
-- Use `import type` for type-only imports.
-- Names for functions, variables, and types are English.
-- Comments may be Chinese when explaining why a non-obvious choice exists.
-  Avoid comments that merely narrate what the next line already says.
+## Code and documentation
 
-## Documentation Boundaries
-
-Public documentation:
-
-- `README.md`
-- `README.zh-CN.md`
-- `docs/README.md`
-- `docs/en/**`
-- `docs/zh-CN/**`
-- `examples/adapters/*.example.toml`
-
-When migrating or rewriting docs, first classify the content:
-
-- user guide
-- CLI/API reference
-- concepts or architecture
-- security
-- maintainer procedure
-- local process record
-
-Do not put internal comparisons, one-time implementation status, review logs, or
-temporary task lists into public docs. Extract stable conclusions and write them
-as product, architecture, security, or maintainer documentation instead.
-
-## Documentation Change Requirements
-
-- Keep the English and Simplified Chinese public docs in sync.
-- CLI examples must match the current implementation. Check source and package
-  metadata before documenting commands, package names, release state, or flags.
-- If a command is future-facing or release-dependent, label it as such instead
-  of presenting it as currently available.
-- Public docs should not link to deleted legacy paths.
+- TypeScript is ESM + NodeNext: relative source imports use `.js`; use
+  `import type` for type-only imports. Names are English. Comments explain why,
+  not what the next line already says.
+- Public docs are only `README.md`, `README.zh-CN.md`, `docs/README.md`,
+  `docs/README.zh-CN.md`, package READMEs, and `examples/adapters/*.json`.
+- Keep English and Simplified Chinese docs semantically aligned. Verify CLI
+  examples against source and package metadata; label future or release-dependent
+  behavior instead of presenting it as available.
+- Public docs contain stable user, architecture, security, and maintainer
+  guidance—not comparisons, implementation diaries, review logs, or task lists.

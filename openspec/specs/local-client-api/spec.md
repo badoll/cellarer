@@ -1,3 +1,5 @@
+# local-client-api Specification
+
 ## Purpose
 
 Define the versioned, typed, authenticated, and non-disclosing local client API shared by supported clients.

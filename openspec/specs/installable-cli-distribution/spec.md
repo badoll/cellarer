@@ -78,10 +78,3 @@ Local release preparation and validation MUST NOT publish packages, create remot
 #### Scenario: Local release gate completes
 - **WHEN** every artifact check passes
 - **THEN** tarballs and a readiness report exist locally while all remote state remains unchanged
-
-### Requirement: Single-executable feasibility has a recorded decision
-The project SHALL complete a bounded feasibility evaluation for a future Node single-executable distribution covering runtime assets, optional native modules, size, startup, signing, and cross-platform build cost, and MUST record a go/no-go decision.
-
-#### Scenario: Feasibility result is no-go
-- **WHEN** the evaluation finds unacceptable portability or maintenance cost
-- **THEN** the decision record explains the evidence and npm artifact readiness remains unaffected
