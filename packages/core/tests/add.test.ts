@@ -1,6 +1,11 @@
 import { dirname } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { add, type GitClient } from "../src/engine/add.js";
+import {
+  type AddResult,
+  add,
+  type GitClient,
+  recordStructuredSkillRejection,
+} from "../src/engine/add.js";
 import { applyMutationPlan, planApplyMutation } from "../src/engine/apply.js";
 import type { Env } from "../src/env.js";
 import { readOperationJournal } from "../src/protocol/journal.js";
@@ -20,6 +25,23 @@ describe("engine/add — local source import", () => {
     await initStore(t.env, storeRoot);
   });
   afterEach(() => t.cleanup());
+
+  it("keeps a typed structured Skill rejection when display text mutates to empty", () => {
+    const result: AddResult = {
+      imported: [],
+      skipped: [],
+      rejected: [],
+      candidates: [],
+      warnings: [],
+    };
+
+    recordStructuredSkillRejection(result, "structured-skill", {
+      kind: "reject",
+      displayText: "",
+    });
+
+    expect(result.rejected).toEqual([{ kind: "skills", name: "structured-skill", reason: "" }]);
+  });
 
   it("imports a local .md file into store/rules", async () => {
     const src = t.path("style.md");

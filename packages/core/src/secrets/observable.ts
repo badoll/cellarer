@@ -609,8 +609,11 @@ function isFixedProtocolKey(
   key: string,
 ): boolean {
   if (shape === undefined) return false;
-  const structure = shape === "operation-journal" ? JOURNAL_STRUCTURE_KEYS : RECEIPT_STRUCTURE_KEYS;
-  return structure.get(path.join("/"))?.has(key) === true;
+  const allowedKeys =
+    shape === "operation-journal"
+      ? JOURNAL_STRUCTURE_KEYS.get(path.join("/"))
+      : RECEIPT_STRUCTURE_KEYS.get(path.join("/"));
+  return allowedKeys?.has(key) === true;
 }
 
 function redactReferenceNames(

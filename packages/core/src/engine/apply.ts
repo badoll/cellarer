@@ -1567,13 +1567,11 @@ function isExecutableApplyActionSemanticallyValid(
         ]
       : [];
   if (
-    (action.capability === "rules" && action.reason !== artifactIds.join(", ")) ||
-    (action.capability === "mcp" &&
-      (action.artifact !== artifactIds.join(", ") || action.reason !== action.artifact)) ||
+    (action.capability === "rules" && action.artifact !== "rules/*") ||
+    (action.capability === "mcp" && action.artifact !== artifactIds.join(", ")) ||
     (action.capability === "skills" &&
       (artifactIds.length !== 1 ||
         action.artifact !== artifactIds[0] ||
-        action.reason !== artifactIds[0] ||
         normalize(action.source ?? "") !== action.source ||
         !expectedSkillSources.includes(action.source ?? "")))
   ) {

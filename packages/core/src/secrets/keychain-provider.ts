@@ -14,7 +14,7 @@ export class KeychainProviderError extends Error {
 }
 
 export async function getKeychainSecret(
-  store: SecretStore,
+  store: Pick<SecretStore, "get">,
   service: string,
   account: string,
 ): Promise<{ found: false } | { found: true; value: SecretValue }> {
@@ -30,7 +30,7 @@ export async function getKeychainSecret(
 }
 
 export async function setKeychainSecret(
-  store: SecretStore,
+  store: Pick<SecretStore, "set">,
   service: string,
   account: string,
   value: SecretValue,
@@ -44,7 +44,7 @@ export async function setKeychainSecret(
 }
 
 export async function deleteKeychainSecret(
-  store: SecretStore,
+  store: Pick<SecretStore, "delete">,
   service: string,
   account: string,
 ): Promise<boolean> {

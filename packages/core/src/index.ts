@@ -499,8 +499,6 @@ export {
   scanTextForSecrets,
 } from "./secrets/detector.js";
 export {
-  type DeleteStoredSecretOptions,
-  deleteStoredSecret,
   diagnoseKeychainMutationRecovery,
   type KeychainMutationRecoveryDiagnosis,
   type ListStoredSecretNamesOptions,
@@ -510,12 +508,9 @@ export {
   reconcileKeychainMutationRecovery,
   type SecretReferenceVerification,
   type SecretReferenceVerificationStatus,
-  type SetStoredSecretOptions,
-  type StoredSecretMutationResult,
   type StoredSecretProvider,
-  setStoredSecret,
   verifySecretReferences,
-} from "./secrets/provider.js";
+} from "./secrets/provider-runtime.js";
 export {
   createSafeObservableKnownValueSource,
   createSafeObservableOpenApiDocument,
@@ -541,6 +536,13 @@ export {
   type SecretReference,
   secretReferenceToken,
 } from "./secrets/reference.js";
+export {
+  type DeleteStoredSecretOptions,
+  deleteStoredSecret,
+  type SetStoredSecretOptions,
+  type StoredSecretMutationResult,
+  setStoredSecret,
+} from "./secrets/secret-metadata-runtime.js";
 export type { SecretMode } from "./secrets/types.js";
 export type {
   SettingsCollection,

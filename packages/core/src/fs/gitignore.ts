@@ -1,7 +1,7 @@
 // .gitignore managed block(照抄 ruler GitignoreUtils 算法,改 marker 文案,见计划 §7.3)。
 // 算法:整块替换;路径相对化 + POSIX + 前导 /;过滤库房自身/越界路径;.bak 一并 ignore。
 // 注意:本文件只用 node:path(纯路径计算),fs 经 Env 注入。
-import { resolve } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type { Env } from "../env.js";
 import { BAK_SUFFIX } from "./backup.js";
 import { readFileOrNull } from "./probe.js";
@@ -11,7 +11,10 @@ export const GITIGNORE_START = "# START cellarer Generated Files";
 export const GITIGNORE_END = "# END cellarer Generated Files";
 
 export function gitignorePath(projectDir: string): string {
-  return resolve(projectDir, ".gitignore");
+  if (!isAbsolute(projectDir)) {
+    throw new TypeError("gitignore project root must be absolute");
+  }
+  return join(projectDir, ".gitignore");
 }
 
 // 把绝对路径相对化到 projectDir、POSIX 化、加前导 /;越界(库房真源等)返回 null 过滤掉。

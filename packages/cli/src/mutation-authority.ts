@@ -333,8 +333,8 @@ function parsePersistentMaterial(value: string): AuthorityMaterial {
   }
   return {
     authorityId: parts[1],
-    authorityEpoch: parseEpoch(parts[2], "stored mutation authority is malformed"),
-    masterKey: parseKey(parts[3], "stored mutation authority is malformed"),
+    authorityEpoch: parseEpoch(parts[2], "stored"),
+    masterKey: parseKey(parts[3], "stored"),
   };
 }
 
@@ -344,22 +344,22 @@ function encodePersistentMaterial(material: AuthorityMaterial): string {
 
 function parseEpoch(
   value: string | undefined,
-  message = "protected environment authority is malformed",
+  source: AuthorityMaterialSource = "protected-environment",
 ) {
-  if (!value || !/^[1-9][0-9]*$/.test(value)) throw malformedAuthorityError(message);
+  if (!value || !/^[1-9][0-9]*$/.test(value)) throw malformedAuthorityError(source);
   const epoch = Number(value);
-  if (!Number.isSafeInteger(epoch) || epoch <= 0) throw malformedAuthorityError(message);
+  if (!Number.isSafeInteger(epoch) || epoch <= 0) throw malformedAuthorityError(source);
   return epoch;
 }
 
 function parseKey(
   value: string | undefined,
-  message = "protected environment authority is malformed",
+  source: AuthorityMaterialSource = "protected-environment",
 ) {
-  if (!value || !BASE64URL_256.test(value)) throw malformedAuthorityError(message);
+  if (!value || !BASE64URL_256.test(value)) throw malformedAuthorityError(source);
   const key = Buffer.from(value, "base64url");
   if (key.length !== MASTER_KEY_BYTES || key.toString("base64url") !== value)
-    throw malformedAuthorityError(message);
+    throw malformedAuthorityError(source);
   return key;
 }
 
@@ -705,27 +705,56 @@ function authorityError(code: CliErrorCode, message: string) {
   return new CliHandledError({ code, message });
 }
 
-function malformedAuthorityError(message: string): CliHandledError {
-  return authorityError(
-    message.startsWith("protected environment") ? "INVALID_INPUT" : "RECOVERY_REQUIRED",
-    message,
-  );
+type AuthorityMaterialSource = "protected-environment" | "stored";
+type MutationAuthorityRotationFailure =
+  | "active-journal"
+  | "mutation-active"
+  | "recovery-active"
+  | "safety-check-failed";
+
+function malformedAuthorityError(source: AuthorityMaterialSource): CliHandledError {
+  switch (source) {
+    case "protected-environment":
+      return authorityError("INVALID_INPUT", "protected environment authority is malformed");
+    case "stored":
+      return authorityError("RECOVERY_REQUIRED", "stored mutation authority is malformed");
+  }
 }
 
 function mapAuthorityRotationError(error: unknown): unknown {
   if (error instanceof CliHandledError) return error;
-  const message = error instanceof Error ? error.message : "";
+  const failure = mutationAuthorityRotationFailure(error);
+  if (!failure || !(error instanceof Error)) return error;
+  switch (failure) {
+    case "active-journal":
+    case "recovery-active":
+      return new CliHandledError({ code: "RECOVERY_REQUIRED", message: error.message });
+    case "mutation-active":
+      return new CliHandledError({ code: "LOCK_CONFLICT", message: error.message });
+    case "safety-check-failed":
+      return new CliHandledError({ code: "EXECUTION_FAILED", message: error.message });
+  }
+}
+
+function mutationAuthorityRotationFailure(
+  error: unknown,
+): MutationAuthorityRotationFailure | undefined {
   if (
-    message === "mutation authority rotation refused while an active operation journal exists" ||
-    message === "mutation authority rotation refused while recovery is active"
+    typeof error !== "object" ||
+    error === null ||
+    !("code" in error) ||
+    error.code !== "MUTATION_AUTHORITY_ROTATION_FAILURE" ||
+    !("failure" in error)
   ) {
-    return new CliHandledError({ code: "RECOVERY_REQUIRED", message });
+    return undefined;
   }
-  if (message === "mutation authority rotation refused while a mutation is active") {
-    return new CliHandledError({ code: "LOCK_CONFLICT", message });
+  switch (error.failure) {
+    case "active-journal":
+    case "mutation-active":
+    case "recovery-active":
+    case "safety-check-failed":
+      return error.failure;
+    default:
+      return undefined;
   }
-  if (message === "mutation authority rotation safety check failed") {
-    return new CliHandledError({ code: "EXECUTION_FAILED", message });
-  }
-  return error;
 }

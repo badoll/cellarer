@@ -24,11 +24,8 @@ export interface RuleFragment {
   content: string;
 }
 
-// rules 编解码:把库房多个 rule 片段渲染为该 agent 原生 rules 文件内容。
-// 注:文件级「是否 cellarer 生成」的判定收敛在 markers.isGenerated(rules 全用同一 markdown 格式),
-// backup 直接调用它,故 codec 不重复声明 isGenerated(避免 M1 留下的未用接口面)。
+/** @deprecated Rules execution uses the single built-in markdown renderer. */
 export interface RulesCodec {
-  // 渲染:多片段 concat(含 source marker + generated header)→ 文件文本。
   render(fragments: RuleFragment[]): string;
 }
 
@@ -42,8 +39,7 @@ export interface AdapterMcp {
   supportedSecretReferences: ("environment" | "cellarer")[];
 }
 
-// skills 下发:目录级 link/copy(无格式转换,落地方式由 plan 的 method 决定)。
-// 标记接口:存在即表示该 agent 支持 skills 目录下发。
+/** @deprecated Skills execution is path-and-capability driven and supports directories only. */
 export interface SkillsCodec {
   format: "dir";
 }
@@ -55,7 +51,9 @@ export interface AgentAdapter {
   paths(env: Env, scope: Scope, dir?: string): AgentPaths;
   // 各能力在各 scope 下是否支持;未列出 → 下发时跳过并告警。
   capabilities: Record<Capability, Scope[]>;
+  /** @deprecated Compatibility descriptor; execution does not dispatch through this field. */
   rules?: RulesCodec;
   mcp?: AdapterMcp;
+  /** @deprecated Compatibility descriptor; execution does not dispatch through this field. */
   skills?: SkillsCodec;
 }

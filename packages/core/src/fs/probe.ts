@@ -2,7 +2,12 @@
 // try/catch 模式收敛为一处。返回 null 仅表示「路径不存在」(ENOENT/ENOTDIR);
 // 其余错误(EACCES/EISDIR/EIO 等)必须上抛 —— 否则会把「存在但读不了」误判为「不存在」,
 // 进而 backup 漏备份后被覆盖、台账被当空重写,造成静默数据丢失。
-import type { Env, FileStat } from "../env.js";
+import type { FileStat, FsLike } from "../env.js";
+
+type FileReadEnv = { readonly fs: Pick<FsLike, "readFile"> };
+type FileLstatEnv = { readonly fs: Pick<FsLike, "lstat"> };
+type FileStatEnv = { readonly fs: Pick<FsLike, "stat"> };
+type DirectoryReadEnv = { readonly fs: Pick<FsLike, "readdir"> };
 
 // 仅「不存在」类错误视为缺失;其余重新抛出。
 function isNotFound(err: unknown): boolean {
@@ -10,7 +15,7 @@ function isNotFound(err: unknown): boolean {
   return code === "ENOENT" || code === "ENOTDIR";
 }
 
-export async function readFileOrNull(env: Env, path: string): Promise<string | null> {
+export async function readFileOrNull(env: FileReadEnv, path: string): Promise<string | null> {
   try {
     return await env.fs.readFile(path);
   } catch (err) {
@@ -19,7 +24,7 @@ export async function readFileOrNull(env: Env, path: string): Promise<string | n
   }
 }
 
-export async function lstatOrNull(env: Env, path: string): Promise<FileStat | null> {
+export async function lstatOrNull(env: FileLstatEnv, path: string): Promise<FileStat | null> {
   try {
     return await env.fs.lstat(path);
   } catch (err) {
@@ -29,7 +34,7 @@ export async function lstatOrNull(env: Env, path: string): Promise<FileStat | nu
 }
 
 // stat(跟随软链)版本;不存在 → null,其余错误上抛(与 lstatOrNull 同口径)。
-export async function statOrNull(env: Env, path: string): Promise<FileStat | null> {
+export async function statOrNull(env: FileStatEnv, path: string): Promise<FileStat | null> {
   try {
     return await env.fs.stat(path);
   } catch (err) {
@@ -39,7 +44,7 @@ export async function statOrNull(env: Env, path: string): Promise<FileStat | nul
 }
 
 // readdir 版本(store/rules 与 adapters 目录探测共用);不存在 → 空数组。
-export async function readdirOrEmpty(env: Env, path: string): Promise<string[]> {
+export async function readdirOrEmpty(env: DirectoryReadEnv, path: string): Promise<string[]> {
   try {
     return await env.fs.readdir(path);
   } catch (err) {

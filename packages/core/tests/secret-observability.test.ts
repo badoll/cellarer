@@ -14,7 +14,6 @@ import {
 import {
   createProviderScope,
   providerScopeForEnv,
-  resolveActiveSecretValues,
   withProviderScope,
 } from "../src/secrets/active-values.js";
 import {
@@ -25,6 +24,7 @@ import {
   serializeObservable,
   withObservableKnownValues,
 } from "../src/secrets/observable.js";
+import { resolveActiveSecretValues } from "../src/secrets/provider-runtime.js";
 import { createSafeObservableOpenApiDocument } from "../src/secrets/public-boundary.js";
 import { encryptVault, vaultPath } from "../src/secrets/vault.js";
 import { ensureBaseDirs, makeTmpEnv } from "./helpers/env.js";

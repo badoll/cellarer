@@ -15,6 +15,7 @@ import { loadRegistry } from "../adapters/registry.js";
 import type { AgentAdapter, RuleFragment } from "../adapters/types.js";
 import type { Env } from "../env.js";
 import { readFileOrNull } from "../fs/probe.js";
+import { renderRules } from "../markers.js";
 import type { McpServer } from "../mcp/model.js";
 import type {
   Artifact,
@@ -36,7 +37,8 @@ import {
   providerScopeForEnv,
   withProviderScope,
 } from "../secrets/active-values.js";
-import { missingSecretReferences, verifySecretReferences } from "../secrets/provider.js";
+import { missingSecretReferences, verifySecretReferences } from "../secrets/provider-runtime.js";
+import { parseSecretReference } from "../secrets/reference.js";
 import { type SafeRecursiveSnapshot, UnsafeRecursiveSourceError } from "../secrets/safe-tree.js";
 import { sha256 } from "../store/checksum.js";
 import { type CellarerConfig, loadConfig } from "../store/config.js";
@@ -267,6 +269,7 @@ async function planImplementation(
   const duplicateOwnerKeys = duplicateTargetOwnerKeys(ledger.owners);
   addDuplicateOwnerConflicts(ledger.owners, duplicateOwnerKeys, conflicts);
   await classifyPlannedTargets(operationEnv, opts, ledger.owners, actions, conflicts);
+  clearSkippedMcpSecretRefs(actions);
 
   const activeMcpActions = actions.filter(
     (action) => action.capability === "mcp" && action.op !== "skip",
@@ -279,7 +282,13 @@ async function planImplementation(
           vaultPassphrase: opts.vaultPassphrase,
           keychainService: opts.keychainService,
         });
-  const secretReferenceFindings = missingSecretReferences(referenceChecks);
+  const secretReferenceFindings = missingSecretReferences(referenceChecks).filter((finding) => {
+    const reference = parseSecretReference(finding.reference);
+    return (
+      reference !== null &&
+      activeMcpActions.some((action) => action.secretRefs?.includes(reference.name) === true)
+    );
+  });
 
   const distributePlan = {
     actions,
@@ -337,13 +346,30 @@ function blockMissingSecretReferences(
   actions: PlanAction[],
   findings: readonly SecretReferenceFinding[],
 ): void {
-  const references = findings.map((finding) => finding.reference).join(", ");
   for (const action of actions) {
     if (action.op === "skip" || action.capability !== "mcp") continue;
+    const references = findings
+      .filter((finding) => secretReferenceFindingMatchesAction(finding, action))
+      .map((finding) => finding.reference);
+    if (references.length === 0) continue;
     action.op = "skip";
-    action.reason = `secret-reference: required reference unavailable: ${references}`;
+    action.reason = `secret-reference: required reference unavailable: ${references.join(", ")}`;
     action.preview = undefined;
   }
+}
+
+function clearSkippedMcpSecretRefs(actions: PlanAction[]): void {
+  for (const action of actions) {
+    if (action.capability === "mcp" && action.op === "skip") delete action.secretRefs;
+  }
+}
+
+function secretReferenceFindingMatchesAction(
+  finding: SecretReferenceFinding,
+  action: PlanAction,
+): boolean {
+  const reference = parseSecretReference(finding.reference);
+  return reference !== null && action.secretRefs?.includes(reference.name) === true;
 }
 
 function addDuplicateOwnerConflicts(
@@ -576,9 +602,9 @@ async function planRules(
   stagedSources: ReadonlyMap<string, SafeRecursiveSnapshot>,
 ): Promise<PlanAction | null> {
   const target = adapter.paths(env, opts.scope, opts.dir).rules;
-  if (!target || !adapter.rules || fragments.length === 0) return null;
+  if (!target || fragments.length === 0) return null;
 
-  const after = adapter.rules.render(fragments);
+  const after = renderRules(fragments);
   const contentFingerprint = sha256(after);
   // before 是 per-agent 差异:既供 dry-run diff,也是 apply 幂等短路的依据。
   const before = (await readFileOrNull(env, target)) ?? undefined;

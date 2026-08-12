@@ -19,6 +19,7 @@ import {
 } from "../protocol/store-mutation.js";
 import { loadResourceRecord } from "../resources/model.js";
 import { scanTextForSecrets } from "../secrets/detector.js";
+import { activeSecretPublicationGuard } from "../secrets/publication-guard.js";
 import { sha256 } from "../store/checksum.js";
 import { loadConfig } from "../store/config.js";
 import { loadLedgerForPlanning, targetKey } from "../store/ledger.js";
@@ -369,6 +370,7 @@ async function applySyncProfileMutationPlanWithinScope(
   const mutationKind = mutationKindFor(businessInput);
   const path = syncProfilesPath(storeRoot);
   const result = await applyStorePublicationPlan(env, storeRoot, plan, {
+    secretPublicationGuard: activeSecretPublicationGuard,
     operation: "settings",
     allowedMutationKinds: PROFILE_MUTATION_KINDS,
     requiredTarget: path,
@@ -450,6 +452,7 @@ async function mutateProfile(
         changedFields,
       },
       selfContainedPublications: true,
+      secretPublicationGuard: activeSecretPublicationGuard,
       validatePublications: (publications) =>
         publications.forEach(({ data }) => {
           validateRegistryPublication(data);

@@ -18,9 +18,10 @@ describe("mutation authority lifecycle", () => {
       await t.env.fs.mkdir(t.path("home", ".cellarer", "operations"), { recursive: true });
       await t.env.fs.writeFile(journalPath, "unsigned-or-interrupted-record\n", { mode: 0o600 });
 
-      await expect(assertMutationAuthorityRotationAllowed(t.env, storeRoot)).rejects.toThrow(
-        "active operation journal",
-      );
+      await expect(assertMutationAuthorityRotationAllowed(t.env, storeRoot)).rejects.toMatchObject({
+        code: "MUTATION_AUTHORITY_ROTATION_FAILURE",
+        failure: "active-journal",
+      });
     } finally {
       await t.cleanup();
     }

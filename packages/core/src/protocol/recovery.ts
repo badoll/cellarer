@@ -4,7 +4,7 @@ import { emptyDirectoryFingerprint } from "../fs/hashDir.js";
 import { assertSafeAtomicPublicationPath, isPathInside } from "../fs/safety.js";
 import { keychainMetadataPath, serializeKeychainMetadata } from "../secrets/keychain-metadata.js";
 import { cellarerSecretReference } from "../secrets/reference.js";
-import { vaultPath } from "../secrets/vault.js";
+import { vaultPath } from "../secrets/vault-path.js";
 import { sha256 } from "../store/checksum.js";
 import { CONFIG_FILENAME } from "../store/config.js";
 import {

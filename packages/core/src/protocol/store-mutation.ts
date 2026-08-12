@@ -1,16 +1,10 @@
 import { resolve } from "node:path";
 import type { Env, MutationAuthorityLease } from "../env.js";
 import { assertSafeAtomicPublicationPath } from "../fs/safety.js";
-import {
-  createProviderScope,
-  inventoryActiveSecretValues,
-  providerScopeForEnv,
-  withProviderScope,
-} from "../secrets/active-values.js";
 import { assertFinalSerializedSecretBytes } from "../secrets/final-bytes.js";
+import type { StorePublicationSecretGuard } from "../secrets/provider-ports.js";
 import { captureAnchoredSafeRecursiveSource } from "../secrets/safe-tree.js";
 import { sha256 } from "../store/checksum.js";
-import { loadConfig } from "../store/config.js";
 import {
   acquireCurrentMutationAuthorityLease,
   assertStrictMutationPlanRuntime,
@@ -81,6 +75,8 @@ export interface StoreMutationPlanBindings {
   readonly selfContainedPublications?: boolean;
   /** Domain validation for the final bytes, run while planning and again before/under apply lock. */
   readonly validatePublications?: (publications: readonly StorePublicationInput[]) => void;
+  /** Read-only provider observation used by final serialized-byte guards. */
+  readonly secretPublicationGuard?: StorePublicationSecretGuard;
 }
 
 export interface AppliedStorePublicationPlan {
@@ -426,11 +422,14 @@ async function prepareStoreActionMutationPlan<T>(
     const publications = normalizePublications(prepared.publications ?? []);
     bindings.validatePublications?.(publications);
     if (publications.length > 0 && operation !== "secret-metadata") {
-      operationEnv = await finalStorePublicationEnv(env, storeRoot);
-      const scope = providerScopeForEnv(operationEnv);
-      if (!scope) throw new TypeError("final Store publication has no provider inventory");
+      const guarded = await prepareFinalStorePublicationEnv(
+        bindings.secretPublicationGuard,
+        env,
+        storeRoot,
+      );
+      operationEnv = guarded.env;
       for (const publication of publications) {
-        assertFinalSerializedSecretBytes(publication.data, scope.knownValues, publication.path);
+        assertFinalSerializedSecretBytes(publication.data, guarded.knownValues, publication.path);
       }
     }
     const publicationActions: MutationPlanAction[] = publications.map((publication, index) => ({
@@ -527,6 +526,7 @@ export async function applyStorePublicationPlan(
       publication: StorePublicationInput,
     ) => Promise<OperationResult | null>;
     readonly authorityLease?: MutationAuthorityLease;
+    readonly secretPublicationGuard: StorePublicationSecretGuard;
   },
 ): Promise<AppliedStorePublicationPlan> {
   try {
@@ -552,12 +552,9 @@ export async function applyStorePublicationPlan(
     return { plan, changedFields: [], operation: invalidPlanResult() };
   }
   try {
-    let operationEnv = await finalStorePublicationEnv(env, storeRoot);
-    assertFinalSerializedSecretBytes(
-      decoded.data,
-      providerScopeForEnv(operationEnv)?.knownValues ?? [],
-      decoded.action.target,
-    );
+    let guarded = await options.secretPublicationGuard.prepare(env, storeRoot);
+    let operationEnv = guarded.env;
+    assertFinalSerializedSecretBytes(decoded.data, guarded.knownValues, decoded.action.target);
     const operation = await executeMutationPlan(
       operationEnv,
       storeRoot,
@@ -605,10 +602,11 @@ export async function applyStorePublicationPlan(
           if (domainValidation) return domainValidation;
           const finalProvenance = await validateStoreProvenance(operationEnv, storeRoot, plan);
           if (finalProvenance) return finalProvenance;
-          operationEnv = await finalStorePublicationEnv(operationEnv, storeRoot);
+          guarded = await options.secretPublicationGuard.prepare(operationEnv, storeRoot);
+          operationEnv = guarded.env;
           assertFinalSerializedSecretBytes(
             decoded.data,
-            providerScopeForEnv(operationEnv)?.knownValues ?? [],
+            guarded.knownValues,
             decoded.action.target,
           );
           return null;
@@ -801,21 +799,13 @@ function hasExactKeys(value: unknown, keys: readonly string[]): value is Record<
   );
 }
 
-async function finalStorePublicationEnv(env: Env, storeRoot: string): Promise<Env> {
-  const existing = providerScopeForEnv(env);
-  const config = existing ? undefined : await loadConfig(env, storeRoot);
-  const scope =
-    existing ??
-    createProviderScope({
-      secretMode: config?.defaults.secretMode ?? "env",
-    });
-  const operationEnv = existing ? env : withProviderScope(env, scope);
-  await inventoryActiveSecretValues(operationEnv, storeRoot, {
-    secretMode: scope.mode,
-    keychainService: scope.service,
-    requireAvailable: true,
-  });
-  return operationEnv;
+async function prepareFinalStorePublicationEnv(
+  guard: StorePublicationSecretGuard | undefined,
+  env: Env,
+  storeRoot: string,
+) {
+  if (!guard) throw new TypeError("final Store publication has no secret observation port");
+  return guard.prepare(env, storeRoot);
 }
 
 interface NormalizedPublication extends StorePublicationInput {

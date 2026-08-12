@@ -39,8 +39,6 @@ import {
   attachProviderScope,
   containsKnownSecretValue,
   createProviderScope,
-  discoverActiveSecretValues,
-  inventoryActiveSecretValues,
   type ProviderScope,
   providerScopeForEnv,
   withProviderScope,
@@ -51,6 +49,11 @@ import {
   scanTextForSecrets,
 } from "../secrets/detector.js";
 import { assertFinalSerializedSecretBytes } from "../secrets/final-bytes.js";
+import {
+  discoverActiveSecretValues,
+  inventoryActiveSecretValues,
+} from "../secrets/provider-runtime.js";
+import { activeSecretPublicationGuard } from "../secrets/publication-guard.js";
 import { redactFields } from "../secrets/redactor.js";
 import {
   assertSafeRecursiveSnapshotCurrent,
@@ -669,6 +672,7 @@ async function planScanMutationWithAuthorityLease(
       {
         normalizedInputs: normalizedInputs as unknown as CanonicalJsonObject,
         selfContainedPublications: true,
+        secretPublicationGuard: activeSecretPublicationGuard,
       },
       { authorityLease },
     );

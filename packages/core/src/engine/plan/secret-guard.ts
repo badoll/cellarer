@@ -4,9 +4,7 @@ import type { DistributePlan, PlanAction, Scope, SecretGuardFinding } from "../.
 import {
   type ActiveSecretValue,
   discoverSecretReferences,
-  inventoryActiveSecretValues,
   knownSecretValueOffsets,
-  resolveActiveSecretValues,
 } from "../../secrets/active-values.js";
 import {
   type SecretPatternMatch,
@@ -14,6 +12,10 @@ import {
   scanTextForSecretMatches,
   scanTextForSecrets,
 } from "../../secrets/detector.js";
+import {
+  inventoryActiveSecretValues,
+  resolveActiveSecretValues,
+} from "../../secrets/provider-runtime.js";
 import { captureSafeRecursiveSource, type SafeRecursiveSnapshot } from "../../secrets/safe-tree.js";
 import type { CellarerConfig } from "../../store/config.js";
 

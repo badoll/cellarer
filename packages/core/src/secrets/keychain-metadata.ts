@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import type { Env } from "../env.js";
+import type { FsLike } from "../env.js";
 import { sha256 } from "../store/checksum.js";
 import { assertOrdinarySecretCredentialTarget } from "./authority-namespace.js";
 import { cellarerSecretReference } from "./reference.js";
@@ -38,7 +38,16 @@ export function serializeKeychainMutationIntent(
 }
 
 export async function listManagedKeychainSecretNames(
-  env: Env,
+  env: {
+    readonly fs: Pick<
+      FsLike,
+      | "lstat"
+      | "readdir"
+      | "snapshotFileNoFollow"
+      | "snapshotTreeNoFollow"
+      | "supportsSafeRecursiveSnapshots"
+    >;
+  },
   storeRoot: string,
   service: string,
 ): Promise<string[]> {

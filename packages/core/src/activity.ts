@@ -98,20 +98,17 @@ export interface ActivityListResult {
   warnings: string[];
 }
 
-let activityCounter = 0;
-
 export function activityPath(storeRoot: string): string {
   return join(storeRoot, "activity.jsonl");
 }
 
 async function appendActivityImplementation(env: Env, storeRoot: string, input: ActivityInput) {
-  activityCounter += 1;
   const time = env.now().toISOString();
   const event = activityEventSchema.parse(
     sanitizeEvent(
       {
         version: 1,
-        id: `${time}-${activityCounter}`,
+        id: `${time}-${env.randomId()}`,
         time,
         actor: input.actor ?? "you",
         action: input.action,

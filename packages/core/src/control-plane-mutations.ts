@@ -17,6 +17,7 @@ import {
   StoreMutationConflictError,
   type StorePublicationInput,
 } from "./protocol/store-mutation.js";
+import { activeSecretPublicationGuard } from "./secrets/publication-guard.js";
 import {
   type AdapterBodyConfig,
   type AdapterOverrideConfig,
@@ -747,6 +748,7 @@ export async function applyControlPlaneMutationPlan(
     ]),
   );
   const applied = await applyStorePublicationPlan(env, input.storeRoot, normalizedPlan, {
+    secretPublicationGuard: activeSecretPublicationGuard,
     operation: "settings",
     allowedMutationKinds: CONTROL_PLANE_MUTATION_KINDS,
     requiredTarget,

@@ -338,6 +338,49 @@ describe("resource update check, private staging, and Store-only apply", () => {
     await expect(t.env.fs.readFile(staged.stagePath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("rechecks project adapters against the ledger owner root after cwd changes", async () => {
+    const repoA = t.path("repo-a");
+    const repoB = t.path("repo-b");
+    await t.env.fs.mkdir(repoA, { recursive: true });
+    await t.env.fs.mkdir(repoB, { recursive: true });
+    await t.env.fs.writeFile(
+      join(storeRoot, "config.json"),
+      JSON.stringify({
+        version: 1,
+        customAdapters: {
+          "project-only": {
+            displayName: "Project Only",
+            skills: { project: join(repoA, ".project-agent", "skills") },
+          },
+        },
+      }),
+    );
+
+    const deployed = await apply(t.env, {
+      storeRoot,
+      scope: "project",
+      dir: repoA,
+      agents: ["project-only"],
+      capabilities: ["skills"],
+      method: "copy",
+    });
+    expect(deployed.failures).toEqual([]);
+    expect(deployed.entries).toEqual([
+      expect.objectContaining({ scope: "project", projectRoot: repoA }),
+    ]);
+
+    t.env.cwd = () => repoB;
+    t.env.resourceSourceTransport = transport({ commit: NEXT_COMMIT, content: NEW_SKILL });
+    const staged = await stageResourceUpdate(t.env, {
+      storeRoot,
+      check: await checkedUpdate(t, storeRoot),
+    });
+    const planned = await planResourceUpdate(t.env, { storeRoot, candidate: staged });
+    const updated = await applyResourceUpdatePlan(t.env, planned.plan, { storeRoot });
+
+    expect(updated.operation.ok).toBe(true);
+  });
+
   it.each([
     ["repository URL", { repositoryUrl: "https://example.test/forged.git" }],
     ["Git ref", { ref: "refs/heads/forged" }],

@@ -1,9 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { markdownRulesCodec } from "../src/adapters/codec.js";
 import { loadRegistry } from "../src/adapters/registry.js";
 import { specToAdapter } from "../src/adapters/spec.js";
 import type { AgentAdapter } from "../src/adapters/types.js";
-import { GENERATED_HEADER } from "../src/markers.js";
 import { loadAdapterSpecs } from "../src/store/config.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
@@ -18,15 +16,6 @@ async function writeConfig(t: TmpEnv, config: unknown): Promise<string> {
   await t.env.fs.writeFile(t.path("home", ".cellarer", "config.json"), JSON.stringify(config));
   return storeRoot;
 }
-
-describe("adapters/codec markdownRulesCodec", () => {
-  it("renders via the shared markers format", () => {
-    const out = markdownRulesCodec.render([{ relPath: "rules/a.md", content: "A" }]);
-    expect(out.startsWith(GENERATED_HEADER)).toBe(true);
-    expect(out).toContain("<!-- Source: rules/a.md -->");
-    expect(out).toContain("A");
-  });
-});
 
 describe("adapters/config defaults", () => {
   let t: TmpEnv;
@@ -92,6 +81,16 @@ describe("adapters/config defaults", () => {
   });
 
   describe("capabilities", () => {
+    it("retains the legacy rules and skills descriptors while capabilities remain path-driven", () => {
+      const claude = adapters["claude-code"]!;
+      expect(claude.rules?.render([{ relPath: "rules/style.md", content: "# style" }])).toContain(
+        "<!-- Source: rules/style.md -->",
+      );
+      expect(claude.skills).toEqual({ format: "dir" });
+      expect(claude.capabilities.rules).toEqual(["global", "project"]);
+      expect(claude.capabilities.skills).toEqual(["global", "project"]);
+    });
+
     it("agents-md declares no mcp capability", () => {
       expect(adapters["agents-md"]!.capabilities.mcp).toEqual([]);
       expect(adapters["agents-md"]!.capabilities.rules).toEqual(["global", "project"]);

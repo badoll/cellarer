@@ -2,17 +2,34 @@
 // 所有写 / 删 / 还原前调用,防软链穿越与越界写入。
 // 注意:本文件用 node:path 做纯路径计算;resolve 对相对路径会读 process.cwd,
 // 故调用方须传绝对路径(CLI 在边界已 absolutize --dir,adapter target 亦为绝对)。
-import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
+import {
+  dirname,
+  isAbsolute,
+  join,
+  normalize,
+  posix,
+  relative,
+  resolve,
+  sep,
+  win32,
+} from "node:path";
 import type { Env } from "../env.js";
 import { lstatOrNull } from "./probe.js";
 
 // child 相对 root 的路径,当且仅当 child 严格位于 root 之内(不含 root 自身);否则 null。
 // 单一实现:isPathInside 与 gitignore 的相对化都走这里,Windows 跨盘语义一致。
 export function relativeInside(root: string, child: string): string | null {
-  const rel = relative(resolve(root), resolve(child));
+  const paths = absolutePathFlavor(root, child);
+  if (paths === null) return null;
+  const rel = paths.relative(paths.normalize(root), paths.normalize(child));
   // 空 rel = 同一路径;rel 为 ".." 或以 "../" 开头 = 在 root 之外;绝对(带盘符)= Windows 跨盘。
   // 注意:只判 ".." 段本身,不能用 startsWith("..") —— 否则名为 "..config" 的合法子项被误判越界。
-  if (rel.length === 0 || rel === ".." || rel.startsWith(`..${sep}`) || isAbsoluteLike(rel)) {
+  if (
+    rel.length === 0 ||
+    rel === ".." ||
+    rel.startsWith(`..${paths.sep}`) ||
+    paths.isAbsolute(rel)
+  ) {
     return null;
   }
   return rel;
@@ -27,13 +44,27 @@ export function isPathInside(child: string, root: string): boolean {
 // 用途:适配器路径模板的越界校验 —— 模板可能合法地解析为根本身(如 detect 到工程根),
 // 故需比 isPathInside(严格)更宽一档,与参照实现 A 的 isWithin 语义一致。
 export function isWithinRoot(root: string, child: string): boolean {
-  const rel = relative(resolve(root), resolve(child));
-  return rel.length === 0 || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsoluteLike(rel));
+  const paths = absolutePathFlavor(root, child);
+  if (paths === null) return false;
+  const rel = paths.relative(paths.normalize(root), paths.normalize(child));
+  return (
+    rel.length === 0 ||
+    (rel !== ".." && !rel.startsWith(`..${paths.sep}`) && !paths.isAbsolute(rel))
+  );
 }
 
-function isAbsoluteLike(p: string): boolean {
-  // Windows 跨盘 relative 会返回带盘符的绝对路径。
-  return /^([a-zA-Z]:)?[\\/]/.test(p);
+function absolutePathFlavor(root: string, child: string): typeof posix | typeof win32 | null {
+  const rootFlavor = pathFlavor(root);
+  const childFlavor = pathFlavor(child);
+  if (!rootFlavor || !childFlavor) {
+    throw new TypeError("safety: path and root must be absolute");
+  }
+  return rootFlavor === childFlavor ? rootFlavor : null;
+}
+
+function pathFlavor(path: string): typeof posix | typeof win32 | null {
+  if (/^(?:[a-zA-Z]:[\\/]|\\\\)/.test(path)) return win32.isAbsolute(path) ? win32 : null;
+  return posix.isAbsolute(path) ? posix : null;
 }
 
 // 断言 path 在 root 之内,否则抛错(label 标明用途,便于排查)。

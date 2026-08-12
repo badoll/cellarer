@@ -1,5 +1,5 @@
 import { basename, dirname, join } from "node:path";
-import type { Env, FileTreeSnapshot } from "../env.js";
+import type { Env, FileTreeSnapshot, FsLike } from "../env.js";
 import { lstatOrNull } from "../fs/probe.js";
 import { sha256 } from "../store/checksum.js";
 
@@ -51,9 +51,16 @@ export interface SafeRecursiveSnapshot {
   readonly tree: FileTreeSnapshot;
 }
 
+export interface SafeRecursiveObservationEnv {
+  readonly fs: Pick<
+    FsLike,
+    "lstat" | "snapshotFileNoFollow" | "snapshotTreeNoFollow" | "supportsSafeRecursiveSnapshots"
+  >;
+}
+
 /** Capture one immutable, no-follow tree. All public evidence is derived from this snapshot. */
 export async function captureSafeRecursiveSource(
-  env: Env,
+  env: SafeRecursiveObservationEnv,
   rootPath: string,
 ): Promise<SafeRecursiveSnapshot> {
   let tree: FileTreeSnapshot;
@@ -171,7 +178,7 @@ function safeRecursiveSnapshotFromTree(tree: FileTreeSnapshot): SafeRecursiveSna
 
 /** Compatibility view for scanners that only need file contents. */
 export async function scanSafeRecursiveSource(
-  env: Env,
+  env: SafeRecursiveObservationEnv,
   rootPath: string,
 ): Promise<readonly SafeRecursiveFile[]> {
   return (await captureSafeRecursiveSource(env, rootPath)).files;

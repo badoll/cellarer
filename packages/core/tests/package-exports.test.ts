@@ -947,6 +947,36 @@ console.log(JSON.stringify({
     });
   });
 
+  it("keeps legacy adapter type imports and assignments source-compatible", async () => {
+    const fixturePath = join(consumerRoot, "legacy-adapter-types.mts");
+    await writeFile(
+      fixturePath,
+      `import {
+  renderRules,
+  type AgentAdapter,
+  type RulesCodec,
+  type SkillsCodec,
+} from "@cellarer/core";
+
+const rules: RulesCodec = { render: (fragments) => renderRules(fragments) };
+const skills: SkillsCodec = { format: "dir" };
+const adapter: AgentAdapter = {
+  id: "legacy-consumer",
+  displayName: "Legacy consumer",
+  capabilities: { rules: ["global"], mcp: [], skills: ["global"] },
+  rules,
+  skills,
+  paths: () => ({}),
+  detect: async () => ({ installed: false, root: "" }),
+};
+void adapter;
+`,
+      "utf8",
+    );
+
+    expect(() => compileConsumer(fixturePath, false)).not.toThrow();
+  });
+
   it("enumerates every frozen root value and type export from the touched Core modules", async () => {
     await expect(rootDeclarationInventory(true)).resolves.toEqual({
       types: baselineTouchedRootTypes,

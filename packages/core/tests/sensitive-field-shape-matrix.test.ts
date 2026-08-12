@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { inventoryActiveSecretValues } from "../src/secrets/active-values.js";
 import {
   isSensitiveSecretFieldName,
   scanStructuredFileSecretFindings,
@@ -10,6 +9,7 @@ import {
   REDACTED_SECRET,
   serializeObservable,
 } from "../src/secrets/observable.js";
+import { inventoryActiveSecretValues } from "../src/secrets/provider-runtime.js";
 import { makeTmpEnv } from "./helpers/env.js";
 
 const SENSITIVE_FIELD_NAMES = [

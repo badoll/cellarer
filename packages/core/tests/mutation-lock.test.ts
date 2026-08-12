@@ -1,6 +1,11 @@
 import { spawn } from "node:child_process";
-import { pathToFileURL } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join, relative, sep } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import type * as ts from "typescript";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { LockOwnerEvidence } from "../src/protocol/models.js";
 import {
   acquireStoreMutationLock,
@@ -9,21 +14,44 @@ import {
 } from "../src/protocol/mutation-lock.js";
 import { makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
+const tsRuntime = createRequire(import.meta.url)("typescript") as typeof ts;
+const packageRoot = fileURLToPath(new URL("..", import.meta.url));
+const sourceRoot = join(packageRoot, "src");
+
+let sourceBuildRoot: string;
+let lockUrl: string;
+let sourceBuildInputs: readonly string[] = [];
+
 function owner(operationId: string, acquiredAt = "2026-07-28T10:00:00.000Z"): LockOwnerEvidence {
   return { operationId, processId: 1234, hostname: "test-host", acquiredAt };
 }
 
 async function runChild(storeRoot: string, evidence: LockOwnerEvidence): Promise<unknown> {
-  const realEnvUrl = pathToFileURL(new URL("../src/real-env.ts", import.meta.url).pathname).href;
-  const lockUrl = pathToFileURL(
-    new URL("../src/protocol/mutation-lock.ts", import.meta.url).pathname,
-  ).href;
   const script = `
-    const [{ createRealEnv }, { acquireStoreMutationLock }] = await Promise.all([
-      import(process.argv[1]), import(process.argv[2])
+    const [{ open, readFile, rm }, { acquireStoreMutationLock }] = await Promise.all([
+      import("node:fs/promises"), import(process.argv[1])
     ]);
+    const env = {
+      fs: {
+        async writeFileExclusive(path, data, options) {
+          let handle;
+          try {
+            handle = await open(path, "wx", options?.mode);
+            await handle.writeFile(data, "utf8");
+            return true;
+          } catch (error) {
+            if (error?.code === "EEXIST") return false;
+            throw error;
+          } finally {
+            await handle?.close();
+          }
+        },
+        readFile: (path) => readFile(path, "utf8"),
+        rm: (path) => rm(path)
+      }
+    };
     const result = await acquireStoreMutationLock(
-      createRealEnv(), process.argv[3], JSON.parse(process.argv[4])
+      env, process.argv[2], JSON.parse(process.argv[3])
     );
     if (result.ok) await result.lock.release();
     process.stdout.write(JSON.stringify(result.ok ? { ok: true } : result));
@@ -31,15 +59,7 @@ async function runChild(storeRoot: string, evidence: LockOwnerEvidence): Promise
   return new Promise((resolve, reject) => {
     const child = spawn(
       process.execPath,
-      [
-        "--input-type=module",
-        "--eval",
-        script,
-        realEnvUrl,
-        lockUrl,
-        storeRoot,
-        JSON.stringify(evidence),
-      ],
+      ["--input-type=module", "--eval", script, lockUrl, storeRoot, JSON.stringify(evidence)],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
     let stdout = "";
@@ -58,8 +78,27 @@ describe("store mutation lock", () => {
   let t: TmpEnv;
   let held: StoreMutationLock | undefined;
 
+  beforeAll(() => {
+    sourceBuildRoot = mkdtempSync(join(tmpdir(), "cellarer-mutation-lock-source-build-"));
+    sourceBuildInputs = buildCurrentCoreSource(sourceBuildRoot);
+    lockUrl = pathToFileURL(join(sourceBuildRoot, "dist", "protocol", "mutation-lock.js")).href;
+  });
+  afterAll(() => {
+    rmSync(sourceBuildRoot, { recursive: true, force: true });
+  });
   beforeEach(() => {
     t = makeTmpEnv();
+  });
+
+  it("runs the child from a suite-unique build of the current Core source", () => {
+    const builtLock = realpathSync(fileURLToPath(lockUrl));
+    const sharedDist = `${realpathSync(packageRoot)}${sep}dist${sep}`;
+
+    expect(builtLock.startsWith(realpathSync(sourceBuildRoot) + sep)).toBe(true);
+    expect(builtLock.startsWith(sharedDist)).toBe(false);
+    expect(sourceBuildInputs).toEqual([
+      realpathSync(join(sourceRoot, "protocol", "mutation-lock.ts")),
+    ]);
   });
   afterEach(async () => {
     await held?.release();
@@ -112,3 +151,48 @@ describe("store mutation lock", () => {
     );
   });
 });
+
+function buildCurrentCoreSource(destinationRoot: string): readonly string[] {
+  const configPath = join(packageRoot, "tsconfig.json");
+  const parsed = tsRuntime.getParsedCommandLineOfConfigFile(
+    configPath,
+    {
+      composite: false,
+      declaration: false,
+      declarationMap: false,
+      incremental: false,
+      outDir: join(destinationRoot, "dist"),
+      rootDir: sourceRoot,
+      sourceMap: false,
+      tsBuildInfoFile: join(destinationRoot, ".tsbuildinfo"),
+    },
+    {
+      ...tsRuntime.sys,
+      onUnRecoverableConfigFileDiagnostic: (diagnostic) => {
+        throw new Error(formatDiagnostics([diagnostic]));
+      },
+    },
+  );
+  if (!parsed) throw new Error("failed to parse Core tsconfig for mutation-lock source build");
+  if (parsed.errors.length > 0) throw new Error(formatDiagnostics(parsed.errors));
+  const entrypoints = [join(sourceRoot, "protocol", "mutation-lock.ts")];
+  const program = tsRuntime.createProgram({ rootNames: entrypoints, options: parsed.options });
+  const source = program.getSourceFile(entrypoints[0] ?? "");
+  if (!source) throw new Error("failed to load mutation-lock source entrypoint");
+  const emit = program.emit(source);
+  const diagnostics = [
+    ...program.getSyntacticDiagnostics(source),
+    ...program.getSemanticDiagnostics(source),
+    ...emit.diagnostics,
+  ];
+  if (diagnostics.length > 0) throw new Error(formatDiagnostics(diagnostics));
+  return entrypoints.map((path) => realpathSync(path));
+}
+
+function formatDiagnostics(diagnostics: readonly ts.Diagnostic[]): string {
+  return tsRuntime.formatDiagnosticsWithColorAndContext(diagnostics, {
+    getCanonicalFileName: (fileName) => relative(packageRoot, fileName),
+    getCurrentDirectory: () => packageRoot,
+    getNewLine: () => "\n",
+  });
+}

@@ -1,63 +1,37 @@
-import type { Env, MutationAuthorityLease, SecretStore } from "../env.js";
-import { assertSafeAtomicPublicationPath } from "../fs/safety.js";
+import type { Env, MutationAuthorityLease } from "../env.js";
 import type { SecretReferenceFinding } from "../model/index.js";
 import { withCurrentMutationAuthorityLease } from "../protocol/canonical.js";
 import { readOperationJournal } from "../protocol/journal.js";
 import type { OperationResult } from "../protocol/models.js";
-import { executeStoreActionMutation } from "../protocol/store-mutation.js";
-import { sha256 } from "../store/checksum.js";
-import { providerScopeForEnv, resolveActiveSecretValues } from "./active-values.js";
-import { assertOrdinarySecretCredentialTarget } from "./authority-namespace.js";
 import {
-  keychainMetadataPath,
-  serializeKeychainMetadata,
-  serializeKeychainMutationIntent,
-} from "./keychain-metadata.js";
-import { deleteKeychainSecret, getKeychainSecret, setKeychainSecret } from "./keychain-provider.js";
-import { createSecretValue, withObservableKnownValues } from "./observable.js";
+  providerScopeForEnv,
+  resolveActiveSecretValues,
+  type SecretObservationUseCaseInput,
+  type VaultReadSecretObservationInput,
+} from "./active-values.js";
+import { assertOrdinarySecretCredentialTarget } from "./authority-namespace.js";
+import type { KeychainGetPort, StoredSecretProvider } from "./provider-ports.js";
 import {
   cellarerSecretReference,
   type SecretReference,
   secretReferenceToken,
 } from "./reference.js";
 import type { SecretSources } from "./resolver.js";
-import { encryptVault, loadVault, vaultPath } from "./vault.js";
 
-export type StoredSecretProvider = "vault" | "keychain";
-
-export interface SetStoredSecretOptions {
-  readonly provider: StoredSecretProvider;
-  readonly name: string;
-  readonly value: string;
-  readonly vaultPassphrase?: string;
-  readonly keychainService?: string;
-}
-
-export interface DeleteStoredSecretOptions {
-  readonly provider: StoredSecretProvider;
-  readonly name: string;
-  readonly vaultPassphrase?: string;
-  readonly keychainService?: string;
-}
-
-export interface StoredSecretMutationResult {
-  readonly provider: StoredSecretProvider;
-  readonly name: string;
-  readonly operation: OperationResult;
-}
+export type { StoredSecretProvider } from "./provider-ports.js";
 
 export interface ListStoredSecretNamesOptions {
   readonly provider: "vault";
   readonly vaultPassphrase: string;
 }
 
-export async function listStoredSecretNames(
-  env: Env,
+export async function listStoredSecretNamesWithPort(
+  input: VaultReadSecretObservationInput,
   storeRoot: string,
   options: ListStoredSecretNamesOptions,
 ): Promise<string[]> {
   const passphrase = requireVaultPassphrase(options.vaultPassphrase);
-  const vault = await loadVault(env, storeRoot, passphrase);
+  const vault = await input.observation.loadVault(storeRoot, passphrase);
   return Object.keys(vault).sort((left, right) => left.localeCompare(right));
 }
 
@@ -100,158 +74,18 @@ export function missingSecretReferences(
   );
 }
 
-export async function setStoredSecret(
-  env: Env,
-  storeRoot: string,
-  options: SetStoredSecretOptions,
-): Promise<StoredSecretMutationResult> {
-  const name = validateStoredSecretName(options.name);
-  const protectedValue = createSecretValue(options.value);
-  const operationEnv = withObservableKnownValues(env, [protectedValue]);
-  if (options.provider === "vault") {
-    const passphrase = requireVaultPassphrase(options.vaultPassphrase);
-    const result = await executeStoreActionMutation(
-      operationEnv,
-      storeRoot,
-      "secret-metadata",
-      "vault-secret-set",
-      async () => {
-        const current = await loadVault(operationEnv, storeRoot, passphrase);
-        const next = protectedValue.use((plaintext) => ({ ...current, [name]: plaintext }));
-        return {
-          value: undefined,
-          actions: [],
-          publications: [
-            {
-              path: vaultPath(storeRoot),
-              data: await encryptVault(next, passphrase),
-              mode: 0o600,
-              currentUserOnly: true,
-            },
-          ],
-        };
-      },
-    );
-    return { provider: "vault", name, operation: result.operation };
-  }
-
-  const service = options.keychainService ?? "cellarer";
-  assertOrdinarySecretCredentialTarget(service, name);
-  const secretStore = requireKeychain(env);
-  const metadata = serializeKeychainMetadata(service, name, true);
-  const intent = serializeKeychainMutationIntent(service, name, "set");
-  const target = keychainMetadataPath(storeRoot, service, name);
-  const result = await executeStoreActionMutation(
-    operationEnv,
-    storeRoot,
-    "secret-metadata",
-    "keychain-secret-set",
-    async () => ({
-      value: undefined,
-      actions: [
-        {
-          actionId: keychainActionId("set", service, name),
-          kind: "keychain-secret-set",
-          target,
-          payload: { provider: "keychain", service, name },
-          postcondition: { state: "present", fingerprint: sha256(metadata) },
-          execute: async () => {
-            await assertSafeAtomicPublicationPath(
-              operationEnv,
-              target,
-              storeRoot,
-              "keychain metadata",
-            );
-            await operationEnv.fs.publishFileAtomically(target, intent, { mode: 0o600 });
-            await setKeychainSecret(secretStore, service, name, protectedValue);
-            await operationEnv.fs.publishFileAtomically(target, metadata, { mode: 0o600 });
-          },
-        },
-      ],
-    }),
-  );
-  return { provider: "keychain", name, operation: result.operation };
-}
-
-export async function deleteStoredSecret(
-  env: Env,
-  storeRoot: string,
-  options: DeleteStoredSecretOptions,
-): Promise<StoredSecretMutationResult> {
-  const name = validateStoredSecretName(options.name);
-  if (options.provider === "vault") {
-    const passphrase = requireVaultPassphrase(options.vaultPassphrase);
-    const result = await executeStoreActionMutation(
-      env,
-      storeRoot,
-      "secret-metadata",
-      "vault-secret-delete",
-      async () => {
-        const current = await loadVault(env, storeRoot, passphrase);
-        const next = { ...current };
-        delete next[name];
-        return {
-          value: undefined,
-          actions: [],
-          publications: [
-            {
-              path: vaultPath(storeRoot),
-              data: await encryptVault(next, passphrase),
-              mode: 0o600,
-              currentUserOnly: true,
-            },
-          ],
-        };
-      },
-    );
-    return { provider: "vault", name, operation: result.operation };
-  }
-
-  const service = options.keychainService ?? "cellarer";
-  assertOrdinarySecretCredentialTarget(service, name);
-  const secretStore = requireKeychain(env);
-  const metadata = serializeKeychainMetadata(service, name, false);
-  const intent = serializeKeychainMutationIntent(service, name, "delete");
-  const target = keychainMetadataPath(storeRoot, service, name);
-  const result = await executeStoreActionMutation(
-    env,
-    storeRoot,
-    "secret-metadata",
-    "keychain-secret-delete",
-    async () => ({
-      value: undefined,
-      actions: [
-        {
-          actionId: keychainActionId("delete", service, name),
-          kind: "keychain-secret-delete",
-          target,
-          payload: { provider: "keychain", service, name },
-          postcondition: { state: "present", fingerprint: sha256(metadata) },
-          execute: async () => {
-            await assertSafeAtomicPublicationPath(env, target, storeRoot, "keychain metadata");
-            await env.fs.publishFileAtomically(target, intent, { mode: 0o600 });
-            await deleteKeychainSecret(secretStore, service, name);
-            await env.fs.publishFileAtomically(target, metadata, { mode: 0o600 });
-          },
-        },
-      ],
-    }),
-  );
-  return { provider: "keychain", name, operation: result.operation };
-}
-
-export async function verifySecretReferences(
-  env: Env,
+export async function verifySecretReferencesWithPort(
+  input: SecretObservationUseCaseInput,
   storeRoot: string,
   references: readonly SecretReference[],
   sources: SecretSources,
 ): Promise<SecretReferenceVerification[]> {
-  const scope = providerScopeForEnv(env);
+  const scope = providerScopeForEnv(input.scopeCarrier);
   if (
     scope?.mode === sources.mode &&
     (sources.mode !== "keychain" || scope.service === (sources.keychainService ?? "cellarer"))
   ) {
-    await resolveActiveSecretValues(env, storeRoot, references, {
+    await resolveActiveSecretValues(input, storeRoot, references, {
       secretMode: sources.mode,
       vaultPassphrase: sources.vaultPassphrase,
       keychainService: sources.keychainService,
@@ -272,7 +106,7 @@ export async function verifySecretReferences(
   const results: SecretReferenceVerification[] = [];
   for (const reference of references) {
     if (reference.kind === "environment") {
-      const value = env.env[reference.name];
+      const value = input.environment[reference.name];
       results.push({
         reference: secretReferenceToken(reference),
         provider: "environment",
@@ -282,9 +116,12 @@ export async function verifySecretReferences(
     }
 
     if (sources.mode === "keychain") {
+      if (input.useCase !== "keychain-get" && input.useCase !== "keychain-inventory") {
+        throw new TypeError("keychain reference verification requires a keychain get port");
+      }
       assertOrdinarySecretCredentialTarget(sources.keychainService ?? "cellarer", reference.name);
       const status = await keychainReferenceStatus(
-        env.secretStore,
+        input.observation,
         sources.keychainService ?? "cellarer",
         reference.name,
       );
@@ -298,8 +135,11 @@ export async function verifySecretReferences(
 
     if (!vaultData && !vaultUnavailable) {
       if (sources.vaultPassphrase) {
+        if (input.useCase !== "vault-read") {
+          throw new TypeError("vault reference verification requires a vault read port");
+        }
         try {
-          vaultData = await loadVault(env, storeRoot, sources.vaultPassphrase);
+          vaultData = await input.observation.loadVault(storeRoot, sources.vaultPassphrase);
         } catch {
           vaultUnavailable = true;
         }
@@ -318,13 +158,20 @@ export async function verifySecretReferences(
   return results;
 }
 
-export async function diagnoseKeychainMutationRecovery(
+export async function diagnoseKeychainMutationRecoveryWithPort(
   env: Env,
   storeRoot: string,
   operationId: string,
+  observation: KeychainGetPort,
 ): Promise<KeychainMutationRecoveryDiagnosis> {
   return withCurrentMutationAuthorityLease(env, (authorityLease) =>
-    diagnoseKeychainMutationRecoveryWithAuthorityLease(env, storeRoot, operationId, authorityLease),
+    diagnoseKeychainMutationRecoveryWithAuthorityLease(
+      env,
+      storeRoot,
+      operationId,
+      authorityLease,
+      observation,
+    ),
   );
 }
 
@@ -333,17 +180,14 @@ async function diagnoseKeychainMutationRecoveryWithAuthorityLease(
   storeRoot: string,
   operationId: string,
   authorityLease: MutationAuthorityLease,
+  observation: KeychainGetPort,
 ): Promise<KeychainMutationRecoveryDiagnosis> {
   if (!(await authorityLease.isCurrent().catch(() => false))) {
     throw new TypeError("mutation authority is not current");
   }
   const context = await keychainRecoveryContext(env, storeRoot, operationId);
   const reference = secretReferenceToken(cellarerSecretReference(context.name));
-  const providerStatus = await diagnosedKeychainStatus(
-    env.secretStore,
-    context.service,
-    context.name,
-  );
+  const providerStatus = await diagnosedKeychainStatus(observation, context.service, context.name);
   const supportedResolution = null;
   const steps = [
     `Inspect ${context.service}/${context.name} with the operating-system credential manager.`,
@@ -401,20 +245,16 @@ async function keychainRecoveryContext(
 }
 
 async function diagnosedKeychainStatus(
-  store: SecretStore | undefined,
+  observation: KeychainGetPort,
   service: string,
   name: string,
 ): Promise<"present" | "missing" | "unavailable"> {
-  if (!store) return "unavailable";
+  if (!observation.keychainAvailable()) return "unavailable";
   try {
-    return (await getKeychainSecret(store, service, name)).found ? "present" : "missing";
+    return (await observation.getKeychain(service, name)).found ? "present" : "missing";
   } catch {
     return "unavailable";
   }
-}
-
-function validateStoredSecretName(name: string): string {
-  return cellarerSecretReference(name).name;
 }
 
 function requireVaultPassphrase(passphrase: string | undefined): string {
@@ -422,25 +262,16 @@ function requireVaultPassphrase(passphrase: string | undefined): string {
   return passphrase;
 }
 
-function requireKeychain(env: Env): SecretStore {
-  if (!env.secretStore) throw new Error("keychain unavailable (no SecretStore injected)");
-  return env.secretStore;
-}
-
 async function keychainReferenceStatus(
-  secretStore: SecretStore | undefined,
+  observation: KeychainGetPort,
   service: string,
   name: string,
 ): Promise<SecretReferenceVerificationStatus> {
-  if (!secretStore) return "unavailable";
+  if (!observation.keychainAvailable()) return "unavailable";
   try {
-    const result = await getKeychainSecret(secretStore, service, name);
+    const result = await observation.getKeychain(service, name);
     return result.found ? "available" : "missing";
   } catch {
     return "unavailable";
   }
-}
-
-function keychainActionId(operation: "set" | "delete", service: string, name: string): string {
-  return sha256(JSON.stringify({ kind: `keychain-secret-${operation}`, service, name }));
 }

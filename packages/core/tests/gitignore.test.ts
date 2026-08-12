@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   GITIGNORE_END,
   GITIGNORE_START,
+  gitignorePath,
   removeManagedBlock,
   updateGitignore,
 } from "../src/fs/gitignore.js";
@@ -21,6 +22,10 @@ describe("fs/gitignore", () => {
   it("exposes the managed block markers", () => {
     expect(GITIGNORE_START).toBe("# START cellarer Generated Files");
     expect(GITIGNORE_END).toBe("# END cellarer Generated Files");
+  });
+
+  it("requires an absolute project root at the pure path boundary", () => {
+    expect(() => gitignorePath("relative-project")).toThrow(/must be absolute/);
   });
 
   it("creates .gitignore with a managed block (relative, POSIX, leading slash) + .bak", async () => {

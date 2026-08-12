@@ -15,6 +15,27 @@ describe("fs/atomicWrite", () => {
     expect(await t.env.fs.readFile(p)).toBe("hello");
   });
 
+  it("derives the temporary publication name from the operation environment", async () => {
+    const p = t.path("isolated.txt");
+    const writes: string[] = [];
+    const baseFs = t.env.fs;
+    const env = {
+      ...t.env,
+      randomId: () => "operation-local",
+      fs: {
+        ...baseFs,
+        async writeFile(path: string, data: string, options?: { mode?: number }) {
+          writes.push(path);
+          return baseFs.writeFile(path, data, options);
+        },
+      },
+    };
+
+    await atomicWrite(env, p, "isolated");
+
+    expect(writes).toEqual([t.path(".cellarer-tmp-operation-local")]);
+  });
+
   it("overwrites existing content", async () => {
     const p = t.path("x.txt");
     await atomicWrite(t.env, p, "one");

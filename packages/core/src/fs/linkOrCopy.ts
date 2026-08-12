@@ -35,17 +35,16 @@ async function alreadyLinkedTo(env: Env, dest: string, src: string): Promise<boo
   }
 }
 
-let replacementCounter = 0;
-
 export async function linkOrCopy(
   env: Env,
   src: string,
   dest: string,
   opts: LinkOrCopyOpts,
 ): Promise<LinkOrCopyResult> {
-  const absSrc = resolve(src);
+  const absSrc = resolve(env.cwd(), src);
+  const absDest = resolve(env.cwd(), dest);
 
-  if (opts.method === "symlink" && (await alreadyLinkedTo(env, dest, absSrc))) {
+  if (opts.method === "symlink" && (await alreadyLinkedTo(env, absDest, absSrc))) {
     const result: LinkOrCopyResult = {
       method: env.platform === "win32" && opts.kind === "dir" ? "junction" : "symlink",
       skipped: true,
@@ -53,25 +52,25 @@ export async function linkOrCopy(
     // A caller may still need a fresh receipt for the unchanged link node (for example after the
     // linked source contents drifted). Receipt preparation is read-only here and must not remove
     // the existing target if it fails.
-    await opts.preparePlaced?.(dest, result);
+    await opts.preparePlaced?.(absDest, result);
     return result;
   }
 
   // dest 父目录就绪；普通 placement 不再无条件清掉未知目标。
-  await env.fs.mkdir(dirname(dest), { recursive: true });
-  const existing = await lstatOrNull(env, dest);
+  await env.fs.mkdir(dirname(absDest), { recursive: true });
+  const existing = await lstatOrNull(env, absDest);
   if (existing) {
     if (!opts.replaceExisting) {
-      throw new Error(`destination exists and replacement was not approved: "${dest}"`);
+      throw new Error(`destination exists and replacement was not approved: "${absDest}"`);
     }
-    return replaceStaged(env, absSrc, dest, opts);
+    return replaceStaged(env, absSrc, absDest, opts);
   }
 
-  const result = await placeIntoEmptyDestination(env, absSrc, dest, opts);
+  const result = await placeIntoEmptyDestination(env, absSrc, absDest, opts);
   try {
-    await opts.preparePlaced?.(dest, result);
+    await opts.preparePlaced?.(absDest, result);
   } catch (error) {
-    await env.fs.rm(dest, { recursive: true, force: true }).catch(() => {});
+    await env.fs.rm(absDest, { recursive: true, force: true }).catch(() => {});
     throw error;
   }
   return result;
@@ -83,8 +82,7 @@ async function replaceStaged(
   dest: string,
   opts: LinkOrCopyOpts,
 ): Promise<LinkOrCopyResult> {
-  replacementCounter += 1;
-  const suffix = `${env.now().getTime()}-${replacementCounter}`;
+  const suffix = `${env.now().getTime()}-${env.randomId()}`;
   const parent = dirname(dest);
   const name = basename(dest);
   const staged = join(parent, `.${name}.cellarer-stage-${suffix}`);

@@ -49,8 +49,6 @@ export class SnapshotCreationError extends Error {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-let snapshotCounter = 0;
-let restoreCounter = 0;
 
 export async function createEncryptedTargetSnapshot(
   env: Env,
@@ -67,14 +65,8 @@ export async function createEncryptedTargetSnapshot(
     }
     const encrypted = await encryptTargetSnapshot(snapshot, passphrase);
     const dir = await prepareSnapshotDirectory(env, storeRoot);
-    snapshotCounter += 1;
     const name = sha256(
-      JSON.stringify([
-        target,
-        snapshot.targetFingerprint,
-        env.now().toISOString(),
-        snapshotCounter,
-      ]),
+      JSON.stringify([target, snapshot.targetFingerprint, env.now().toISOString(), env.randomId()]),
     ).slice("sha256:".length);
     const path = join(dir, `${name}.age`);
     const temporaryPath = join(dir, `.${name}.tmp`);
@@ -267,8 +259,7 @@ export async function restoreTargetSnapshot(
   expectedCurrentFingerprint?: string | null,
 ): Promise<void> {
   assertTargetSnapshot(snapshot);
-  restoreCounter += 1;
-  const suffix = `${env.now().getTime()}-${restoreCounter}`;
+  const suffix = `${env.now().getTime()}-${env.randomId()}`;
   const parent = dirname(target);
   const name = basename(target);
   const staged = join(parent, `.${name}.cellarer-restore-stage-${suffix}`);

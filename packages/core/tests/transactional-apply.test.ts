@@ -26,12 +26,9 @@ import {
   readStoreRevision,
   storeRevisionPath,
 } from "../src/protocol/store-revision.js";
-import {
-  createProviderScope,
-  resolveActiveSecretValues,
-  withProviderScope,
-} from "../src/secrets/active-values.js";
+import { createProviderScope, withProviderScope } from "../src/secrets/active-values.js";
 import { observableKnownValues, serializeObservable } from "../src/secrets/observable.js";
+import { resolveActiveSecretValues } from "../src/secrets/provider-runtime.js";
 import { environmentSecretReference } from "../src/secrets/reference.js";
 import { sha256 } from "../src/store/checksum.js";
 import { saveLedger } from "../src/store/ledger.js";

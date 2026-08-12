@@ -44,11 +44,15 @@ async function seedStore(
 }
 
 function addReferenceNativeAdapter(config: CellarerConfig): void {
-  config.customAdapters["reference-native"] = {
-    displayName: "Reference Native",
+  addReferenceAdapter(config, "reference-native", "~/.reference-native/mcp.json");
+}
+
+function addReferenceAdapter(config: CellarerConfig, id: string, globalTarget: string): void {
+  config.customAdapters[id] = {
+    displayName: id,
     mcp: {
-      global: "~/.reference-native/mcp.json",
-      project: "{dir}/.reference-native/mcp.json",
+      global: globalTarget,
+      project: `{dir}/.${id}/mcp.json`,
       format: "json",
       supportedSecretReferences: ["environment", "cellarer"],
     },
@@ -184,7 +188,7 @@ describe("engine mcp — secret handling (red line)", () => {
       mcp: { c7: { command: "npx", env: { CONTEXT7_API_KEY: "${CELLARER_SECRET:C7_KEY}" } } },
       configure: addReferenceNativeAdapter,
     });
-    const { saveVault } = await import("../src/secrets/vault.js");
+    const { saveVault } = await import("../src/secrets/secret-metadata-runtime.js");
     await saveVault(t.env, storeRoot, { C7_KEY: "configured" }, "pp");
     await apply(t.env, {
       storeRoot,
@@ -205,7 +209,7 @@ describe("engine mcp — secret handling (red line)", () => {
       mcp: { c7: { command: "npx", args: ["--token", "${CELLARER_SECRET:ARG_KEY}"] } },
       configure: addReferenceNativeAdapter,
     });
-    const { saveVault } = await import("../src/secrets/vault.js");
+    const { saveVault } = await import("../src/secrets/secret-metadata-runtime.js");
     await saveVault(t.env, storeRoot, { ARG_KEY: "configured" }, "pp");
     await apply(t.env, {
       storeRoot,
@@ -316,12 +320,66 @@ describe("engine mcp — secret handling (red line)", () => {
     expect(result.actions.find((action) => action.capability === "mcp")?.op).toBe("skip");
     expect(result.secretReferenceFindings).toEqual([
       {
-        reference: "${CELLARER_SECRET:MISSING_TOKEN}",
+        reference: "$" + "{CELLARER_SECRET:MISSING_TOKEN}",
         provider: "keychain",
         status: "missing",
       },
     ]);
     expect(JSON.stringify(result)).not.toContain("ghp_realtoken");
+  });
+
+  it("keeps reference evidence only on every active MCP action guarded for that name", async () => {
+    const storeRoot = await seedStore(t, {
+      mcp: {
+        shared: { command: "npx", env: { TOKEN: "$" + "{CELLARER_SECRET:SHARED_TOKEN}" } },
+      },
+      configure(config) {
+        addReferenceAdapter(config, "ordinary-pre-skip", "~/.ordinary-pre-skip/mcp.json");
+        addReferenceAdapter(config, "guarded-a", "~/.guarded-a/mcp.json");
+        addReferenceAdapter(config, "guarded-b", "~/.guarded-b/mcp.json");
+      },
+    });
+    await t.env.fs.mkdir(t.path("home", ".ordinary-pre-skip"), { recursive: true });
+    await t.env.fs.writeFile(
+      t.path("home", ".ordinary-pre-skip", "mcp.json"),
+      JSON.stringify({ userOwned: true }),
+    );
+    t.env.secretStore = {
+      async get() {
+        return { found: false };
+      },
+      async set() {},
+      async delete() {
+        return false;
+      },
+    };
+
+    const result = await plan(t.env, {
+      storeRoot,
+      scope: "global",
+      agents: ["ordinary-pre-skip", "guarded-a", "guarded-b"],
+      capabilities: ["mcp"],
+      secretMode: "keychain",
+    });
+
+    const ordinaryPreSkip = result.actions.find((action) => action.agent === "ordinary-pre-skip");
+    expect(ordinaryPreSkip?.op).toBe("skip");
+    expect(ordinaryPreSkip).not.toHaveProperty("secretRefs");
+    expect(
+      result.actions
+        .filter((action) => action.agent.startsWith("guarded-"))
+        .map(({ agent, op, secretRefs }) => ({ agent, op, secretRefs })),
+    ).toEqual([
+      { agent: "guarded-a", op: "skip", secretRefs: ["SHARED_TOKEN"] },
+      { agent: "guarded-b", op: "skip", secretRefs: ["SHARED_TOKEN"] },
+    ]);
+    expect(result.secretReferenceFindings).toEqual([
+      {
+        reference: "$" + "{CELLARER_SECRET:SHARED_TOKEN}",
+        provider: "keychain",
+        status: "missing",
+      },
+    ]);
   });
 
   it("does not verify unrequested MCP references while planning Rules", async () => {
@@ -444,7 +502,7 @@ describe("engine mcp — secret handling (red line)", () => {
   // This real transaction must finish before fixture teardown; Vitest timeouts do not cancel it.
   it("vault mode preserves references and never sends resolved values to the target writer", async () => {
     // 先建 vault。
-    const { saveVault } = await import("../src/secrets/vault.js");
+    const { saveVault } = await import("../src/secrets/secret-metadata-runtime.js");
     const storeRoot = await seedStore(t, {
       mcp: { c7: { command: "npx", env: { TOKEN: "${CELLARER_SECRET:C7_TOKEN}" } } },
       configure: addReferenceNativeAdapter,
@@ -468,7 +526,7 @@ describe("engine mcp — secret handling (red line)", () => {
 
   // This real transaction must finish before fixture teardown; Vitest timeouts do not cancel it.
   it("project scope vault mode also writes only the reference token", async () => {
-    const { saveVault } = await import("../src/secrets/vault.js");
+    const { saveVault } = await import("../src/secrets/secret-metadata-runtime.js");
     const proj = t.path("proj");
     await t.env.fs.mkdir(proj, { recursive: true });
     const storeRoot = await seedStore(t, {

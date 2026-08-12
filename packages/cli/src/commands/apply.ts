@@ -5,6 +5,7 @@ import {
   type Capability,
   type LinkMethod,
   type MutationPlan,
+  parseSecretReference,
   preflightApplyMutationPlan,
   type SecretMode,
 } from "@cellarer/core";
@@ -301,24 +302,35 @@ function applyCommandError(result: Awaited<ReturnType<typeof apply>>) {
     result.mutation.result && !result.mutation.result.ok
       ? cliErrorFromMutationConflict(result.mutation.result.conflict)
       : undefined;
-  const guarded = result.plan.actions.some(
-    (action) =>
-      action.op === "skip" &&
-      (action.reason?.includes("secret-scan") || action.reason?.includes("secret-reference")),
-  );
+  const policy = applyPolicyDecision(result.plan);
   return (
     operationConflict ??
     (result.failures.length > 0
       ? { code: "PARTIAL_FAILURE" as const, message: "Apply reported action failures" }
       : result.plan.conflicts.length > 0
         ? { code: "TARGET_CONFLICT" as const, message: "Apply plan is blocked" }
-        : guarded
-          ? {
-              code: "POLICY_VIOLATION" as const,
-              message: "Apply was blocked by a safety guard",
-            }
-          : undefined)
+        : applyPolicyError(policy))
   );
+}
+
+type ApplyPolicyDecision = { readonly kind: "allowed" } | { readonly kind: "secret-guard-blocked" };
+
+function applyPolicyDecision(plan: Awaited<ReturnType<typeof apply>>["plan"]): ApplyPolicyDecision {
+  return (plan.secretFindings?.length ?? 0) > 0 || (plan.secretReferenceFindings?.length ?? 0) > 0
+    ? { kind: "secret-guard-blocked" }
+    : { kind: "allowed" };
+}
+
+function applyPolicyError(decision: ApplyPolicyDecision) {
+  switch (decision.kind) {
+    case "allowed":
+      return undefined;
+    case "secret-guard-blocked":
+      return {
+        code: "POLICY_VIOLATION" as const,
+        message: "Apply was blocked by a safety guard",
+      };
+  }
 }
 
 function parseSecretMode(
@@ -375,17 +387,69 @@ function printApplyText(
       `✓ ${entry.agent} ${entry.capability}/${entry.scope} → ${entry.target} (${entry.receipt.method})${refs}`,
     );
   }
-  for (const action of result.plan.actions) {
-    if (
-      action.op === "skip" &&
-      (action.reason?.includes("secret-scan") || action.reason?.includes("secret-reference"))
-    ) {
+  if (applyPolicyDecision(result.plan).kind === "secret-guard-blocked") {
+    for (const action of secretGuardBlockedActions(result.plan)) {
       output.error(`⛔ ${action.agent} ${action.capability} 被安全护栏拦截:${action.reason}`);
     }
   }
   if (result.entries.length === 0) {
     output.log("无可下发的资源(检查 collection 过滤与 agent 能力)。");
   }
+}
+
+function secretGuardBlockedActions(
+  plan: Awaited<ReturnType<typeof apply>>["plan"],
+): Awaited<ReturnType<typeof apply>>["plan"]["actions"] {
+  if (
+    (plan.secretFindings?.length ?? 0) === 0 &&
+    (plan.secretReferenceFindings?.length ?? 0) === 0
+  ) {
+    return [];
+  }
+  const conflictTargets = new Set(plan.conflicts.map((conflict) => conflict.target));
+  const claimedTargets = new Set<string>();
+  const secretFindings = plan.secretFindings ?? [];
+  const secretReferenceFindings = plan.secretReferenceFindings ?? [];
+  return plan.actions.filter((action) => {
+    if (action.target === "" || conflictTargets.has(action.target)) return false;
+    if (action.op !== "skip" || (action.artifactIds?.length ?? 0) === 0) return false;
+    const guarded =
+      secretFindings.some((finding) => secretFindingMatchesAction(finding, action)) ||
+      secretReferenceFindings.some((finding) =>
+        secretReferenceFindingMatchesAction(finding, action),
+      );
+    if (!guarded) return false;
+    const targetKey = `${action.capability}\u0000${action.target}`;
+    if (claimedTargets.has(targetKey)) return false;
+    claimedTargets.add(targetKey);
+    return true;
+  });
+}
+
+function secretReferenceFindingMatchesAction(
+  finding: NonNullable<
+    Awaited<ReturnType<typeof apply>>["plan"]["secretReferenceFindings"]
+  >[number],
+  action: Awaited<ReturnType<typeof apply>>["plan"]["actions"][number],
+): boolean {
+  const reference = parseSecretReference(finding.reference);
+  return (
+    action.capability === "mcp" &&
+    reference !== null &&
+    action.secretRefs?.includes(reference.name) === true
+  );
+}
+
+function secretFindingMatchesAction(
+  finding: NonNullable<Awaited<ReturnType<typeof apply>>["plan"]["secretFindings"]>[number],
+  action: Awaited<ReturnType<typeof apply>>["plan"]["actions"][number],
+): boolean {
+  return (
+    action.artifact === finding.artifact ||
+    action.artifactIds?.includes(finding.artifact) === true ||
+    action.source === finding.source ||
+    action.target === finding.source
+  );
 }
 
 function parseTokens(spec: string | undefined): string[] | undefined {

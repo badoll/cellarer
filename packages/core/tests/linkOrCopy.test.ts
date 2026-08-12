@@ -124,6 +124,16 @@ describe("fs/linkOrCopy", () => {
   });
 
   describe("copy method", () => {
+    it("resolves a relative source against the operation Env cwd", async () => {
+      const src = "relative-source.md";
+      const dest = t.path("relative-dest.md");
+      await t.env.fs.writeFile(t.path("cwd", src), "operation cwd content");
+
+      await linkOrCopy(t.env, src, dest, { method: "copy", kind: "file" });
+
+      await expect(t.env.fs.readFile(dest)).resolves.toBe("operation cwd content");
+    });
+
     it("copies a file and reports method copy", async () => {
       const src = t.path("src.md");
       const dest = t.path("dest.md");

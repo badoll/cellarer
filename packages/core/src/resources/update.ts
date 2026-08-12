@@ -792,10 +792,21 @@ async function validateCandidate(
   const references = discoverSecretReferences(files.map((file) => decodeUtf8(file.dataHex)));
   for (const owner of owners) {
     const adapter = registry.get(owner.agent);
-    const codec = adapter?.[current.record.kind];
+    const paths = adapter?.paths(
+      env,
+      owner.scope,
+      owner.scope === "project" ? owner.projectRoot : undefined,
+    );
+    const target =
+      current.record.kind === "rules"
+        ? paths?.rules
+        : current.record.kind === "mcp"
+          ? paths?.mcp
+          : paths?.skillsDir;
     if (
       !adapter ||
-      !codec ||
+      !target ||
+      (current.record.kind === "mcp" && !adapter.mcp) ||
       !(adapter.capabilities[current.record.kind] ?? []).includes(owner.scope)
     ) {
       throw new ResourceUpdateError(

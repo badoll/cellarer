@@ -2,6 +2,7 @@ import { listActivity } from "./activity.js";
 import { loadRegistry } from "./adapters/registry.js";
 import { type AgentDoctorReport, doctor } from "./diagnostics.js";
 import { inCollections, plan } from "./engine/plan.js";
+import { planActionPresentationClass } from "./engine/plan-presentation.js";
 import { status } from "./engine/status.js";
 import type { DistributeOptions, StatusItem } from "./engine/types.js";
 import type { Env } from "./env.js";
@@ -115,6 +116,7 @@ async function dashboardSummaryImplementation(env: Env, opts: DashboardSummaryOp
           artifacts,
           statusItems,
           ledger.owners,
+          registry,
         );
 
   const artifactCounts = {
@@ -271,6 +273,7 @@ async function coverageGroups(
     target: string;
     receipt: { appliedAt: string };
   }[],
+  registry: Awaited<ReturnType<typeof loadRegistry>>,
 ) {
   const scopes: Scope[] = opts.dir ? ["global", "project"] : ["global"];
   const groups: ReturnType<typeof coverageGroup>[] = [];
@@ -286,10 +289,13 @@ async function coverageGroups(
         secretMode: "env",
         dryRun: true,
       } satisfies DistributeOptions);
-      const desired = p.actions.filter((action) => {
-        if (action.op !== "skip") return true;
-        return !/not supported|capability .* not supported/.test(action.reason ?? "");
-      });
+      const desired = p.actions.filter(
+        (action) =>
+          planActionPresentationClass(
+            action,
+            registry.get(action.agent)?.capabilities[action.capability] ?? [],
+          ) === "desired",
+      );
       const nonSkip = desired.filter((action) => action.op !== "skip");
       const statusByKey = new Map(
         statusItems.map((item) => [statusIdentityKey(item), item.status]),

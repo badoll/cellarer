@@ -3,7 +3,6 @@ import type { Env, SecretStore } from "../src/env.js";
 import {
   createAuthorizedMutationPlan,
   createDurableMutationPlan,
-  createMutationPlan,
 } from "../src/protocol/canonical.js";
 import {
   operationJournalPath,
@@ -16,23 +15,20 @@ import {
   keychainMetadataPath,
   serializeKeychainMetadata,
 } from "../src/secrets/keychain-metadata.js";
-import { createSecretValue } from "../src/secrets/observable.js";
 import {
-  deleteStoredSecret,
   diagnoseKeychainMutationRecovery,
   reconcileKeychainMutationRecovery,
-  setStoredSecret,
+  resolveFields,
+  resolveSecretValue,
   verifySecretReferences,
-} from "../src/secrets/provider.js";
+} from "../src/secrets/provider-runtime.js";
 import { cellarerSecretReference, environmentSecretReference } from "../src/secrets/reference.js";
-import { resolveFields, resolveSecretValue } from "../src/secrets/resolver.js";
 import {
-  decryptVault,
-  encryptVault,
-  loadVault,
+  deleteStoredSecret,
   saveVault,
-  vaultPath,
-} from "../src/secrets/vault.js";
+  setStoredSecret,
+} from "../src/secrets/secret-metadata-runtime.js";
+import { decryptVault, encryptVault, loadVault, vaultPath } from "../src/secrets/vault.js";
 import { sha256 } from "../src/store/checksum.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 

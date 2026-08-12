@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { planApplyMutation } from "@cellarer/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { saveVault } from "../../core/src/secrets/vault.js";
+import { saveVault } from "../../core/src/secrets/secret-metadata-runtime.js";
 import { resolveContext } from "../src/context.js";
 import { HEADLESS_MUTATION_AUTHORITY_ENV } from "../src/mutation-authority.js";
 import { handleCliRunnerBoundaryError } from "../src/protocol/execution.js";

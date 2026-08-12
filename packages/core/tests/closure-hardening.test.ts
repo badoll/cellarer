@@ -18,7 +18,7 @@ import type { OperationJournal } from "../src/protocol/models.js";
 import { diagnoseMutationRecovery, recoverInterruptedOperation } from "../src/protocol/recovery.js";
 import * as activeSecretInternals from "../src/secrets/active-values.js";
 import * as observableSecretInternals from "../src/secrets/observable.js";
-import { setStoredSecret } from "../src/secrets/provider.js";
+import { setStoredSecret } from "../src/secrets/secret-metadata-runtime.js";
 import { sha256 } from "../src/store/checksum.js";
 import { entryKey } from "../src/store/ledger.js";
 import { initStore, writeRuleArtifact } from "../src/store/store.js";

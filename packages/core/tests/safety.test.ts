@@ -4,6 +4,7 @@ import {
   assertPathInside,
   isPathInside,
   isWithinRoot,
+  relativeInside,
 } from "../src/fs/safety.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
@@ -30,6 +31,18 @@ describe("fs/safety", () => {
       // 回归:不能用 rel.startsWith("..") 判越界,否则 ..config 被误判在 root 外。
       expect(isPathInside(t.path("root", "..config", "rules.md"), t.path("root"))).toBe(true);
       expect(isPathInside(t.path("root", "..hidden"), t.path("root"))).toBe(true);
+    });
+
+    it("requires absolute inputs when no Env cwd is available", () => {
+      expect(() => relativeInside("relative-root", "relative-root/child")).toThrow(
+        /must be absolute/,
+      );
+    });
+
+    it("normalizes POSIX and Windows aliases and rejects Windows cross-drive children", () => {
+      expect(relativeInside("/managed/./root", "/managed/root/dir/../rule.md")).toBe("rule.md");
+      expect(relativeInside("C:\\Store\\Root", "c:/store/root/dir/../rule.md")).toBe("rule.md");
+      expect(relativeInside("C:\\Store\\Root", "D:\\Store\\Root\\rule.md")).toBeNull();
     });
   });
 

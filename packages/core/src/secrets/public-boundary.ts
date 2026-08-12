@@ -1,9 +1,5 @@
 import type { Env } from "../env.js";
-import {
-  createProviderScope,
-  inventoryActiveSecretValues,
-  withProviderScope,
-} from "./active-values.js";
+import { createProviderScope, withProviderScope } from "./active-values.js";
 import { isSensitiveSecretFieldName } from "./detector.js";
 import {
   attachObservableKnownValues,
@@ -15,6 +11,7 @@ import {
   type SecretValue,
   serializeObservable,
 } from "./observable.js";
+import { inventoryActiveSecretValues } from "./provider-runtime.js";
 
 const OPEN_API_ROOT_KEYS = new Set([
   "openapi",

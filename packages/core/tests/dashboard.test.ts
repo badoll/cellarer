@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { planActionPresentationClass } from "../src/engine/plan-presentation.js";
 import { dashboardSummary } from "../src/index.js";
+import type { PlanAction } from "../src/model/index.js";
 import { loadConfig, saveConfig, tagArtifactCollections } from "../src/store/config.js";
 import { saveLedger } from "../src/store/ledger.js";
 import { initStore, writeMcpArtifact, writeRuleArtifact } from "../src/store/store.js";
@@ -74,6 +76,69 @@ describe("dashboard summary", () => {
       desiredCount: 0,
       percentage: null,
     });
+  });
+
+  it("keeps unsupported classification stable across action copies and serialization", () => {
+    const action: PlanAction = {
+      artifact: "mcp/*",
+      artifactIds: [],
+      agent: "agents-md",
+      scope: "global",
+      capability: "mcp",
+      target: "",
+      method: "symlink",
+      op: "skip",
+      reason: "capability mcp/global not supported",
+    };
+    const classified = action;
+    const supportedScopes: readonly PlanAction["scope"][] = [];
+
+    expect([
+      planActionPresentationClass(classified, supportedScopes),
+      planActionPresentationClass({ ...classified }, supportedScopes),
+      planActionPresentationClass(structuredClone(classified), supportedScopes),
+    ]).toEqual(["unsupported", "unsupported", "unsupported"]);
+  });
+
+  it("keeps coverage classification stable when only a blocked reason wording changes", async () => {
+    await writeRuleArtifact(t.env, storeRoot, "style", "# style");
+    const config = await loadConfig(t.env, storeRoot);
+    config.customAdapters.wording = {
+      rules: { global: "../not supported/reason.md" },
+      capabilities: { rules: ["global"], mcp: [], skills: [] },
+    };
+    await saveConfig(t.env, storeRoot, config);
+
+    const before = await dashboardSummary(t.env, {
+      storeRoot,
+      agents: ["wording"],
+      capabilities: ["rules"],
+    });
+    const changed = await loadConfig(t.env, storeRoot);
+    const wording = changed.customAdapters.wording;
+    if (!wording?.rules) throw new Error("missing wording adapter");
+    wording.rules.global = "../different presentation wording/reason.md";
+    await saveConfig(t.env, storeRoot, changed);
+    const after = await dashboardSummary(t.env, {
+      storeRoot,
+      agents: ["wording"],
+      capabilities: ["rules"],
+    });
+
+    const presentation = (summary: typeof before) => {
+      const group = summary.distributionCoverage[0];
+      return {
+        desiredCount: group?.desiredCount,
+        blockedCount: group?.blockedCount,
+        percentage: group?.percentage,
+      };
+    };
+    expect(presentation(before)).toEqual({
+      desiredCount: 1,
+      blockedCount: 1,
+      percentage: 0,
+    });
+    expect(presentation(after)).toEqual(presentation(before));
   });
 
   it("reports secret reference counts by ledger entry", async () => {

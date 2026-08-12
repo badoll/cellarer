@@ -14,6 +14,7 @@ import type { AssertExact, ExactContract, SettingsSummary } from "../protocol/cl
 import { registerObservablePublicControlPlaneConfig } from "../secrets/observable.js";
 
 export const CONFIG_FILENAME = "config.json";
+type ConfigReadContext = { readonly fs: Pick<Env["fs"], "readFile"> };
 export const PACKAGED_CONFIG_PATH = fileURLToPath(new URL("../../config.json", import.meta.url));
 export const NORMALIZED_STORE_RELATIVE_SOURCE_PATTERN =
   "^(?!/)(?!.*\\\\)(?![A-Za-z]:)(?!.*:)(?!.*%[0-9A-Fa-f]{2})(?!(?:.*\\/)?\\.{1,2}(?:\\/|$))(?!.*\\/\\/)(?!.*\\/$)[^/]+(?:\\/[^/]+)*$";
@@ -410,10 +411,14 @@ function adapterToSpec(id: string, a: AdapterBodyConfig): AgentSpec {
   };
 }
 
-export async function packagedConfigText(env: Env): Promise<string> {
+async function packagedConfigTextFromReadContext(env: ConfigReadContext): Promise<string> {
   const text = await env.fs.readFile(PACKAGED_CONFIG_PATH);
   parsePackagedConfig(text);
   return text.endsWith("\n") ? text : `${text}\n`;
+}
+
+export async function packagedConfigText(env: Env): Promise<string> {
+  return packagedConfigTextFromReadContext(env);
 }
 
 function userConfigTemplate(packaged: PackagedConfig): CellarerConfig {
@@ -427,20 +432,33 @@ function userConfigTemplate(packaged: PackagedConfig): CellarerConfig {
   };
 }
 
-export async function initialConfigText(env: Env): Promise<string> {
-  const initial = userConfigTemplate(parsePackagedConfig(await packagedConfigText(env)));
+async function initialConfigTextFromReadContext(env: ConfigReadContext): Promise<string> {
+  const initial = userConfigTemplate(
+    parsePackagedConfig(await packagedConfigTextFromReadContext(env)),
+  );
   return `${JSON.stringify(initial, null, 2)}\n`;
 }
 
-export async function loadConfig(env: Env, storeRoot: string): Promise<CellarerConfig> {
+export async function initialConfigText(env: Env): Promise<string> {
+  return initialConfigTextFromReadContext(env);
+}
+
+export async function loadConfigFromReadContext(
+  env: ConfigReadContext,
+  storeRoot: string,
+): Promise<CellarerConfig> {
   const path = join(storeRoot, CONFIG_FILENAME);
   const text = await readFileOrNull(env, path);
-  if (text === null) return parseConfig(await initialConfigText(env));
+  if (text === null) return parseConfig(await initialConfigTextFromReadContext(env));
   try {
     return parseConfig(text);
   } catch (err) {
     throw new InvalidConfigError(path, err);
   }
+}
+
+export async function loadConfig(env: Env, storeRoot: string): Promise<CellarerConfig> {
+  return loadConfigFromReadContext(env, storeRoot);
 }
 
 export class InvalidConfigError extends Error {

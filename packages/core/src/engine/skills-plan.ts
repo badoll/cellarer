@@ -26,7 +26,7 @@ export async function planSkills(
   adapter: AgentAdapter,
 ): Promise<PlanAction[]> {
   const skillsDir = adapter.paths(ctx.env, ctx.scope, ctx.dir).skillsDir;
-  if (!skillsDir || !adapter.skills || ctx.selectedSkills.length === 0) return [];
+  if (!skillsDir || ctx.selectedSkills.length === 0) return [];
 
   const op = ctx.method === "copy" ? "copy" : "symlink";
   return Promise.all(

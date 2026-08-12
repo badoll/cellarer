@@ -6,6 +6,7 @@ import {
   planStorePublicationMutation,
   type StorePublicationMutationPlan,
 } from "./protocol/store-mutation.js";
+import { activeSecretPublicationGuard } from "./secrets/publication-guard.js";
 import {
   type CellarerConfig,
   CONFIG_FILENAME,
@@ -75,6 +76,7 @@ function configMutationBindings(options: ConfigMutationOptions) {
     provenancePaths: options.provenancePaths ?? [join(options.storeRoot, CONFIG_FILENAME)],
     normalizedInputs: { ...(options.normalizedInputs ?? {}), changedFields: options.changedFields },
     selfContainedPublications: true,
+    secretPublicationGuard: activeSecretPublicationGuard,
     validatePublications: (publications: readonly { readonly data: string }[]) => {
       for (const publication of publications) validateConfigPublication(publication.data);
     },

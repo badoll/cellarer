@@ -1,13 +1,11 @@
-import type { Env } from "../env.js";
 import { isSensitiveSecretFieldName } from "./detector.js";
-import { listManagedKeychainSecretNames } from "./keychain-metadata.js";
-import { getKeychainSecret } from "./keychain-provider.js";
 import {
   attachObservableKnownValues,
   attachObservableProviderScope,
   createSecretValue,
   type SecretValue,
 } from "./observable.js";
+import type { KeychainGetPort, KeychainListPort, VaultReadPort } from "./provider-ports.js";
 import {
   cellarerSecretReference,
   environmentSecretReference,
@@ -15,7 +13,6 @@ import {
   type SecretReference,
   secretReferenceToken,
 } from "./reference.js";
-import { loadVault } from "./vault.js";
 
 export interface ActiveSecretValueOptions {
   readonly secretMode: "env" | "vault" | "keychain";
@@ -29,6 +26,32 @@ export interface ActiveSecretValue {
   readonly reference: SecretReference;
   readonly value: SecretValue;
 }
+
+interface SecretObservationInput<UseCase extends string, Observation extends object> {
+  readonly useCase: UseCase;
+  readonly environment: Readonly<Record<string, string | undefined>>;
+  readonly observation: Observation;
+  readonly scopeCarrier: object;
+}
+
+export type EnvironmentOnlySecretObservationInput = SecretObservationInput<
+  "environment-only",
+  Record<never, never>
+>;
+export type VaultReadSecretObservationInput = SecretObservationInput<"vault-read", VaultReadPort>;
+export type KeychainGetSecretObservationInput = SecretObservationInput<
+  "keychain-get",
+  KeychainGetPort
+>;
+export type KeychainInventorySecretObservationInput = SecretObservationInput<
+  "keychain-inventory",
+  KeychainGetPort & KeychainListPort
+>;
+export type SecretObservationUseCaseInput =
+  | EnvironmentOnlySecretObservationInput
+  | VaultReadSecretObservationInput
+  | KeychainGetSecretObservationInput
+  | KeychainInventorySecretObservationInput;
 
 export type ProviderAvailability = "available" | "missing" | "unavailable";
 
@@ -70,8 +93,8 @@ export function createProviderScope(options: ActiveSecretValueOptions): Provider
   } as MutableProviderScope;
 }
 
-export function withProviderScope(env: Env, scope: ProviderScope): Env {
-  const scoped = { ...env };
+export function withProviderScope<T extends object>(value: T, scope: ProviderScope): T {
+  const scoped = { ...value } as T;
   Object.defineProperty(scoped, PROVIDER_SCOPE, {
     value: scope,
     enumerable: false,
@@ -81,8 +104,8 @@ export function withProviderScope(env: Env, scope: ProviderScope): Env {
   return attachObservableProviderScope(scoped, scope);
 }
 
-export function providerScopeForEnv(env: Env): ProviderScope | undefined {
-  return (env as Env & { [PROVIDER_SCOPE]?: ProviderScope })[PROVIDER_SCOPE];
+export function providerScopeForEnv(value: object): ProviderScope | undefined {
+  return (value as { [PROVIDER_SCOPE]?: ProviderScope })[PROVIDER_SCOPE];
 }
 
 export function configureProviderScope(
@@ -131,12 +154,12 @@ export function discoverSecretReferences(texts: readonly string[]): SecretRefere
 }
 
 export async function resolveActiveSecretValues(
-  env: Env,
+  input: SecretObservationUseCaseInput,
   storeRoot: string,
   references: readonly SecretReference[],
   options: ActiveSecretValueOptions,
 ): Promise<ActiveSecretValue[]> {
-  const existingScope = providerScopeForEnv(env) as MutableProviderScope | undefined;
+  const existingScope = providerScopeForEnv(input.scopeCarrier) as MutableProviderScope | undefined;
   const scope =
     existingScope?.mode === options.secretMode &&
     existingScope.service === (options.keychainService ?? "cellarer")
@@ -152,7 +175,7 @@ export async function resolveActiveSecretValues(
       continue;
     }
     if (reference.kind !== "environment") continue;
-    const plaintext = env.env[reference.name];
+    const plaintext = input.environment[reference.name];
     addScopeValue(scope, reference, plaintext);
     if (!plaintext) unavailable.push(reference);
   }
@@ -166,7 +189,7 @@ export async function resolveActiveSecretValues(
     }
     let load = scope.referenceLoads.get(token);
     if (!load) {
-      load = loadCellarerReference(env, storeRoot, reference.name, options, scope);
+      load = loadCellarerReference(input, storeRoot, reference.name, options, scope);
       scope.referenceLoads.set(token, load);
     }
     const resolution = await load;
@@ -188,28 +211,31 @@ export async function resolveActiveSecretValues(
 }
 
 export async function inventoryActiveSecretValues(
-  env: Env,
+  input: SecretObservationUseCaseInput,
   storeRoot: string,
   options: ActiveSecretValueOptions,
 ): Promise<ActiveSecretValue[]> {
-  const existing = providerScopeForEnv(env) as MutableProviderScope | undefined;
+  const existing = providerScopeForEnv(input.scopeCarrier) as MutableProviderScope | undefined;
   const scope =
     existing?.mode === options.secretMode &&
     existing.service === (options.keychainService ?? "cellarer")
       ? existing
       : (createProviderScope(options) as MutableProviderScope);
-  const environmentReferences = Object.entries(env.env).flatMap(([name, value]) =>
+  const environmentReferences = Object.entries(input.environment).flatMap(([name, value]) =>
     value && isSensitiveSecretFieldName(name) ? [environmentSecretReference(name)] : [],
   );
   await resolveActiveSecretValues(
-    withProviderScope(env, scope),
+    { ...input, scopeCarrier: withProviderScope(input.scopeCarrier, scope) },
     storeRoot,
     environmentReferences,
     options,
   );
   if (options.secretMode === "vault" && options.vaultPassphrase) {
     try {
-      scope.vaultLoad ??= loadVault(env, storeRoot, options.vaultPassphrase);
+      if (input.useCase !== "vault-read") {
+        throw new TypeError("vault inventory requires the vault-read observation port");
+      }
+      scope.vaultLoad ??= input.observation.loadVault(storeRoot, options.vaultPassphrase);
       const vault = await scope.vaultLoad;
       for (const [name, plaintext] of Object.entries(vault)) {
         addScopeValue(scope, cellarerSecretReference(name), plaintext);
@@ -223,12 +249,14 @@ export async function inventoryActiveSecretValues(
       }
     }
   } else if (options.secretMode === "keychain") {
-    const names = await listManagedKeychainSecretNames(
-      env,
+    if (input.useCase !== "keychain-inventory") {
+      throw new TypeError("keychain inventory requires the keychain-inventory observation port");
+    }
+    const names = await input.observation.listManagedKeychainNames(
       storeRoot,
       options.keychainService ?? "cellarer",
     );
-    await resolveActiveSecretValues(env, storeRoot, names.map(cellarerSecretReference), options);
+    await resolveActiveSecretValues(input, storeRoot, names.map(cellarerSecretReference), options);
   }
   return scope.activeValues;
 }
@@ -252,20 +280,20 @@ function addScopeValue(
 }
 
 async function loadCellarerReference(
-  env: Env,
+  input: SecretObservationUseCaseInput,
   storeRoot: string,
   name: string,
   options: ActiveSecretValueOptions,
   scope: MutableProviderScope,
 ): Promise<ProviderResolution> {
   if (options.secretMode === "keychain") {
-    if (!env.secretStore) return { availability: "unavailable" };
+    if (input.useCase !== "keychain-get" && input.useCase !== "keychain-inventory") {
+      return { availability: "unavailable" };
+    }
+    const observation = input.observation;
+    if (!observation.keychainAvailable()) return { availability: "unavailable" };
     try {
-      const result = await getKeychainSecret(
-        env.secretStore,
-        options.keychainService ?? "cellarer",
-        name,
-      );
+      const result = await observation.getKeychain(options.keychainService ?? "cellarer", name);
       return result.found
         ? result.value.use((plaintext) => ({ availability: "available", plaintext }))
         : { availability: "missing" };
@@ -274,8 +302,9 @@ async function loadCellarerReference(
     }
   }
   if (!options.vaultPassphrase) return { availability: "unavailable" };
+  if (input.useCase !== "vault-read") return { availability: "unavailable" };
   try {
-    scope.vaultLoad ??= loadVault(env, storeRoot, options.vaultPassphrase);
+    scope.vaultLoad ??= input.observation.loadVault(storeRoot, options.vaultPassphrase);
     const vault = await scope.vaultLoad;
     const plaintext = vault[name];
     return plaintext === undefined
@@ -287,12 +316,12 @@ async function loadCellarerReference(
 }
 
 export async function discoverActiveSecretValues(
-  env: Env,
+  input: SecretObservationUseCaseInput,
   storeRoot: string,
   texts: readonly string[],
   options: ActiveSecretValueOptions,
 ): Promise<ActiveSecretValue[]> {
-  return resolveActiveSecretValues(env, storeRoot, discoverSecretReferences(texts), options);
+  return resolveActiveSecretValues(input, storeRoot, discoverSecretReferences(texts), options);
 }
 
 export function knownSecretValueOffsets(

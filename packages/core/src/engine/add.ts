@@ -21,8 +21,6 @@ import {
   attachProviderScope,
   containsKnownSecretValue,
   createProviderScope,
-  discoverActiveSecretValues,
-  inventoryActiveSecretValues,
   type ProviderScope,
   withProviderScope,
 } from "../secrets/active-values.js";
@@ -31,6 +29,11 @@ import {
   scanStructuredFileSecretFindings,
   scanTextForSecrets,
 } from "../secrets/detector.js";
+import {
+  discoverActiveSecretValues,
+  inventoryActiveSecretValues,
+} from "../secrets/provider-runtime.js";
+import { activeSecretPublicationGuard } from "../secrets/publication-guard.js";
 import {
   assertSafeRecursiveSnapshotCurrent,
   captureSafeRecursiveSource,
@@ -128,6 +131,23 @@ export interface AddResult {
   operation?: OperationResult;
 }
 
+export type StructuredSkillRejectionResult =
+  | { readonly kind: "allow" }
+  | { readonly kind: "reject"; readonly displayText: string };
+
+export function recordStructuredSkillRejection(
+  result: AddResult,
+  name: string,
+  decision: StructuredSkillRejectionResult,
+): void {
+  switch (decision.kind) {
+    case "allow":
+      return;
+    case "reject":
+      result.rejected.push({ kind: "skills", name, reason: decision.displayText });
+  }
+}
+
 interface PreparedAddAction extends PreparedStoreMutationAction {
   imported?: { kind: ArtifactKind; name: string; path: string };
 }
@@ -135,12 +155,26 @@ interface PreparedAddAction extends PreparedStoreMutationAction {
 interface PreparedAdd {
   result: AddResult;
   actions: PreparedAddAction[];
+  policy: PreparedAddPolicy;
 }
+
+type PreparedAddPolicy =
+  | { readonly kind: "allowed" }
+  | { readonly kind: "structured-secret-guard" };
 
 class StructuredAddGuardError extends Error {
   constructor() {
     super("structured import validation failed before protocol publication");
     this.name = "StructuredAddGuardError";
+  }
+}
+
+function enforcePreparedAddPolicy(policy: PreparedAddPolicy): void {
+  switch (policy.kind) {
+    case "allowed":
+      return;
+    case "structured-secret-guard":
+      throw new StructuredAddGuardError();
   }
 }
 
@@ -242,23 +276,26 @@ async function structuredLocalFileRejection(
 async function structuredSkillRejection(
   env: Env,
   candidate: SkillCandidate,
-): Promise<string | null> {
-  if (candidate.rejected) return null;
+): Promise<StructuredSkillRejectionResult> {
+  if (candidate.rejected) return { kind: "allow" };
   let snapshot: SafeRecursiveSnapshot;
   try {
     snapshot = await safeSourceSnapshot(env, candidate.path);
   } catch (error) {
-    if (error instanceof UnsafeRecursiveSourceError) return null;
+    if (error instanceof UnsafeRecursiveSourceError) return { kind: "allow" };
     throw error;
   }
-  if (snapshot.kind !== "directory") return null;
+  if (snapshot.kind !== "directory") return { kind: "allow" };
   const findings = snapshot.files.flatMap((file) =>
     scanStructuredFileSecretFindings(file.relativePath, file.content),
   );
-  if (findings.length === 0) return null;
-  return `structured sensitive-field finding(s) [${[
-    ...new Set(findings.map((finding) => `${finding.source}:${finding.rule}`)),
-  ].join(", ")}] — replace plaintext with a supported reference before importing`;
+  if (findings.length === 0) return { kind: "allow" };
+  return {
+    kind: "reject",
+    displayText: `structured sensitive-field finding(s) [${[
+      ...new Set(findings.map((finding) => `${finding.source}:${finding.rule}`)),
+    ].join(", ")}] — replace plaintext with a supported reference before importing`,
+  };
 }
 
 // mcp 结构化密钥检测(名字启发 + 高熵,强于纯文本的 high-value 前缀扫描)。
@@ -307,12 +344,12 @@ async function addLocalFile(
 
   if (!opts.force && (await nameExists(env, opts.storeRoot, kind, name))) {
     result.skipped.push({ kind, name, reason: "already exists (use --force to overwrite)" });
-    return { result, actions: [] };
+    return { result, actions: [], policy: { kind: "allowed" } };
   }
 
-  const reject = (reason: string): PreparedAdd => {
+  const reject = (reason: string, policy: PreparedAddPolicy = { kind: "allowed" }): PreparedAdd => {
     result.rejected.push({ kind, name, reason });
-    return { result, actions: [] };
+    return { result, actions: [], policy };
   };
 
   let snapshot: SafeRecursiveSnapshot;
@@ -362,6 +399,7 @@ async function addLocalFile(
         `structured mcp field finding(s) [${[
           ...new Set(structuredHits.map((finding) => finding.rule)),
         ].join(", ")}] — replace plaintext with a supported reference before importing`,
+        { kind: "structured-secret-guard" },
       );
     }
     let raw: unknown;
@@ -415,7 +453,7 @@ async function addLocalFile(
     };
   }
 
-  return { result, actions: [action] };
+  return { result, actions: [action], policy: { kind: "allowed" } };
 }
 
 function parseGitHubSource(source: string): GitHubSource | null {
@@ -873,14 +911,14 @@ async function importSkillCandidate(
   candidate: SkillCandidate,
   result: AddResult,
   actions: PreparedAddAction[],
-): Promise<void> {
+): Promise<PreparedAddPolicy> {
   if (candidate.rejected) {
     result.rejected.push({
       kind: "skills",
       name: candidate.name,
       reason: candidate.rejectionReason ?? "candidate rejected",
     });
-    return;
+    return { kind: "allowed" };
   }
   if (!opts.force && (await nameExists(env, opts.storeRoot, "skills", candidate.name))) {
     result.skipped.push({
@@ -888,7 +926,7 @@ async function importSkillCandidate(
       name: candidate.name,
       reason: "already exists (use --force to overwrite)",
     });
-    return;
+    return { kind: "allowed" };
   }
 
   let snapshot: SafeRecursiveSnapshot;
@@ -901,7 +939,7 @@ async function importSkillCandidate(
       name: candidate.name,
       reason: unsafeRecursiveReason(error),
     });
-    return;
+    return { kind: "allowed" };
   }
   if (snapshot.kind !== "directory") {
     result.rejected.push({
@@ -909,7 +947,7 @@ async function importSkillCandidate(
       name: candidate.name,
       reason: `unsafe recursive source (non-regular) at ${candidate.path}`,
     });
-    return;
+    return { kind: "allowed" };
   }
   const payloadText = snapshot.files.map((file) => file.content).join("\n");
 
@@ -924,7 +962,7 @@ async function importSkillCandidate(
         ...new Set(structuredHits.map((finding) => `${finding.source}:${finding.rule}`)),
       ].join(", ")}] — replace plaintext with a supported reference before importing`,
     });
-    return;
+    return { kind: "structured-secret-guard" };
   }
 
   const textHits = scanTextForSecrets(payloadText);
@@ -934,7 +972,7 @@ async function importSkillCandidate(
       name: candidate.name,
       reason: `plaintext secret(s) [${textHits.map((h) => h.rule).join(", ")}] — replace with \${ENV} or \${CELLARER_SECRET:name} before importing`,
     });
-    return;
+    return { kind: "allowed" };
   }
   if (await containsActiveKnownValue(env, opts, payloadText)) {
     result.rejected.push({
@@ -943,7 +981,7 @@ async function importSkillCandidate(
       reason:
         "known secret value is present beside an active reference — remove plaintext before importing",
     });
-    return;
+    return { kind: "allowed" };
   }
 
   const path = join(opts.storeRoot, "store", "skills", candidate.name);
@@ -988,6 +1026,7 @@ async function importSkillCandidate(
       },
     },
   );
+  return { kind: "allowed" };
 }
 
 function skillSourceDescriptor(
@@ -1025,9 +1064,7 @@ async function executeAddTransaction(
     "add",
     async () => {
       const prepared = await prepare();
-      if (prepared.result.rejected.some((item) => /structured/i.test(item.reason))) {
-        throw new StructuredAddGuardError();
-      }
+      enforcePreparedAddPolicy(prepared.policy);
       const imported = prepared.actions.flatMap((action) =>
         action.imported ? [action.imported] : [],
       );
@@ -1038,7 +1075,7 @@ async function executeAddTransaction(
         ...(publications.length > 0 ? { publications } : {}),
       };
     },
-    { authorityLease },
+    { authorityLease, secretPublicationGuard: activeSecretPublicationGuard },
   );
   const successfulActionIds = new Set(
     transaction.operation.ok
@@ -1174,8 +1211,8 @@ async function addWithAuthorityLease(
       preflight.candidates = visibleCandidates(candidates, opts.collection === "internal");
       const selected = selectCandidates(candidates, opts, preflight);
       for (const candidate of selected) {
-        const reason = await structuredSkillRejection(operationEnv, candidate);
-        if (reason) preflight.rejected.push({ kind: "skills", name: candidate.name, reason });
+        const decision = await structuredSkillRejection(operationEnv, candidate);
+        recordStructuredSkillRejection(preflight, candidate.name, decision);
       }
       if (preflight.rejected.length > 0) return attachProviderScope(preflight, scope);
       const result = await executeAddTransaction(
@@ -1186,10 +1223,19 @@ async function addWithAuthorityLease(
           prepared.candidates = visibleCandidates(candidates, opts.collection === "internal");
           const selectedCandidates = selectCandidates(candidates, opts, prepared);
           const actions: PreparedAddAction[] = [];
+          let policy: PreparedAddPolicy = { kind: "allowed" };
           for (const candidate of selectedCandidates) {
-            await importSkillCandidate(operationEnv, opts, stage, candidate, prepared, actions);
+            const candidatePolicy = await importSkillCandidate(
+              operationEnv,
+              opts,
+              stage,
+              candidate,
+              prepared,
+              actions,
+            );
+            if (candidatePolicy.kind === "structured-secret-guard") policy = candidatePolicy;
           }
-          return { result: prepared, actions };
+          return { result: prepared, actions, policy };
         },
         requireAddMutationLease(authorityLease),
       );

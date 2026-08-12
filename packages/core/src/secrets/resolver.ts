@@ -1,12 +1,10 @@
 // 密钥解析(下发期):占位符 → 真值,来源分层(env / vault / keychain)。
 // 安全约束:解析只在「必须明文」的 agent 落地路径上发生;默认下发保留 ${ENV_VAR} 不解析(零落盘)。
 // 日志/错误绝不回显真值(用 [REDACTED] / 引用名)。
-import type { Env } from "../env.js";
-import { getKeychainSecret } from "./keychain-provider.js";
+import type { SecretObservationUseCaseInput } from "./active-values.js";
 import { createSecretValue, type SecretValue } from "./observable.js";
 import { parseSecretRef, type SecretRef } from "./redactor.js";
 import type { SecretMode } from "./types.js";
-import { loadVault } from "./vault.js";
 
 // 解析所需的密钥来源(按 mode 注入,避免下发期总是要口令)。
 export interface SecretSources {
@@ -29,7 +27,7 @@ export interface ResolveOutcome {
 // - ${CELLARER_SECRET:name}:按 mode 从 vault / keychain 取真值。
 // 非占位符(已是明文或普通值)→ 原样返回(resolved:true)。
 export async function resolveSecretValue(
-  env: Env,
+  input: SecretObservationUseCaseInput,
   storeRoot: string,
   value: string,
   sources: SecretSources,
@@ -38,7 +36,7 @@ export async function resolveSecretValue(
   if (!ref) return { resolved: true, value: createSecretValue(value) };
 
   if (ref.kind === "env") {
-    const real = env.env[ref.name];
+    const real = input.environment[ref.name];
     if (real === undefined || real.length === 0) {
       return { resolved: false, reason: `env var "${ref.name}" not set` };
     }
@@ -46,23 +44,26 @@ export async function resolveSecretValue(
   }
 
   // vault 引用:按 mode 决定来源。
-  return resolveVaultRef(env, storeRoot, ref, sources);
+  return resolveVaultRef(input, storeRoot, ref, sources);
 }
 
 async function resolveVaultRef(
-  env: Env,
+  input: SecretObservationUseCaseInput,
   storeRoot: string,
   ref: SecretRef,
   sources: SecretSources,
 ): Promise<ResolveOutcome> {
   if (sources.mode === "keychain") {
-    if (!env.secretStore) {
+    if (input.useCase !== "keychain-get" && input.useCase !== "keychain-inventory") {
+      return { resolved: false, reason: "keychain unavailable (no keychain get port injected)" };
+    }
+    if (!input.observation.keychainAvailable()) {
       return { resolved: false, reason: "keychain unavailable (no SecretStore injected)" };
     }
     const service = sources.keychainService ?? "cellarer";
-    let got: Awaited<ReturnType<typeof getKeychainSecret>>;
+    let got: Awaited<ReturnType<typeof input.observation.getKeychain>>;
     try {
-      got = await getKeychainSecret(env.secretStore, service, ref.name);
+      got = await input.observation.getKeychain(service, ref.name);
     } catch {
       return { resolved: false, reason: `keychain provider unavailable for "${ref.name}"` };
     }
@@ -76,7 +77,10 @@ async function resolveVaultRef(
   // 每个 operation 的调用方在更外层 provider scope 中负责去重加载。
   let vault: Record<string, string>;
   if (sources.vaultPassphrase) {
-    vault = await loadVault(env, storeRoot, sources.vaultPassphrase);
+    if (input.useCase !== "vault-read") {
+      return { resolved: false, reason: "vault unavailable (no vault read port injected)" };
+    }
+    vault = await input.observation.loadVault(storeRoot, sources.vaultPassphrase);
   } else {
     return { resolved: false, reason: "vault passphrase not provided" };
   }
@@ -88,7 +92,7 @@ async function resolveVaultRef(
 
 // 批量解析一组字段(mcp 的 env/headers)。任一解析失败 → unresolved 收集,调用方决定降级或中止。
 export async function resolveFields(
-  env: Env,
+  input: SecretObservationUseCaseInput,
   storeRoot: string,
   fields: Record<string, string>,
   sources: SecretSources,
@@ -99,7 +103,7 @@ export async function resolveFields(
   const resolved: Record<string, string | SecretValue> = {};
   const unresolved: { field: string; reason: string }[] = [];
   for (const [field, value] of Object.entries(fields)) {
-    const outcome = await resolveSecretValue(env, storeRoot, value, sources);
+    const outcome = await resolveSecretValue(input, storeRoot, value, sources);
     if (outcome.resolved && outcome.value !== undefined) {
       resolved[field] = outcome.value;
     } else {
