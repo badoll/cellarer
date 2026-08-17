@@ -594,6 +594,11 @@ export {
   loadLedger,
   targetKey,
 } from "./store/ledger.js";
+export {
+  observeStoreConfigSnapshot,
+  type StoreConfigSnapshot,
+  type StoreConfigSnapshotObservation,
+} from "./store/snapshot.js";
 export type { InitResult } from "./store/store.js";
 export {
   isSafeArtifactName,

@@ -6,6 +6,7 @@ describe("@cellarer/core package root", () => {
     expect(core).toHaveProperty("initializeStore");
     expect(core).toHaveProperty("recoverInterruptedOperation");
     expect(core).toHaveProperty("pruneOperationRecoveryArtifacts");
+    expect(core).toHaveProperty("observeStoreConfigSnapshot");
     expect(core).not.toHaveProperty("initStore");
     expect(core).not.toHaveProperty("executeMutationPlan");
     expect(core).not.toHaveProperty("publishOperationJournal");

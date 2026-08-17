@@ -15,6 +15,10 @@ export async function readStoreRevision(env: Env, storeRoot: string): Promise<St
     if ((error as { code?: string }).code === "ENOENT") return null;
     throw error;
   });
+  return parseStoreRevisionRecord(text, path);
+}
+
+export function parseStoreRevisionRecord(text: string | null, path: string): StoreRevision {
   if (text === null) return 0;
   try {
     const value = JSON.parse(text) as { schemaVersion?: unknown; revision?: unknown };

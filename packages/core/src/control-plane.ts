@@ -44,6 +44,7 @@ import {
   parsePackagedConfigForSettings,
   projectPublicControlPlaneConfig,
 } from "./store/config.js";
+import { observeStoreConfigSnapshot } from "./store/snapshot.js";
 
 export type {
   ControlPlaneAgentDto,
@@ -346,11 +347,17 @@ export async function showControlPlaneConfig(
   env: Env,
   opts: ControlPlaneStoreOptions,
 ): Promise<ControlPlaneConfigDto> {
-  const [config, revision] = await Promise.all([
-    loadConfig(env, opts.storeRoot),
-    readStoreRevision(env, opts.storeRoot),
-  ]);
-  return { revision, config: projectPublicControlPlaneConfig(config) };
+  const observation = await observeStoreConfigSnapshot(env, opts.storeRoot);
+  if (!observation.ok) {
+    throw Object.assign(
+      new Error(`control-plane configuration observation failed: ${observation.error.code}`),
+      observation.error,
+    );
+  }
+  return {
+    revision: observation.snapshot.revision,
+    config: projectPublicControlPlaneConfig(observation.snapshot.configuration),
+  };
 }
 
 export function validateControlPlaneConfig(input: unknown): ControlPlaneConfigValidationDto {

@@ -1,4 +1,6 @@
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { Env } from "../src/env.js";
 import {
   diffControlPlane,
   discoverySummaryControlPlane,
@@ -17,7 +19,12 @@ import {
   validateControlPlaneConfig,
   verifyControlPlane,
 } from "../src/index.js";
-import { tagArtifactCollections } from "../src/store/config.js";
+import { readStoreRevision } from "../src/protocol/store-revision.js";
+import {
+  loadConfig,
+  projectPublicControlPlaneConfig,
+  tagArtifactCollections,
+} from "../src/store/config.js";
 import { saveLedger } from "../src/store/ledger.js";
 import { initStore, writeRuleArtifact } from "../src/store/store.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
@@ -283,3 +290,99 @@ describe("shared control-plane DTO contracts", () => {
     expect(hostile.executions()).toBe(0);
   });
 });
+
+describe("control-plane config snapshot", () => {
+  let t: TmpEnv;
+  let storeRoot: string;
+  let configurationPath: string;
+  let revisionPath: string;
+
+  beforeEach(async () => {
+    t = makeTmpEnv();
+    await ensureBaseDirs(t);
+    storeRoot = t.path("home", ".cellarer");
+    configurationPath = join(storeRoot, "config.json");
+    revisionPath = join(storeRoot, "revision.json");
+    await initStore(t.env, storeRoot);
+  });
+
+  afterEach(() => t.cleanup());
+
+  it("config preserves the legacy projected DTO exactly", async () => {
+    await writeControlPlaneConfiguration(t, configurationPath, "parity");
+    await writeControlPlaneRevision(t, revisionPath, 5);
+    const expected = {
+      revision: await readStoreRevision(t.env, storeRoot),
+      config: projectPublicControlPlaneConfig(await loadConfig(t.env, storeRoot)),
+    };
+
+    const result = await showControlPlaneConfig(t.env, { storeRoot });
+
+    expect(result).toEqual(expected);
+    expect(Object.keys(result).sort()).toEqual(["config", "revision"]);
+  });
+
+  it("config retries concurrent drift instead of returning a mixed DTO", async () => {
+    await writeControlPlaneConfiguration(t, configurationPath, "discarded");
+    await writeControlPlaneRevision(t, revisionPath, 0);
+    const baseReadFile = t.env.fs.readFile;
+    const baseSnapshotPathNoFollow = t.env.fs.snapshotPathNoFollow;
+    let releaseConfigRead: (() => void) | undefined;
+    const configRead = new Promise<void>((resolve) => {
+      releaseConfigRead = resolve;
+    });
+    let configurationSnapshots = 0;
+    const advanceStore = async () => {
+      await writeControlPlaneConfiguration(t, configurationPath, "accepted");
+      await writeControlPlaneRevision(t, revisionPath, 1);
+    };
+    const env: Env = {
+      ...t.env,
+      fs: {
+        ...t.env.fs,
+        readFile: async (path) => {
+          if (path === configurationPath) {
+            const text = await baseReadFile(path);
+            releaseConfigRead?.();
+            return text;
+          }
+          if (path === revisionPath) {
+            await configRead;
+            await advanceStore();
+          }
+          return baseReadFile(path);
+        },
+        snapshotPathNoFollow: async (anchorRoot, path) => {
+          const snapshot = await baseSnapshotPathNoFollow(anchorRoot, path);
+          if (path === configurationPath) {
+            configurationSnapshots += 1;
+            if (configurationSnapshots === 1) await advanceStore();
+          }
+          return snapshot;
+        },
+      },
+    };
+
+    const result = await showControlPlaneConfig(env, { storeRoot });
+
+    expect(result.revision).toBe(1);
+    expect(result.config.collections.accepted?.description).toBe("accepted");
+    expect(result.config.collections.discarded).toBeUndefined();
+    expect(configurationSnapshots).toBe(2);
+  });
+});
+
+async function writeControlPlaneConfiguration(
+  t: TmpEnv,
+  path: string,
+  name: string,
+): Promise<void> {
+  await t.env.fs.writeFile(
+    path,
+    `${JSON.stringify({ collections: { [name]: { description: name } } })}\n`,
+  );
+}
+
+async function writeControlPlaneRevision(t: TmpEnv, path: string, revision: number): Promise<void> {
+  await t.env.fs.writeFile(path, `${JSON.stringify({ schemaVersion: 1, revision })}\n`);
+}
