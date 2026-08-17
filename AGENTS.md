@@ -35,7 +35,21 @@ in OpenSpec.
 
 - Preserve unrelated and uncommitted work. Prefer TDD for behavior changes,
   temporary directories, and injected or fake `Env` objects for filesystem tests.
-- Iterate with the narrowest relevant check, then run the applicable full gate:
+- Keep at most one change in implementation. The controller selects one coherent
+  task group and one writer; that writer owns its first repair wave. Planning,
+  status, findings, and completion remain in OpenSpec rather than a second plan
+  or progress ledger.
+- Use focused checks inside a task group. Use one combined review for integration
+  work and one adversarial review for high-risk mutation, recovery, ownership, or
+  secret work. After one repair wave, re-review only the findings and affected
+  paths; if the same Important/Critical class recurs or scope crosses an
+  undeclared capability/package/boundary, stop and update the OpenSpec artifacts.
+- Superpowers techniques such as TDD and systematic debugging may support the
+  selected task. Do not add brainstorming, writing-plans, executing-plans,
+  subagent-driven-development, or branch-finishing as parallel workflow controllers
+  unless the user explicitly requests them.
+- Run the applicable full gate once when closing the change, and repeat it only
+  after a final cross-cutting repair:
 
   ```bash
   pnpm build

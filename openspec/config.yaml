@@ -12,13 +12,17 @@ rules:
   proposal:
     - State the user-visible problem, outcome, non-goals, affected capabilities, and compatibility impact.
     - Prefer the smallest coherent change; do not include implementation progress or validation evidence.
+    - Add an Execution Contract with exact `Risk` (`mechanical`, `integration`, or `high`), `Depends on` (change ids or `none`), and `Allowed paths` entries; refresh it after every dependency is archived.
   specs:
     - Describe stable accepted behavior only, using normative requirements and independently testable scenarios.
     - Keep release status, platform evidence, task completion, and historical decisions out of current specs.
   design:
     - Preserve Core-first composition, injected Env effects, plan/apply authority, adapter boundaries, ownership recovery, and reference-only secrets.
     - Record meaningful trade-offs and rejected alternatives without repeating the proposal or task list.
+    - High-risk changes must freeze explicit proof obligations or an attack/state matrix before implementation begins.
   tasks:
-    - Group work into independently verifiable deliverables and include relevant tests, public docs, and OpenSpec validation.
+    - Each top-level task group is one independently reviewable slice, names its focused `Verification`, and stays within the proposal's allowed paths and one primary invariant.
+    - Split unbounded work such as `all`, `every`, or whole-repository migrations unless the scope is generated and mechanically checkable.
+    - Include relevant tests, public docs, and OpenSpec validation, but list the full build/test/lint/typecheck gate only once at change closure.
     - User-visible behavior updates keep English and Simplified Chinese public documentation aligned.
     - Completion checkboxes report implementation work only; archive and remote Git actions remain separate explicit steps.

@@ -19,6 +19,7 @@
     "test:watch": "vitest",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
+    "openspec:preflight": "node scripts/openspec-preflight.mjs",
     "typecheck": "turbo run typecheck"
   },
   "devDependencies": {

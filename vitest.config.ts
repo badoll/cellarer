@@ -29,6 +29,14 @@ export default defineConfig({
           environment: "node",
         },
       },
+      {
+        test: {
+          name: "tooling",
+          root: ".",
+          include: ["scripts/**/*.test.mjs"],
+          environment: "node",
+        },
+      },
     ],
   },
 });
