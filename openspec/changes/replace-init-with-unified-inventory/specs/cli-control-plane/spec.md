@@ -19,34 +19,6 @@ Initialization SHALL create or validate Store state and automatically refresh co
 - **WHEN** Store initialization succeeds but Inventory refresh is partial or failed
 - **THEN** the CLI reports the states separately and provides an exact refresh retry without undoing Store initialization
 
-### Requirement: Custom Agent mutation refreshes Inventory after commit
-After a Custom Agent add or update commits, the composing client SHALL refresh only that adapter. Refresh failure MUST NOT roll back or misreport the completed adapter mutation and SHALL include an exact manual retry.
-
-#### Scenario: Custom Agent add reveals resources
-- **WHEN** a valid Custom Agent with readable paths is added
-- **THEN** the completed mutation result includes its targeted Inventory summary
-
-#### Scenario: Post-commit refresh fails
-- **WHEN** adapter configuration commits but targeted refresh fails
-- **THEN** the mutation remains successful and the result warns to run `cellarer inventory refresh --agent <id>`
-
-## MODIFIED Requirements
-
-### Requirement: CLI exposes operational state and evidence
-The CLI SHALL provide desired/applied diff, target status, combined verification, Inventory refresh summaries, and redacted operation list/show commands using shared Core DTOs. Superseded discovery-summary and mutating-scan commands MUST NOT remain as alternative product paths.
-
-#### Scenario: Desired configuration changed after apply
-- **WHEN** a resource or collection selection changes without applying
-- **THEN** `diff` reports the exact proposed target actions while `status` continues to report current owned target health
-
-#### Scenario: Inventory summary is requested
-- **WHEN** a user runs `inventory refresh`
-- **THEN** it reports candidate counts and completeness without importing or writing target state
-
-#### Scenario: Operation receipt is queried
-- **WHEN** `operation show` receives a completed operation ID
-- **THEN** it returns plan identity, revisions, redacted action outcomes, and recovery status
-
 ## REMOVED Requirements
 
 ### Requirement: First-run target selection is explicit

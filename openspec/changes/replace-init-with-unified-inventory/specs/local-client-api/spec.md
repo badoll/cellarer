@@ -14,14 +14,3 @@ The bundled Web first-run journey SHALL load live Inventory, render aggregate st
 #### Scenario: Import completes
 - **WHEN** the Store import succeeds
 - **THEN** the client offers Library and a separate Sync journey without writing an agent target
-
-### Requirement: Superseded discovery and scan routes are removed
-After bundled-client migration, `/api/v1` capability discovery, route registration, OpenAPI, and closed schemas MUST expose only unified Inventory refresh/import for this journey and MUST NOT retain obsolete discovery, scan, or overlapping import shapes.
-
-#### Scenario: Removed route is requested
-- **WHEN** a caller requests a superseded discovery or scan route shape
-- **THEN** the server returns not found without invoking Core or advertising an alias
-
-#### Scenario: Contract still advertises a removed route
-- **WHEN** route implementation and published OpenAPI differ after migration
-- **THEN** contract parity tests fail before the change can be closed
