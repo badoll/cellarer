@@ -1,7 +1,13 @@
 import { readFileSync } from "node:fs";
 import { CLI_PROTOCOL_VERSION, type CliErrorCode, type CliResultEnvelope } from "@cellarer/core";
+import { Command } from "commander";
 import { describe, expect, it } from "vitest";
 import { buildProgram } from "../src/program.js";
+import {
+  createCommandCatalog,
+  defineCommandContract,
+  defineCommandDomain,
+} from "../src/protocol/command-contract.js";
 import {
   commandRegistry,
   getCommandDefinition,
@@ -10,7 +16,7 @@ import {
 import { CLI_EXIT_CODE, exitCodeForError } from "../src/protocol/exit-mapper.js";
 import { createProtocolRenderer } from "../src/protocol/renderer.js";
 import { resolveRequestId } from "../src/protocol/request-id.js";
-import type { JsonSchema } from "../src/protocol/schemas.js";
+import { type JsonSchema, jsonSchema } from "../src/protocol/schemas.js";
 
 interface GoldenFixture {
   success: CliResultEnvelope<{ items: never[] }>;
@@ -445,6 +451,142 @@ function expectDeeplyFrozen(value: unknown, seen = new WeakSet<object>()): void 
   seen.add(value);
   expect(Object.isFrozen(value)).toBe(true);
   for (const child of Object.values(value)) expectDeeplyFrozen(child, seen);
+}
+
+describe("command contract kernel", () => {
+  it("generates Commander registration and every protocol projection from one aggregate", async () => {
+    const contract = testCommandContract("probe.echo");
+    const catalog = createCommandCatalog([
+      defineCommandDomain({ id: "probe", contracts: [contract] }),
+    ]);
+    const program = new Command();
+    const invoked: string[] = [];
+
+    catalog.registerCommander(program, async (selected) => {
+      invoked.push(selected.command);
+    });
+    await program.parseAsync(["node", "test", "probe", "echo", "--message", "hello"], {
+      from: "node",
+    });
+
+    expect(invoked).toEqual(["probe.echo"]);
+    expect(catalog.getCapabilities().commands).toEqual([
+      {
+        command: "probe.echo",
+        mutability: "read",
+        streaming: false,
+        inputSchemaId: contract.inputSchemaId,
+        outputSchemaId: contract.outputSchemaId,
+        requiredFeatures: ["probe"],
+      },
+    ]);
+    expect(catalog.getInputBindings("probe.echo")).toEqual([
+      { field: "message", option: "message" },
+    ]);
+    expect(catalog.getRendererMetadata("probe.echo")).toEqual({
+      command: "probe.echo",
+      streaming: false,
+      outputSchema: contract.outputSchema,
+    });
+    const schemaBundle = catalog.getSchemaBundle();
+    expect(
+      schemaBundle?.schemas
+        .map(({ schemaId }) => schemaId)
+        .filter((schemaId) => schemaId.includes("command:probe.echo")),
+    ).toEqual([contract.inputSchemaId, contract.outputSchemaId]);
+    expect(
+      schemaBundle?.schemas.find(({ schemaId }) => schemaId === contract.inputSchemaId)?.schema,
+    ).not.toBe(contract.inputSchema);
+    expectDeeplyFrozen(schemaBundle);
+  });
+
+  it("rejects executable leaves without contracts and contracts without executable leaves", () => {
+    const catalog = createCommandCatalog([
+      defineCommandDomain({ id: "probe", contracts: [testCommandContract("probe.echo")] }),
+    ]);
+
+    expect(() => catalog.assertExecutableParity(["probe.echo", "probe.orphan"])).toThrow(
+      /executable command probe\.orphan has no contract/,
+    );
+    expect(() => catalog.assertExecutableParity([])).toThrow(
+      /contract probe\.echo has no executable command/,
+    );
+  });
+
+  it("rejects duplicate command paths and schema IDs", () => {
+    const first = testCommandContract("probe.echo");
+    const second = testCommandContract("probe.other");
+    const duplicateInputSchema = {
+      ...second,
+      inputSchemaId: first.inputSchemaId,
+      inputSchema: { ...second.inputSchema, $id: first.inputSchemaId },
+    };
+
+    expect(() =>
+      createCommandCatalog([
+        defineCommandDomain({ id: "one", contracts: [first] }),
+        defineCommandDomain({ id: "two", contracts: [first] }),
+      ]),
+    ).toThrow(/duplicate command path probe\.echo/);
+    expect(() =>
+      createCommandCatalog([
+        defineCommandDomain({ id: "one", contracts: [first, duplicateInputSchema] }),
+      ]),
+    ).toThrow(/duplicate schema ID/);
+  });
+
+  it("rejects invalid streaming, schema identity, and input-binding combinations", () => {
+    const base = testCommandContract("probe.echo");
+
+    expect(() =>
+      createCommandCatalog([
+        defineCommandDomain({ id: "probe", contracts: [{ ...base, streaming: true }] }),
+      ]),
+    ).toThrow(/event schema exactly when streaming/);
+    expect(() =>
+      createCommandCatalog([
+        defineCommandDomain({
+          id: "probe",
+          contracts: [{ ...base, inputSchemaId: "urn:wrong" }],
+        }),
+      ]),
+    ).toThrow(/input schema ID/);
+    expect(() =>
+      defineCommandContract({
+        ...testCommandContractInput("probe.unbound"),
+        bindings: [],
+      }),
+    ).toThrow(/input bindings/);
+  });
+});
+
+function testCommandContract(command: string) {
+  return defineCommandContract(testCommandContractInput(command));
+}
+
+function testCommandContractInput(command: string) {
+  const leafName = command.split(".").at(-1) as string;
+  return {
+    command,
+    mutability: "read" as const,
+    requiredFeatures: ["probe"],
+    input: jsonSchema.object({ message: jsonSchema.string() }),
+    bindings: [{ field: "message", option: "message" }],
+    output: jsonSchema.object({ echoed: jsonSchema.string() }, ["echoed"]),
+    createCommand: () =>
+      new Command(leafName).description("echo a probe value").option("--message <message>"),
+    normalize: ({ command: leaf }: { command: Command }) => ({
+      message: String(leaf.opts().message ?? ""),
+    }),
+    execute: async (input: { message: string }) => ({
+      ok: true as const,
+      data: { echoed: input.message },
+      warnings: [],
+      context: input,
+    }),
+    presentText: () => undefined,
+    mapError: () => undefined,
+  };
 }
 
 describe("agent CLI protocol foundation", () => {

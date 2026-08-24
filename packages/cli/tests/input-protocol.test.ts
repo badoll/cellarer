@@ -104,6 +104,59 @@ describe("agent CLI structured input boundary", () => {
     expect(action).not.toHaveBeenCalled();
   });
 
+  it("rejects positional argv/request ambiguity before the action", async () => {
+    const action = vi.fn();
+    const program = new Command().name("cellarer");
+    installCliInputBoundary(program, {
+      stdinIsTTY: true,
+      readInput: async () =>
+        JSON.stringify({
+          protocolVersion: CLI_PROTOCOL_VERSION,
+          command: "add",
+          input: { source: "/tmp/from-request" },
+        }),
+    });
+    program
+      .command("add")
+      .argument("[source]")
+      .action((source: string | undefined) => action(source));
+
+    const error = await program
+      .parseAsync(["add", "/tmp/from-argv", "--input", "request.json"], { from: "user" })
+      .catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(CliInputError);
+    expect(error).toMatchObject({
+      cliError: { code: "INPUT_AMBIGUITY", details: { fields: ["source"] } },
+    });
+    expect(action).not.toHaveBeenCalled();
+  });
+
+  it("rejects capability argv/request ambiguity before the action", async () => {
+    const action = vi.fn();
+    const program = new Command().name("cellarer");
+    installCliInputBoundary(program, {
+      stdinIsTTY: true,
+      readInput: async () =>
+        JSON.stringify({
+          protocolVersion: CLI_PROTOCOL_VERSION,
+          command: "apply",
+          input: { capabilities: ["rules"], dryRun: true },
+        }),
+    });
+    program.command("apply").option("--rules").option("--dry-run").action(action);
+
+    const error = await program
+      .parseAsync(["apply", "--rules", "--input", "request.json"], { from: "user" })
+      .catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(CliInputError);
+    expect(error).toMatchObject({
+      cliError: { code: "INPUT_AMBIGUITY", details: { fields: ["capabilities"] } },
+    });
+    expect(action).not.toHaveBeenCalled();
+  });
+
   it("supplies required positional domain input from a validated request", async () => {
     const action = vi.fn();
     const program = new Command().name("cellarer");
@@ -191,7 +244,15 @@ describe("agent CLI structured input boundary", () => {
     expect(action).not.toHaveBeenCalled();
   });
 
-  it("treats structured stdin and non-TTY execution as non-interactive", async () => {
+  it("classifies TTY, explicit, structured, and non-TTY interaction modes", async () => {
+    const interactive = statusProgram();
+    await interactive.program.parseAsync(["status"], { from: "user" });
+    expect(interactive.action.mock.calls[0]?.[1]).toMatchObject({ nonInteractive: false });
+
+    const explicit = statusProgram();
+    await explicit.program.parseAsync(["status", "--non-interactive"], { from: "user" });
+    expect(explicit.action.mock.calls[0]?.[1]).toMatchObject({ nonInteractive: true });
+
     const fromStdin = statusProgram();
     await fromStdin.program.parseAsync(["status", "--input", "-"], { from: "user" });
     expect(fromStdin.action.mock.calls[0]?.[1]).toMatchObject({ nonInteractive: true });

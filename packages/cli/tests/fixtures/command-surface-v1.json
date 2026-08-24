@@ -1,0 +1,5692 @@
+{
+  "fixtureVersion": 1,
+  "program": {
+    "name": "cellarer",
+    "description": "多 AI agent 的 skills / mcp / rules 全局统一管理工具",
+    "version": "0.1.0-alpha.0",
+    "rootOrder": [
+      "init",
+      "add",
+      "agents",
+      "ls",
+      "apply",
+      "authority",
+      "scan",
+      "revert",
+      "status",
+      "secret",
+      "doctor",
+      "ui",
+      "capabilities",
+      "schema",
+      "resource",
+      "agent",
+      "collection",
+      "config",
+      "diff",
+      "verify",
+      "summary",
+      "discovery",
+      "operation",
+      "plan",
+      "profile",
+      "sync"
+    ],
+    "options": [
+      {
+        "flags": "-V, --version",
+        "attributeName": "version",
+        "description": "output the version number",
+        "short": "-V",
+        "long": "--version",
+        "required": false,
+        "optional": false,
+        "variadic": false,
+        "mandatory": false,
+        "negate": false,
+        "hidden": false,
+        "choices": null
+      },
+      {
+        "flags": "--output <format>",
+        "attributeName": "output",
+        "description": "输出格式:text | json | jsonl",
+        "short": null,
+        "long": "--output",
+        "required": true,
+        "optional": false,
+        "variadic": false,
+        "mandatory": false,
+        "negate": false,
+        "hidden": false,
+        "choices": null
+      },
+      {
+        "flags": "--non-interactive",
+        "attributeName": "nonInteractive",
+        "description": "禁止交互提示;缺少必需输入时失败",
+        "short": null,
+        "long": "--non-interactive",
+        "required": false,
+        "optional": false,
+        "variadic": false,
+        "mandatory": false,
+        "negate": false,
+        "hidden": false,
+        "choices": null
+      },
+      {
+        "flags": "--input <path|->",
+        "attributeName": "input",
+        "description": "从 JSON 文件或标准输入读取结构化命令请求",
+        "short": null,
+        "long": "--input",
+        "required": true,
+        "optional": false,
+        "variadic": false,
+        "mandatory": false,
+        "negate": false,
+        "hidden": false,
+        "choices": null
+      }
+    ]
+  },
+  "protocolOrder": [
+    "init",
+    "add",
+    "agents",
+    "ls",
+    "apply",
+    "authority.rotate",
+    "scan",
+    "revert",
+    "status",
+    "secret.add",
+    "secret.ls",
+    "secret.rm",
+    "doctor",
+    "ui",
+    "capabilities",
+    "schema",
+    "resource.list",
+    "resource.show",
+    "agent.list",
+    "agent.show",
+    "agent.enable",
+    "agent.disable",
+    "agent.configure",
+    "agent.reset",
+    "agent.add",
+    "agent.update",
+    "agent.remove",
+    "collection.list",
+    "collection.show",
+    "collection.create",
+    "collection.update",
+    "collection.delete",
+    "collection.members.set",
+    "collection.defaults.set",
+    "config.show",
+    "config.validate",
+    "config.update",
+    "config.reset",
+    "diff",
+    "verify",
+    "summary",
+    "discovery.summary",
+    "operation.list",
+    "operation.show",
+    "operation.recover",
+    "plan",
+    "resource.dependencies",
+    "resource.check",
+    "resource.update",
+    "resource.rename",
+    "resource.remove",
+    "resource.export",
+    "resource.import",
+    "profile.list",
+    "profile.show",
+    "profile.create",
+    "profile.update",
+    "profile.delete",
+    "sync.plan",
+    "sync.apply",
+    "sync.verify",
+    "sync.uninstall"
+  ],
+  "commands": [
+    {
+      "path": "add",
+      "aliases": [],
+      "description": "从本地路径或 GitHub source 导入资源到库房",
+      "arguments": [
+        {
+          "name": "source",
+          "description": "源:本地 .md/.json/skill 目录、GitHub owner/repo 或 GitHub URL",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--force",
+          "attributeName": "force",
+          "description": "同名资源已存在时覆盖(默认跳过)",
+          "short": null,
+          "long": "--force",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--list",
+          "attributeName": "list",
+          "description": "只列出可导入的 skill candidates,不写库房",
+          "short": null,
+          "long": "--list",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--skill <name>",
+          "attributeName": "skill",
+          "description": "导入指定 skill;可重复传入",
+          "short": null,
+          "long": "--skill",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--all",
+          "attributeName": "all",
+          "description": "导入所有 eligible skills",
+          "short": null,
+          "long": "--all",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--collection <name>",
+          "attributeName": "collection",
+          "description": "给导入资源归入 collection;internal 会包含 internal skills",
+          "short": null,
+          "long": "--collection",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--yes",
+          "attributeName": "yes",
+          "description": "跳过确认提示(当前 add 为非交互,保留命令面兼容)",
+          "short": null,
+          "long": "--yes",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--secret-mode <mode>",
+          "attributeName": "secretMode",
+          "description": "密钥来源:env(默认)| vault | keychain",
+          "short": null,
+          "long": "--secret-mode",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--vault-passphrase-fd <number>",
+          "attributeName": "vaultPassphraseFd",
+          "description": "从继承的文件描述符读取 vault 口令",
+          "short": null,
+          "long": "--vault-passphrase-fd",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--keychain-service <name>",
+          "attributeName": "keychainService",
+          "description": "keychain service 名称(默认 cellarer)",
+          "short": null,
+          "long": "--keychain-service",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--json",
+          "attributeName": "json",
+          "description": "输出 JSON report",
+          "short": null,
+          "long": "--json",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:add:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:add:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "source",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "force",
+            "option": "force",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "list",
+            "option": "list",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "skills",
+            "option": "skill",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "all",
+            "option": "all",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "collection",
+            "option": "collection",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "yes",
+            "option": "yes",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "secretMode",
+            "option": "secretMode",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "vaultPassphraseFd",
+            "option": "vaultPassphraseFd",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "keychainService",
+            "option": "keychainService",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "agent.add",
+      "aliases": [],
+      "description": "add a declarative custom adapter",
+      "arguments": [
+        {
+          "name": "agentId",
+          "description": "custom adapter id",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--adapter <json>",
+          "attributeName": "adapter",
+          "description": "typed complete custom adapter JSON",
+          "short": null,
+          "long": "--adapter",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅返回 revisioned plan，不写入",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:agent.add:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:agent.add:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "agentId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "adapter",
+            "option": "adapter",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "agent.configure",
+      "aliases": [],
+      "description": "configure a built-in adapter override",
+      "arguments": [
+        {
+          "name": "agentId",
+          "description": "built-in adapter id",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--adapter <json>",
+          "attributeName": "adapter",
+          "description": "typed adapter override JSON",
+          "short": null,
+          "long": "--adapter",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅返回 revisioned plan，不写入",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:agent.configure:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:agent.configure:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "agentId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "adapter",
+            "option": "adapter",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "agent.disable",
+      "aliases": [],
+      "description": "disable an agent through a planned adapter override",
+      "arguments": [
+        {
+          "name": "agentId",
+          "description": "adapter id",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅返回 revisioned plan，不写入",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:agent.disable:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:agent.disable:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "agentId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "agent.enable",
+      "aliases": [],
+      "description": "enable an agent through a planned adapter override",
+      "arguments": [
+        {
+          "name": "agentId",
+          "description": "adapter id",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅返回 revisioned plan，不写入",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:agent.enable:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:agent.enable:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "agentId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "agent.list",
+      "aliases": [],
+      "description": "列出 agent adapter",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "--scope <scope>",
+          "attributeName": "scope",
+          "description": "作用域:global | project",
+          "short": null,
+          "long": "--scope",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dir <path>",
+          "attributeName": "dir",
+          "description": "project 目录",
+          "short": null,
+          "long": "--dir",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "-a, --agent <ids>",
+          "attributeName": "agent",
+          "description": "agent id，逗号分隔",
+          "short": "-a",
+          "long": "--agent",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": [],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:agent.list:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:agent.list:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "scope",
+            "option": "scope",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "dir",
+            "option": "dir",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "agents",
+            "option": "agent",
+            "positional": null,
+            "encoded": true
+          }
+        ]
+      }
+    },
+    {
+      "path": "agent.remove",
+      "aliases": [],
+      "description": "remove a custom adapter when no dependencies remain",
+      "arguments": [
+        {
+          "name": "agentId",
+          "description": "custom adapter id",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅返回 revisioned plan，不写入",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:agent.remove:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:agent.remove:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "agentId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "agent.reset",
+      "aliases": [],
+      "description": "reset a built-in adapter override",
+      "arguments": [
+        {
+          "name": "agentId",
+          "description": "built-in adapter id",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅返回 revisioned plan，不写入",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:agent.reset:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:agent.reset:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "agentId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "agent.show",
+      "aliases": [],
+      "description": "按 adapter ID 检查 agent",
+      "arguments": [
+        {
+          "name": "agentId",
+          "description": "agent ID",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--scope <scope>",
+          "attributeName": "scope",
+          "description": "作用域:global | project",
+          "short": null,
+          "long": "--scope",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dir <path>",
+          "attributeName": "dir",
+          "description": "project 目录",
+          "short": null,
+          "long": "--dir",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "-a, --agent <ids>",
+          "attributeName": "agent",
+          "description": "agent id，逗号分隔",
+          "short": "-a",
+          "long": "--agent",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": [],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:agent.show:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:agent.show:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "agentId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "scope",
+            "option": "scope",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "dir",
+            "option": "dir",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "agents",
+            "option": "agent",
+            "positional": null,
+            "encoded": true
+          }
+        ]
+      }
+    },
+    {
+      "path": "agent.update",
+      "aliases": [],
+      "description": "update a declarative custom adapter",
+      "arguments": [
+        {
+          "name": "agentId",
+          "description": "custom adapter id",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--adapter <json>",
+          "attributeName": "adapter",
+          "description": "typed complete custom adapter JSON",
+          "short": null,
+          "long": "--adapter",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅返回 revisioned plan，不写入",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:agent.update:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:agent.update:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "agentId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "adapter",
+            "option": "adapter",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "agents",
+      "aliases": [],
+      "description": "列出已注册 agent adapter、探测结果、能力与目标路径",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "-a, --agent <ids>",
+          "attributeName": "agent",
+          "description": "只显示指定 agent(逗号分隔)",
+          "short": "-a",
+          "long": "--agent",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dir <path>",
+          "attributeName": "dir",
+          "description": "按 project scope 展示目标路径",
+          "short": null,
+          "long": "--dir",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--json",
+          "attributeName": "json",
+          "description": "JSON 输出",
+          "short": null,
+          "long": "--json",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": [],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:agents:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:agents:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "agents",
+            "option": "agent",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "dir",
+            "option": "dir",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "apply",
+      "aliases": [],
+      "description": "下发库房资源到 agent(默认全局;指定 --dir 则下发到该工程)",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "--plan <json>",
+          "attributeName": "plan",
+          "description": "执行 plan 或 settings dry-run 返回的 exact sealed plan",
+          "short": null,
+          "long": "--plan",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "-a, --agent <ids>",
+          "attributeName": "agent",
+          "description": "planning 路径必填的 agent(逗号分隔);--plan 路径不需要",
+          "short": "-a",
+          "long": "--agent",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dir <path>",
+          "attributeName": "dir",
+          "description": "下发到指定工程目录(否则下发到 agent 家目录)",
+          "short": null,
+          "long": "--dir",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--collection <collection>",
+          "attributeName": "collection",
+          "description": "按 collection 过滤",
+          "short": null,
+          "long": "--collection",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--rules",
+          "attributeName": "rules",
+          "description": "下发 rules",
+          "short": null,
+          "long": "--rules",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--mcp",
+          "attributeName": "mcp",
+          "description": "下发 mcp",
+          "short": null,
+          "long": "--mcp",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--skills",
+          "attributeName": "skills",
+          "description": "下发 skills",
+          "short": null,
+          "long": "--skills",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--copy",
+          "attributeName": "copy",
+          "description": "强制 copy(不软链)",
+          "short": null,
+          "long": "--copy",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--mcp-overwrite",
+          "attributeName": "mcpOverwrite",
+          "description": "mcp 用 overwrite 策略(默认 merge)",
+          "short": null,
+          "long": "--mcp-overwrite",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--secret-mode <mode>",
+          "attributeName": "secretMode",
+          "description": "密钥来源:env(默认)| vault | keychain",
+          "short": null,
+          "long": "--secret-mode",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--vault-passphrase-fd <number>",
+          "attributeName": "vaultPassphraseFd",
+          "description": "从继承的文件描述符读取 vault 口令",
+          "short": null,
+          "long": "--vault-passphrase-fd",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--keychain-service <name>",
+          "attributeName": "keychainService",
+          "description": "keychain service 名称(默认 cellarer)",
+          "short": null,
+          "long": "--keychain-service",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--replace-unowned <tokens>",
+          "attributeName": "replaceUnowned",
+          "description": "确认 plan 返回的精确非托管替换 token(逗号分隔)",
+          "short": null,
+          "long": "--replace-unowned",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--override-drift <tokens>",
+          "attributeName": "overrideDrift",
+          "description": "确认 plan 返回的精确漂移覆盖 token(逗号分隔)",
+          "short": null,
+          "long": "--override-drift",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--snapshot-passphrase-fd <number>",
+          "attributeName": "snapshotPassphraseFd",
+          "description": "从继承的文件描述符读取 snapshot 口令",
+          "short": null,
+          "long": "--snapshot-passphrase-fd",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅预览,不落地",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--json",
+          "attributeName": "json",
+          "description": "输出完整 Core apply plan/result",
+          "short": null,
+          "long": "--json",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": true,
+        "requiredFeatures": ["mutation-authority", "plan-apply", "protected-secret-channel"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:apply:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:apply:output",
+        "eventSchemaId": "urn:cellarer:cli:protocol:1.0:command:apply:event",
+        "inputBindings": [
+          {
+            "field": "plan",
+            "option": "plan",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "agents",
+            "option": "agent",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "dir",
+            "option": "dir",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "collection",
+            "option": "collection",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "capabilities",
+            "option": "rules",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "capabilities",
+            "option": "mcp",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "capabilities",
+            "option": "skills",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "copy",
+            "option": "copy",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "mcpOverwrite",
+            "option": "mcpOverwrite",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "secretMode",
+            "option": "secretMode",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "vaultPassphraseFd",
+            "option": "vaultPassphraseFd",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "keychainService",
+            "option": "keychainService",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "replaceUnowned",
+            "option": "replaceUnowned",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "overrideDrift",
+            "option": "overrideDrift",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "snapshotPassphraseFd",
+            "option": "snapshotPassphraseFd",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "authority.rotate",
+      "aliases": [],
+      "description": "显式轮换本机 keychain 中的 mutation authority",
+      "arguments": [],
+      "options": [],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:authority.rotate:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:authority.rotate:output",
+        "eventSchemaId": null,
+        "inputBindings": []
+      }
+    },
+    {
+      "path": "capabilities",
+      "aliases": [],
+      "description": "列出本地 CLI 协议版本、命令特征与 schema 标识符",
+      "arguments": [],
+      "options": [],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": [],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:capabilities:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:capabilities:output",
+        "eventSchemaId": null,
+        "inputBindings": []
+      }
+    },
+    {
+      "path": "collection.create",
+      "aliases": [],
+      "description": "create a collection from exact immutable resource IDs",
+      "arguments": [
+        {
+          "name": "collectionName",
+          "description": "collection name",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--description <text>",
+          "attributeName": "description",
+          "description": "collection description",
+          "short": null,
+          "long": "--description",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--resource <ids>",
+          "attributeName": "resource",
+          "description": "immutable resource IDs, comma separated",
+          "short": null,
+          "long": "--resource",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅返回 revisioned plan，不写入",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply", "exact-resource-selector"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:collection.create:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:collection.create:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "collectionName",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "description",
+            "option": "description",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "resourceIds",
+            "option": "resource",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "collection.defaults.set",
+      "aliases": [],
+      "description": "replace default desired collections",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "--collection <names>",
+          "attributeName": "collection",
+          "description": "collection names, comma separated",
+          "short": null,
+          "long": "--collection",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅返回 revisioned plan，不写入",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:collection.defaults.set:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:collection.defaults.set:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "collectionNames",
+            "option": "collection",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "collection.delete",
+      "aliases": [],
+      "description": "delete an unselected collection",
+      "arguments": [
+        {
+          "name": "collectionName",
+          "description": "collection name",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅返回 revisioned plan，不写入",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:collection.delete:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:collection.delete:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "collectionName",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "collection.list",
+      "aliases": [],
+      "description": "列出 collections",
+      "arguments": [],
+      "options": [],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": [],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:collection.list:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:collection.list:output",
+        "eventSchemaId": null,
+        "inputBindings": []
+      }
+    },
+    {
+      "path": "collection.members.set",
+      "aliases": [],
+      "description": "replace collection members with immutable resource IDs",
+      "arguments": [
+        {
+          "name": "collectionName",
+          "description": "collection name",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--resource <ids>",
+          "attributeName": "resource",
+          "description": "immutable resource IDs, comma separated",
+          "short": null,
+          "long": "--resource",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅返回 revisioned plan，不写入",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply", "exact-resource-selector"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:collection.members.set:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:collection.members.set:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "collectionName",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "resourceIds",
+            "option": "resource",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "collection.show",
+      "aliases": [],
+      "description": "按名称检查 collection",
+      "arguments": [
+        {
+          "name": "collectionName",
+          "description": "collection 名称",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": [],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:collection.show:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:collection.show:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "collectionName",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "collection.update",
+      "aliases": [],
+      "description": "update collection metadata",
+      "arguments": [
+        {
+          "name": "collectionName",
+          "description": "collection name",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--description <text>",
+          "attributeName": "description",
+          "description": "replacement collection description",
+          "short": null,
+          "long": "--description",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅返回 revisioned plan，不写入",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:collection.update:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:collection.update:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "collectionName",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "description",
+            "option": "description",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "config.reset",
+      "aliases": [],
+      "description": "reset typed non-secret settings to packaged defaults",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "--field <names>",
+          "attributeName": "field",
+          "description": "method,secretMode,os；逗号分隔",
+          "short": null,
+          "long": "--field",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅返回 revisioned plan，不写入",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:config.reset:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:config.reset:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "fields",
+            "option": "field",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "config.show",
+      "aliases": [],
+      "description": "显示当前解析后的配置",
+      "arguments": [],
+      "options": [],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": [],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:config.show:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:config.show:output",
+        "eventSchemaId": null,
+        "inputBindings": []
+      }
+    },
+    {
+      "path": "config.update",
+      "aliases": [],
+      "description": "update typed non-secret settings",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "--settings <json>",
+          "attributeName": "settings",
+          "description": "typed settings JSON",
+          "short": null,
+          "long": "--settings",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅返回 revisioned plan，不写入",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:config.update:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:config.update:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "settings",
+            "option": "settings",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "config.validate",
+      "aliases": [],
+      "description": "验证结构化配置，不写入 store",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "--config <json>",
+          "attributeName": "config",
+          "description": "要验证的 JSON 配置",
+          "short": null,
+          "long": "--config",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": [],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:config.validate:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:config.validate:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "config",
+            "option": "config",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "diff",
+      "aliases": [],
+      "description": "比较期望配置与已应用状态",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "--scope <scope>",
+          "attributeName": "scope",
+          "description": "作用域:global | project",
+          "short": null,
+          "long": "--scope",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dir <path>",
+          "attributeName": "dir",
+          "description": "project 目录",
+          "short": null,
+          "long": "--dir",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "-a, --agent <ids>",
+          "attributeName": "agent",
+          "description": "agent id，逗号分隔",
+          "short": "-a",
+          "long": "--agent",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--collection <names>",
+          "attributeName": "collection",
+          "description": "collection，逗号分隔",
+          "short": null,
+          "long": "--collection",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--rules",
+          "attributeName": "rules",
+          "description": "验证 rules",
+          "short": null,
+          "long": "--rules",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--mcp",
+          "attributeName": "mcp",
+          "description": "验证 MCP",
+          "short": null,
+          "long": "--mcp",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--skills",
+          "attributeName": "skills",
+          "description": "验证 skills",
+          "short": null,
+          "long": "--skills",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--method <method>",
+          "attributeName": "method",
+          "description": "落地方式:symlink | copy",
+          "short": null,
+          "long": "--method",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--mcp-strategy <strategy>",
+          "attributeName": "mcpStrategy",
+          "description": "MCP 策略:merge | overwrite",
+          "short": null,
+          "long": "--mcp-strategy",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": [],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:diff:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:diff:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "scope",
+            "option": "scope",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "dir",
+            "option": "dir",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "agents",
+            "option": "agent",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "collections",
+            "option": "collection",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "capabilities",
+            "option": "rules",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "capabilities",
+            "option": "mcp",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "capabilities",
+            "option": "skills",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "method",
+            "option": "method",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "mcpStrategy",
+            "option": "mcpStrategy",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "discovery.summary",
+      "aliases": [],
+      "description": "汇总 agent 目标中的可发现资源",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "--destination <destination>",
+          "attributeName": "destination",
+          "description": "目标:user | project",
+          "short": null,
+          "long": "--destination",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dir <path>",
+          "attributeName": "dir",
+          "description": "project 目录",
+          "short": null,
+          "long": "--dir",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "-a, --agent <ids>",
+          "attributeName": "agent",
+          "description": "agent id，逗号分隔",
+          "short": "-a",
+          "long": "--agent",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": [],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:discovery.summary:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:discovery.summary:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "destination",
+            "option": "destination",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "dir",
+            "option": "dir",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "agents",
+            "option": "agent",
+            "positional": null,
+            "encoded": true
+          }
+        ]
+      }
+    },
+    {
+      "path": "doctor",
+      "aliases": [],
+      "description": "检查库房、adapter 注册表、agent 探测与目标路径写权限",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "-a, --agent <ids>",
+          "attributeName": "agent",
+          "description": "只检查指定 agent(逗号分隔)",
+          "short": "-a",
+          "long": "--agent",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dir <path>",
+          "attributeName": "dir",
+          "description": "按 project scope 检查目标路径",
+          "short": null,
+          "long": "--dir",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--json",
+          "attributeName": "json",
+          "description": "JSON 输出",
+          "short": null,
+          "long": "--json",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": [],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:doctor:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:doctor:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "agents",
+            "option": "agent",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "dir",
+            "option": "dir",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "init",
+      "aliases": [],
+      "description": "初始化库房(全局)",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "--global",
+          "attributeName": "global",
+          "description": "初始化全局库房(默认)",
+          "short": null,
+          "long": "--global",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "-a, --agent <ids>",
+          "attributeName": "agent",
+          "description": "明确启用的 agent targets，逗号分隔",
+          "short": "-a",
+          "long": "--agent",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--no-agent",
+          "attributeName": "noAgent",
+          "description": "明确不启用任何 agent",
+          "short": null,
+          "long": "--no-agent",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅验证初始化目标，不创建或修改库房",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "exact-agent-targets"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:init:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:init:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "global",
+            "option": "global",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "agents",
+            "option": "agent",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "ls",
+      "aliases": [],
+      "description": "列出库房资源(rules / mcp / skills)及其 collection 标签",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "--collection <collection>",
+          "attributeName": "collection",
+          "description": "按 collection 过滤",
+          "short": null,
+          "long": "--collection",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": [],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:ls:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:ls:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "collection",
+            "option": "collection",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "operation.list",
+      "aliases": [],
+      "description": "列出已脱敏的操作回执",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "--limit <count>",
+          "attributeName": "limit",
+          "description": "最多返回的回执数",
+          "short": null,
+          "long": "--limit",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": [],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:operation.list:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:operation.list:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "limit",
+            "option": "limit",
+            "positional": null,
+            "encoded": true
+          }
+        ]
+      }
+    },
+    {
+      "path": "operation.recover",
+      "aliases": [],
+      "description": "按持久化证据恢复中断操作",
+      "arguments": [
+        {
+          "name": "operationId",
+          "description": "中断操作 ID",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--snapshot-passphrase-fd <number>",
+          "attributeName": "snapshotPassphraseFd",
+          "description": "从继承的文件描述符读取 snapshot 口令",
+          "short": null,
+          "long": "--snapshot-passphrase-fd",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅诊断 recovery evidence，不执行恢复",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply", "recovery"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:operation.recover:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:operation.recover:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "operationId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "snapshotPassphraseFd",
+            "option": "snapshotPassphraseFd",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "operation.show",
+      "aliases": [],
+      "description": "按 ID 检查已脱敏的操作回执",
+      "arguments": [
+        {
+          "name": "operationId",
+          "description": "操作 ID",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": [],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:operation.show:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:operation.show:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "operationId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "plan",
+      "aliases": [],
+      "description": "生成只读、authority-sealed apply plan",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "--scope <scope>",
+          "attributeName": "scope",
+          "description": "作用域:global | project",
+          "short": null,
+          "long": "--scope",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dir <path>",
+          "attributeName": "dir",
+          "description": "project 目录",
+          "short": null,
+          "long": "--dir",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "-a, --agent <ids>",
+          "attributeName": "agent",
+          "description": "agent id，逗号分隔",
+          "short": "-a",
+          "long": "--agent",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--collection <names>",
+          "attributeName": "collection",
+          "description": "collection，逗号分隔",
+          "short": null,
+          "long": "--collection",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--rules",
+          "attributeName": "rules",
+          "description": "验证 rules",
+          "short": null,
+          "long": "--rules",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--mcp",
+          "attributeName": "mcp",
+          "description": "验证 MCP",
+          "short": null,
+          "long": "--mcp",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--skills",
+          "attributeName": "skills",
+          "description": "验证 skills",
+          "short": null,
+          "long": "--skills",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--method <method>",
+          "attributeName": "method",
+          "description": "落地方式:symlink | copy",
+          "short": null,
+          "long": "--method",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--mcp-strategy <strategy>",
+          "attributeName": "mcpStrategy",
+          "description": "MCP 策略:merge | overwrite",
+          "short": null,
+          "long": "--mcp-strategy",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply", "exact-resource-selector"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:plan:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:plan:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "agents",
+            "option": "agent",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "scope",
+            "option": "scope",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "dir",
+            "option": "dir",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "collections",
+            "option": "collection",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "capabilities",
+            "option": "rules",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "capabilities",
+            "option": "mcp",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "capabilities",
+            "option": "skills",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "method",
+            "option": "method",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "mcpStrategy",
+            "option": "mcpStrategy",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "profile.create",
+      "aliases": [],
+      "description": "create a revisioned sync profile",
+      "arguments": [
+        {
+          "name": "profileId",
+          "description": "profile ID",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--desired <json>",
+          "attributeName": "desired",
+          "description": "精确 desired-state JSON",
+          "short": null,
+          "long": "--desired",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅返回 plan，不写入",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply", "sync-profiles"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:profile.create:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:profile.create:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "profileId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "desired",
+            "option": "desired",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "profile.delete",
+      "aliases": [],
+      "description": "删除未被调用的 sync profile",
+      "arguments": [
+        {
+          "name": "profileId",
+          "description": "profile ID",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅返回 plan，不写入",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply", "sync-profiles"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:profile.delete:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:profile.delete:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "profileId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "profile.list",
+      "aliases": [],
+      "description": "列出 sync profiles",
+      "arguments": [],
+      "options": [],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": [],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:profile.list:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:profile.list:output",
+        "eventSchemaId": null,
+        "inputBindings": []
+      }
+    },
+    {
+      "path": "profile.show",
+      "aliases": [],
+      "description": "按 ID 显示 sync profile",
+      "arguments": [
+        {
+          "name": "profileId",
+          "description": "profile ID",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": [],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:profile.show:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:profile.show:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "profileId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "profile.update",
+      "aliases": [],
+      "description": "update a revisioned sync profile",
+      "arguments": [
+        {
+          "name": "profileId",
+          "description": "profile ID",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--desired <json>",
+          "attributeName": "desired",
+          "description": "精确 desired-state JSON",
+          "short": null,
+          "long": "--desired",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅返回 plan，不写入",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply", "sync-profiles"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:profile.update:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:profile.update:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "profileId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "desired",
+            "option": "desired",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "resource.check",
+      "aliases": [],
+      "description": "只读检查 resource source evidence",
+      "arguments": [
+        {
+          "name": "resourceId",
+          "description": "immutable resource ID",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": ["exact-resource-selector", "resource-provenance"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:resource.check:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:resource.check:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "resourceId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "resource.dependencies",
+      "aliases": [],
+      "description": "报告 exact resource ID 的 collection/profile/selection/target 依赖",
+      "arguments": [
+        {
+          "name": "resourceId",
+          "description": "immutable resource ID",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": ["exact-resource-selector"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:resource.dependencies:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:resource.dependencies:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "resourceId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "resource.export",
+      "aliases": [],
+      "description": "export a portable reference-only resource bundle",
+      "arguments": [
+        {
+          "name": "resourceId",
+          "description": "immutable resource ID",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        },
+        {
+          "name": "bundlePath",
+          "description": "bundle path",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--plan <json>",
+          "attributeName": "plan",
+          "description": "approved bundle plan JSON",
+          "short": null,
+          "long": "--plan",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅返回 plan",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply", "reference-only-export"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:resource.export:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:resource.export:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "resourceId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "bundlePath",
+            "option": null,
+            "positional": 1,
+            "encoded": false
+          },
+          {
+            "field": "plan",
+            "option": "plan",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "resource.import",
+      "aliases": [],
+      "description": "import a portable reference-only resource bundle",
+      "arguments": [
+        {
+          "name": "bundlePath",
+          "description": "bundle path",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--plan <json>",
+          "attributeName": "plan",
+          "description": "approved bundle plan JSON",
+          "short": null,
+          "long": "--plan",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅返回 plan",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply", "reference-only-export"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:resource.import:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:resource.import:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "bundlePath",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "plan",
+            "option": "plan",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "resource.list",
+      "aliases": [],
+      "description": "列出资源",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "--kind <kind>",
+          "attributeName": "kind",
+          "description": "资源类型:rules | mcp | skills",
+          "short": null,
+          "long": "--kind",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--state <states>",
+          "attributeName": "state",
+          "description": "资源状态，逗号分隔",
+          "short": null,
+          "long": "--state",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--source <sources>",
+          "attributeName": "source",
+          "description": "精确来源，逗号分隔",
+          "short": null,
+          "long": "--source",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "-a, --agent <ids>",
+          "attributeName": "agent",
+          "description": "agent id，逗号分隔",
+          "short": "-a",
+          "long": "--agent",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--collection <names>",
+          "attributeName": "collection",
+          "description": "collection，逗号分隔",
+          "short": null,
+          "long": "--collection",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--destination <destination>",
+          "attributeName": "destination",
+          "description": "目标:user | project",
+          "short": null,
+          "long": "--destination",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dir <path>",
+          "attributeName": "dir",
+          "description": "project 目录",
+          "short": null,
+          "long": "--dir",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--no-include-discovered",
+          "attributeName": "includeDiscovered",
+          "description": "不扫描 agent 中的已发现资源",
+          "short": null,
+          "long": "--no-include-discovered",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": true,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": ["exact-resource-selector"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:resource.list:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:resource.list:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "kind",
+            "option": "kind",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "states",
+            "option": "state",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "sources",
+            "option": "source",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "agents",
+            "option": "agent",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "collections",
+            "option": "collection",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "destination",
+            "option": "destination",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "dir",
+            "option": "dir",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "includeDiscovered",
+            "option": "includeDiscovered",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "resource.remove",
+      "aliases": [],
+      "description": "store-only remove；cascade 必须显式请求且不会卸载 targets",
+      "arguments": [
+        {
+          "name": "resourceId",
+          "description": "immutable resource ID",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--cascade",
+          "attributeName": "cascade",
+          "description": "枚举并移除 store dependencies",
+          "short": null,
+          "long": "--cascade",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--plan <json>",
+          "attributeName": "plan",
+          "description": "approved lifecycle plan JSON",
+          "short": null,
+          "long": "--plan",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅返回 plan",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply", "exact-resource-selector"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:resource.remove:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:resource.remove:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "resourceId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "cascade",
+            "option": "cascade",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "plan",
+            "option": "plan",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "resource.rename",
+      "aliases": [],
+      "description": "按 exact ID 计划/应用 metadata rename 或显式 local fork",
+      "arguments": [
+        {
+          "name": "resourceId",
+          "description": "immutable resource ID",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        },
+        {
+          "name": "newName",
+          "description": "new managed name",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--local-fork",
+          "attributeName": "localFork",
+          "description": "创建显式 local fork",
+          "short": null,
+          "long": "--local-fork",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--plan <json>",
+          "attributeName": "plan",
+          "description": "approved lifecycle plan JSON",
+          "short": null,
+          "long": "--plan",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅返回 plan",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply", "exact-resource-selector"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:resource.rename:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:resource.rename:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "resourceId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "newName",
+            "option": null,
+            "positional": 1,
+            "encoded": false
+          },
+          {
+            "field": "localFork",
+            "option": "localFork",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "plan",
+            "option": "plan",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "resource.show",
+      "aliases": [],
+      "description": "按不可变 ID 检查资源",
+      "arguments": [
+        {
+          "name": "resourceId",
+          "description": "资源 ID",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--kind <kind>",
+          "attributeName": "kind",
+          "description": "资源类型:rules | mcp | skills",
+          "short": null,
+          "long": "--kind",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--state <states>",
+          "attributeName": "state",
+          "description": "资源状态，逗号分隔",
+          "short": null,
+          "long": "--state",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--source <sources>",
+          "attributeName": "source",
+          "description": "精确来源，逗号分隔",
+          "short": null,
+          "long": "--source",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "-a, --agent <ids>",
+          "attributeName": "agent",
+          "description": "agent id，逗号分隔",
+          "short": "-a",
+          "long": "--agent",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--collection <names>",
+          "attributeName": "collection",
+          "description": "collection，逗号分隔",
+          "short": null,
+          "long": "--collection",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--destination <destination>",
+          "attributeName": "destination",
+          "description": "目标:user | project",
+          "short": null,
+          "long": "--destination",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dir <path>",
+          "attributeName": "dir",
+          "description": "project 目录",
+          "short": null,
+          "long": "--dir",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--no-include-discovered",
+          "attributeName": "includeDiscovered",
+          "description": "不扫描 agent 中的已发现资源",
+          "short": null,
+          "long": "--no-include-discovered",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": true,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": ["exact-resource-selector"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:resource.show:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:resource.show:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "resourceId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "kind",
+            "option": "kind",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "states",
+            "option": "state",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "sources",
+            "option": "source",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "agents",
+            "option": "agent",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "collections",
+            "option": "collection",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "destination",
+            "option": "destination",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "dir",
+            "option": "dir",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "includeDiscovered",
+            "option": "includeDiscovered",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "resource.update",
+      "aliases": [],
+      "description": "检查、私有 staging 并计划/应用 store-only resource update",
+      "arguments": [
+        {
+          "name": "resourceId",
+          "description": "immutable resource ID",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--plan <json>",
+          "attributeName": "plan",
+          "description": "previously staged update plan JSON",
+          "short": null,
+          "long": "--plan",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅返回 staged candidate 和 plan",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply", "resource-provenance"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:resource.update:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:resource.update:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "resourceId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "plan",
+            "option": "plan",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "revert",
+      "aliases": [],
+      "description": "依据台账回滚下发",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "-a, --agent <ids>",
+          "attributeName": "agent",
+          "description": "指定 agent",
+          "short": "-a",
+          "long": "--agent",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dir <path>",
+          "attributeName": "dir",
+          "description": "指定工程目录",
+          "short": null,
+          "long": "--dir",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--all",
+          "attributeName": "all",
+          "description": "回滚台账中的全部条目(无 --agent/--dir 时必须显式确认)",
+          "short": null,
+          "long": "--all",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--keep-backups",
+          "attributeName": "keepBackups",
+          "description": "保留 .bak 备份",
+          "short": null,
+          "long": "--keep-backups",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--acknowledge <tokens>",
+          "attributeName": "acknowledge",
+          "description": "确认 dry-run 返回的精确漂移 token(逗号分隔)",
+          "short": null,
+          "long": "--acknowledge",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--snapshot-passphrase-fd <number>",
+          "attributeName": "snapshotPassphraseFd",
+          "description": "从继承的文件描述符读取 snapshot 口令",
+          "short": null,
+          "long": "--snapshot-passphrase-fd",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅预览,不落地",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--json",
+          "attributeName": "json",
+          "description": "输出完整 Core revert plan/result",
+          "short": null,
+          "long": "--json",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": true,
+        "requiredFeatures": ["mutation-authority", "plan-apply"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:revert:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:revert:output",
+        "eventSchemaId": "urn:cellarer:cli:protocol:1.0:command:revert:event",
+        "inputBindings": [
+          {
+            "field": "agents",
+            "option": "agent",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "dir",
+            "option": "dir",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "all",
+            "option": "all",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "keepBackups",
+            "option": "keepBackups",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "acknowledgements",
+            "option": "acknowledge",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "snapshotPassphraseFd",
+            "option": "snapshotPassphraseFd",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "scan",
+      "aliases": [],
+      "description": "扫描 agent 现有 rules/mcp/skills 回写库房(密钥自动脱敏为占位符)",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "-a, --agent <id>",
+          "attributeName": "agent",
+          "description": "扫描指定 agent",
+          "short": "-a",
+          "long": "--agent",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dir <path>",
+          "attributeName": "dir",
+          "description": "扫描指定工程目录(project scope)",
+          "short": null,
+          "long": "--dir",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--rules",
+          "attributeName": "rules",
+          "description": "仅扫 rules",
+          "short": null,
+          "long": "--rules",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--mcp",
+          "attributeName": "mcp",
+          "description": "仅扫 mcp",
+          "short": null,
+          "long": "--mcp",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--skills",
+          "attributeName": "skills",
+          "description": "仅扫 skills",
+          "short": null,
+          "long": "--skills",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--into-collection <collection>",
+          "attributeName": "intoCollection",
+          "description": "给导入资源归入 collection",
+          "short": null,
+          "long": "--into-collection",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--conflict <strategy>",
+          "attributeName": "conflict",
+          "description": "冲突策略:keep-theirs(默认)| keep-mine | copy",
+          "short": null,
+          "long": "--conflict",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--select <json>",
+          "attributeName": "select",
+          "description": "精确 selector JSON 数组：kind/name/source",
+          "short": null,
+          "long": "--select",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅预览发现项,不写库房",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--secret-mode <mode>",
+          "attributeName": "secretMode",
+          "description": "密钥来源:env(默认)| vault | keychain",
+          "short": null,
+          "long": "--secret-mode",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--vault-passphrase-fd <number>",
+          "attributeName": "vaultPassphraseFd",
+          "description": "从继承的文件描述符读取 vault 口令",
+          "short": null,
+          "long": "--vault-passphrase-fd",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--keychain-service <name>",
+          "attributeName": "keychainService",
+          "description": "keychain service 名称(默认 cellarer)",
+          "short": null,
+          "long": "--keychain-service",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--json",
+          "attributeName": "json",
+          "description": "JSON 输出(兼容别名;等价 --output json)",
+          "short": null,
+          "long": "--json",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": true,
+        "requiredFeatures": ["mutation-authority", "protected-secret-channel"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:scan:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:scan:output",
+        "eventSchemaId": "urn:cellarer:cli:protocol:1.0:command:scan:event",
+        "inputBindings": [
+          {
+            "field": "agent",
+            "option": "agent",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "dir",
+            "option": "dir",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "capabilities",
+            "option": "rules",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "capabilities",
+            "option": "mcp",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "capabilities",
+            "option": "skills",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "intoCollection",
+            "option": "intoCollection",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "conflict",
+            "option": "conflict",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "select",
+            "option": "select",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "secretMode",
+            "option": "secretMode",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "vaultPassphraseFd",
+            "option": "vaultPassphraseFd",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "keychainService",
+            "option": "keychainService",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "schema",
+      "aliases": [],
+      "description": "输出指定 CLI JSON Schema；省略标识符时输出本地 schema bundle",
+      "arguments": [
+        {
+          "name": "schema-id",
+          "description": "capabilities 报告的 schema 标识符",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": [],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:schema:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:schema:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "schemaId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "secret.add",
+      "aliases": [],
+      "description": "新增/更新一个密钥(真值加密入 vault,绝不打印)",
+      "arguments": [
+        {
+          "name": "name",
+          "description": "",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--provider <provider>",
+          "attributeName": "provider",
+          "description": "存储提供方:vault(默认)|keychain",
+          "short": null,
+          "long": "--provider",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--stdin",
+          "attributeName": "stdin",
+          "description": "从标准输入读取密钥值",
+          "short": null,
+          "long": "--stdin",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--fd <number>",
+          "attributeName": "fd",
+          "description": "从继承的文件描述符读取密钥值",
+          "short": null,
+          "long": "--fd",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--passphrase-fd <number>",
+          "attributeName": "passphraseFd",
+          "description": "从继承的文件描述符读取 vault 口令",
+          "short": null,
+          "long": "--passphrase-fd",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["protected-secret-channel"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:secret.add:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:secret.add:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "name",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "provider",
+            "option": "provider",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "stdin",
+            "option": "stdin",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "fd",
+            "option": "fd",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "passphraseFd",
+            "option": "passphraseFd",
+            "positional": null,
+            "encoded": true
+          }
+        ]
+      }
+    },
+    {
+      "path": "secret.ls",
+      "aliases": [],
+      "description": "列出 vault 中的密钥引用名(不显示真值)",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "--passphrase-fd <number>",
+          "attributeName": "passphraseFd",
+          "description": "从继承的文件描述符读取 vault 口令",
+          "short": null,
+          "long": "--passphrase-fd",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": ["protected-secret-channel"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:secret.ls:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:secret.ls:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "passphraseFd",
+            "option": "passphraseFd",
+            "positional": null,
+            "encoded": true
+          }
+        ]
+      }
+    },
+    {
+      "path": "secret.rm",
+      "aliases": [],
+      "description": "删除一个密钥",
+      "arguments": [
+        {
+          "name": "name",
+          "description": "",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--provider <provider>",
+          "attributeName": "provider",
+          "description": "存储提供方:vault(默认)|keychain",
+          "short": null,
+          "long": "--provider",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--passphrase-fd <number>",
+          "attributeName": "passphraseFd",
+          "description": "从继承的文件描述符读取 vault 口令",
+          "short": null,
+          "long": "--passphrase-fd",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["protected-secret-channel"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:secret.rm:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:secret.rm:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "name",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "provider",
+            "option": "provider",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "passphraseFd",
+            "option": "passphraseFd",
+            "positional": null,
+            "encoded": true
+          }
+        ]
+      }
+    },
+    {
+      "path": "status",
+      "aliases": [],
+      "description": "漂移检测(库房 vs 落地)",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "-a, --agent <ids>",
+          "attributeName": "agent",
+          "description": "指定 agent",
+          "short": "-a",
+          "long": "--agent",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dir <path>",
+          "attributeName": "dir",
+          "description": "指定工程目录",
+          "short": null,
+          "long": "--dir",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--json",
+          "attributeName": "json",
+          "description": "JSON 输出(CI 漂移检查用)",
+          "short": null,
+          "long": "--json",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": [],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:status:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:status:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "agents",
+            "option": "agent",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "dir",
+            "option": "dir",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "summary",
+      "aliases": [],
+      "description": "汇总本地控制平面状态",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "--scope <scope>",
+          "attributeName": "scope",
+          "description": "作用域:global | project",
+          "short": null,
+          "long": "--scope",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dir <path>",
+          "attributeName": "dir",
+          "description": "project 目录",
+          "short": null,
+          "long": "--dir",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "-a, --agent <ids>",
+          "attributeName": "agent",
+          "description": "agent id，逗号分隔",
+          "short": "-a",
+          "long": "--agent",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--collection <names>",
+          "attributeName": "collection",
+          "description": "collection，逗号分隔",
+          "short": null,
+          "long": "--collection",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--rules",
+          "attributeName": "rules",
+          "description": "验证 rules",
+          "short": null,
+          "long": "--rules",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--mcp",
+          "attributeName": "mcp",
+          "description": "验证 MCP",
+          "short": null,
+          "long": "--mcp",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--skills",
+          "attributeName": "skills",
+          "description": "验证 skills",
+          "short": null,
+          "long": "--skills",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--method <method>",
+          "attributeName": "method",
+          "description": "落地方式:symlink | copy",
+          "short": null,
+          "long": "--method",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--mcp-strategy <strategy>",
+          "attributeName": "mcpStrategy",
+          "description": "MCP 策略:merge | overwrite",
+          "short": null,
+          "long": "--mcp-strategy",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--limit <count>",
+          "attributeName": "limit",
+          "description": "最多返回的活动记录数",
+          "short": null,
+          "long": "--limit",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--no-include-plan-coverage",
+          "attributeName": "includePlanCoverage",
+          "description": "跳过只读 plan coverage",
+          "short": null,
+          "long": "--no-include-plan-coverage",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": true,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": [],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:summary:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:summary:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "scope",
+            "option": "scope",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "dir",
+            "option": "dir",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "agents",
+            "option": "agent",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "collections",
+            "option": "collection",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "capabilities",
+            "option": "rules",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "capabilities",
+            "option": "mcp",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "capabilities",
+            "option": "skills",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "method",
+            "option": "method",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "mcpStrategy",
+            "option": "mcpStrategy",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "activityLimit",
+            "option": "limit",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "includePlanCoverage",
+            "option": "includePlanCoverage",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "sync.apply",
+      "aliases": [],
+      "description": "应用调用方提供的 immutable profile plan",
+      "arguments": [
+        {
+          "name": "profileId",
+          "description": "profile ID",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--plan <json>",
+          "attributeName": "plan",
+          "description": "sync plan JSON",
+          "short": null,
+          "long": "--plan",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--snapshot-passphrase-fd <number>",
+          "attributeName": "snapshotPassphraseFd",
+          "description": "从继承的文件描述符读取 snapshot 口令",
+          "short": null,
+          "long": "--snapshot-passphrase-fd",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--workspace-root <path>",
+          "attributeName": "workspaceRoot",
+          "description": "project profile 的显式 workspace root",
+          "short": null,
+          "long": "--workspace-root",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--replace-unowned <tokens>",
+          "attributeName": "replaceUnowned",
+          "description": "plan-bound replacement acknowledgements，逗号分隔",
+          "short": null,
+          "long": "--replace-unowned",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--override-drift <tokens>",
+          "attributeName": "overrideDrift",
+          "description": "plan-bound drift acknowledgements，逗号分隔",
+          "short": null,
+          "long": "--override-drift",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply", "sync-profiles"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:sync.apply:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:sync.apply:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "profileId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "workspaceRoot",
+            "option": "workspaceRoot",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "replaceUnowned",
+            "option": "replaceUnowned",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "overrideDrift",
+            "option": "overrideDrift",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "snapshotPassphraseFd",
+            "option": "snapshotPassphraseFd",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "plan",
+            "option": "plan",
+            "positional": null,
+            "encoded": true
+          }
+        ]
+      }
+    },
+    {
+      "path": "sync.plan",
+      "aliases": [],
+      "description": "生成 profile 的 immutable sync plan",
+      "arguments": [
+        {
+          "name": "profileId",
+          "description": "profile ID",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--snapshot-passphrase-fd <number>",
+          "attributeName": "snapshotPassphraseFd",
+          "description": "从继承的文件描述符读取 snapshot 口令",
+          "short": null,
+          "long": "--snapshot-passphrase-fd",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--workspace-root <path>",
+          "attributeName": "workspaceRoot",
+          "description": "project profile 的显式 workspace root",
+          "short": null,
+          "long": "--workspace-root",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--replace-unowned <tokens>",
+          "attributeName": "replaceUnowned",
+          "description": "plan-bound replacement acknowledgements，逗号分隔",
+          "short": null,
+          "long": "--replace-unowned",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--override-drift <tokens>",
+          "attributeName": "overrideDrift",
+          "description": "plan-bound drift acknowledgements，逗号分隔",
+          "short": null,
+          "long": "--override-drift",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply", "sync-profiles"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:sync.plan:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:sync.plan:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "profileId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "workspaceRoot",
+            "option": "workspaceRoot",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "replaceUnowned",
+            "option": "replaceUnowned",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "overrideDrift",
+            "option": "overrideDrift",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "snapshotPassphraseFd",
+            "option": "snapshotPassphraseFd",
+            "positional": null,
+            "encoded": true
+          }
+        ]
+      }
+    },
+    {
+      "path": "sync.uninstall",
+      "aliases": [],
+      "description": "计划或卸载 profile 的精确 owned targets",
+      "arguments": [
+        {
+          "name": "profileId",
+          "description": "profile ID",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--plan <json>",
+          "attributeName": "plan",
+          "description": "previously approved uninstall plan JSON",
+          "short": null,
+          "long": "--plan",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--acknowledge <tokens>",
+          "attributeName": "acknowledge",
+          "description": "plan-bound drift acknowledgements，逗号分隔",
+          "short": null,
+          "long": "--acknowledge",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "仅返回精确卸载计划",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--workspace-root <path>",
+          "attributeName": "workspaceRoot",
+          "description": "project profile 的显式 workspace root",
+          "short": null,
+          "long": "--workspace-root",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--replace-unowned <tokens>",
+          "attributeName": "replaceUnowned",
+          "description": "plan-bound replacement acknowledgements，逗号分隔",
+          "short": null,
+          "long": "--replace-unowned",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--override-drift <tokens>",
+          "attributeName": "overrideDrift",
+          "description": "plan-bound drift acknowledgements，逗号分隔",
+          "short": null,
+          "long": "--override-drift",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply", "sync-profiles"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:sync.uninstall:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:sync.uninstall:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "profileId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "workspaceRoot",
+            "option": "workspaceRoot",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "replaceUnowned",
+            "option": "replaceUnowned",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "overrideDrift",
+            "option": "overrideDrift",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "plan",
+            "option": "plan",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "acknowledgements",
+            "option": "acknowledge",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "sync.verify",
+      "aliases": [],
+      "description": "验证 profile desired/applied/disk 状态",
+      "arguments": [
+        {
+          "name": "profileId",
+          "description": "profile ID",
+          "required": false,
+          "variadic": false,
+          "choices": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--workspace-root <path>",
+          "attributeName": "workspaceRoot",
+          "description": "project profile 的显式 workspace root",
+          "short": null,
+          "long": "--workspace-root",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--replace-unowned <tokens>",
+          "attributeName": "replaceUnowned",
+          "description": "plan-bound replacement acknowledgements，逗号分隔",
+          "short": null,
+          "long": "--replace-unowned",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--override-drift <tokens>",
+          "attributeName": "overrideDrift",
+          "description": "plan-bound drift acknowledgements，逗号分隔",
+          "short": null,
+          "long": "--override-drift",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "sync-profiles"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:sync.verify:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:sync.verify:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "profileId",
+            "option": null,
+            "positional": 0,
+            "encoded": false
+          },
+          {
+            "field": "workspaceRoot",
+            "option": "workspaceRoot",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "replaceUnowned",
+            "option": "replaceUnowned",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "overrideDrift",
+            "option": "overrideDrift",
+            "positional": null,
+            "encoded": true
+          }
+        ]
+      }
+    },
+    {
+      "path": "ui",
+      "aliases": [],
+      "description": "启动本地 Web UI(仅监听 127.0.0.1)",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "--port <port>",
+          "attributeName": "port",
+          "description": "端口(默认 4317)",
+          "short": null,
+          "long": "--port",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--token-fd <number>",
+          "attributeName": "tokenFd",
+          "description": "从继承的文件描述符读取访问 token",
+          "short": null,
+          "long": "--token-fd",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--lifetime-fd <number>",
+          "attributeName": "lifetimeFd",
+          "description": "由继承的所有权描述符 EOF 触发关闭",
+          "short": null,
+          "long": "--lifetime-fd",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "service",
+        "streaming": false,
+        "requiredFeatures": [
+          "long-running-process",
+          "protected-secret-channel",
+          "lifetime-channel"
+        ],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:ui:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:ui:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "port",
+            "option": "port",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "tokenFd",
+            "option": "tokenFd",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "lifetimeFd",
+            "option": "lifetimeFd",
+            "positional": null,
+            "encoded": true
+          }
+        ]
+      }
+    },
+    {
+      "path": "verify",
+      "aliases": [],
+      "description": "组合验证期望状态、磁盘漂移和恢复状态",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "--scope <scope>",
+          "attributeName": "scope",
+          "description": "作用域:global | project",
+          "short": null,
+          "long": "--scope",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dir <path>",
+          "attributeName": "dir",
+          "description": "project 目录",
+          "short": null,
+          "long": "--dir",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "-a, --agent <ids>",
+          "attributeName": "agent",
+          "description": "agent id，逗号分隔",
+          "short": "-a",
+          "long": "--agent",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--collection <names>",
+          "attributeName": "collection",
+          "description": "collection，逗号分隔",
+          "short": null,
+          "long": "--collection",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--rules",
+          "attributeName": "rules",
+          "description": "验证 rules",
+          "short": null,
+          "long": "--rules",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--mcp",
+          "attributeName": "mcp",
+          "description": "验证 MCP",
+          "short": null,
+          "long": "--mcp",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--skills",
+          "attributeName": "skills",
+          "description": "验证 skills",
+          "short": null,
+          "long": "--skills",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--method <method>",
+          "attributeName": "method",
+          "description": "落地方式:symlink | copy",
+          "short": null,
+          "long": "--method",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--mcp-strategy <strategy>",
+          "attributeName": "mcpStrategy",
+          "description": "MCP 策略:merge | overwrite",
+          "short": null,
+          "long": "--mcp-strategy",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": [],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:verify:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:verify:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "scope",
+            "option": "scope",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "dir",
+            "option": "dir",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "agents",
+            "option": "agent",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "collections",
+            "option": "collection",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "capabilities",
+            "option": "rules",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "capabilities",
+            "option": "mcp",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "capabilities",
+            "option": "skills",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "method",
+            "option": "method",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "mcpStrategy",
+            "option": "mcpStrategy",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    }
+  ]
+}

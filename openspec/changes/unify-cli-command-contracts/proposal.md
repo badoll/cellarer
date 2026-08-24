@@ -26,3 +26,9 @@ None.
 - `packages/cli/src/program.ts`, command factories, protocol registry/input/renderer/schema modules, and conformance tests.
 - No Core business-logic move, protocol-version bump, or user-visible command migration.
 - Must land before adding the new Inventory CLI surface to avoid recreating duplicated declarations.
+
+## Execution Contract
+
+- Risk: integration
+- Depends on: none
+- Allowed paths: `packages/cli/src/program.ts`, `packages/cli/src/commands`, `packages/cli/src/protocol`, `packages/cli/tests`

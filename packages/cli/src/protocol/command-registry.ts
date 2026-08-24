@@ -9,6 +9,7 @@ import {
   CLI_ERROR_SCHEMA,
   CLI_WARNING_SCHEMA,
   createCommandProtocolSchemas,
+  immutableJsonSnapshot,
   jsonSchema,
   PROTECTED_DESCRIPTOR_MAX,
   PROTECTED_DESCRIPTOR_MIN,
@@ -2735,24 +2736,4 @@ function assertInputBindings(
 function requiredSchemaId(schema: JsonSchema): string {
   if (schema.$id === undefined) throw new Error("public protocol schema must define $id");
   return schema.$id;
-}
-
-function immutableJsonSnapshot<T>(value: T, seen = new WeakMap<object, unknown>()): T {
-  if (value === null || typeof value !== "object") return value;
-  const existing = seen.get(value);
-  if (existing !== undefined) return existing as T;
-
-  if (Array.isArray(value)) {
-    const clone: unknown[] = [];
-    seen.set(value, clone);
-    for (const item of value) clone.push(immutableJsonSnapshot(item, seen));
-    return Object.freeze(clone) as T;
-  }
-
-  const clone: Record<string, unknown> = {};
-  seen.set(value, clone);
-  for (const [key, item] of Object.entries(value)) {
-    clone[key] = immutableJsonSnapshot(item, seen);
-  }
-  return Object.freeze(clone) as T;
 }
