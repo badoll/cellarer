@@ -48,6 +48,14 @@ export async function readApiJson<T>(response: Response): Promise<T> {
   );
 }
 
+export function isClientReplanRequired(error: unknown): boolean {
+  return (
+    error instanceof ClientApiError &&
+    (error.code === "STALE_REVISION" || error.code === "TARGET_CONFLICT") &&
+    error.details?.replanRequired === true
+  );
+}
+
 function isDetailMap(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

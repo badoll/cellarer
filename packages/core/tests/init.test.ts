@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../src/env.js";
-import { initializeStore, loadRegistry, PACKAGED_CONFIG_PATH, parseConfig } from "../src/index.js";
+import {
+  initializeStore,
+  loadRegistry,
+  PACKAGED_CONFIG_PATH,
+  parseConfig,
+  refreshInventory,
+} from "../src/index.js";
 import { readOperationJournal } from "../src/protocol/journal.js";
 import { acquireStoreMutationLock } from "../src/protocol/mutation-lock.js";
 import { diagnoseMutationRecovery, recoverInterruptedOperation } from "../src/protocol/recovery.js";
@@ -88,55 +94,31 @@ describe("store/initStore", () => {
     );
   });
 
-  it("persists exactly the explicit first-run agent target set", async () => {
-    const result = await initializeStore(t.env, storeRoot, { agentTargets: ["codex"] });
-
-    expect(result.operation).toMatchObject({ ok: true });
-    const config = parseConfig(await t.env.fs.readFile(t.path("home", ".cellarer", "config.json")));
-    expect(config.adapterOverrides.codex).toEqual({ enabled: true });
-    const registry = await loadRegistry(t.env, storeRoot);
-    for (const adapter of registry.list()) {
-      expect(config.adapterOverrides[adapter.id]?.enabled).toBe(adapter.id === "codex");
-    }
-  });
-
-  it("persists an explicit empty first-run agent target set", async () => {
-    const result = await initializeStore(t.env, storeRoot, { agentTargets: [] });
-
-    expect(result.operation).toMatchObject({ ok: true });
-    const config = parseConfig(await t.env.fs.readFile(t.path("home", ".cellarer", "config.json")));
-    const registry = await loadRegistry(t.env, storeRoot);
-    for (const adapter of registry.list()) {
-      expect(config.adapterOverrides[adapter.id]?.enabled).toBe(false);
-    }
-  });
-
-  it("accepts a repeated agent target set regardless of order", async () => {
-    await initializeStore(t.env, storeRoot, { agentTargets: ["codex", "claude-code"] });
-    const configPath = t.path("home", ".cellarer", "config.json");
-    const before = await t.env.fs.readFile(configPath);
-
-    const result = await initializeStore(t.env, storeRoot, {
-      agentTargets: ["claude-code", "codex"],
+  it("leaves activation preferences untouched before live Inventory refresh", async () => {
+    await t.env.fs.mkdir(t.path("home", ".agents", "skills", "inventory-demo"), {
+      recursive: true,
     });
+    await t.env.fs.writeFile(
+      t.path("home", ".agents", "skills", "inventory-demo", "SKILL.md"),
+      "---\nname: inventory-demo\ndescription: init fixture\n---\n",
+    );
 
-    expect(result).toMatchObject({ createdConfig: false, operation: { ok: true } });
-    await expect(t.env.fs.readFile(configPath)).resolves.toBe(before);
-  });
+    await initializeStore(t.env, storeRoot);
+    const config = parseConfig(await t.env.fs.readFile(t.path("home", ".cellarer", "config.json")));
+    const inventory = await refreshInventory(t.env, { storeRoot });
 
-  it("rejects a repeated agent target set that conflicts with persisted activation", async () => {
-    await initializeStore(t.env, storeRoot, { agentTargets: ["codex"] });
-    const configPath = t.path("home", ".cellarer", "config.json");
-    const before = await t.env.fs.readFile(configPath);
-
-    await expect(
-      initializeStore(t.env, storeRoot, { agentTargets: ["claude-code"] }),
-    ).rejects.toMatchObject({
-      name: "InitialAgentSelectionConflictError",
-      currentAgentTargets: ["codex"],
-      requestedAgentTargets: ["claude-code"],
+    expect(config.adapterOverrides).toEqual({});
+    expect(inventory).toMatchObject({
+      completeness: "complete",
+      candidates: [
+        expect.objectContaining({
+          kind: "skills",
+          name: "inventory-demo",
+          state: "ready",
+          defaultSelected: true,
+        }),
+      ],
     });
-    await expect(t.env.fs.readFile(configPath)).resolves.toBe(before);
   });
 
   it("does not leave a truncated config when config publication fails with EIO", async () => {

@@ -13,7 +13,7 @@ import {
   operationCommandRoot,
   resourceCommandRoot,
 } from "./commands/control-plane-read.js";
-import type { InitAgentSelector } from "./commands/init.js";
+import type { InitInventoryImportConfirmer } from "./commands/init.js";
 import { inventoryCommandRoot } from "./commands/inventory.js";
 import { profileCommandRoot, syncProfileCommandRoot } from "./commands/resource-lifecycle.js";
 import { secretCommandRoot } from "./commands/secret.js";
@@ -25,7 +25,7 @@ import { CLI_PACKAGE_VERSION } from "./version.js";
 // CLI 是薄壳:每个子命令一文件,只解析参数并调用 @cellarer/core(不变量 1)。
 export function buildProgram(
   inputIo?: CliInputBoundaryIo,
-  initAgentSelector?: InitAgentSelector,
+  initInventoryImportConfirmer?: InitInventoryImportConfirmer,
 ): Command {
   const program = new Command();
 
@@ -34,8 +34,8 @@ export function buildProgram(
     .description("多 AI agent 的 skills / mcp / rules 全局统一管理工具")
     .version(CLI_PACKAGE_VERSION);
 
-  const catalog = initAgentSelector
-    ? createCliCommandCatalog({ initAgentSelector })
+  const catalog = initInventoryImportConfirmer
+    ? createCliCommandCatalog({ initInventoryImportConfirmer })
     : getDefaultCliCommandCatalog();
   installCliInputBoundary(program, inputIo, catalog);
 

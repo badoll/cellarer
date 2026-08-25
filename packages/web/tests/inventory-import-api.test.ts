@@ -35,7 +35,7 @@ describe("Inventory Store import local client API", () => {
       "---\nname: inventory-demo\ndescription: inventory fixture\n---\n",
       "utf8",
     );
-    await initializeStore(env, storeRoot, { agentTargets: ["codex"] });
+    await initializeStore(env, storeRoot);
   });
 
   afterEach(async () => fs.rm(root, { recursive: true, force: true }));

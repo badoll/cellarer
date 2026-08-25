@@ -55,7 +55,7 @@ describe("control-plane agent and config mutation commands", () => {
     process.env[HEADLESS_MUTATION_AUTHORITY_ENV] =
       `v1:1:${Buffer.alloc(32, 0x6d).toString("base64url")}`;
     process.exitCode = undefined;
-    expect(await invoke(["init", "--agent", "codex"])).toMatchObject({ status: "success" });
+    expect(await invoke(["init"])).toMatchObject({ status: "success" });
   });
 
   afterEach(async () => {
@@ -376,20 +376,20 @@ describe("control-plane agent and config mutation commands", () => {
     });
   }, 30_000);
 
-  it("requires exact non-interactive init targets and returns inventory without writing", async () => {
+  it("returns non-interactive Inventory after Store setup without importing", async () => {
     const missingTargetStore = join(root, "missing-target-store");
     process.env.CELLARER_HOME = missingTargetStore;
 
     expect(await invoke(["init"])).toMatchObject({
-      status: "error",
-      error: {
-        code: "INPUT_REQUIRED",
-        details: { fields: ["agents"], inventory: { agents: expect.any(Array) } },
+      status: "success",
+      data: {
+        store: { createdConfig: true, operation: { ok: true } },
+        inventory: { candidates: expect.any(Array) },
+        confirmation: { status: "not-offered", reason: "non-interactive" },
+        import: { status: "not-started" },
       },
     });
-    await expect(fs.stat(join(missingTargetStore, "config.json"))).rejects.toMatchObject({
-      code: "ENOENT",
-    });
+    await expect(fs.stat(join(missingTargetStore, "config.json"))).resolves.toBeDefined();
   });
 
   it("previews and invokes evidence-based recovery through a typed protocol result", async () => {

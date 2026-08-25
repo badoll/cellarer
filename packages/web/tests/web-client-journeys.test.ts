@@ -1,9 +1,27 @@
 import { promises as fs, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRealEnv, type Env, type MutationPlan, recoveryLockPath } from "@cellarer/core";
+import {
+  createRealEnv,
+  type Env,
+  type InventoryRefreshResult,
+  type MutationPlan,
+  recoveryLockPath,
+} from "@cellarer/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initStore, writeRuleArtifact } from "../../core/src/store/store.js";
+import { ClientApiError } from "../client/api-state.js";
+import {
+  canPlanInventoryImport,
+  createInventoryOnboardingState,
+  defaultInventorySelection,
+  filterInventoryCandidates,
+  type InventoryFilters,
+  inventoryImportDeclined,
+  inventoryImportFailed,
+  inventoryImportPlanned,
+  inventoryLoaded,
+} from "../client/inventory-onboarding.js";
 import { createApp } from "../src/app.js";
 import { deterministicMutationAuthority } from "./helpers/mutation-authority.js";
 
@@ -152,7 +170,153 @@ describe("bundled Web client end-to-end journeys", () => {
     expect(cookie).not.toBe(cookieBeforeRestart);
     expect(bootstrapCount).toBe(2);
   });
+
+  it("keeps first-run filtering, confirmation, decline, reload, partial, and stale remediation explicit", () => {
+    const complete = onboardingInventory("complete");
+    const filters: InventoryFilters = {
+      kind: "skills",
+      sourceId: "source:codex",
+      adapterId: "codex",
+      state: "ready",
+    };
+
+    expect(defaultInventorySelection(complete)).toEqual(["candidate:ready"]);
+    expect(filterInventoryCandidates(complete.candidates, filters)).toEqual([
+      expect.objectContaining({
+        id: "candidate:ready",
+        sources: [
+          expect.objectContaining({ id: "source:codex" }),
+          expect.objectContaining({ id: "source:claude" }),
+        ],
+      }),
+    ]);
+
+    let state = inventoryLoaded(createInventoryOnboardingState(), complete);
+    expect(state).toMatchObject({ phase: "review", selectedCandidateIds: ["candidate:ready"] });
+    expect(canPlanInventoryImport(state)).toBe(true);
+
+    const mutationPlan = { schemaVersion: 1, planId: "inventory-first-run" } as MutationPlan;
+    state = inventoryImportPlanned(state, {
+      inventory: complete,
+      candidateIds: ["candidate:ready"],
+      mutationPlan,
+    });
+    expect(state).toMatchObject({ phase: "confirmation", pendingPlan: { mutationPlan } });
+
+    state = inventoryImportDeclined(state);
+    expect(state).toMatchObject({ phase: "declined", pendingPlan: null });
+
+    state = inventoryLoaded(state, onboardingInventory("partial"));
+    expect(state).toMatchObject({
+      phase: "review",
+      result: { completeness: "partial" },
+      selectedCandidateIds: ["candidate:ready"],
+    });
+    expect(canPlanInventoryImport(state)).toBe(false);
+
+    state = inventoryLoaded(state, {
+      ...complete,
+      candidates: complete.candidates.map((candidate) => ({
+        ...candidate,
+        defaultSelected: false,
+      })),
+    });
+    expect(state.selectedCandidateIds).toEqual([]);
+
+    state = inventoryImportFailed(
+      inventoryImportPlanned(inventoryLoaded(state, complete), {
+        inventory: complete,
+        candidateIds: ["candidate:ready"],
+        mutationPlan,
+      }),
+      new ClientApiError("source changed after planning", "TARGET_CONFLICT", 409, "req-stale", {
+        replanRequired: true,
+      }),
+    );
+    expect(state).toMatchObject({
+      phase: "stale",
+      pendingPlan: null,
+      result: complete,
+    });
+  });
 });
+
+function onboardingInventory(completeness: "complete" | "partial"): InventoryRefreshResult {
+  return {
+    generatedAt: "2026-08-25T12:00:00.000Z",
+    completeness,
+    counts: {
+      total: 2,
+      ready: 1,
+      needsAttention: 1,
+      inStore: 0,
+      observedSources: 2,
+      failedSources: completeness === "partial" ? 1 : 0,
+    },
+    findings:
+      completeness === "partial"
+        ? [
+            {
+              code: "SOURCE_UNREADABLE",
+              severity: "warning",
+              scope: "source",
+              remediation: "retry-refresh",
+            },
+          ]
+        : [],
+    candidates: [
+      {
+        id: "candidate:ready",
+        kind: "skills",
+        name: "shared-skill",
+        contentFingerprint: "sha256:ready",
+        state: "ready",
+        defaultSelected: true,
+        sources: [
+          {
+            id: "source:codex",
+            kind: "skills",
+            scope: "global",
+            location: "~/.codex/skills/shared-skill",
+            adapters: [{ id: "codex", displayName: "Codex", enabled: false, detected: true }],
+          },
+          {
+            id: "source:claude",
+            kind: "skills",
+            scope: "global",
+            location: "~/.claude/skills/shared-skill",
+            adapters: [
+              { id: "claude-code", displayName: "Claude Code", enabled: false, detected: true },
+            ],
+          },
+        ],
+        relatedAdapters: [
+          { id: "codex", displayName: "Codex", enabled: false, detected: true },
+          { id: "claude-code", displayName: "Claude Code", enabled: false, detected: true },
+        ],
+        findings: [],
+      },
+      {
+        id: "candidate:attention",
+        kind: "rules",
+        name: "blocked-rule",
+        contentFingerprint: "sha256:attention",
+        state: "needs-attention",
+        defaultSelected: false,
+        sources: [],
+        relatedAdapters: [],
+        findings: [
+          {
+            code: "PROBABLE_SECRET",
+            severity: "blocked",
+            scope: "candidate",
+            remediation: "remove-secret-values",
+          },
+        ],
+      },
+    ],
+  };
+}
 
 async function postData<T>(
   apiFetch: (path: `/api/v1/${string}`, init?: RequestInit) => Promise<Response>,

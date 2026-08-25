@@ -59,6 +59,7 @@ describe("client mutation error parity", () => {
         target: "/tmp/target",
         expected: { state: "absent" },
         actual: { state: "present", fingerprint: "changed" },
+        replanRequired: true,
       },
     },
     {

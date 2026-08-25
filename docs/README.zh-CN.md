@@ -98,9 +98,9 @@ Adapter 描述如何探测一个 agent，以及它在 global/project scope 下�
 和 skills 的位置。它还声明 capability、codec、路径模板与精确支持的密钥引用类型。
 
 随包 agent 通过按 key 的 `adapterOverrides` 调整；新的声明式 agent 位于
-`customAdapters`。探测到 agent 不等于自动把它作为 mutation 目标。初始化记录持久化的
-enabled-agent 集合，作为 discovery 和展示的默认范围；后续每次 mutation 仍须单独明确
-agent 与 capability。
+`customAdapters`。探测到 agent 不等于自动把它作为 mutation 目标。Enabled state 是与
+初始化分离配置的高级下发偏好，绝不用于过滤 Inventory；后续每次 target mutation 仍须
+单独明确 agent 与 capability。
 
 ### Scope 与落地方式
 
@@ -149,25 +149,34 @@ unowned-existing 或 invalid-owner。
 
 ### 初始化与检查
 
-交互式文本初始化会展示支持的 agent inventory 并询问启用范围；直接回车表示明确不启用
-任何 agent。自动化、JSON/JSONL、structured input、非 TTY 输入及 `--non-interactive`
-必须给出精确的 `--agent` 或 `--no-agent`，不会隐式启用所有探测到的 agent：
+交互式文本初始化会创建或验证 Store，刷新完整的有界 Inventory，展示完整度与候选状态，
+并在导入 Core 默认选中的精确 ready candidate ID 前确认一次。拒绝确认会保留已完成的
+Store 初始化且不导入资源。Refresh 为 partial 或 failed 时会单独保留候选与 findings，
+在显式重试成功前不提供导入确认：
 
 ```bash
-# 交互选择
+# 交互式 Inventory 审查与一次精确 Store-import 确认
 cellarer init
 
-# 确定性自动化
-cellarer init --agent codex,claude-code
-cellarer init --no-agent
+# 无提示的 machine initialization；两者都返回 Inventory 且不导入
+cellarer --output json init
+cellarer --non-interactive init
+
+# 精确重试，并在审查后显式导入
+cellarer inventory refresh
+cellarer --output json inventory import plan --candidate '<candidate-id>'
+cellarer inventory import apply --plan '<plan 返回的 mutationPlan JSON>'
+
+# Agent 检查与初始化、导入保持分离
 cellarer agents
 cellarer doctor
 ```
 
-Structured caller 使用 `agents: []` 表示相同的明确空选择。`init` 只创建或保留 Cellarer
-Store/configuration state，不会向 agent 下发 Rules、MCP definitions 或 Skills。重复执行
-`init` 时，请求集合必须与现有 enabled-agent 集合一致；若要修改已初始化 Store，请使用
-`cellarer agent enable <agent>` 和 `cellarer agent disable <agent>`。
+JSON、JSONL、structured input、非 TTY 输入及 `--non-interactive` 返回闭合、脱敏的
+Store/Inventory 结果，并执行零 prompt、零 import、零 agent-target operation。Init 不再
+接受 `--agent`、`--no-agent` 或 structured `agents` 字段。重复执行 `init` 会刷新当前来源，
+只提供当前 Core defaults；Store 中相同 revision 不会再被选中。已确认 plan 过期时不会静默
+重试：应重新 refresh、review 并创建新的精确 plan。资源导入与后续 Sync 授权保持分离。
 
 `doctor` 是只读命令，检查 Store 布局、配置、adapter 加载、agent 探测、目标写权限、
 authority、锁与恢复证据。它诊断中断 operation，但不会自行删除或修复证据。
@@ -520,7 +529,11 @@ envelope 内的 typed partial 或 failed 结果保留，而不会转换为原始
 
 Inventory import plan route 接收 `candidateIds`，以及可选的 `agentId`、`dir` 和
 `intoCollection`。Apply route 只接收规划返回且未经修改的 `mutationPlan`。随包 client 在
-两个 route 之间传递该精确 plan，不会重新 refresh、重新选择或重建 action。
+两个 route 之间传递该精确 plan，不会重新 refresh、重新选择或重建 action。随包 UI 从
+Inventory-first onboarding 开始，支持按 kind、source、adapter 与 state 过滤合并后的
+provenance，并只采用 Core defaults。Inventory 不完整时禁用导入；导入需要一次精确确认；
+plan 过期时只展示 refresh/replan 指引，不会静默重试。导入成功后，Library 与 Sync 作为
+独立 next action 展示；Inventory 审查和导入都不会写入 agent target。
 
 ## 自定义 Adapter
 

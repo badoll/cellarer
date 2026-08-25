@@ -48,7 +48,7 @@ describe("control-plane read commands", () => {
       `v1:1:${Buffer.alloc(32, 0x4d).toString("base64url")}`;
     process.exitCode = undefined;
 
-    expect(await invoke(["init", "--agent", "codex"])).toMatchObject({ status: "success" });
+    expect(await invoke(["init"])).toMatchObject({ status: "success" });
   });
 
   afterEach(async () => {

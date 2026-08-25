@@ -118,10 +118,10 @@ kinds.
 
 Packaged agents may be adjusted through keyed `adapterOverrides`. New
 declarative agents live under `customAdapters`. An agent is not considered a
-mutation target merely because it was detected. Initialization records a
-persistent enabled-agent set used as a discovery and presentation default;
-each later mutation still requires its own exact agent and capability
-selection.
+mutation target merely because it was detected. Enabled state remains an
+advanced distribution preference configured separately from initialization;
+it never filters Inventory. Each target mutation requires its own exact agent
+and capability selection.
 
 ### Scope and placement
 
@@ -177,29 +177,38 @@ or reports exact manual work.
 
 ### Initialize and inspect
 
-Interactive text-mode initialization shows the supported inventory and asks
-which agents to enable; an empty answer explicitly enables none. Automation,
-JSON/JSONL, structured input, non-TTY input, and `--non-interactive` must supply
-exact `--agent` targets or `--no-agent` and never enable every detected agent
-implicitly:
+Interactive text-mode initialization creates or validates the Store, refreshes
+the complete bounded Inventory, shows completeness and candidate state, and
+asks once before importing the exact Core-default-selected ready candidate IDs.
+Declining leaves Store initialization complete and imports nothing. Partial or
+failed refresh remains separate, preserves its candidates and findings, and
+offers no import confirmation until an explicit retry succeeds:
 
 ```bash
-# Interactive selection
+# Interactive Inventory review and one exact Store-import confirmation
 cellarer init
 
-# Deterministic automation
-cellarer init --agent codex,claude-code
-cellarer init --no-agent
+# Prompt-free machine initialization; both return Inventory and import nothing
+cellarer --output json init
+cellarer --non-interactive init
+
+# Exact retry and explicit import after review
+cellarer inventory refresh
+cellarer --output json inventory import plan --candidate '<candidate-id>'
+cellarer inventory import apply --plan '<mutationPlan JSON returned by plan>'
+
+# Agent inspection remains separate from initialization and import
 cellarer agents
 cellarer doctor
 ```
 
-Structured callers use `agents: []` for the same explicit empty selection.
-`init` creates or preserves only Cellarer Store/configuration state; it does
-not distribute Rules, MCP definitions, or Skills. Repeating `init` is accepted
-only when the requested set matches the existing enabled-agent set. Use
-`cellarer agent enable <agent>` and `cellarer agent disable <agent>` to change
-an initialized Store.
+JSON, JSONL, structured input, non-TTY input, and `--non-interactive` return a
+closed redacted Store/Inventory result and perform zero prompt, import, or
+agent-target operations. Init no longer accepts `--agent`, `--no-agent`, or a
+structured `agents` field. Repeating `init` refreshes current sources and offers
+only the current Core defaults; equal in-Store revisions are not selected. A
+stale confirmed plan is not retried silently: refresh, review, and create a new
+exact plan. Resource import and later Sync authorization remain separate.
 
 `doctor` is read-only. It checks Store layout, configuration, adapter loading,
 agent detection, target write access, authority availability, locks, and
@@ -594,6 +603,12 @@ The Inventory import plan route accepts `candidateIds` plus optional `agentId`,
 `dir`, and `intoCollection`. The apply route accepts only the unchanged
 `mutationPlan` returned by planning. The bundled client passes that exact plan
 between the two routes; it does not refresh, reselect, or reconstruct actions.
+The bundled UI starts with Inventory-first onboarding, supports kind, source,
+adapter, and state filters over merged provenance, and uses only Core defaults.
+It disables import for incomplete Inventory, requires one exact confirmation,
+and surfaces stale-plan refresh/replan guidance without a silent retry. A
+successful import offers Library and Sync as separate next actions; neither
+Inventory review nor import writes an agent target.
 
 ## Custom adapters
 

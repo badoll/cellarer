@@ -147,6 +147,7 @@ export function clientErrorFromMutationConflict(conflict: MutationConflict): Cli
           target: conflict.target,
           expected: conflict.expected,
           actual: conflict.actual,
+          replanRequired: true,
         },
       };
     case "PARTIAL_FAILURE":

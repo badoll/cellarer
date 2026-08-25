@@ -995,6 +995,37 @@ tr:last-child td {
   gap: 8px;
 }
 
+.inventory-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.inventory-filter-field {
+  display: grid;
+  gap: 6px;
+  color: var(--muted-strong);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.inventory-confirmation {
+  border-color: rgba(15, 127, 79, 0.32);
+}
+
+.receipt-list {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-soft);
+}
+
+.receipt-list code {
+  overflow-wrap: anywhere;
+}
+
 .mini-metrics {
   display: grid;
   grid-template-columns: repeat(3, minmax(140px, 1fr));

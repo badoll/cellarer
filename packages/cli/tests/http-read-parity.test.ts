@@ -25,7 +25,7 @@ describe("CLI and HTTP read parity", () => {
     process.env[HEADLESS_MUTATION_AUTHORITY_ENV] =
       `v1:1:${Buffer.alloc(32, 0x5a).toString("base64url")}`;
     process.exitCode = undefined;
-    expect(await invoke(["init", "--agent", "codex"])).toMatchObject({ status: "success" });
+    expect(await invoke(["init"])).toMatchObject({ status: "success" });
     await fs.writeFile(join(storeRoot, "store", "rules", "style.md"), "# style\n", "utf8");
   });
 

@@ -74,7 +74,7 @@ type CommandCase = (context: TestContext) => readonly string[] | Promise<readonl
 const protectedDescriptors: number[] = [];
 
 const commandCases = {
-  init: () => ["init", "--agent", "codex"],
+  init: () => ["init"],
   add: ({ skillSource }) => ["add", skillSource, "--list"],
   agents: ({ project }) => ["agents", "--dir", project],
   ls: () => ["ls"],
@@ -822,44 +822,35 @@ describe("CLI command registry protocol conformance", () => {
     });
   }
 
-  it("defines mutually exclusive init dry-run and committed output data", async () => {
+  it("defines mutually exclusive init location preview and phased Inventory output data", async () => {
     const definition = commandRegistry.find(({ command }) => command === "init");
     const dataSchema = definition?.outputSchema.properties?.data;
     if (!dataSchema) throw new Error("expected init output data schema");
 
-    const dryRun = JSON.parse(
-      (await invoke(["--output", "json", "init", "--agent", "codex", "--dry-run"])).stdout,
-    ) as { data: Record<string, unknown> };
+    const dryRun = JSON.parse((await invoke(["--output", "json", "init", "--dry-run"])).stdout) as {
+      data: Record<string, unknown>;
+    };
     expect(validateAgainstSchema(dryRun.data, dataSchema)).toEqual([]);
 
-    const emptyDryRun = JSON.parse(
-      (await invoke(["--output", "json", "init", "--no-agent", "--dry-run"])).stdout,
-    ) as { data: { agentTargets: unknown[] } };
-    expect(emptyDryRun.data.agentTargets).toEqual([]);
-    expect(validateAgainstSchema(emptyDryRun.data, dataSchema)).toEqual([]);
-
-    const committed = JSON.parse(
-      (await invoke(["--output", "json", "init", "--agent", "codex"])).stdout,
-    ) as { data: Record<string, unknown> };
+    const committed = JSON.parse((await invoke(["--output", "json", "init"])).stdout) as {
+      data: Record<string, unknown>;
+    };
     expect(validateAgainstSchema(committed.data, dataSchema)).toEqual([]);
 
-    expect(
-      validateAgainstSchema(
-        { ...committed.data, dryRun: true, agentTargets: ["codex"] },
-        dataSchema,
-      ),
-    ).toContain("$: oneOf");
-    const { operation: _operation, ...missingCommittedField } = committed.data;
+    expect(validateAgainstSchema({ ...committed.data, dryRun: true }, dataSchema)).toContain(
+      "$: oneOf",
+    );
+    const { store: _store, ...missingCommittedField } = committed.data;
     expect(validateAgainstSchema(missingCommittedField, dataSchema)).toContain("$: oneOf");
-    const { agentTargets: _agentTargets, ...missingDryRunField } = dryRun.data;
+    const { storeRoot: _storeRoot, ...missingDryRunField } = dryRun.data;
     expect(validateAgainstSchema(missingDryRunField, dataSchema)).toContain("$: oneOf");
   });
 
   it("rejects unknown nested fields in public operation receipts and distribution plans", async () => {
-    const initialized = JSON.parse(
-      (await invoke(["--output", "json", "init", "--agent", "codex"])).stdout,
-    ) as { data: { operation: { receipt: Record<string, unknown> } } };
-    initialized.data.operation.receipt.unexpectedReceiptField = true;
+    const initialized = JSON.parse((await invoke(["--output", "json", "init"])).stdout) as {
+      data: { store: { operation: { receipt: Record<string, unknown> } } };
+    };
+    initialized.data.store.operation.receipt.unexpectedReceiptField = true;
     const initDefinition = commandRegistry.find(({ command }) => command === "init");
     expect(
       validateAgainstSchema(initialized, initDefinition?.outputSchema as JsonSchema),
@@ -1007,7 +998,7 @@ describe("CLI command registry protocol conformance", () => {
   });
 
   async function initializeStore(): Promise<void> {
-    const captured = await invoke(["--output", "json", "init", "--agent", "codex"]);
+    const captured = await invoke(["--output", "json", "init"]);
     const terminal = JSON.parse(captured.stdout) as { status?: string };
     expect(terminal.status).toBe("success");
   }

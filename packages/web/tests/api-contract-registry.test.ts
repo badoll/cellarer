@@ -461,6 +461,11 @@ describe("local client route registry", () => {
       ["profiles", items(property(successData("listProfiles"), "profiles"))],
       ["activity", items(property(successData("listActivity"), "events"))],
       ["operations", items(property(successData("listOperations"), "operations"))],
+      ["Inventory candidates", items(property(successData("refreshInventory"), "candidates"))],
+      [
+        "Inventory import candidate IDs",
+        property(inputBody("planInventoryStoreImport"), "candidateIds"),
+      ],
       ["config", property(successData("showConfig"), "config")],
       ["agent adapter request", inputBody("planAgentMutation")],
       ["settings request", property(inputBody("planSettingsMutation"), "settings")],
@@ -474,6 +479,13 @@ describe("local client route registry", () => {
     for (const [label, schema] of stable) {
       assertStableClosedJsonSchema(schema, document.components.schemas, label, new Set());
     }
+
+    expect(inputBody("applyInventoryStoreImport")).toEqual({
+      type: "object",
+      properties: { mutationPlan: { $ref: "#/components/schemas/MutationPlan" } },
+      required: ["mutationPlan"],
+      additionalProperties: false,
+    });
   });
 
   it("validates representative real read and plan responses against the published schemas", async () => {

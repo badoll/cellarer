@@ -2350,7 +2350,7 @@
     {
       "path": "init",
       "aliases": [],
-      "description": "初始化库房(全局)",
+      "description": "初始化库房并刷新统一 Inventory",
       "arguments": [],
       "options": [
         {
@@ -2368,37 +2368,9 @@
           "choices": null
         },
         {
-          "flags": "-a, --agent <ids>",
-          "attributeName": "agent",
-          "description": "明确启用的 agent targets，逗号分隔",
-          "short": "-a",
-          "long": "--agent",
-          "required": true,
-          "optional": false,
-          "variadic": false,
-          "mandatory": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null
-        },
-        {
-          "flags": "--no-agent",
-          "attributeName": "noAgent",
-          "description": "明确不启用任何 agent",
-          "short": null,
-          "long": "--no-agent",
-          "required": false,
-          "optional": false,
-          "variadic": false,
-          "mandatory": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null
-        },
-        {
           "flags": "--dry-run",
           "attributeName": "dryRun",
-          "description": "仅验证初始化目标，不创建或修改库房",
+          "description": "仅解析库房位置，不创建或修改库房",
           "short": null,
           "long": "--dry-run",
           "required": false,
@@ -2413,7 +2385,11 @@
       "protocol": {
         "mutability": "write",
         "streaming": false,
-        "requiredFeatures": ["mutation-authority", "exact-agent-targets"],
+        "requiredFeatures": [
+          "mutation-authority",
+          "unified-resource-inventory",
+          "inventory-store-import"
+        ],
         "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:init:input",
         "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:init:output",
         "eventSchemaId": null,
@@ -2423,12 +2399,6 @@
             "option": "global",
             "positional": null,
             "encoded": false
-          },
-          {
-            "field": "agents",
-            "option": "agent",
-            "positional": null,
-            "encoded": true
           },
           {
             "field": "dryRun",

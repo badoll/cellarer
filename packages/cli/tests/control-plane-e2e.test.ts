@@ -63,11 +63,10 @@ describe("complete CLI control-plane journey", () => {
   });
 
   it("manages three agents end to end through human, JSON, JSONL, and structured input", async () => {
-    const initialized = await invoke(["init", "--agent", "codex,claude-code"]);
+    const initialized = await invoke(["init"]);
     expect(initialized).toMatchObject({ stderr: "", exitCode: undefined });
     expect(initialized.stdout).toContain("库房已初始化:");
-    expect(initialized.stdout).toContain("codex:");
-    expect(initialized.stdout).toContain("claude-code:");
+    expect(initialized.stdout).toContain("inventory:");
 
     const customAdapter = JSON.stringify({
       displayName: "Journey Agent",
@@ -284,9 +283,7 @@ describe("complete CLI control-plane journey", () => {
   }, 30_000);
 
   it("keeps overlapping CLI and Web reads and planned agent mutation semantically equivalent", async () => {
-    expect(
-      protocolTerminal(await invoke(["--output", "json", "init", "--agent", "codex"])),
-    ).toMatchObject({
+    expect(protocolTerminal(await invoke(["--output", "json", "init"]))).toMatchObject({
       status: "success",
     });
     await fs.writeFile(join(storeRoot, "store", "rules", "style.md"), "# Style\n", "utf8");
@@ -409,9 +406,9 @@ describe("complete CLI control-plane journey", () => {
   });
 
   it("applies the exact structured authority-sealed plan and rejects ambiguity, tampering, drift, and staleness", async () => {
-    expect(
-      protocolTerminal(await invoke(["--output", "json", "init", "--agent", "codex"])),
-    ).toMatchObject({ status: "success" });
+    expect(protocolTerminal(await invoke(["--output", "json", "init"]))).toMatchObject({
+      status: "success",
+    });
     await fs.writeFile(join(storeRoot, "store", "rules", "sealed.md"), "# Sealed\n", "utf8");
 
     const planned = protocolTerminal(

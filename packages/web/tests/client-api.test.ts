@@ -146,7 +146,7 @@ describe("bundled versioned API client", () => {
     expect(JSON.parse(String(applyInit?.body))).toEqual({ mutationPlan });
   });
 
-  it("passes the exact Inventory import receipt from plan to apply", async () => {
+  it("keeps Inventory planning separate until confirmation applies the exact receipt", async () => {
     const mutationPlan = { schemaVersion: 1, planId: "inventory-import-plan" };
     const fetchMock = vi
       .fn<typeof fetch>()
@@ -167,11 +167,15 @@ describe("bundled versioned API client", () => {
       .mockResolvedValueOnce(successResponse("req-plan", { mutationPlan }))
       .mockResolvedValueOnce(successResponse("req-apply", { operation: { ok: true } }));
     vi.stubGlobal("fetch", fetchMock);
-    const { applyPlannedInventoryStoreImport } = await import("../client/api.js");
+    const api = await import("../client/api.js");
 
-    await applyPlannedInventoryStoreImport({ candidateIds: ["candidate-exact"] });
+    const planned = await api.planInventoryStoreImport({ candidateIds: ["candidate-exact"] });
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+
+    await api.applyInventoryStoreImport(planned.mutationPlan);
 
     expect(JSON.parse(String(fetchMock.mock.calls[4]?.[1]?.body))).toEqual({ mutationPlan });
+    expect(api).not.toHaveProperty("applyPlannedInventoryStoreImport");
   });
 });
 

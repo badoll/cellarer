@@ -35,7 +35,7 @@ In JSON and JSONL modes the system MUST reserve stdout for protocol records and 
 - **THEN** redacted diagnostics are written only to stderr and stdout remains schema-valid
 
 ### Requirement: Non-interactive execution never prompts
-The CLI MUST support explicit non-interactive execution, SHALL fail with a typed input-required error when mandatory input or acknowledgement is absent, and MUST invoke prompt-capable behavior only for text-mode TTY interaction. An explicit empty collection MUST remain distinguishable from omitted mandatory input.
+The CLI MUST support explicit non-interactive execution, SHALL fail with a typed input-required error when mandatory input or acknowledgement is absent, and MUST invoke prompt-capable behavior only for text-mode TTY interaction. An explicit empty collection MUST remain distinguishable from omitted mandatory input, but initialization MUST NOT use an agent-target collection as first-run input.
 
 #### Scenario: Mutation lacks required acknowledgement
 - **WHEN** a non-interactive apply requires a destructive acknowledgement not present in the request
@@ -45,21 +45,27 @@ The CLI MUST support explicit non-interactive execution, SHALL fail with a typed
 - **WHEN** JSON/JSONL output or structured stdin input is selected
 - **THEN** prompt-capable command behavior is non-interactive
 
-#### Scenario: Non-TTY text mode omits init targets
-- **WHEN** text-mode `init` has no explicit target intent and stdin is not a TTY
-- **THEN** the CLI emits `INPUT_REQUIRED` with inventory and does not attempt to read a prompt
+#### Scenario: Machine initialization completes Store setup
+- **WHEN** machine-mode `init` creates or validates the Store
+- **THEN** it returns the redacted refreshed Inventory, imports no candidate, and does not request agent activation input
 
-#### Scenario: Interactive text mode omits init targets
-- **WHEN** text-mode `init` has no explicit target intent and stdin is a TTY
-- **THEN** the CLI presents the agent inventory and obtains one exact target selection before invoking Core
+### Requirement: Machine initialization returns Inventory without implicit import
+JSON, JSONL, structured-input, non-TTY, and explicitly non-interactive initialization MUST never prompt or infer a candidate selection. After Store creation or validation, it SHALL return the redacted live Inventory and perform no resource import or agent-target mutation.
 
-#### Scenario: Structured init explicitly selects no agents
-- **WHEN** a valid structured init request contains `agents: []`
-- **THEN** the CLI treats it as an explicit empty target set, does not prompt, and invokes Core with zero targets
+#### Scenario: Machine init discovers ready candidates
+- **WHEN** init runs in any non-interactive transport and Inventory contains ready candidates
+- **THEN** it returns those candidates in a schema-valid result and imports none of them
 
-#### Scenario: Conflicting init target forms are supplied
-- **WHEN** an init invocation supplies both exact agent targets and the explicit no-agent form
-- **THEN** the CLI returns `INPUT_AMBIGUITY` and performs no initialization mutation
+### Requirement: Initialization command contracts contain no activation selection
+Capability discovery, schema retrieval, argv help, and structured input MUST describe Inventory-first initialization without init-time agent activation fields or prompt-selection schemas.
+
+#### Scenario: Agent inspects migrated init capabilities
+- **WHEN** `cellarer capabilities --output json` or init help is requested after the migration
+- **THEN** init exposes no `--agent`, `--no-agent`, structured `agents`, or selector contract while Inventory refresh/import remains separately discoverable
+
+#### Scenario: Removed init-selection schema is requested
+- **WHEN** a caller requests a superseded init-selection schema identifier
+- **THEN** schema retrieval returns the stable unsupported-schema failure and does not expose a compatibility alias
 
 ### Requirement: Structured requests are schema validated
 The CLI SHALL accept a versioned command request through `--input <path|->`, MUST validate it before Core invocation, and MUST reject ambiguous duplicate domain inputs.

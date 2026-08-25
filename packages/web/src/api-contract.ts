@@ -829,8 +829,9 @@ const targetConflictDetailsSchema = objectSchema(
     target: nonEmptyStringSchema,
     expected: targetStateReceiptSchema,
     actual: targetStateReceiptSchema,
+    replanRequired: { const: true },
   },
-  ["coreCode", "planId", "actionId", "target", "expected", "actual"],
+  ["coreCode", "planId", "actionId", "target", "expected", "actual", "replanRequired"],
 );
 const partialFailureDetailsSchema = objectSchema(
   {

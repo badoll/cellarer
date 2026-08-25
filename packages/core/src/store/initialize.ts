@@ -12,56 +12,14 @@ import {
   StoreMutationConflictError,
 } from "../protocol/store-mutation.js";
 import { sha256 } from "./checksum.js";
-import {
-  CONFIG_FILENAME,
-  initialConfigText,
-  packagedConfigText,
-  parseConfig,
-  parsePackagedConfigForSettings,
-} from "./config.js";
+import { CONFIG_FILENAME, initialConfigText } from "./config.js";
 import type { InitResult } from "./store.js";
 
 export interface InitializeStoreResult extends InitResult {
   operation: OperationResult;
 }
 
-export interface InitializeStoreOptions {
-  readonly agentTargets?: readonly string[];
-}
-
-export interface InitializationAgentTargetsValidation {
-  readonly initialized: boolean;
-  readonly agentTargets: readonly string[];
-}
-
-export class InitialAgentSelectionConflictError extends Error {
-  readonly currentAgentTargets: readonly string[];
-  readonly requestedAgentTargets: readonly string[];
-
-  constructor(currentAgentTargets: readonly string[], requestedAgentTargets: readonly string[]) {
-    super(
-      "init agent targets differ from the existing enabled-agent set; use cellarer agent enable/disable",
-    );
-    this.name = "InitialAgentSelectionConflictError";
-    this.currentAgentTargets = currentAgentTargets;
-    this.requestedAgentTargets = requestedAgentTargets;
-  }
-}
-
-export async function validateInitializationAgentTargets(
-  env: Env,
-  storeRoot: string,
-  agentTargets: readonly string[],
-): Promise<InitializationAgentTargetsValidation> {
-  const existingConfig = await readFileOrNull(env, join(storeRoot, CONFIG_FILENAME));
-  return validateAgentTargetsForConfig(env, existingConfig, agentTargets);
-}
-
-export async function initializeStore(
-  env: Env,
-  storeRoot: string,
-  opts: InitializeStoreOptions = {},
-): Promise<InitializeStoreResult> {
+export async function initializeStore(env: Env, storeRoot: string): Promise<InitializeStoreResult> {
   // Only protocol scaffolding may precede the mutation lock. Product layout and config are signed
   // actions with journal receipts below.
   await env.fs.mkdir(storeRoot, { recursive: true });
@@ -76,12 +34,8 @@ export async function initializeStore(
       async () => {
         const configPath = join(storeRoot, CONFIG_FILENAME);
         const existingConfig = await readFileOrNull(env, configPath);
-        if (opts.agentTargets !== undefined) {
-          await validateAgentTargetsForConfig(env, existingConfig, opts.agentTargets);
-        }
         const createdConfig = existingConfig === null;
-        const configData =
-          existingConfig ?? (await initialConfigWithAgentTargets(env, opts.agentTargets));
+        const configData = existingConfig ?? (await initialConfigText(env));
         const configMode = 0o600;
         const configAction = {
           actionId: sha256(
@@ -157,71 +111,4 @@ export async function initializeStore(
     }
     return { ...transaction.value, operation: transaction.operation };
   });
-}
-
-async function validateAgentTargetsForConfig(
-  env: Env,
-  existingConfig: string | null,
-  agentTargets: readonly string[],
-): Promise<InitializationAgentTargetsValidation> {
-  if (new Set(agentTargets).size !== agentTargets.length) {
-    throw new TypeError("initial agent targets must be unique");
-  }
-  const packaged = parsePackagedConfigForSettings(await packagedConfigText(env));
-  const builtinIds = Object.keys(packaged.builtinAdapters);
-  const config = existingConfig === null ? null : parseConfig(existingConfig);
-  const known = new Set([...builtinIds, ...Object.keys(config?.customAdapters ?? {})]);
-  const unknown = agentTargets.filter((agentId) => !known.has(agentId));
-  if (unknown.length > 0) {
-    throw new TypeError(`unknown initial agent target: ${unknown.join(", ")}`);
-  }
-
-  const requestedAgentTargets = sortedAgentTargets(agentTargets);
-  if (config === null) {
-    return { initialized: false, agentTargets: requestedAgentTargets };
-  }
-
-  const currentAgentTargets = sortedAgentTargets(
-    [...known].filter((agentId) => config.adapterOverrides[agentId]?.enabled !== false),
-  );
-  if (currentAgentTargets.join("\0") !== requestedAgentTargets.join("\0")) {
-    throw new InitialAgentSelectionConflictError(currentAgentTargets, requestedAgentTargets);
-  }
-  return { initialized: true, agentTargets: currentAgentTargets };
-}
-
-function sortedAgentTargets(agentTargets: readonly string[]): string[] {
-  return [...agentTargets].sort((left, right) => left.localeCompare(right));
-}
-
-async function initialConfigWithAgentTargets(
-  env: Env,
-  agentTargets: readonly string[] | undefined,
-): Promise<string> {
-  const initialText = await initialConfigText(env);
-  if (agentTargets === undefined) return initialText;
-  if (new Set(agentTargets).size !== agentTargets.length) {
-    throw new TypeError("initial agent targets must be unique");
-  }
-  const packaged = parsePackagedConfigForSettings(await packagedConfigText(env));
-  const builtinIds = Object.keys(packaged.builtinAdapters);
-  const known = new Set(builtinIds);
-  const unknown = agentTargets.filter((agentId) => !known.has(agentId));
-  if (unknown.length > 0)
-    throw new TypeError(`unknown initial agent target: ${unknown.join(", ")}`);
-  const selected = new Set(agentTargets);
-  const config = parseConfig(initialText);
-  return `${JSON.stringify(
-    {
-      ...config,
-      adapterOverrides: Object.fromEntries(
-        builtinIds.map((agentId) => [
-          agentId,
-          { ...config.adapterOverrides[agentId], enabled: selected.has(agentId) },
-        ]),
-      ),
-    },
-    null,
-    2,
-  )}\n`;
 }

@@ -162,13 +162,6 @@ export async function applyInventoryStoreImport(
   );
 }
 
-export async function applyPlannedInventoryStoreImport(
-  input: InventoryStoreImportPlanInput,
-): Promise<InventoryStoreImportApplyResult> {
-  const planned = await planInventoryStoreImport(input);
-  return applyInventoryStoreImport(planned.mutationPlan);
-}
-
 async function ensureBrowserSession(): Promise<void> {
   sessionBootstrap ??= fetch(SESSION_PATH, {
     method: "POST",

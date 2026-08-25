@@ -96,7 +96,7 @@ const RESOURCE_STATE_LABELS: Record<ResourceState, string> = {
 };
 
 export function App() {
-  const [page, setPage] = useState<Page>("dashboard");
+  const [page, setPage] = useState<Page>("inventory");
   return (
     <div className="app">
       <MobileChrome page={page} onNavigate={setPage} />
@@ -138,7 +138,7 @@ export function App() {
         <AppHeader page={page} onNavigate={setPage} />
         <div className="content">
           {page === "dashboard" && <DashboardPage onNavigate={setPage} />}
-          {page === "inventory" && <InventoryPage />}
+          {page === "inventory" && <InventoryPage onNavigate={setPage} />}
           {page === "skills" && <ResourcePage kind="skills" />}
           {page === "mcp" && <ResourcePage kind="mcp" />}
           {page === "rules" && <ResourcePage kind="rules" />}

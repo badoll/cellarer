@@ -121,7 +121,7 @@ describe("packed CLI artifact", () => {
     try {
       execFileSync(
         process.execPath,
-        ["--require", preload, join(packageRoot, "dist", "bin.js"), "init", "--agent", "codex"],
+        ["--require", preload, join(packageRoot, "dist", "bin.js"), "init"],
         {
           cwd: temporaryRoot,
           encoding: "utf8",

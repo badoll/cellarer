@@ -173,6 +173,7 @@ describe("versioned HTTP mutation journeys", () => {
           target: "untrusted",
           expected: { state: "present" },
           actual: { state: "present" },
+          replanRequired: true,
         },
       },
     });
@@ -353,6 +354,127 @@ describe("versioned HTTP mutation journeys", () => {
     }>;
 
     expect(applied.data.operation.ok).toBe(true);
+  });
+
+  it("keeps first-run Inventory review, decline, exact import, and stale remediation separate", async () => {
+    const firstSource = join(root, "home", ".codex", "skills", "first-run", "SKILL.md");
+    const staleSource = join(root, "home", ".codex", "skills", "stale-run", "SKILL.md");
+    await env.fs.mkdir(join(firstSource, ".."), { recursive: true });
+    await env.fs.mkdir(join(staleSource, ".."), { recursive: true });
+    await env.fs.writeFile(
+      firstSource,
+      "---\nname: first-run\ndescription: first-run Inventory fixture\n---\n",
+    );
+    await env.fs.writeFile(
+      staleSource,
+      "---\nname: stale-run\ndescription: stale Inventory fixture\n---\n",
+    );
+
+    const reviewedResponse = await app.request("/api/v1/inventory/codex");
+    const reviewed = (await reviewedResponse.json()) as SuccessEnvelope<{
+      readonly completeness: string;
+      readonly candidates: readonly {
+        readonly id: string;
+        readonly name: string;
+        readonly state: string;
+        readonly defaultSelected: boolean;
+      }[];
+    }>;
+    expect(reviewedResponse.status).toBe(200);
+    expect(reviewed.data).toMatchObject({
+      completeness: "complete",
+      candidates: expect.arrayContaining([
+        expect.objectContaining({ name: "first-run", state: "ready", defaultSelected: true }),
+        expect.objectContaining({ name: "stale-run", state: "ready", defaultSelected: true }),
+      ]),
+    });
+
+    // Decline is represented by making no mutation request after review.
+    await expect(
+      env.fs.lstat(join(storeRoot, "store", "skills", "first-run", "SKILL.md")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    const firstCandidate = reviewed.data.candidates.find(({ name }) => name === "first-run");
+    const staleCandidate = reviewed.data.candidates.find(({ name }) => name === "stale-run");
+    if (!firstCandidate || !staleCandidate) throw new Error("missing first-run candidates");
+
+    const firstPlanResponse = await post("/api/v1/inventory/import/plan", {
+      candidateIds: [firstCandidate.id],
+      agentId: "codex",
+    });
+    const firstPlan = (await firstPlanResponse.json()) as SuccessEnvelope<{
+      readonly candidateIds: readonly string[];
+      readonly mutationPlan: MutationPlan;
+    }>;
+    expect(firstPlanResponse.status).toBe(200);
+    expect(firstPlan.data).toMatchObject({
+      candidateIds: [firstCandidate.id],
+      mutationPlan: { operation: "store-import" },
+    });
+    const firstApply = await post("/api/v1/inventory/import/apply", {
+      mutationPlan: firstPlan.data.mutationPlan,
+    });
+    expect(firstApply.status).toBe(200);
+    expect(await firstApply.json()).toMatchObject({
+      status: "success",
+      data: {
+        candidateIds: [firstCandidate.id],
+        resourceIds: ["skills/first-run"],
+        operation: { ok: true, receipt: { outcome: "committed" } },
+      },
+    });
+
+    const stalePlanResponse = await post("/api/v1/inventory/import/plan", {
+      candidateIds: [staleCandidate.id],
+      agentId: "codex",
+    });
+    const stalePlan = (await stalePlanResponse.json()) as SuccessEnvelope<{
+      readonly mutationPlan: MutationPlan;
+    }>;
+    expect(stalePlanResponse.status).toBe(200);
+    await env.fs.writeFile(
+      staleSource,
+      "---\nname: stale-run\ndescription: drifted after confirmation\n---\n",
+    );
+    const staleApply = await post("/api/v1/inventory/import/apply", {
+      mutationPlan: stalePlan.data.mutationPlan,
+    });
+    expect(staleApply.status).toBe(409);
+    expect(await staleApply.json()).toMatchObject({
+      status: "error",
+      error: {
+        code: "TARGET_CONFLICT",
+        details: { coreCode: "TARGET_PRECONDITION_CONFLICT", replanRequired: true },
+      },
+    });
+    await expect(
+      env.fs.lstat(join(storeRoot, "store", "skills", "stale-run", "SKILL.md")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("preserves safe first-run candidates when Inventory refresh is partial", async () => {
+    const safeSource = join(root, "home", ".codex", "skills", "safe-run", "SKILL.md");
+    const externalRules = join(root, "external-rules.md");
+    await env.fs.mkdir(join(safeSource, ".."), { recursive: true });
+    await env.fs.writeFile(
+      safeSource,
+      "---\nname: safe-run\ndescription: safe partial fixture\n---\n",
+    );
+    await env.fs.writeFile(externalRules, "# External rules\n");
+    await env.fs.mkdir(join(root, "home", ".codex"), { recursive: true });
+    await env.fs.symlink(externalRules, join(root, "home", ".codex", "AGENTS.md"), "file");
+
+    const response = await app.request("/api/v1/inventory/codex");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      status: "success",
+      data: {
+        completeness: "partial",
+        candidates: [expect.objectContaining({ name: "safe-run", state: "ready" })],
+        findings: [
+          expect.objectContaining({ code: "UNSAFE_LINK", remediation: "remove-unsafe-link" }),
+        ],
+      },
+    });
   });
 
   async function planCollection(name: string): Promise<{ readonly plan: MutationPlan }> {

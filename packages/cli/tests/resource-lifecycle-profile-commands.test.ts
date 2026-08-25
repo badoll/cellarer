@@ -54,7 +54,7 @@ describe("resource lifecycle and sync-profile commands", () => {
     process.env[HEADLESS_MUTATION_AUTHORITY_ENV] =
       `v1:1:${Buffer.alloc(32, 0x7d).toString("base64url")}`;
     process.exitCode = undefined;
-    expect(await invoke(["init", "--agent", "codex"], "json")).toMatchObject({
+    expect(await invoke(["init"], "json")).toMatchObject({
       status: "success",
     });
     await fs.mkdir(join(root, "project"), { recursive: true });

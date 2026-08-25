@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ClientApiError, readApiJson } from "../client/api-state.js";
+import { ClientApiError, isClientReplanRequired, readApiJson } from "../client/api-state.js";
 
 describe("client api state", () => {
   it("turns API error responses into thrown errors", async () => {
@@ -39,7 +39,7 @@ describe("client api state", () => {
           error: {
             code: "STALE_REVISION",
             message: "plan revision is stale",
-            details: { coreCode: "STALE_REVISION" },
+            details: { coreCode: "STALE_REVISION", replanRequired: true },
           },
         }),
         { status: 409, headers: { "content-type": "application/json" } },
@@ -48,9 +48,11 @@ describe("client api state", () => {
 
     expect(error).toMatchObject({
       code: "STALE_REVISION",
-      details: { coreCode: "STALE_REVISION" },
+      details: { coreCode: "STALE_REVISION", replanRequired: true },
       httpStatus: 409,
     });
+    expect(isClientReplanRequired(error)).toBe(true);
+    expect(isClientReplanRequired(new Error("refresh and retry"))).toBe(false);
   });
 
   it("returns JSON for successful responses", async () => {

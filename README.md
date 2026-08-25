@@ -44,14 +44,29 @@ After publication, the same command surface will be available through the
 
 ## First workflow
 
-Initialize the local store and explicitly enable the agents you want to manage:
+Initialize or validate the local Store. Interactive text mode refreshes the live
+Inventory, preselects only Core-designated ready candidates, and asks once
+before importing that exact selection into the Library:
 
 On a headless machine without an OS credential manager, configure the protected
 [mutation authority](docs/README.md#mutation-authority) before `init`.
 
 ```bash
-node packages/cli/dist/bin.js init --agent codex
+node packages/cli/dist/bin.js init
 ```
+
+Declining leaves Store initialization complete and imports nothing. Partial or
+failed Inventory is reported separately with `inventory refresh` retry guidance.
+Machine modes return the closed redacted Store and Inventory phases without a
+prompt or import:
+
+```bash
+node packages/cli/dist/bin.js --output json init
+node packages/cli/dist/bin.js --non-interactive init
+```
+
+Init no longer accepts `--agent`, `--no-agent`, or structured `agents`. Agent
+targets are selected only by later, separately authorized distribution commands.
 
 Refresh the read-only Inventory across every registered bounded user source, or
 one exact adapter. Add `--dir <project>` to include that current project:
@@ -70,7 +85,7 @@ distributes resources to agent targets:
 
 ```bash
 node packages/cli/dist/bin.js --output json inventory import plan \
-  --candidate '<candidate-id>' --agent codex
+  --candidate '<candidate-id>'
 node packages/cli/dist/bin.js inventory import apply \
   --plan '<mutationPlan JSON returned by plan>'
 ```

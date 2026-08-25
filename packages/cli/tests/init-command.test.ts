@@ -3,17 +3,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLI_PROTOCOL_VERSION, parseConfig } from "@cellarer/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getDefaultCliCommandCatalog } from "../src/commands/command-catalog.js";
 import { HEADLESS_MUTATION_AUTHORITY_ENV } from "../src/mutation-authority.js";
 import { buildProgram } from "../src/program.js";
 
 interface InvocationOptions {
-  readonly output?: "text" | "json";
+  readonly output?: "text" | "json" | "jsonl";
   readonly stdinIsTTY?: boolean;
   readonly input?: string;
-  readonly selectAgents?: (inventory: unknown) => Promise<string>;
+  readonly confirmImport?: (plan: unknown) => Promise<boolean>;
 }
 
-describe("init agent activation", () => {
+describe("init Inventory onboarding", () => {
   let root: string;
   let storeRoot: string;
   let previousCellarerHome: string | undefined;
@@ -46,195 +47,269 @@ describe("init agent activation", () => {
     await fs.rm(root, { recursive: true, force: true });
   });
 
-  it("uses the interactive selector when text-mode stdin is a TTY", async () => {
+  it("confirms one exact Core-default import without changing activation or agent targets", async () => {
+    await createReadySkill(root, "inventory-demo", "initial");
+    let confirmationPlan: unknown;
     const captured = await invoke(["init"], {
       stdinIsTTY: true,
-      selectAgents: async () => "codex",
+      confirmImport: async (plan) => {
+        confirmationPlan = plan;
+        return true;
+      },
     });
 
     expect(captured.stdout).toContain("库房已初始化:");
-    expect(await enabledAgents(storeRoot)).toEqual(["codex"]);
+    expect(captured.stdout).toContain("inventory: complete");
+    expect(confirmationPlan).toMatchObject({
+      candidateIds: [expect.stringMatching(/^inventory-candidate:v1:/)],
+      mutationPlan: { operation: "store-import" },
+    });
+    expect(await explicitAgentOverrides(storeRoot)).toEqual({});
+    await expect(
+      fs.readFile(join(storeRoot, "store", "skills", "inventory-demo", "SKILL.md"), "utf8"),
+    ).resolves.toContain("description: initial");
+    await expect(
+      fs.readFile(join(root, ".codex", "skills", "inventory-demo", "SKILL.md"), "utf8"),
+    ).resolves.toContain("description: initial");
+    await expect(fs.stat(join(root, ".claude"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("persists an interactive empty selection without touching agent targets", async () => {
+  it("keeps Store initialization when the user declines the exact import", async () => {
+    await createReadySkill(root, "inventory-demo", "declined");
     const captured = await invoke(["init"], {
       stdinIsTTY: true,
-      selectAgents: async () => "",
+      confirmImport: async () => false,
     });
 
     expect(captured.stdout).toContain("库房已初始化:");
-    expect(await enabledAgents(storeRoot)).toEqual([]);
-    await expect(fs.stat(join(root, ".codex"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(captured.stdout).toContain("inventory import declined");
+    await expect(fs.stat(join(storeRoot, "config.json"))).resolves.toBeDefined();
+    await expect(
+      fs.stat(join(storeRoot, "store", "skills", "inventory-demo", "SKILL.md")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("keeps non-TTY omission fail-closed without invoking a selector", async () => {
+  it("does not reconfirm an equal candidate already imported by a prior init", async () => {
+    await createReadySkill(root, "inventory-demo", "repeat");
+    await invoke(["init"], { stdinIsTTY: true, confirmImport: async () => true });
+
+    const repeated = await invoke(["init"], {
+      stdinIsTTY: true,
+      confirmImport: async () => {
+        throw new Error("in-store candidates must not be offered again");
+      },
+    });
+
+    expect(repeated.stdout).toContain("inventory: complete");
+    expect(repeated.stdout).toContain("0 ready");
+    expect(repeated.stdout).toContain("1 in Store");
+  });
+
+  it("preserves partial Inventory and skips import confirmation", async () => {
+    await createReadySkill(root, "inventory-demo", "partial");
+    const external = join(root, "external-rules.md");
+    await fs.writeFile(external, "# External\n");
+    await fs.mkdir(join(root, ".agents"), { recursive: true });
+    await fs.symlink(external, join(root, ".agents", "AGENTS.md"), "file");
+
+    const captured = await invoke(["init"], {
+      stdinIsTTY: true,
+      confirmImport: async () => {
+        throw new Error("partial Inventory must not be confirmed");
+      },
+    });
+
+    expect(captured.stdout).toContain("inventory: partial");
+    expect(captured.stderr).toContain("cellarer inventory refresh");
+    await expect(fs.stat(join(storeRoot, "config.json"))).resolves.toBeDefined();
+    await expect(
+      fs.stat(join(storeRoot, "store", "skills", "inventory-demo", "SKILL.md")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("preserves failed Inventory separately from successful Store initialization", async () => {
+    const external = join(root, "external-rules.md");
+    await fs.writeFile(external, "# External\n");
+    await fs.mkdir(join(root, ".agents"), { recursive: true });
+    await fs.symlink(external, join(root, ".agents", "AGENTS.md"), "file");
+
+    const captured = await invoke(["init"], {
+      stdinIsTTY: true,
+      confirmImport: async () => {
+        throw new Error("failed Inventory must not be confirmed");
+      },
+    });
+
+    expect(captured.stdout).toContain("库房已初始化:");
+    expect(captured.stdout).toContain("inventory: failed");
+    expect(captured.stderr).toContain("cellarer inventory refresh");
+    await expect(fs.stat(join(storeRoot, "config.json"))).resolves.toBeDefined();
+  });
+
+  it("surfaces stale exact-plan failure without refreshing, replanning, or target writes", async () => {
+    const source = await createReadySkill(root, "inventory-demo", "reviewed");
+    const captured = await invoke(["init"], {
+      stdinIsTTY: true,
+      confirmImport: async () => {
+        await fs.writeFile(
+          source,
+          "---\nname: inventory-demo\ndescription: drifted after review\n---\n",
+        );
+        return true;
+      },
+    });
+
+    expect(captured.stderr).toContain("TARGET_PRECONDITION_CONFLICT");
+    expect(captured.stderr).toContain("cellarer inventory refresh");
+    await expect(
+      fs.stat(join(storeRoot, "store", "skills", "inventory-demo", "SKILL.md")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.stat(join(root, ".claude"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("returns closed Inventory in non-TTY JSON with zero prompt and zero import", async () => {
+    await createReadySkill(root, "inventory-demo", "machine-json");
     const captured = await invoke(["init"], {
       output: "json",
       stdinIsTTY: false,
-      selectAgents: async () => {
+      confirmImport: async () => {
         throw new Error("selector must not run");
       },
     });
 
     expect(JSON.parse(captured.stdout)).toMatchObject({
-      status: "error",
-      error: { code: "INPUT_REQUIRED", details: { fields: ["agents"] } },
+      status: "success",
+      data: {
+        store: { createdConfig: true, operation: { ok: true } },
+        inventory: {
+          completeness: "complete",
+          candidates: [expect.objectContaining({ name: "inventory-demo", defaultSelected: true })],
+        },
+        confirmation: { status: "not-offered", reason: "non-interactive" },
+        import: { status: "not-started" },
+      },
     });
-    await expect(fs.stat(join(storeRoot, "config.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(captured.stderr).toBe("");
+    await expect(fs.stat(join(storeRoot, "config.json"))).resolves.toBeDefined();
+    await expect(
+      fs.stat(join(storeRoot, "store", "skills", "inventory-demo", "SKILL.md")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("keeps JSON TTY invocation protocol-only without invoking a selector", async () => {
+  it("returns one terminal JSONL Inventory record without invoking confirmation", async () => {
+    await createReadySkill(root, "inventory-demo", "machine-jsonl");
     const captured = await invoke(["init"], {
-      output: "json",
+      output: "jsonl",
       stdinIsTTY: true,
-      selectAgents: async () => {
+      confirmImport: async () => {
         throw new Error("selector must not run");
       },
     });
 
-    expect(JSON.parse(captured.stdout)).toMatchObject({
-      status: "error",
-      error: { code: "INPUT_REQUIRED" },
+    const records = captured.stdout
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      status: "success",
+      data: {
+        inventory: { completeness: "complete", candidates: [{ name: "inventory-demo" }] },
+        confirmation: { status: "not-offered", reason: "non-interactive" },
+        import: { status: "not-started" },
+      },
     });
     expect(captured.stderr).toBe("");
   });
 
-  it("keeps structured file input non-interactive on a TTY", async () => {
-    let selectorCalls = 0;
+  it("keeps structured init prompt-free and imports nothing on a TTY", async () => {
+    await createReadySkill(root, "inventory-demo", "structured");
     const request = JSON.stringify({
       protocolVersion: CLI_PROTOCOL_VERSION,
       command: "init",
       requestId: "test:init:file-input",
-      input: { dryRun: true },
+      input: {},
     });
 
     const captured = await invoke(["--input", "request.json", "init"], {
-      stdinIsTTY: true,
-      input: request,
-      selectAgents: async () => {
-        selectorCalls += 1;
-        return "codex";
-      },
-    });
-
-    expect(selectorCalls).toBe(0);
-    expect(captured.stderr).toContain("init requires explicit agent target intent");
-    await expect(fs.stat(join(storeRoot, "config.json"))).rejects.toMatchObject({ code: "ENOENT" });
-  });
-
-  it("accepts --no-agent as explicit empty non-interactive intent", async () => {
-    const captured = await invoke(["init", "--no-agent"], {
-      output: "json",
-      stdinIsTTY: false,
-    });
-
-    expect(JSON.parse(captured.stdout)).toMatchObject({ status: "success" });
-    expect(await enabledAgents(storeRoot)).toEqual([]);
-  });
-
-  it("rejects an empty --agent value instead of treating it as --no-agent", async () => {
-    const captured = await invoke(["init", "--agent", ","], {
-      output: "json",
-      stdinIsTTY: false,
-    });
-
-    expect(JSON.parse(captured.stdout)).toMatchObject({
-      status: "error",
-      error: { code: "INVALID_INPUT", details: { fields: ["agents"] } },
-    });
-    await expect(fs.stat(join(storeRoot, "config.json"))).rejects.toMatchObject({ code: "ENOENT" });
-  });
-
-  it("accepts structured agents: [] as explicit empty intent", async () => {
-    const request = JSON.stringify({
-      protocolVersion: CLI_PROTOCOL_VERSION,
-      command: "init",
-      requestId: "test:init:empty",
-      input: { agents: [], dryRun: true },
-    });
-    const captured = await invoke(["--input", "-", "init"], {
-      output: "json",
-      stdinIsTTY: false,
-      input: request,
-    });
-
-    expect(JSON.parse(captured.stdout)).toMatchObject({
-      status: "success",
-      requestId: "test:init:empty",
-      data: { dryRun: true, agentTargets: [] },
-    });
-    await expect(fs.stat(join(storeRoot, "config.json"))).rejects.toMatchObject({ code: "ENOENT" });
-  });
-
-  it("rejects --agent with --no-agent as ambiguous before initialization", async () => {
-    const captured = await invoke(["init", "--agent", "codex", "--no-agent"], {
-      output: "json",
-      stdinIsTTY: false,
-    });
-
-    expect(JSON.parse(captured.stdout)).toMatchObject({
-      status: "error",
-      error: { code: "INPUT_AMBIGUITY", details: { fields: ["agents"] } },
-    });
-    await expect(fs.stat(join(storeRoot, "config.json"))).rejects.toMatchObject({ code: "ENOENT" });
-  });
-
-  it("rejects structured agent targets with --no-agent as ambiguous", async () => {
-    const request = JSON.stringify({
-      protocolVersion: CLI_PROTOCOL_VERSION,
-      command: "init",
-      requestId: "test:init:ambiguous-structured",
-      input: { agents: ["codex"], dryRun: true },
-    });
-    const captured = await invoke(["--input", "request.json", "init", "--no-agent"], {
       output: "json",
       stdinIsTTY: true,
       input: request,
+      confirmImport: async () => {
+        throw new Error("structured init must not confirm import");
+      },
     });
 
     expect(JSON.parse(captured.stdout)).toMatchObject({
-      status: "error",
-      requestId: "test:init:ambiguous-structured",
-      error: { code: "INPUT_AMBIGUITY", details: { fields: ["agents"] } },
-    });
-    await expect(fs.stat(join(storeRoot, "config.json"))).rejects.toMatchObject({ code: "ENOENT" });
-  });
-
-  it("accepts matching repeated initialization and rejects conflicting activation", async () => {
-    expect(JSON.parse((await invokeJson(["init", "--agent", "codex"])).stdout)).toMatchObject({
       status: "success",
-    });
-    const configPath = join(storeRoot, "config.json");
-    const before = await fs.readFile(configPath, "utf8");
-
-    expect(JSON.parse((await invokeJson(["init", "--agent", "codex"])).stdout)).toMatchObject({
-      status: "success",
-    });
-    const conflicting = JSON.parse((await invokeJson(["init", "--agent", "claude-code"])).stdout);
-    expect(conflicting).toMatchObject({
-      status: "error",
-      error: {
-        code: "DOMAIN_VALIDATION_FAILED",
-        details: {
-          currentAgentTargets: ["codex"],
-          requestedAgentTargets: ["claude-code"],
-        },
+      requestId: "test:init:file-input",
+      data: {
+        inventory: { candidates: [{ name: "inventory-demo" }] },
+        confirmation: { status: "not-offered", reason: "non-interactive" },
+        import: { status: "not-started" },
       },
     });
-    await expect(fs.readFile(configPath, "utf8")).resolves.toBe(before);
+    await expect(
+      fs.stat(join(storeRoot, "store", "skills", "inventory-demo", "SKILL.md")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps explicitly non-interactive text init prompt-free and read-only after Store setup", async () => {
+    await createReadySkill(root, "inventory-demo", "explicit-non-interactive");
+    const captured = await invoke(["--non-interactive", "init"], {
+      stdinIsTTY: true,
+      confirmImport: async () => {
+        throw new Error("explicitly non-interactive init must not confirm import");
+      },
+    });
+
+    expect(captured.stdout).toContain("inventory: complete");
+    expect(captured.stdout).toContain("inventory import not offered in non-interactive mode");
+    await expect(
+      fs.stat(join(storeRoot, "store", "skills", "inventory-demo", "SKILL.md")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("removes init activation options and structured selection from help and catalog", async () => {
+    const program = buildProgram();
+    const help =
+      program.commands.find((command) => command.name() === "init")?.helpInformation() ?? "";
+    const definition = getDefaultCliCommandCatalog().requireDefinition("init");
+
+    expect(help).not.toContain("--agent");
+    expect(help).not.toContain("--no-agent");
+    expect(definition.requiredFeatures).not.toContain("exact-agent-targets");
+    expect(definition.inputSchema.properties?.input?.properties).not.toHaveProperty("agents");
+
+    const request = JSON.stringify({
+      protocolVersion: CLI_PROTOCOL_VERSION,
+      command: "init",
+      requestId: "test:init:removed-agents",
+      input: { agents: [] },
+    });
+    const removedStructuredProgram = buildProgram({
+      stdinIsTTY: false,
+      readInput: async () => request,
+    });
+    removedStructuredProgram.exitOverride();
+    const structuredError = await removedStructuredProgram
+      .parseAsync(["node", "cellarer", "--input", "-", "init"], { from: "node" })
+      .catch((error: unknown) => error);
+    expect(structuredError).toMatchObject({ cliError: { code: "INVALID_INPUT" } });
+    await expect(fs.stat(join(storeRoot, "config.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
 
-async function enabledAgents(root: string): Promise<string[]> {
+async function explicitAgentOverrides(root: string): Promise<Record<string, unknown>> {
   const config = parseConfig(await fs.readFile(join(root, "config.json"), "utf8"));
-  return Object.entries(config.adapterOverrides)
-    .filter(([, override]) => override.enabled === true)
-    .map(([agentId]) => agentId)
-    .sort();
+  return config.adapterOverrides;
 }
 
-function invokeJson(args: readonly string[]) {
-  return invoke(args, { output: "json", stdinIsTTY: false });
+async function createReadySkill(root: string, name: string, description: string): Promise<string> {
+  const path = join(root, ".codex", "skills", name, "SKILL.md");
+  await fs.mkdir(join(path, ".."), { recursive: true });
+  await fs.writeFile(path, `---\nname: ${name}\ndescription: ${description}\n---\n`, "utf8");
+  return path;
 }
 
 async function invoke(
@@ -264,9 +339,12 @@ async function invoke(
     stdinIsTTY: options.stdinIsTTY ?? false,
     readInput: async () => options.input ?? "",
   };
-  const program = buildProgram(inputIo, options.selectAgents);
+  const program = buildProgram(inputIo, options.confirmImport);
   program.exitOverride();
-  const argv = options.output === "json" ? ["--output", "json", ...args] : [...args];
+  const argv =
+    options.output === "json" || options.output === "jsonl"
+      ? ["--output", options.output, ...args]
+      : [...args];
   try {
     await program.parseAsync(["node", "cellarer", ...argv], { from: "node" });
   } finally {

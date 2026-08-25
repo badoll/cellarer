@@ -11,13 +11,13 @@ import {
   createSchemaCommandContract,
   type ProtocolDiscoveryProvider,
 } from "./discovery.js";
-import type { InitAgentSelector } from "./init.js";
+import type { InitInventoryImportConfirmer } from "./init.js";
 import { createInitCommandContract } from "./init.js";
 import { createScanCommandContract } from "./scan.js";
 
 export function createInitializationDiscoveryDomain(
   options: {
-    readonly initAgentSelector?: InitAgentSelector;
+    readonly initInventoryImportConfirmer?: InitInventoryImportConfirmer;
     readonly scanContextResolver?: typeof resolveContext;
   },
   provider: ProtocolDiscoveryProvider,
@@ -30,35 +30,77 @@ export function createInitializationDiscoveryDomain(
           command: "init",
           catalogOrder: 0,
           mutability: "write",
-          requiredFeatures: ["mutation-authority", "exact-agent-targets"],
+          requiredFeatures: [
+            "mutation-authority",
+            "unified-resource-inventory",
+            "inventory-store-import",
+          ],
           input: s.jsonSchema.object({
             global: s.jsonSchema.boolean(),
-            agents: s.stringArray,
             dryRun: s.jsonSchema.boolean(),
           }),
-          bindings: [
-            s.option("global"),
-            s.option("agents", "agent", s.joinList),
-            s.option("dryRun"),
-          ],
+          bindings: [s.option("global"), s.option("dryRun")],
           output: {
             oneOf: [
-              s.dataObject(["dryRun", "storeRoot", "agentTargets", "inventory"], {
+              s.dataObject(["dryRun", "storeRoot"], {
                 dryRun: { const: true },
                 storeRoot: s.jsonSchema.string(),
-                agentTargets: s.stringArray,
-                inventory: s.agentListOutput,
               }),
-              s.dataObject(["storeRoot", "createdConfig", "operation", "inventory"], {
-                storeRoot: s.jsonSchema.string(),
-                createdConfig: s.jsonSchema.boolean(),
-                operation: s.presentedOperationResult,
-                inventory: s.agentListOutput,
+              s.dataObject(["store", "inventory", "confirmation", "import"], {
+                store: s.dataObject(["storeRoot", "createdConfig", "operation"], {
+                  storeRoot: s.jsonSchema.string(),
+                  createdConfig: s.jsonSchema.boolean(),
+                  operation: s.presentedOperationResult,
+                }),
+                inventory: s.inventoryRefreshOutput,
+                confirmation: {
+                  oneOf: [
+                    s.dataObject(["status", "candidateIds", "reason"], {
+                      status: { const: "not-offered" },
+                      candidateIds: s.stringArray,
+                      reason: s.jsonSchema.enumeration([
+                        "inventory-incomplete",
+                        "no-ready-candidates",
+                        "non-interactive",
+                      ]),
+                    }),
+                    s.dataObject(["status", "candidateIds"], {
+                      status: { const: "declined" },
+                      candidateIds: s.stringArray,
+                    }),
+                    s.dataObject(["status", "candidateIds"], {
+                      status: { const: "confirmed" },
+                      candidateIds: s.stringArray,
+                    }),
+                  ],
+                },
+                import: {
+                  oneOf: [
+                    s.dataObject(["status"], { status: { const: "not-started" } }),
+                    s.dataObject(["status", "error"], {
+                      status: { const: "failed" },
+                      error: s.dataObject(["code", "reason"], {
+                        code: s.jsonSchema.string({ minLength: 1 }),
+                        reason: s.jsonSchema.string({ minLength: 1 }),
+                      }),
+                    }),
+                    s.dataObject(
+                      ["status", "candidateIds", "resourceIds", "operation", "warnings"],
+                      {
+                        status: { const: "applied" },
+                        candidateIds: s.stringArray,
+                        resourceIds: s.stringArray,
+                        operation: s.presentedOperationResult,
+                        warnings: s.stringArray,
+                      },
+                    ),
+                  ],
+                },
               }),
             ],
           },
         }),
-        options.initAgentSelector,
+        options.initInventoryImportConfirmer,
       ),
       createScanCommandContract(
         defineContractMetadata({

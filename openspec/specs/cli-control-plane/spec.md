@@ -68,36 +68,24 @@ The CLI SHALL show, validate, and mutate supported non-secret settings through t
 - **WHEN** a valid configuration plan is applied at the matching revision
 - **THEN** the store advances one revision and returns a receipt describing redacted changed fields
 
-### Requirement: First-run target selection is explicit
-Initialization MUST report supported, detected, configured, and enabled agents, MUST persist only an exact first-run activation set, and MUST NOT treat activation as authorization to distribute resources. Non-interactive initialization MUST require either exact agent targets or an explicit empty target set.
+### Requirement: First-run Inventory review is automatic and explicit
+Initialization SHALL create or validate Store state and automatically refresh complete bounded Inventory without asking the user to select agents. Interactive text mode SHALL offer one confirmation for the exact Core-default-selected ready candidates through the normal import plan/apply flow. Initialization and import MUST NOT distribute resources.
 
-#### Scenario: Non-interactive init omits target intent
-- **WHEN** `init` is invoked non-interactively without exact agent targets or an explicit empty target set
-- **THEN** it returns `INPUT_REQUIRED` with the inventory, performs no initialization mutation, and does not enable every detected agent
+#### Scenario: Interactive first initialization finds ready candidates
+- **WHEN** a text-mode TTY user invokes `init` without domain options
+- **THEN** the CLI shows completeness, state, and selected counts and asks once before applying the unchanged exact import plan
 
-#### Scenario: Non-interactive init explicitly selects no agents
-- **WHEN** `init` is invoked non-interactively with an explicit empty target set
-- **THEN** initialization succeeds with every built-in agent disabled and reports the resulting inventory
+#### Scenario: Interactive user declines import
+- **WHEN** the user declines the unified confirmation
+- **THEN** Store initialization remains successful, no resource is imported, and every agent target remains unchanged
 
-#### Scenario: Human confirms selected targets
-- **WHEN** an interactive text-mode user chooses exact agents from the supported inventory
-- **THEN** initialization persists only those agents and reports detection and unsupported capabilities before any separate distribution
+#### Scenario: Initialization is repeated
+- **WHEN** init runs against an existing Store
+- **THEN** it refreshes current sources, leaves equal in-store revisions unselected, and offers only current new or changed ready candidates
 
-#### Scenario: Human confirms an empty target set
-- **WHEN** an interactive text-mode user explicitly chooses no agents
-- **THEN** initialization persists an empty enabled-agent set without distributing, deleting, or modifying any agent target
-
-#### Scenario: Initialization never distributes resources
-- **WHEN** initialization succeeds with one or more enabled agents
-- **THEN** it creates or preserves only Cellarer Store/configuration state and does not write Rules, MCP definitions, or Skills to agent targets
-
-#### Scenario: Repeated initialization matches persisted activation
-- **WHEN** `init` receives an exact target set equal to the effective enabled-agent set in an existing config
-- **THEN** initialization preserves that config and reports an idempotent successful result
-
-#### Scenario: Repeated initialization conflicts with persisted activation
-- **WHEN** `init` receives an exact target set different from the effective enabled-agent set in an existing config
-- **THEN** it returns a typed validation failure with current and requested sets, leaves the config unchanged, and directs the caller to `agent enable` and `agent disable`
+#### Scenario: Refresh fails after Store creation
+- **WHEN** Store initialization succeeds but Inventory refresh is partial or failed
+- **THEN** the CLI reports the states separately and provides an exact refresh retry without undoing Store initialization
 
 ### Requirement: CLI exposes operational state and evidence
 The CLI SHALL provide desired/applied diff, target status, combined verification, discovery summary, and redacted operation list/show commands using shared Core DTOs.

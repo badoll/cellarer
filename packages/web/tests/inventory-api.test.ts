@@ -35,7 +35,7 @@ describe("Inventory local client API", () => {
       "utf8",
     );
     await env.fs.mkdir(projectRoot, { recursive: true });
-    await initializeStore(env, storeRoot, { agentTargets: ["codex"] });
+    await initializeStore(env, storeRoot);
   });
 
   afterEach(async () => {

@@ -1,225 +1,279 @@
 import { createInterface } from "node:readline/promises";
 import {
-  type ControlPlaneAgentListDto,
-  InitialAgentSelectionConflictError,
+  type AppliedInventoryStoreImport,
+  applyInventoryStoreImportPlan,
+  type InventoryRefreshResult,
+  InventoryStoreImportPlanningError,
   initializeStore,
-  listControlPlaneAgents,
-  validateInitializationAgentTargets,
+  type PlannedInventoryStoreImport,
+  planInventoryStoreImport,
+  refreshInventory,
 } from "@cellarer/core";
-import { Command, Option } from "commander";
+import { Command } from "commander";
 import { resolveContext } from "../context.js";
-import { safeConsole as console } from "../output.js";
+import { safeConsole as console, createSafeConsole } from "../output.js";
 import {
   type CommandContractMetadata,
   defineCommandContract,
 } from "../protocol/command-contract.js";
 import { commandSuccess, publicOperationResult } from "../protocol/execution.js";
-import { CliInputError, type CliInvocation } from "../protocol/input.js";
 
 interface InitOpts {
   readonly global?: boolean;
-  readonly agent?: string;
-  readonly noAgent?: boolean;
   readonly dryRun?: boolean;
 }
 
-export type InitAgentSelector = (inventory: ControlPlaneAgentListDto) => Promise<string>;
+export type InitInventoryImportConfirmer = (plan: PlannedInventoryStoreImport) => Promise<boolean>;
+
+type InitConfirmationPhase =
+  | {
+      readonly status: "not-offered";
+      readonly candidateIds: readonly string[];
+      readonly reason: "inventory-incomplete" | "no-ready-candidates" | "non-interactive";
+    }
+  | { readonly status: "declined"; readonly candidateIds: readonly string[] }
+  | { readonly status: "confirmed"; readonly candidateIds: readonly string[] };
+
+type InitImportPhase =
+  | { readonly status: "not-started" }
+  | {
+      readonly status: "failed";
+      readonly error: { readonly code: string; readonly reason: string };
+    }
+  | {
+      readonly status: "applied";
+      readonly candidateIds: readonly string[];
+      readonly resourceIds: readonly string[];
+      readonly operation: ReturnType<typeof publicOperationResult>;
+      readonly warnings: readonly string[];
+    };
+
+interface InteractiveInitCommandData {
+  readonly store: {
+    readonly storeRoot: string;
+    readonly createdConfig: boolean;
+    readonly operation: ReturnType<typeof publicOperationResult>;
+  };
+  readonly inventory: InventoryRefreshResult;
+  readonly confirmation: InitConfirmationPhase;
+  readonly import: InitImportPhase;
+}
 
 type InitCommandData =
+  | InteractiveInitCommandData
   | {
       readonly dryRun: true;
       readonly storeRoot: string;
-      readonly agentTargets: string[];
-      readonly inventory: Awaited<ReturnType<typeof listControlPlaneAgents>>;
-    }
-  | {
-      readonly storeRoot: string;
-      readonly createdConfig: boolean;
-      readonly operation: ReturnType<typeof publicOperationResult>;
-      readonly inventory: Awaited<ReturnType<typeof listControlPlaneAgents>>;
     };
 
 interface InitCommandInput {
   readonly opts: InitOpts;
-  readonly command: Command;
 }
 
 // 初始化库房:委托给 core 并发安全 initializer(不变量 1:CLI 不写 fs 业务逻辑)。
 export function createInitCommandContract(
   definition: CommandContractMetadata<"init">,
-  selectAgents: InitAgentSelector = selectInitAgents,
+  confirmImport: InitInventoryImportConfirmer = confirmInventoryImport,
 ) {
   return defineCommandContract<"init", InitCommandInput, InitCommandData>(definition, {
     createCommand: () =>
       new Command("init")
-        .description("初始化库房(全局)")
+        .description("初始化库房并刷新统一 Inventory")
         .option("--global", "初始化全局库房(默认)")
-        .option("-a, --agent <ids>", "明确启用的 agent targets，逗号分隔")
-        .addOption(explicitNoAgentOption())
-        .option("--dry-run", "仅验证初始化目标，不创建或修改库房"),
-    normalize: ({ command }) => ({ opts: command.opts<InitOpts>(), command }),
-    execute: async ({ opts, command }, { invocation }) => {
-      assertUnambiguousAgentIntent(opts, invocation);
-      assertExplicitArgvAgentList(opts, command, invocation);
+        .option("--dry-run", "仅解析库房位置，不创建或修改库房"),
+    normalize: ({ command }) => ({ opts: command.opts<InitOpts>() }),
+    execute: async ({ opts }, { invocation }) => {
       const preview = await resolveContext({}, "none");
-      const inventory = await listControlPlaneAgents(preview.env, {
-        storeRoot: preview.storeRoot,
-        scope: "global",
-      });
-      let selection: string | false | undefined = opts.noAgent ? false : opts.agent;
-      if (selection === undefined && invocation.nonInteractive) {
-        throw new CliInputError(
-          "INPUT_REQUIRED",
-          "init requires explicit agent target intent",
-          { fields: ["agents"], inventory },
-          invocation,
-        );
-      }
-      selection ??= await selectAgents(inventory);
-      const agentTargets = parseAgentTargets(selection);
-      const knownAgentIds = new Set(inventory.agents.map((agent) => agent.id));
-      const unknown = agentTargets.filter((agentId) => !knownAgentIds.has(agentId));
-      if (unknown.length > 0) {
-        throw new CliInputError(
-          "INVALID_INPUT",
-          "init agent targets must identify supported agents exactly",
-          { fields: ["agents"], agentIds: unknown, inventory },
-          invocation,
-        );
-      }
-      await validateAgentTargets(preview.env, preview.storeRoot, agentTargets, invocation);
       if (opts.dryRun) {
         return commandSuccess({
           dryRun: true as const,
           storeRoot: preview.storeRoot,
-          agentTargets,
-          inventory,
         });
       }
-      const { env, storeRoot } = await resolveContext({}, "provision");
-      let result: Awaited<ReturnType<typeof initializeStore>>;
-      try {
-        result = await initializeStore(env, storeRoot, { agentTargets });
-      } catch (error) {
-        throw mapSelectionConflict(error, invocation);
-      }
-      const configuredInventory = await listControlPlaneAgents(env, {
-        storeRoot,
-        scope: "global",
-      });
-      return commandSuccess({
-        storeRoot: result.storeRoot,
-        createdConfig: result.createdConfig,
-        operation: publicOperationResult(result.operation),
-        inventory: configuredInventory,
-      });
+      return executeInventoryInit(invocation.nonInteractive, confirmImport);
     },
     presentText: (outcome) => {
       if (!outcome.ok) return;
-      if ("dryRun" in outcome.data) {
-        console.log(`dry-run: would initialize ${outcome.data.storeRoot}`);
+      if ("store" in outcome.data) {
+        presentInteractiveInventoryInit(outcome.data);
         return;
       }
-      const note = outcome.data.createdConfig ? "" : " (config.json 已存在,保留)";
-      if (!outcome.data.operation.ok) return;
-      console.log(
-        `库房已初始化:${outcome.data.storeRoot}${note} (operation ${outcome.data.operation.receipt.operationId}, revision ${outcome.data.operation.receipt.resultingRevision})`,
-      );
-      for (const agent of outcome.data.inventory.agents) {
-        console.log(
-          `  ${agent.id}: detected=${agent.detected ? "yes" : "no"}, configured=${agent.configured ? "yes" : "no"}, enabled=${agent.enabled ? "yes" : "no"}`,
-        );
+      if ("dryRun" in outcome.data) {
+        console.log(`dry-run: would initialize ${outcome.data.storeRoot}`);
       }
     },
     mapError: () => undefined,
   });
 }
 
-async function selectInitAgents(inventory: ControlPlaneAgentListDto): Promise<string> {
-  console.log("Supported agents (detected status is evidence, not automatic activation):");
-  for (const agent of inventory.agents) {
-    console.log(`  ${agent.id}: detected=${agent.detected ? "yes" : "no"}`);
+async function executeInventoryInit(
+  nonInteractive: boolean,
+  confirmImport: InitInventoryImportConfirmer,
+): Promise<ReturnType<typeof commandSuccess<InteractiveInitCommandData>>> {
+  const { env, storeRoot } = await resolveContext({}, "provision");
+  const initialized = await initializeStore(env, storeRoot);
+  const inventory = await refreshInventory(env, { storeRoot });
+  const candidateIds = inventory.candidates
+    .filter((candidate) => candidate.state === "ready" && candidate.defaultSelected)
+    .map((candidate) => candidate.id);
+  const store = {
+    storeRoot: initialized.storeRoot,
+    createdConfig: initialized.createdConfig,
+    operation: publicOperationResult(initialized.operation),
+  };
+  if (nonInteractive) {
+    return commandSuccess({
+      store,
+      inventory,
+      confirmation: {
+        status: "not-offered",
+        candidateIds,
+        reason: "non-interactive",
+      },
+      import: { status: "not-started" },
+    });
+  }
+  if (inventory.completeness !== "complete") {
+    return commandSuccess({
+      store,
+      inventory,
+      confirmation: {
+        status: "not-offered",
+        candidateIds,
+        reason: "inventory-incomplete",
+      },
+      import: { status: "not-started" },
+    });
+  }
+  if (candidateIds.length === 0) {
+    return commandSuccess({
+      store,
+      inventory,
+      confirmation: {
+        status: "not-offered",
+        candidateIds,
+        reason: "no-ready-candidates",
+      },
+      import: { status: "not-started" },
+    });
+  }
+
+  let planned: PlannedInventoryStoreImport;
+  try {
+    planned = await planInventoryStoreImport(env, { storeRoot, candidateIds });
+  } catch (error) {
+    if (!(error instanceof InventoryStoreImportPlanningError)) throw error;
+    return commandSuccess({
+      store,
+      inventory,
+      confirmation: {
+        status: "not-offered",
+        candidateIds,
+        reason: "inventory-incomplete",
+      },
+      import: {
+        status: "failed",
+        error: {
+          code: error.code,
+          reason: error.reason,
+        },
+      },
+    });
+  }
+  const confirmed = await confirmImport(planned);
+  if (!confirmed) {
+    return commandSuccess({
+      store,
+      inventory: planned.inventory,
+      confirmation: { status: "declined", candidateIds: planned.candidateIds },
+      import: { status: "not-started" },
+    });
+  }
+  const applied = await applyInventoryStoreImportPlan(env, planned.mutationPlan, { storeRoot });
+  return commandSuccess({
+    store,
+    inventory: planned.inventory,
+    confirmation: { status: "confirmed", candidateIds: planned.candidateIds },
+    import: publicInventoryImport(applied),
+  });
+}
+
+async function confirmInventoryImport(plan: PlannedInventoryStoreImport): Promise<boolean> {
+  const output = createSafeConsole(plan);
+  presentInventorySummary(output, plan.inventory);
+  for (const candidate of plan.inventory.candidates.filter(({ id }) =>
+    plan.candidateIds.includes(id),
+  )) {
+    output.log(`  selected ${candidate.kind}/${candidate.name} (${candidate.id})`);
   }
   const readline = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    return await readline.question(
-      "Enable agents (comma-separated IDs; press Enter to enable none): ",
+    const answer = await readline.question(
+      `Import ${plan.candidateIds.length} exact ready candidate${plan.candidateIds.length === 1 ? "" : "s"} into Store? [y/N] `,
     );
+    return /^(?:y|yes)$/i.test(answer.trim());
   } finally {
     readline.close();
   }
 }
 
-async function validateAgentTargets(
-  env: Parameters<typeof validateInitializationAgentTargets>[0],
-  storeRoot: string,
-  agentTargets: readonly string[],
-  invocation: CliInvocation,
-): Promise<void> {
-  try {
-    await validateInitializationAgentTargets(env, storeRoot, agentTargets);
-  } catch (error) {
-    throw mapSelectionConflict(error, invocation);
+function publicInventoryImport(applied: AppliedInventoryStoreImport): InitImportPhase {
+  return {
+    status: "applied",
+    candidateIds: applied.candidateIds,
+    resourceIds: applied.resourceIds,
+    operation: publicOperationResult(applied.operation),
+    warnings: applied.warnings,
+  };
+}
+
+function presentInteractiveInventoryInit(data: InteractiveInitCommandData): void {
+  const output = createSafeConsole(data);
+  const note = data.store.createdConfig ? "" : " (config.json 已存在,保留)";
+  if (data.store.operation.ok) {
+    output.log(
+      `库房已初始化:${data.store.storeRoot}${note} (operation ${data.store.operation.receipt.operationId}, revision ${data.store.operation.receipt.resultingRevision})`,
+    );
+  }
+  presentInventorySummary(output, data.inventory);
+  if (data.confirmation.status === "declined") {
+    output.log("inventory import declined; Store initialization remains complete");
+  } else if (data.confirmation.status === "not-offered") {
+    if (data.confirmation.reason === "inventory-incomplete") {
+      output.warn(
+        "Inventory is incomplete; no import was offered. Retry: cellarer inventory refresh",
+      );
+    } else if (data.confirmation.reason === "non-interactive") {
+      output.log("inventory import not offered in non-interactive mode");
+    } else {
+      output.log("inventory import not offered: no new or changed ready candidates");
+    }
+  }
+  if (data.import.status === "failed") {
+    output.warn(
+      `inventory import plan failed: ${data.import.error.code}/${data.import.error.reason}. Retry: cellarer inventory refresh`,
+    );
+  } else if (data.import.status === "applied") {
+    if (data.import.operation.ok) {
+      output.log(
+        `inventory import ${data.import.operation.receipt.outcome}: ${data.import.resourceIds.length} resources`,
+      );
+    } else {
+      output.warn(
+        `inventory import failed: ${data.import.operation.conflict.code}. Retry: cellarer inventory refresh, then create a new exact plan`,
+      );
+    }
   }
 }
 
-function mapSelectionConflict(error: unknown, invocation: CliInvocation): unknown {
-  if (!(error instanceof InitialAgentSelectionConflictError)) return error;
-  return new CliInputError(
-    "DOMAIN_VALIDATION_FAILED",
-    error.message,
-    {
-      currentAgentTargets: error.currentAgentTargets,
-      requestedAgentTargets: error.requestedAgentTargets,
-      commands: ["cellarer agent enable <agent>", "cellarer agent disable <agent>"],
-    },
-    invocation,
-  );
-}
-
-function explicitNoAgentOption(): Option {
-  const option = new Option("--no-agent", "明确不启用任何 agent");
-  // Commander treats --no-* as a negation of the positive option by default. Here it is an
-  // independent explicit-empty intent so --agent and --no-agent remain distinguishable.
-  option.negate = false;
-  return option;
-}
-
-function assertUnambiguousAgentIntent(opts: InitOpts, invocation: CliInvocation): void {
-  if (opts.agent === undefined || opts.noAgent !== true) return;
-  throw new CliInputError(
-    "INPUT_AMBIGUITY",
-    "init accepts either --agent or --no-agent, not both",
-    { fields: ["agents"] },
-    invocation,
-  );
-}
-
-function assertExplicitArgvAgentList(
-  opts: InitOpts,
-  command: Command,
-  invocation: CliInvocation,
+function presentInventorySummary(
+  output: ReturnType<typeof createSafeConsole>,
+  inventory: InventoryRefreshResult,
 ): void {
-  if (
-    opts.agent === undefined ||
-    command.getOptionValueSource("agent") !== "cli" ||
-    parseAgentTargets(opts.agent).length > 0
-  ) {
-    return;
-  }
-  throw new CliInputError(
-    "INVALID_INPUT",
-    "--agent requires at least one agent ID; use --no-agent to enable none",
-    { fields: ["agents"] },
-    invocation,
+  output.log(
+    `inventory: ${inventory.completeness} (${inventory.counts.total} candidates; ${inventory.counts.ready} ready, ${inventory.counts.needsAttention} need attention, ${inventory.counts.inStore} in Store)`,
   );
-}
-
-function parseAgentTargets(value: string | false): string[] {
-  if (value === false) return [];
-  const targets = value
-    .split(",")
-    .map((agentId) => agentId.trim())
-    .filter(Boolean);
-  return [...new Set(targets)];
+  output.log(
+    `sources: ${inventory.counts.observedSources} observed, ${inventory.counts.failedSources} failed`,
+  );
 }

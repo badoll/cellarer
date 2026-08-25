@@ -31,7 +31,7 @@ describe("inventory import plan/apply commands", () => {
       "---\nname: inventory-demo\ndescription: inventory fixture\n---\n",
       "utf8",
     );
-    expect(await invokeJson(["init", "--agent", "codex"])).toMatchObject({ status: "success" });
+    expect(await invokeJson(["init"])).toMatchObject({ status: "success" });
   });
 
   afterEach(async () => {

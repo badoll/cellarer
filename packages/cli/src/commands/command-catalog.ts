@@ -25,7 +25,7 @@ import {
 } from "./control-plane-read.js";
 import { createDiagnosticsServiceDomain } from "./diagnostics-service-catalog.js";
 import type { ProtocolDiscoveryProvider } from "./discovery.js";
-import type { InitAgentSelector } from "./init.js";
+import type { InitInventoryImportConfirmer } from "./init.js";
 import { createInitializationDiscoveryDomain } from "./initialization-discovery-catalog.js";
 import {
   createInventoryImportApplyCommandContract,
@@ -39,7 +39,7 @@ import { createStoreTargetMutationDomain } from "./store-target-mutation-catalog
 
 export function createCliCommandCatalog(
   options: {
-    readonly initAgentSelector?: InitAgentSelector;
+    readonly initInventoryImportConfirmer?: InitInventoryImportConfirmer;
     readonly scanContextResolver?: typeof resolveContext;
   } = {},
 ): CommandCatalog {

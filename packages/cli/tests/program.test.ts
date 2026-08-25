@@ -227,7 +227,7 @@ describe("cli program wiring", () => {
       process.env.HOME = join(root, "home");
 
       await buildProgram().parseAsync(
-        ["node", "cellarer", "init", "--agent", "codex", "--dry-run", "--output", "json"],
+        ["node", "cellarer", "init", "--dry-run", "--output", "json"],
         { from: "node" },
       );
 
@@ -260,7 +260,7 @@ describe("cli program wiring", () => {
       process.env.CELLARER_HOME = storeRoot;
       console.log = (message?: unknown) => logs.push(String(message));
 
-      await buildProgram().parseAsync(["node", "cellarer", "init", "--agent", "codex"], {
+      await buildProgram().parseAsync(["node", "cellarer", "init"], {
         from: "node",
       });
 

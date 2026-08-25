@@ -44,4 +44,4 @@ None.
 
 - Risk: integration
 - Depends on: simplify-init-agent-activation, unify-cli-command-contracts, add-unified-resource-inventory, add-inventory-store-import
-- Allowed paths: `packages/core/src/store/initialize.ts`, `packages/core/src/index.ts`, `packages/core/src/protocol`, `packages/core/tests`, `packages/cli/src/commands/init.ts`, `packages/cli/src/program.ts`, `packages/cli/src/protocol`, `packages/cli/tests`, `packages/web/src/app.ts`, `packages/web/src/api-contract.ts`, `packages/web/client`, `packages/web/tests`, `README.md`, `README.zh-CN.md`, `docs/README.md`, `docs/README.zh-CN.md`
+- Allowed paths: `packages/core/src/store/initialize.ts`, `packages/core/src/index.ts`, `packages/core/src/protocol`, `packages/core/tests`, `packages/cli/src/commands/init.ts`, `packages/cli/src/commands/command-catalog.ts`, `packages/cli/src/commands/initialization-discovery-catalog.ts`, `packages/cli/src/program.ts`, `packages/cli/src/protocol`, `packages/cli/tests`, `packages/web/src/app.ts`, `packages/web/src/api-contract.ts`, `packages/web/client`, `packages/web/tests`, `README.md`, `README.zh-CN.md`, `docs/README.md`, `docs/README.zh-CN.md`

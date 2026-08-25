@@ -2,10 +2,18 @@ import type { InventoryRefreshResult } from "@cellarer/core/client-api";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { App } from "../client/App.js";
+import { defaultInventorySelection } from "../client/inventory-onboarding.js";
 import { InventoryResultView } from "../client/inventory-page.js";
 
 describe("Inventory bundled client view", () => {
-  it("renders shared DTO states, provenance, findings, and managed matches read-only", () => {
+  it("starts the bundled first-run client on Inventory onboarding", () => {
+    const html = renderToStaticMarkup(createElement(App));
+    expect(html).toContain("<h2>Inventory</h2>");
+    expect(html).toContain("Loading bounded registered sources...");
+  });
+
+  it("renders shared DTO states, provenance, findings, and only Core-default selection", () => {
     const result: InventoryRefreshResult = {
       generatedAt: "2026-08-25T08:00:00.000Z",
       completeness: "partial",
@@ -66,13 +74,19 @@ describe("Inventory bundled client view", () => {
       ],
     };
 
-    const html = renderToStaticMarkup(createElement(InventoryResultView, { result }));
+    const html = renderToStaticMarkup(
+      createElement(InventoryResultView, {
+        result,
+        selectedCandidateIds: defaultInventorySelection(result),
+      }),
+    );
     expect(html).toContain("Inventory is partial");
     expect(html).toContain("inventory-demo");
     expect(html).toContain("Ready");
     expect(html).toContain("~/.codex/skills/inventory-demo");
     expect(html).toContain("PROBABLE_SECRET");
     expect(html).toContain("remove-secret-values");
-    expect(html).not.toContain('type="checkbox"');
+    expect(html).toContain('aria-label="Select inventory-demo" checked=""');
+    expect(html).toContain('aria-label="Select unsafe-rule" disabled=""');
   });
 });

@@ -44,9 +44,7 @@ describe("apply external plan boundary", () => {
     process.exitCode = undefined;
     protectedInput.reads.mockClear();
 
-    expect(
-      protocolTerminal(await invoke(["--output", "json", "init", "--agent", "codex"])),
-    ).toMatchObject({
+    expect(protocolTerminal(await invoke(["--output", "json", "init"]))).toMatchObject({
       status: "success",
     });
     protectedInput.reads.mockClear();

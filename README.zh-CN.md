@@ -39,14 +39,27 @@ package 发布后，同一命令面将通过 `cellarer` 可执行文件提供。
 
 ## 第一次完整使用
 
-初始化本地 Store，并明确启用需要管理的 agent：
+创建或验证本地 Store。交互式文本模式会刷新实时 Inventory，只预选 Core 指定的 ready
+候选，并在把这组精确候选导入 Library 前确认一次：
 
 若 headless 机器没有 OS credential manager，请在 `init` 前配置受保护的
 [mutation authority](docs/README.zh-CN.md#mutation-authority)。
 
 ```bash
-node packages/cli/dist/bin.js init --agent codex
+node packages/cli/dist/bin.js init
 ```
+
+拒绝确认会保留已完成的 Store 初始化且不导入任何资源。Inventory 为 partial 或 failed 时会
+单独报告，并给出 `inventory refresh` 重试指引。Machine mode 返回闭合、脱敏的 Store 与
+Inventory 阶段结果，不提示也不导入：
+
+```bash
+node packages/cli/dist/bin.js --output json init
+node packages/cli/dist/bin.js --non-interactive init
+```
+
+Init 不再接受 `--agent`、`--no-agent` 或 structured `agents`。Agent target 只由后续独立
+授权的下发命令选择。
 
 只读刷新所有已注册的有界用户来源，或精确指定一个 adapter；添加 `--dir <project>`
 可同时包含当前 project：
@@ -64,7 +77,7 @@ Inventory 返回安全候选、provenance、findings、Store 匹配、计数与�
 
 ```bash
 node packages/cli/dist/bin.js --output json inventory import plan \
-  --candidate '<candidate-id>' --agent codex
+  --candidate '<candidate-id>'
 node packages/cli/dist/bin.js inventory import apply \
   --plan '<plan 返回的 mutationPlan JSON>'
 ```
