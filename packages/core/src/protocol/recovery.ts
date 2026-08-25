@@ -46,6 +46,7 @@ import {
   releaseStoreMutationLock,
   type StoreMutationLock,
 } from "./mutation-lock.js";
+import { mutationOperationAdapterFor } from "./operation-adapter.js";
 import { PublicationPostconditionError, verifyFilePublication } from "./publication.js";
 import { StoreMutationConflictError } from "./store-mutation.js";
 import { publishStoreRevision, readStoreRevision } from "./store-revision.js";
@@ -286,39 +287,10 @@ async function isDurableRecoveryAuthorized(
   storeRoot: string,
   journal: OperationJournal,
 ): Promise<boolean> {
-  const allowedByOperation: Record<OperationJournal["plan"]["operation"], readonly string[]> = {
-    initialize: ["mkdir", "preserve-file", "publish-file"],
-    apply: ["copy", "merge", "overwrite", "sync-gitignore", "symlink", "write"],
-    revert: ["remove-target", "restore-snapshot", "sync-gitignore"],
-    settings: ["publish-file"],
-    "secret-metadata": ["keychain-secret-delete", "keychain-secret-set", "publish-file"],
-    "store-import": [
-      "add-mcp",
-      "add-rules",
-      "add-skill-provenance",
-      "add-skills",
-      "inventory-collection-membership",
-      "inventory-resource-content",
-      "inventory-resource-metadata",
-      "publish-file",
-      "scan-mcp",
-      "scan-rules",
-      "scan-skills",
-    ],
-    "resource-lifecycle": [
-      "install-resource-content",
-      "preserve-file",
-      "publish-file",
-      "publish-resource-metadata",
-      "remove-resource-path",
-      "rename-resource-content",
-      "write-resource-bundle",
-    ],
-    "sync-uninstall": ["remove-target", "sync-gitignore"],
-  };
+  const adapter = mutationOperationAdapterFor(journal.plan.operation);
   if (
     journal.plan.actions.some(
-      (action) => !allowedByOperation[journal.plan.operation].includes(action.kind),
+      (action) => !adapter.recovery.allowedActionKinds.includes(action.kind),
     ) ||
     (journal.statePublications ?? []).some(
       (publication) => !isPathInside(publication.path, storeRoot),

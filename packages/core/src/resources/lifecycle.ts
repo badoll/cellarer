@@ -9,18 +9,10 @@ import { serverFromRaw } from "../mcp/model.js";
 import type { Artifact, ArtifactKind, TargetOwner } from "../model/index.js";
 import {
   acquireCurrentMutationAuthorityLease,
-  assertStrictMutationPlanRuntime,
   canonicalJson,
   createAuthorizedMutationPlan,
-  verifyMutationPlanAuthorization,
-  verifyMutationPlanDigest,
 } from "../protocol/canonical.js";
-import {
-  assertMutationPlanActionAlignment,
-  executeMutationPlan,
-  invalidPlanResult,
-  targetState,
-} from "../protocol/execute.js";
+import { invalidPlanResult, targetState } from "../protocol/execute.js";
 import type {
   CanonicalJsonObject,
   MutationPlan,
@@ -30,6 +22,8 @@ import type {
   PlanExpiry,
   TargetStateReceipt,
 } from "../protocol/models.js";
+import { resolveAuthorizedMutationOperationAdapter } from "../protocol/operation-adapter.js";
+import { executePreparedMutationOperation } from "../protocol/operation-execution.js";
 import { captureStoreProvenance, validateStoreProvenance } from "../protocol/store-mutation.js";
 import { observeAtStableStoreRevision } from "../protocol/store-revision.js";
 import { discoverSecretReferences } from "../secrets/active-values.js";
@@ -726,29 +720,20 @@ async function applyCanonicalLifecyclePlan(
   storeRoot: string,
   rebuild: (options: BuildOptions) => Promise<BuiltLifecyclePlan>,
 ): Promise<AppliedResourceLifecycle> {
-  try {
-    assertStrictMutationPlanRuntime(plan, "resource-lifecycle");
-  } catch (error) {
-    if (error instanceof TypeError || error instanceof ResourceLifecycleError) {
-      return invalidApplied(plan);
-    }
-    throw error;
-  }
-  if (!verifyMutationPlanAuthorization(env, storeRoot, plan) || !verifyMutationPlanDigest(plan)) {
+  if (!resolveAuthorizedMutationOperationAdapter(env, storeRoot, plan, "resource-lifecycle")) {
     return invalidApplied(plan);
   }
   let lease: MutationAuthorityLease | null = null;
   try {
     lease = await acquireCurrentMutationAuthorityLease(env).catch(() => null);
     if (!lease || !(await lease.isCurrent().catch(() => false))) return invalidApplied(plan);
-    assertMutationPlanActionAlignment(plan);
     const expected = await rebuild({ planId: plan.planId, expires: plan.expires });
     if (expected.blocked.length > 0 || canonicalJson(expected.plan) !== canonicalJson(plan)) {
       return invalidApplied(plan);
     }
     const validate = async (): Promise<OperationResult | null> =>
       validateStoreProvenance(env, storeRoot, plan);
-    const operation = await executeMutationPlan(
+    const operation = await executePreparedMutationOperation(
       env,
       storeRoot,
       plan,

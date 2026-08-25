@@ -32,6 +32,10 @@ import type {
   TargetStateReceipt,
 } from "./models.js";
 import { acquireStoreMutationLock, readStoreRecoveryLockOwner } from "./mutation-lock.js";
+import {
+  assertMutationPlanActionAlignment,
+  resolveMutationOperationAdapter,
+} from "./operation-adapter.js";
 import { PublicationPostconditionError, verifyFilePublication } from "./publication.js";
 import { publishStoreRevision, readStoreRevision } from "./store-revision.js";
 
@@ -81,6 +85,9 @@ export async function executeMutationPlan(
     return invalidPlanResult();
   }
   if (!verifyMutationPlanAuthorization(env, storeRoot, plan)) return invalidPlanResult();
+  const adapter = resolveMutationOperationAdapter(plan);
+  if (!adapter) return invalidPlanResult();
+  const executePreparedEffects = adapter.prepareEffects(() => execute);
   const suppliedAuthorityLease = options.authorityLease;
   const authorityLease =
     suppliedAuthorityLease ?? (await acquireCurrentMutationAuthorityLease(env).catch(() => null));
@@ -293,7 +300,7 @@ export async function executeMutationPlan(
       });
     };
 
-    const execution = await execute(
+    const execution = await executePreparedEffects(
       operationId,
       recordAction,
       authorizeAction,
@@ -458,7 +465,7 @@ export async function executeMutationPlan(
     releaseAttempted = true;
     await acquired.lock.release();
     await removeOperationJournal(env, storeRoot);
-    return { ok: true, receipt };
+    return adapter.projectReceipt({ ok: true, receipt });
   } catch (error) {
     if (error instanceof PublicationPostconditionError) {
       let recoveryJournal = journal;
@@ -563,7 +570,6 @@ async function validatePlanUnderLock(
 ): Promise<OperationResult | null> {
   const integrity = validatePlanIntegrity(plan);
   if (integrity) return integrity;
-  assertMutationPlanActionAlignment(plan);
 
   if (
     plan.expires.policy === "expires-at" &&
@@ -662,49 +668,6 @@ export function invalidPlanResult(): OperationResult {
       message: "mutation plan is invalid",
     },
   };
-}
-
-export function assertMutationPlanActionAlignment(plan: MutationPlan): void {
-  if (!Array.isArray(plan.actions) || !Array.isArray(plan.targetPreconditions)) {
-    throw new TypeError("mutation plan has invalid action authorization structure");
-  }
-  if (
-    !plan.actions.every(
-      (action) =>
-        typeof action === "object" &&
-        action !== null &&
-        typeof action.actionId === "string" &&
-        typeof action.kind === "string" &&
-        typeof action.target === "string" &&
-        typeof action.payload === "object" &&
-        action.payload !== null,
-    ) ||
-    !plan.targetPreconditions.every(
-      (precondition) =>
-        typeof precondition === "object" &&
-        precondition !== null &&
-        typeof precondition.actionId === "string" &&
-        typeof precondition.target === "string" &&
-        typeof precondition.expected === "object" &&
-        precondition.expected !== null,
-    )
-  ) {
-    throw new TypeError("mutation plan has invalid action authorization structure");
-  }
-  const actionIds = new Set(plan.actions.map((action) => action.actionId));
-  const preconditionsByAction = new Map(
-    plan.targetPreconditions.map((precondition) => [precondition.actionId, precondition]),
-  );
-  if (
-    actionIds.size !== plan.actions.length ||
-    preconditionsByAction.size !== plan.targetPreconditions.length ||
-    plan.actions.length !== plan.targetPreconditions.length ||
-    plan.actions.some(
-      (action) => preconditionsByAction.get(action.actionId)?.target !== action.target,
-    )
-  ) {
-    throw new TypeError("mutation plan actions and target preconditions are not one-to-one");
-  }
 }
 
 export async function targetState(env: Env, target: string): Promise<TargetStateReceipt> {

@@ -4,13 +4,7 @@ import type { AgentAdapter } from "../adapters/types.js";
 import type { Env } from "../env.js";
 import { assertSafeAtomicPublicationPath } from "../fs/safety.js";
 import { type McpServer, serverFromRaw, serverToRaw } from "../mcp/model.js";
-import {
-  acquireCurrentMutationAuthorityLease,
-  assertStrictMutationPlanRuntime,
-  canonicalJson,
-  verifyMutationPlanAuthorization,
-  verifyMutationPlanDigest,
-} from "../protocol/canonical.js";
+import { acquireCurrentMutationAuthorityLease, canonicalJson } from "../protocol/canonical.js";
 import { CLIENT_API_MAX_REQUEST_BODY_BYTES } from "../protocol/client.js";
 import type {
   CanonicalJsonObject,
@@ -27,12 +21,13 @@ import type {
 } from "../protocol/client-types.js";
 import {
   type AuthorizeOperationAction,
-  executeMutationPlan,
   invalidPlanResult,
   targetState,
 } from "../protocol/execute.js";
 import { readOperationJournal } from "../protocol/journal.js";
 import type { OperationActionReceipt, OperationResult } from "../protocol/models.js";
+import { resolveAuthorizedMutationOperationAdapter } from "../protocol/operation-adapter.js";
+import { executePreparedMutationOperation } from "../protocol/operation-execution.js";
 import { planStoreActionMutation } from "../protocol/store-mutation.js";
 import { createResourceRecord, resourceMetadataPath } from "../resources/model.js";
 import {
@@ -260,8 +255,7 @@ export function decodeInventorySecretAdoptionPlan(
   plan: MutationPlan,
 ): DecodedInventorySecretAdoptionPlan | null {
   try {
-    assertStrictMutationPlanRuntime(plan, "store-import");
-    if (!verifyMutationPlanAuthorization(env, storeRoot, plan) || !verifyMutationPlanDigest(plan)) {
+    if (!resolveAuthorizedMutationOperationAdapter(env, storeRoot, plan, "store-import")) {
       return null;
     }
     const inputs = plan.normalizedInputs;
@@ -377,7 +371,7 @@ export async function applyInventorySecretAdoptionPlan(
         return adoptionSourceConflict(decoded.source.fingerprint, null);
       }
     };
-    const operation = await executeMutationPlan(
+    const operation = await executePreparedMutationOperation(
       env,
       options.storeRoot,
       mutationPlan,

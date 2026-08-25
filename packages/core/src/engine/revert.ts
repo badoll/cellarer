@@ -15,18 +15,13 @@ import type {
 } from "../model/index.js";
 import {
   acquireCurrentMutationAuthorityLease,
-  assertStrictMutationPlanRuntime,
   canonicalJson,
   createAuthorizedMutationPlan,
   requireMutationAuthority,
-  verifyMutationPlanAuthorization,
-  verifyMutationPlanDigest,
   withCurrentMutationAuthorityLease,
 } from "../protocol/canonical.js";
 import {
   type AuthorizeOperationAction,
-  assertMutationPlanActionAlignment,
-  executeMutationPlan,
   invalidPlanResult,
   type RecordOperationAction,
   targetState,
@@ -37,9 +32,10 @@ import type {
   MutationPlan,
   MutationPlanAction,
   OperationActionReceipt,
-  OperationResult,
   TargetStateReceipt,
 } from "../protocol/models.js";
+import { resolveAuthorizedMutationOperationAdapter } from "../protocol/operation-adapter.js";
+import { executePreparedMutationOperation } from "../protocol/operation-execution.js";
 import { mutationPresentation } from "../protocol/presentation.js";
 import { PublicationPostconditionError } from "../protocol/publication.js";
 import { observeAtStableStoreRevision } from "../protocol/store-revision.js";
@@ -229,15 +225,7 @@ export async function applyRevertMutationPlan(
   context: RevertMutationContext,
   execution: { readonly authorityLease?: MutationAuthorityLease } = {},
 ): Promise<RevertMutationResult> {
-  try {
-    assertStrictMutationPlanRuntime(mutationPlan, "revert");
-  } catch {
-    return invalidRevertMutationResult();
-  }
-  if (
-    !verifyMutationPlanAuthorization(env, context.storeRoot, mutationPlan) ||
-    !verifyMutationPlanDigest(mutationPlan)
-  ) {
+  if (!resolveAuthorizedMutationOperationAdapter(env, context.storeRoot, mutationPlan, "revert")) {
     return invalidRevertMutationResult();
   }
   const suppliedLease = execution.authorityLease;
@@ -269,20 +257,10 @@ async function applyRevertMutationPlanWithAuthorityLease(
   let plan: RevertPlan = { targets: [], conflicts: [], warnings: [] };
   let revertedResult: RevertResult | undefined;
   let decoded: ReturnType<typeof decodeRevertMutation>;
-  try {
-    assertStrictMutationPlanRuntime(mutationPlan, "revert");
-  } catch {
-    return invalidRevertMutationResult();
-  }
-  if (!verifyMutationPlanAuthorization(env, context.storeRoot, mutationPlan)) {
-    return invalidRevertMutationResult();
-  }
-  if (!verifyMutationPlanDigest(mutationPlan)) return invalidRevertDigestMutationResult();
   let ledger: Ledger;
   let currentExecutionPlan: RevertPlan;
   let trustedOptions: RevertOptions;
   try {
-    assertMutationPlanActionAlignment(mutationPlan);
     trustedOptions = assertTrustedRevertOptions(context);
     decoded = decodeRevertMutation(mutationPlan);
     assertRevertOptionsMatchTrustedContext(decoded.opts, trustedOptions);
@@ -305,7 +283,7 @@ async function applyRevertMutationPlanWithAuthorityLease(
     return invalidRevertMutationResult();
   }
   plan = decoded.plan;
-  const operation = await executeMutationPlan(
+  const operation = await executePreparedMutationOperation(
     env,
     context.storeRoot,
     mutationPlan,
@@ -380,34 +358,6 @@ function assertTrustedRevertOptions(context: RevertMutationContext): RevertOptio
 
 function invalidRevertMutationResult(): RevertMutationResult {
   const operation = invalidPlanResult();
-  const plan: RevertPlan = { targets: [], conflicts: [], warnings: [] };
-  return {
-    plan,
-    reverted: [],
-    failures: [],
-    warnings: [],
-    operation,
-    mutation: {
-      planId: "untrusted",
-      planDigest: "untrusted",
-      operation: "revert",
-      baseRevision: 0,
-      result: operation,
-    },
-  };
-}
-
-function invalidRevertDigestMutationResult(): RevertMutationResult {
-  const operation: OperationResult = {
-    ok: false,
-    conflict: {
-      code: "INVALID_PLAN_DIGEST",
-      message: "plan digest does not match its contents",
-      planId: "untrusted",
-      expectedDigest: "untrusted",
-      actualDigest: "invalid",
-    },
-  };
   const plan: RevertPlan = { targets: [], conflicts: [], warnings: [] };
   return {
     plan,

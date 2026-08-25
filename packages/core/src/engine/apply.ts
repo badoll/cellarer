@@ -35,8 +35,6 @@ import {
 } from "../protocol/canonical.js";
 import {
   type AuthorizeOperationAction,
-  assertMutationPlanActionAlignment,
-  executeMutationPlan,
   invalidPlanResult,
   type RecordOperationAction,
   targetState,
@@ -50,6 +48,8 @@ import type {
   OperationResult,
   TargetStateReceipt,
 } from "../protocol/models.js";
+import { resolveMutationOperationAdapterAfterIntegrity } from "../protocol/operation-adapter.js";
+import { executePreparedMutationOperation } from "../protocol/operation-execution.js";
 import { mutationPresentation } from "../protocol/presentation.js";
 import { PublicationPostconditionError } from "../protocol/publication.js";
 import { captureStoreProvenance, validateStoreProvenance } from "../protocol/store-mutation.js";
@@ -548,6 +548,9 @@ export async function applyMutationPlan(
       return invalidApplyMutationResult(scope);
     }
     if (!verifyMutationPlanDigest(mutationPlan)) return invalidApplyDigestMutationResult(scope);
+    if (!resolveMutationOperationAdapterAfterIntegrity(mutationPlan, "apply")) {
+      return invalidApplyMutationResult(scope);
+    }
     const suppliedLease = execution.authorityLease;
     const authorityLease =
       suppliedLease ?? (await acquireCurrentMutationAuthorityLease(operationEnv).catch(() => null));
@@ -558,7 +561,6 @@ export async function applyMutationPlan(
     }
     try {
       try {
-        assertMutationPlanActionAlignment(mutationPlan);
         decoded = decodeApplyMutation(operationEnv, mutationPlan);
         if (
           context.syncProfileId !== undefined &&
@@ -604,7 +606,7 @@ export async function applyMutationPlan(
         if (retainLockedSnapshot) lockedCapabilityRoots = current;
         return null;
       };
-      const operation = await executeMutationPlan(
+      const operation = await executePreparedMutationOperation(
         operationEnv,
         context.storeRoot,
         mutationPlan,
@@ -744,8 +746,10 @@ export function preflightApplyMutationPlan(
     return invalidApplyPlanPreflight();
   }
   if (!verifyMutationPlanDigest(mutationPlan)) return invalidApplyDigestPreflight();
+  if (!resolveMutationOperationAdapterAfterIntegrity(mutationPlan, "apply")) {
+    return invalidApplyPlanPreflight();
+  }
   try {
-    assertMutationPlanActionAlignment(mutationPlan);
     const decoded = decodeApplyMutation(env, mutationPlan);
     if (decoded.opts.storeRoot !== storeRoot) return invalidApplyPlanPreflight();
     return {

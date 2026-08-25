@@ -26,3 +26,9 @@ None.
 - Store mutation protocol, apply/revert/sync/resource/control-plane/secret/Inventory operation modules, recovery, and tests.
 - Scheduled after final Inventory operations to avoid designing adapters around superseded scan semantics.
 - No user-visible behavior, plan compatibility, Store format, or second execution engine.
+
+## Execution Contract
+
+- Risk: high
+- Depends on: none
+- Allowed paths: `packages/core/src/**`, `packages/core/tests/**`, `packages/cli/src/**`, `packages/cli/tests/**`, `packages/web/src/**`, `packages/web/tests/**`, `openspec/changes/deepen-mutation-operation-adapters/**`, `openspec/specs/mutation-operation-adapters/spec.md`

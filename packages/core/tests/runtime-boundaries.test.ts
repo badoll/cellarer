@@ -132,6 +132,8 @@ const BOUNDARY_ROLE_INVENTORY: Readonly<Record<BoundaryRole, readonly string[]>>
     "protocol/execute.ts",
     "protocol/journal.ts",
     "protocol/mutation-lock.ts",
+    "protocol/operation-adapter.ts",
+    "protocol/operation-execution.ts",
     "protocol/presentation.ts",
     "protocol/publication.ts",
     "protocol/readiness.ts",

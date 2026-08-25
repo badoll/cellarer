@@ -10,25 +10,19 @@ import { serverFromRaw } from "../mcp/model.js";
 import type { Artifact, ArtifactKind } from "../model/index.js";
 import {
   assertCurrentMutationAuthorityScope,
-  assertStrictMutationPlanRuntime,
   type CurrentMutationAuthorityScope,
   canonicalJson,
-  verifyMutationPlanAuthorization,
-  verifyMutationPlanDigest,
   withCurrentMutationAuthorityScope,
 } from "../protocol/canonical.js";
-import {
-  assertMutationPlanActionAlignment,
-  executeMutationPlan,
-  invalidPlanResult,
-  targetState,
-} from "../protocol/execute.js";
+import { invalidPlanResult, targetState } from "../protocol/execute.js";
 import type {
   CanonicalJsonObject,
   MutationPlan,
   OperationActionReceipt,
   OperationResult,
 } from "../protocol/models.js";
+import { resolveAuthorizedMutationOperationAdapter } from "../protocol/operation-adapter.js";
+import { executePreparedMutationOperation } from "../protocol/operation-execution.js";
 import {
   decodeStoreProvenance,
   type PreparedStoreMutationAction,
@@ -415,16 +409,11 @@ export async function applyResourceUpdatePlan(
   plan: MutationPlan,
   opts: { readonly storeRoot: string },
 ): Promise<AppliedResourceUpdate> {
-  try {
-    assertStrictMutationPlanRuntime(plan, "store-import");
-  } catch {
+  if (!resolveAuthorizedMutationOperationAdapter(env, opts.storeRoot, plan, "store-import")) {
     return invalidApplied(plan);
   }
-  if (!verifyMutationPlanAuthorization(env, opts.storeRoot, plan)) return invalidApplied(plan);
-  if (!verifyMutationPlanDigest(plan)) return invalidApplied(plan);
   let decoded: DecodedResourceUpdate;
   try {
-    assertMutationPlanActionAlignment(plan);
     decoded = decodeResourceUpdatePlan(plan, opts.storeRoot);
   } catch {
     return invalidApplied(plan);
@@ -464,7 +453,7 @@ export async function applyResourceUpdatePlan(
     return validateStoreProvenance(env, opts.storeRoot, plan);
   };
 
-  const operation = await executeMutationPlan(
+  const operation = await executePreparedMutationOperation(
     env,
     opts.storeRoot,
     plan,

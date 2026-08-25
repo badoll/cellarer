@@ -7,13 +7,10 @@ import { captureAnchoredSafeRecursiveSource } from "../secrets/safe-tree.js";
 import { sha256 } from "../store/checksum.js";
 import {
   acquireCurrentMutationAuthorityLease,
-  assertStrictMutationPlanRuntime,
   createAuthorizedMutationPlan,
   requireMutationAuthority,
-  verifyMutationPlanAuthorization,
-  verifyMutationPlanDigest,
 } from "./canonical.js";
-import { executeMutationPlan, invalidPlanResult, targetState } from "./execute.js";
+import { invalidPlanResult, targetState } from "./execute.js";
 import type {
   CanonicalJsonObject,
   CanonicalJsonValue,
@@ -25,6 +22,8 @@ import type {
   OperationResult,
   TargetStateReceipt,
 } from "./models.js";
+import { resolveAuthorizedMutationOperationAdapter } from "./operation-adapter.js";
+import { executePreparedMutationOperation } from "./operation-execution.js";
 import { observeAtStableStoreRevision } from "./store-revision.js";
 
 export interface StorePublicationInput {
@@ -232,7 +231,7 @@ async function executeStoreActionMutationWithAuthorityLease<T>(
     bindings,
   );
   const { operationEnv, plan, prepared, preconditions, publications, publicationActions } = planned;
-  const result = await executeMutationPlan(
+  const result = await executePreparedMutationOperation(
     operationEnv,
     storeRoot,
     plan,
@@ -529,15 +528,7 @@ export async function applyStorePublicationPlan(
     readonly secretPublicationGuard: StorePublicationSecretGuard;
   },
 ): Promise<AppliedStorePublicationPlan> {
-  try {
-    assertStrictMutationPlanRuntime(plan, options.operation);
-  } catch {
-    return { plan, changedFields: [], operation: invalidPlanResult() };
-  }
-  if (!verifyMutationPlanAuthorization(env, storeRoot, plan)) {
-    return { plan, changedFields: [], operation: invalidPlanResult() };
-  }
-  if (!verifyMutationPlanDigest(plan)) {
+  if (!resolveAuthorizedMutationOperationAdapter(env, storeRoot, plan, options.operation)) {
     return { plan, changedFields: [], operation: invalidPlanResult() };
   }
   const decoded = decodeSelfContainedPublicationPlan(plan, options);
@@ -555,7 +546,7 @@ export async function applyStorePublicationPlan(
     let guarded = await options.secretPublicationGuard.prepare(env, storeRoot);
     let operationEnv = guarded.env;
     assertFinalSerializedSecretBytes(decoded.data, guarded.knownValues, decoded.action.target);
-    const operation = await executeMutationPlan(
+    const operation = await executePreparedMutationOperation(
       operationEnv,
       storeRoot,
       plan,

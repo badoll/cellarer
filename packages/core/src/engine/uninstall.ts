@@ -8,20 +8,12 @@ import type {
 } from "../model/index.js";
 import {
   assertCurrentMutationAuthorityScope,
-  assertStrictMutationPlanRuntime,
   type CurrentMutationAuthorityScope,
   canonicalJson,
   createAuthorizedMutationPlan,
-  verifyMutationPlanAuthorization,
-  verifyMutationPlanDigest,
   withCurrentMutationAuthorityScope,
 } from "../protocol/canonical.js";
-import {
-  assertMutationPlanActionAlignment,
-  executeMutationPlan,
-  invalidPlanResult,
-  targetState,
-} from "../protocol/execute.js";
+import { invalidPlanResult, targetState } from "../protocol/execute.js";
 import type {
   CanonicalJsonObject,
   MutationPlan,
@@ -30,6 +22,8 @@ import type {
   PlanExpiry,
   TargetStateReceipt,
 } from "../protocol/models.js";
+import { resolveAuthorizedMutationOperationAdapter } from "../protocol/operation-adapter.js";
+import { executePreparedMutationOperation } from "../protocol/operation-execution.js";
 import { observeAtStableStoreRevision } from "../protocol/store-revision.js";
 import { sha256 } from "../store/checksum.js";
 import {
@@ -167,7 +161,6 @@ export async function applySyncTargetUninstallPlanWithinAuthorityScope(
   let options: SyncTargetUninstallOptions;
   try {
     options = normalizeOptions(context.options);
-    assertStrictMutationPlanRuntime(mutationPlan, "sync-uninstall");
   } catch (error) {
     if (error instanceof TypeError || error instanceof SyncTargetUninstallError) {
       return invalidApplied(mutationPlan);
@@ -176,15 +169,18 @@ export async function applySyncTargetUninstallPlanWithinAuthorityScope(
   }
   if (
     context.storeRoot !== options.storeRoot ||
-    !verifyMutationPlanAuthorization(env, options.storeRoot, mutationPlan) ||
-    !verifyMutationPlanDigest(mutationPlan)
+    !resolveAuthorizedMutationOperationAdapter(
+      env,
+      options.storeRoot,
+      mutationPlan,
+      "sync-uninstall",
+    )
   ) {
     return invalidApplied(mutationPlan);
   }
 
   try {
     await assertCurrentMutationAuthorityScope(env, authorityScope);
-    assertMutationPlanActionAlignment(mutationPlan);
     let expected = await buildUninstall(env, options, {
       planId: mutationPlan.planId,
       expires: mutationPlan.expires,
@@ -197,7 +193,7 @@ export async function applySyncTargetUninstallPlanWithinAuthorityScope(
     }
 
     let uninstalled: TargetOwner[] = [];
-    const operation = await executeMutationPlan(
+    const operation = await executePreparedMutationOperation(
       env,
       options.storeRoot,
       mutationPlan,

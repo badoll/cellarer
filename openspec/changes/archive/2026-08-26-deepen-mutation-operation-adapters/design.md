@@ -32,6 +32,22 @@ One operation registry maps stable operation discriminants to adapters. External
 
 Config-only Store publications establish the seam, followed by resource operations, Inventory import, sync/apply/revert, and secret adoption. Each migration retains characterization fixtures for canonical plan bytes, zero-interaction invalid plans, call order, receipts, and recovery.
 
+## Proof Obligations
+
+| Boundary | Frozen invariant | Required attack or evidence |
+| --- | --- | --- |
+| Canonical plan | Adapter migration does not change normalized intent, sealed canonical bytes, authority scope, action order, or Store format. | Before/after characterization fixtures compare exact bytes and action sequences for the named operation families. |
+| Authority first | External plans verify authority before adapter selection, product observation, locks, journals, or prepared effects. | Unknown, duplicate, cross-operation, extra, missing, and reordered-action attacks return the constant invalid-plan result with zero interaction. |
+| Closed registry | Each executable operation discriminant has one statically composed adapter; custom agent or runtime configuration cannot install mutation policy. | Exhaustiveness checks cover the operation union, and duplicate/unknown registration tests fail closed. |
+| Kernel ownership | `executeMutationPlan` remains the only component that checks currentness, acquires locks, sequences journals, invokes prepared effects, publishes receipts, and controls compensation/recovery. | Effect spies assert the kernel order and architecture tests reject direct Store, target, provider, journal, or recovery invocation from adapter/domain paths. |
+| Operation semantics | Adapters validate typed intent and the complete action set without consulting message or reason text. | Message/reason mutations preserve decisions; foreign and structurally altered actions are rejected before effects. |
+| Locking and journal | Lock acquisition, revision checks, prepared/committed journal transitions, and terminal action ordering remain unchanged. | Conflict and failure-injection traces compare exact ordering for Store publication, target mutation, provider mutation, and rollback cases. |
+| Receipt and recovery | Receipt projection, durable recovery metadata, compensation authority, ownership, drift, snapshots, and replay behavior remain operation-equivalent. | Success, conflict, interrupted, compensated, and recovery fixtures compare receipt/recovery results before and after each family migration. |
+| Reference-only secrets | Secret values never enter normalized intent, canonical bytes, actions, journals, receipts, recovery evidence, logs, argv, CLI/API results, or Store artifacts. | Unique-value canaries cover Inventory secret adoption and secret-metadata/provider paths, including failures and recovery. |
+| Boundary parity | CLI and loopback API keep their existing result mapping and do not gain mutation-policy authority. | Focused CLI/API parity tests compare success and constant failure projections with Core results. |
+
+A task group may check off migration only when its rows above have fresh focused evidence. One repair wave may address related findings. A repeated Important or Critical class requires a design-level artifact correction before another implementation attempt.
+
 ## Risks / Trade-offs
 
 - **[Risk] Abstraction hides security ordering.** → Keep authority and kernel ordering outside adapters and assert spies at the registry boundary.
@@ -40,7 +56,7 @@ Config-only Store publications establish the seam, followed by resource operatio
 
 ## Migration Plan
 
-1. Freeze canonical/effect characterization for every operation.
+1. Freeze canonical/effect characterization for the operation families named in the task slices.
 2. Add adapter contracts and registry with no migrated external behavior.
 3. Migrate operation families sequentially and delete only proven-dead helpers.
 4. Add forbidden bypass and exhaustive registry tests.

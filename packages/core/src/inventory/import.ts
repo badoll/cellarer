@@ -2,13 +2,7 @@ import { dirname, join } from "node:path";
 import { appendActivity } from "../activity.js";
 import type { Env, FileTreeSnapshot } from "../env.js";
 import { assertSafeAtomicPublicationPath } from "../fs/safety.js";
-import {
-  acquireCurrentMutationAuthorityLease,
-  assertStrictMutationPlanRuntime,
-  canonicalJson,
-  verifyMutationPlanAuthorization,
-  verifyMutationPlanDigest,
-} from "../protocol/canonical.js";
+import { acquireCurrentMutationAuthorityLease, canonicalJson } from "../protocol/canonical.js";
 import { CLIENT_API_MAX_REQUEST_BODY_BYTES } from "../protocol/client.js";
 import type {
   CanonicalJsonObject,
@@ -19,8 +13,10 @@ import type {
   MutationPlanAction,
   TargetStateReceipt,
 } from "../protocol/client-types.js";
-import { executeMutationPlan, invalidPlanResult, targetState } from "../protocol/execute.js";
+import { invalidPlanResult, targetState } from "../protocol/execute.js";
 import type { OperationActionReceipt, OperationResult } from "../protocol/models.js";
+import { resolveAuthorizedMutationOperationAdapter } from "../protocol/operation-adapter.js";
+import { executePreparedMutationOperation } from "../protocol/operation-execution.js";
 import { planStoreActionMutation } from "../protocol/store-mutation.js";
 import {
   createResourceRecord,
@@ -231,10 +227,13 @@ export async function applyInventoryStoreImportPlan(
 ): Promise<AppliedInventoryStoreImport> {
   let decoded: DecodedInventoryStoreImport | null = null;
   try {
-    assertStrictMutationPlanRuntime(mutationPlan, "store-import");
     if (
-      !verifyMutationPlanAuthorization(env, options.storeRoot, mutationPlan) ||
-      !verifyMutationPlanDigest(mutationPlan)
+      !resolveAuthorizedMutationOperationAdapter(
+        env,
+        options.storeRoot,
+        mutationPlan,
+        "store-import",
+      )
     ) {
       return invalidApplied(mutationPlan);
     }
@@ -252,7 +251,7 @@ export async function applyInventoryStoreImportPlan(
   try {
     const validateSources = () =>
       validateInventoryImportSources(env, decoded as DecodedInventoryStoreImport);
-    const operation = await executeMutationPlan(
+    const operation = await executePreparedMutationOperation(
       env,
       options.storeRoot,
       mutationPlan,
