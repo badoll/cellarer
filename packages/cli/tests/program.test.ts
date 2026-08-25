@@ -7,12 +7,16 @@ import {
   type RevertCallResult,
   type VerificationReport,
 } from "@cellarer/core";
+import type { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createCliCommandCatalog } from "../src/commands/command-catalog.js";
 import { HEADLESS_MUTATION_AUTHORITY_ENV } from "../src/mutation-authority.js";
 import { serializeCliOutput } from "../src/output.js";
 import { buildProgram } from "../src/program.js";
+import { commandRegistry } from "../src/protocol/command-registry.js";
 
 const TEST_MUTATION_AUTHORITY = `v1:1:${Buffer.alloc(32, 0x19).toString("base64url")}`;
+const DIAGNOSTICS_SERVICE_COMMANDS = ["agents", "status", "doctor", "ui"] as const;
 let previousMutationAuthority: string | undefined;
 let previousStdoutWrite: typeof process.stdout.write;
 const machineOutput: string[] = [];
@@ -38,6 +42,42 @@ afterEach(() => {
 });
 
 describe("cli program wiring", () => {
+  it("drives diagnostics and service leaves from one parity-preserving domain catalog", () => {
+    const catalog = createCliCommandCatalog();
+    const contracts = catalog.contracts.filter(({ command }) =>
+      DIAGNOSTICS_SERVICE_COMMANDS.includes(
+        command as (typeof DIAGNOSTICS_SERVICE_COMMANDS)[number],
+      ),
+    );
+
+    expect(contracts.map(({ command }) => command)).toEqual(DIAGNOSTICS_SERVICE_COMMANDS);
+    const program = buildProgram();
+    for (const contract of contracts) {
+      const published = commandRegistry.find(({ command }) => command === contract.command);
+      expect(published).toBeDefined();
+      expect(protocolProjection(contract)).toEqual(
+        protocolProjection(published as NonNullable<typeof published>),
+      );
+      expect(commanderProjection(findLeaf(program, contract.command))).toEqual(
+        commanderProjection(contract.createCommand()),
+      );
+    }
+  });
+
+  it("registers every executable leaf exclusively from the aggregate command catalog", () => {
+    const catalog = createCliCommandCatalog();
+    const program = buildProgram();
+    const executablePaths = collectLeafPaths(program).sort();
+    const contractPaths = catalog.contracts.map(({ command }) => command).sort();
+
+    expect(contractPaths).toEqual(executablePaths);
+    expect(catalog.definitions).toBe(catalog.contracts);
+    expect(new Set(contractPaths).size).toBe(contractPaths.length);
+    expect(contractPaths).toHaveLength(commandRegistry.length);
+    expect(commandRegistry.every((definition) => "execute" in definition)).toBe(true);
+    expect(Object.isFrozen(commandRegistry)).toBe(true);
+  });
+
   it("16.1 redacts nested container scalars at the CLI JSON boundary", () => {
     const parsed = JSON.parse(
       serializeCliOutput({
@@ -886,4 +926,55 @@ async function writeSkill(
 
 function machineData<T>(): T {
   return (JSON.parse(machineOutput.join("")) as { data: T }).data;
+}
+
+function findLeaf(program: Command, identity: string): Command {
+  let current = program;
+  for (const part of identity.split(".")) {
+    const next = current.commands.find((command) => command.name() === part);
+    if (!next) throw new Error(`missing command ${identity}`);
+    current = next;
+  }
+  return current;
+}
+
+function collectLeafPaths(command: Command, prefix = ""): string[] {
+  return command.commands.flatMap((child) => {
+    const identity = prefix ? `${prefix}.${child.name()}` : child.name();
+    return child.commands.length === 0 ? [identity] : collectLeafPaths(child, identity);
+  });
+}
+
+function protocolProjection(definition: (typeof commandRegistry)[number]): unknown {
+  return {
+    command: definition.command,
+    mutability: definition.mutability,
+    streaming: definition.streaming,
+    requiredFeatures: definition.requiredFeatures,
+    inputBindings: definition.inputBindings,
+    inputSchemaId: definition.inputSchemaId,
+    outputSchemaId: definition.outputSchemaId,
+    eventSchemaId: definition.eventSchemaId,
+    inputSchema: definition.inputSchema,
+    outputSchema: definition.outputSchema,
+    eventSchema: definition.eventSchema,
+  };
+}
+
+function commanderProjection(command: Command): unknown {
+  return {
+    name: command.name(),
+    description: command.description(),
+    arguments: command.registeredArguments.map((argument) => ({
+      name: argument.name(),
+      required: argument.required,
+      variadic: argument.variadic,
+      description: argument.description,
+    })),
+    options: command.options.map((option) => ({
+      flags: option.flags,
+      description: option.description,
+      defaultValue: option.defaultValue,
+    })),
+  };
 }

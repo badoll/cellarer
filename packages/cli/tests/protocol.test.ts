@@ -2,6 +2,10 @@ import { readFileSync } from "node:fs";
 import { CLI_PROTOCOL_VERSION, type CliErrorCode, type CliResultEnvelope } from "@cellarer/core";
 import { Command } from "commander";
 import { describe, expect, it } from "vitest";
+import {
+  createCliCommandCatalog,
+  getDefaultCliCommandCatalog,
+} from "../src/commands/command-catalog.js";
 import { buildProgram } from "../src/program.js";
 import {
   createCommandCatalog,
@@ -14,7 +18,10 @@ import {
   getProtocolSchemaBundle,
 } from "../src/protocol/command-registry.js";
 import { CLI_EXIT_CODE, exitCodeForError } from "../src/protocol/exit-mapper.js";
-import { createProtocolRenderer } from "../src/protocol/renderer.js";
+import {
+  createProtocolRenderer as createAggregateProtocolRenderer,
+  type ProtocolRendererOptions,
+} from "../src/protocol/renderer.js";
 import { resolveRequestId } from "../src/protocol/request-id.js";
 import { type JsonSchema, jsonSchema } from "../src/protocol/schemas.js";
 
@@ -27,6 +34,15 @@ interface GoldenFixture {
 const golden = JSON.parse(
   readFileSync(new URL("./fixtures/agent-cli-protocol-v1.json", import.meta.url), "utf8"),
 ) as GoldenFixture;
+
+type TestProtocolRendererOptions = Omit<
+  ProtocolRendererOptions,
+  "authority" | "allowUnknownCommand"
+>;
+
+function createProtocolRenderer(options: TestProtocolRendererOptions) {
+  return createAggregateProtocolRenderer(options as ProtocolRendererOptions);
+}
 
 describe("agent CLI protocol v1 golden boundary", () => {
   it("emits exactly one compact JSON success envelope to stdout", () => {
@@ -384,6 +400,32 @@ describe("agent CLI protocol v1 golden boundary", () => {
     });
   });
 
+  it("rejects foreign authority, definition, and fallback seams at the active renderer", () => {
+    const foreignCatalog = createCliCommandCatalog() as unknown as Record<string, unknown>;
+    const canonical = getCommandDefinition("status");
+    const forged = {
+      ...canonical,
+      outputSchema: { ...canonical.outputSchema },
+    };
+
+    for (const forbidden of [
+      { authority: foreignCatalog.authority },
+      { definition: forged },
+      { allowUnknownCommand: true },
+      { authority: undefined, allowUnknownCommand: true },
+    ]) {
+      expect(() =>
+        createAggregateProtocolRenderer({
+          command: "status",
+          output: "json",
+          stdout: () => {},
+          stderr: () => {},
+          ...forbidden,
+        } as never),
+      ).toThrow(/active command composition rejects caller-supplied authority or classification/i);
+    }
+  });
+
   it("mints a deeply immutable public schema bundle that is safe to reuse", () => {
     const canary = "ghp_0123456789abcdefghijklmnopqrstuvwx";
     const schemaId = getCommandDefinition("secret.add")?.inputSchemaId;
@@ -454,6 +496,92 @@ function expectDeeplyFrozen(value: unknown, seen = new WeakSet<object>()): void 
 }
 
 describe("command contract kernel", () => {
+  it("does not expose authority minting or replacement to ordinary consumers", async () => {
+    const runtime = await import("../src/protocol/aggregate-command-runtime.js");
+    const active = getDefaultCliCommandCatalog() as unknown as Record<string, unknown>;
+    const independent = createCliCommandCatalog() as unknown as Record<string, unknown>;
+
+    expect(runtime).not.toHaveProperty("installAggregateCommandDefinitionLookup");
+    expect(runtime).not.toHaveProperty("createAggregateCommandAuthority");
+    expect(runtime).not.toHaveProperty("assertAggregateCommandAuthority");
+    expect(active).not.toHaveProperty("authority");
+    expect(independent).not.toHaveProperty("authority");
+    expect(getDefaultCliCommandCatalog()).toBe(getDefaultCliCommandCatalog());
+  });
+
+  it("rejects a foreign executable match without re-sealing either composition", () => {
+    const active = getDefaultCliCommandCatalog();
+    const foreign = createCliCommandCatalog();
+    const activeDefinition = active.requireDefinition("status");
+    const foreignDefinition = foreign.requireDefinition("status");
+    const foreignMatch = foreign.matchExecutable("status");
+
+    expect(() => active.resolveExecutableMatch(foreignMatch)).toThrow(
+      /not issued by the active command composition/i,
+    );
+    expect(active.requireDefinition("status")).toBe(activeDefinition);
+    expect(foreign.requireDefinition("status")).toBe(foreignDefinition);
+    expect(foreignDefinition).not.toBe(activeDefinition);
+  });
+
+  it("preserves genuine unknown rendering without caller-selected fallback", () => {
+    const stdout: string[] = [];
+    const unknown = createProtocolRenderer({
+      command: "genuinely-unknown",
+      output: "json",
+      requestId: "req-unknown",
+      stdout: (chunk) => stdout.push(chunk),
+      stderr: () => {},
+    });
+    expect(unknown.failure({ code: "INVALID_USAGE", message: "Invalid command line usage" })).toBe(
+      CLI_EXIT_CODE.USAGE,
+    );
+    expect(JSON.parse(stdout.join(""))).toMatchObject({
+      command: "genuinely-unknown",
+      status: "error",
+      error: { code: "INVALID_USAGE" },
+    });
+  });
+
+  it("uses the renderer match and schema bundle's identical canonical schema node", () => {
+    const active = getDefaultCliCommandCatalog();
+    const matched = active.resolveExecutableMatch(active.matchExecutable("status"));
+    expect(matched.kind).toBe("known");
+    if (matched.kind !== "known") throw new Error("status unexpectedly matched unknown");
+    const bundleSchema = active
+      .getSchemaBundle(matched.definition.outputSchemaId)
+      ?.schemas.at(0)?.schema;
+
+    expect(bundleSchema).toBe(matched.definition.outputSchema);
+    const stdout: string[] = [];
+    const renderer = createProtocolRenderer({
+      command: "status",
+      output: "json",
+      requestId: "canonical-renderer",
+      stdout: (chunk) => stdout.push(chunk),
+      stderr: () => {},
+    });
+    expect(renderer.failure({ code: "INVALID_USAGE", message: "Invalid command line usage" })).toBe(
+      CLI_EXIT_CODE.USAGE,
+    );
+    expect(JSON.parse(stdout.join(""))).toMatchObject({ command: "status", status: "error" });
+  });
+
+  it("does not publish a probe catalog as the runtime protocol view", () => {
+    const aggregate = getDefaultCliCommandCatalog();
+    const statusDefinition = aggregate.requireDefinition("status");
+
+    createCommandCatalog([
+      defineCommandDomain({ id: "probe", contracts: [testCommandContract("probe.echo")] }),
+    ]);
+
+    expect(getDefaultCliCommandCatalog()).toBe(aggregate);
+    expect(aggregate.requireDefinition("status")).toBe(statusDefinition);
+    expect(() => aggregate.requireDefinition("probe.echo")).toThrow(
+      /absent from the aggregate catalog/,
+    );
+  });
+
   it("generates Commander registration and every protocol projection from one aggregate", async () => {
     const contract = testCommandContract("probe.echo");
     const catalog = createCommandCatalog([
@@ -463,7 +591,7 @@ describe("command contract kernel", () => {
     const invoked: string[] = [];
 
     catalog.registerCommander(program, async (selected) => {
-      invoked.push(selected.command);
+      invoked.push(selected);
     });
     await program.parseAsync(["node", "test", "probe", "echo", "--message", "hello"], {
       from: "node",
@@ -480,10 +608,10 @@ describe("command contract kernel", () => {
         requiredFeatures: ["probe"],
       },
     ]);
-    expect(catalog.getInputBindings("probe.echo")).toEqual([
+    expect(catalog.requireDefinition("probe.echo").inputBindings).toEqual([
       { field: "message", option: "message" },
     ]);
-    expect(catalog.getRendererMetadata("probe.echo")).toEqual({
+    expect(catalog.requireDefinition("probe.echo")).toMatchObject({
       command: "probe.echo",
       streaming: false,
       outputSchema: contract.outputSchema,
@@ -496,7 +624,22 @@ describe("command contract kernel", () => {
     ).toEqual([contract.inputSchemaId, contract.outputSchemaId]);
     expect(
       schemaBundle?.schemas.find(({ schemaId }) => schemaId === contract.inputSchemaId)?.schema,
-    ).not.toBe(contract.inputSchema);
+    ).toBe(catalog.requireDefinition("probe.echo").inputSchema);
+    const canonical = catalog.requireDefinition("probe.echo");
+    expect(Reflect.set(canonical.requiredFeatures as string[], 0, "forged-feature")).toBe(false);
+    expect(Reflect.set(canonical.inputBindings[0] as object, "field", "forgedField")).toBe(false);
+    expect(
+      Reflect.set(
+        canonical.inputSchema.properties?.input?.properties?.message as object,
+        "type",
+        "number",
+      ),
+    ).toBe(false);
+    expect(catalog.getCapabilities().commands[0]?.requiredFeatures).toBe(
+      canonical.requiredFeatures,
+    );
+    expectDeeplyFrozen(catalog.getCapabilities());
+    expectDeeplyFrozen(catalog.requireDefinition("probe.echo"));
     expectDeeplyFrozen(schemaBundle);
   });
 
@@ -515,7 +658,7 @@ describe("command contract kernel", () => {
 
   it("rejects duplicate command paths and schema IDs", () => {
     const first = testCommandContract("probe.echo");
-    const second = testCommandContract("probe.other");
+    const second = testCommandContract("probe.other", 1);
     const duplicateInputSchema = {
       ...second,
       inputSchemaId: first.inputSchemaId,
@@ -560,14 +703,15 @@ describe("command contract kernel", () => {
   });
 });
 
-function testCommandContract(command: string) {
-  return defineCommandContract(testCommandContractInput(command));
+function testCommandContract(command: string, catalogOrder = 0) {
+  return defineCommandContract(testCommandContractInput(command, catalogOrder));
 }
 
-function testCommandContractInput(command: string) {
+function testCommandContractInput(command: string, catalogOrder = 0) {
   const leafName = command.split(".").at(-1) as string;
   return {
     command,
+    catalogOrder,
     mutability: "read" as const,
     requiredFeatures: ["probe"],
     input: jsonSchema.object({ message: jsonSchema.string() }),

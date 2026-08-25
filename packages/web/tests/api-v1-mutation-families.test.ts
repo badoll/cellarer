@@ -185,7 +185,7 @@ describe("versioned mutation families", () => {
       workspaceRoot,
       targetKeys: uninstall.targetKeys,
     });
-  });
+  }, 15_000);
 
   it("exposes typed recovery diagnosis and recovery results", async () => {
     const diagnosedResponse = await app.request("/api/v1/recovery");

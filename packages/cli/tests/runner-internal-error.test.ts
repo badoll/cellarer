@@ -31,8 +31,9 @@ vi.mock("../src/program.js", () => ({
   },
 }));
 
+import { getCommandDefinition } from "../src/protocol/command-registry.js";
 import { CliHandledError } from "../src/protocol/errors.js";
-import { CliInputError } from "../src/protocol/input.js";
+import { CliInputError, validateJsonSchema } from "../src/protocol/input.js";
 import { runCli } from "../src/runner.js";
 
 const originalStdoutWrite = process.stdout.write;
@@ -83,11 +84,15 @@ describe("runCli internal-error boundary", () => {
 
     expect(stderr.join("")).toBe("[REDACTED]\n");
     expect(stdout.join("").trimEnd().split("\n")).toHaveLength(1);
-    expect(JSON.parse(stdout.join(""))).toMatchObject({
+    const envelope = JSON.parse(stdout.join("")) as unknown;
+    expect(envelope).toMatchObject({
       command: "authority.rotate",
       status: "error",
       error: { code: "INTERNAL_ERROR" },
     });
+    expect(
+      validateJsonSchema(envelope, getCommandDefinition("authority.rotate").outputSchema),
+    ).toEqual([]);
     expect(stdout.join("") + stderr.join("")).not.toContain(canary);
     expect(process.exitCode).toBe(70);
   });

@@ -1,9 +1,11 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { promises as fs, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { validateJsonSchema } from "../src/protocol/input.js";
+import type { JsonSchema } from "../src/protocol/schemas.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -187,25 +189,210 @@ describe("packed CLI artifact", () => {
     const installedMetadata = JSON.parse(
       readFileSync(join(installedPackageRoot, "package.json"), "utf8"),
     ) as { version: string };
-    const output = execFileSync(process.execPath, [installedBin, "--version"], {
-      cwd: installedPackageRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    }).trim();
+    const installedEnvironment = {
+      ...process.env,
+      HOME: join(temporaryRoot, "home"),
+      CELLARER_HOME: join(temporaryRoot, "cellarer-home"),
+    };
+    const installedInvocation = (args: readonly string[]): string =>
+      execFileSync(process.execPath, [installedBin, ...args], {
+        cwd: installedPackageRoot,
+        encoding: "utf8",
+        env: installedEnvironment,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+    const help = installedInvocation(["--help"]);
+    expect(help).toContain("Usage: cellarer [options] [command]");
+    expect(help).toContain("capabilities");
+    expect(help).toContain("schema");
+
+    const output = installedInvocation(["--version"]).trim();
 
     expect(output).toBe(installedMetadata.version);
 
-    const discovery = JSON.parse(
-      execFileSync(process.execPath, [installedBin, "--output", "json", "capabilities"], {
-        cwd: installedPackageRoot,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-      }),
-    ) as { status?: string; command?: string; data?: { protocolVersions?: string[] } };
+    const humanCapabilities = installedInvocation(["capabilities"]);
+    expect(humanCapabilities).toContain("protocol versions: 1.0");
+    expect(humanCapabilities).toContain("status (read, terminal)");
+
+    const discovery = JSON.parse(installedInvocation(["--output", "json", "capabilities"])) as {
+      status?: string;
+      command?: string;
+      data?: {
+        protocolVersions?: string[];
+        commands?: Array<{ command?: string; inputSchemaId?: string; outputSchemaId?: string }>;
+      };
+    };
     expect(discovery).toMatchObject({
       status: "success",
       command: "capabilities",
       data: { protocolVersions: ["1.0"] },
     });
-  });
+
+    const statusInputSchemaId = discovery.data?.commands?.find(
+      ({ command }) => command === "status",
+    )?.inputSchemaId;
+    const statusOutputSchemaId = discovery.data?.commands?.find(
+      ({ command }) => command === "status",
+    )?.outputSchemaId;
+    expect(statusInputSchemaId).toBeTypeOf("string");
+    expect(statusOutputSchemaId).toBeTypeOf("string");
+    const schema = JSON.parse(
+      installedInvocation(["--output", "json", "schema", statusInputSchemaId as string]),
+    ) as { status?: string; command?: string; data?: { schemas?: unknown[] } };
+    expect(schema).toMatchObject({
+      status: "success",
+      command: "schema",
+      data: { schemas: [{ schemaId: statusInputSchemaId }] },
+    });
+
+    const outputSchemaEnvelope = JSON.parse(
+      installedInvocation(["--output", "json", "schema", statusOutputSchemaId as string]),
+    ) as { data?: { schemas?: Array<{ schema?: JsonSchema }> } };
+    const statusOutputSchema = outputSchemaEnvelope.data?.schemas?.[0]?.schema;
+    expect(statusOutputSchema).toBeDefined();
+
+    const installedAuthorityProbe = JSON.parse(
+      execFileSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "--eval",
+          `
+            const [catalogModule, runtimeModule, rendererModule, { getCommandDefinition }] = await Promise.all([
+              import(${JSON.stringify(pathToFileURL(join(installedPackageRoot, "dist", "commands", "command-catalog.js")).href)}),
+              import(${JSON.stringify(pathToFileURL(join(installedPackageRoot, "dist", "protocol", "aggregate-command-runtime.js")).href)}),
+              import(${JSON.stringify(pathToFileURL(join(installedPackageRoot, "dist", "protocol", "renderer.js")).href)}),
+              import(${JSON.stringify(pathToFileURL(join(installedPackageRoot, "dist", "protocol", "command-registry.js")).href)}),
+            ]);
+            const { createCliCommandCatalog, getDefaultCliCommandCatalog } = catalogModule;
+            const { createProtocolRenderer } = rendererModule;
+            const catalog = getDefaultCliCommandCatalog();
+            const foreign = createCliCommandCatalog();
+            const canonical = catalog.requireDefinition("status");
+            const bundleSchema = catalog.getSchemaBundle(canonical.outputSchemaId).schemas[0].schema;
+            let forgedRejected = false;
+            for (const forbidden of [
+              { authority: foreign.authority },
+              { definition: { ...canonical, outputSchema: { ...canonical.outputSchema } } },
+              { authority: undefined, allowUnknownCommand: true },
+              { classification: "unknown" },
+            ]) {
+              try {
+                createProtocolRenderer({ command: "status", output: "json", ...forbidden });
+              } catch { forgedRejected = true; continue; }
+              forgedRejected = false;
+              break;
+            }
+            let foreignMatchRejected = false;
+            try { catalog.resolveExecutableMatch(foreign.matchExecutable("status")); }
+            catch { foreignMatchRejected = true; }
+            let knownMissRejected = false;
+            try {
+              catalog.assertExecutableParity([
+                ...catalog.definitions.map(({ command }) => command),
+                "known.missing",
+              ]);
+            } catch { knownMissRejected = true; }
+            const unknownRecords = [];
+            const unknown = createProtocolRenderer({
+              command: "genuinely-unknown",
+              output: "json",
+              requestId: "packed-unknown",
+              stdout: (chunk) => unknownRecords.push(chunk),
+              stderr: () => {},
+            });
+            unknown.failure({ code: "INVALID_USAGE", message: "Invalid command line usage" });
+            process.stdout.write(JSON.stringify({
+              canonicalRegistryIdentity: canonical === getCommandDefinition("status"),
+              rendererBundleSchemaIdentity: canonical.outputSchema === bundleSchema,
+              authorityMintingAbsent: !("createAggregateCommandAuthority" in runtimeModule),
+              rendererInjectionAbsent: !("createCompositionProtocolRenderer" in rendererModule),
+              catalogAuthorityAbsent: !("authority" in catalog) && !("authority" in foreign),
+              deeplyFrozen: Object.isFrozen(canonical)
+                && Object.isFrozen(canonical.outputSchema)
+                && Object.isFrozen(canonical.inputBindings)
+                && Object.isFrozen(canonical.requiredFeatures),
+              replacementRejected: Reflect.set(
+                catalog,
+                "resolveExecutableMatch",
+                () => ({ kind: "unknown" }),
+              ) === false,
+              forgedRejected,
+              foreignMatchRejected,
+              knownMissRejected,
+              unknown: JSON.parse(unknownRecords.join("")),
+            }));
+          `,
+        ],
+        {
+          cwd: installedPackageRoot,
+          encoding: "utf8",
+          env: installedEnvironment,
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      ),
+    ) as Record<string, unknown>;
+    expect(installedAuthorityProbe).toMatchObject({
+      canonicalRegistryIdentity: true,
+      rendererBundleSchemaIdentity: true,
+      authorityMintingAbsent: true,
+      rendererInjectionAbsent: true,
+      catalogAuthorityAbsent: true,
+      deeplyFrozen: true,
+      replacementRejected: true,
+      forgedRejected: true,
+      foreignMatchRejected: true,
+      knownMissRejected: true,
+      unknown: {
+        command: "genuinely-unknown",
+        status: "error",
+        error: { code: "INVALID_USAGE" },
+      },
+    });
+
+    const structuredRequest = join(temporaryRoot, "invalid-status-request.json");
+    await fs.writeFile(
+      structuredRequest,
+      JSON.stringify({
+        protocolVersion: "1.0",
+        command: "status",
+        input: { unsupported: true },
+      }),
+      "utf8",
+    );
+    for (const args of [
+      ["--output", "json", "--input", structuredRequest, "status"],
+      ["--output", "json", "status", "--does-not-exist"],
+    ]) {
+      const failure = spawnSync(process.execPath, [installedBin, ...args], {
+        cwd: installedPackageRoot,
+        encoding: "utf8",
+        env: installedEnvironment,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      expect(failure.status).toBe(2);
+      expect(failure.stderr).toBe("");
+      const envelope = JSON.parse(failure.stdout) as unknown;
+      expect(validateJsonSchema(envelope, statusOutputSchema as JsonSchema)).toEqual([]);
+    }
+
+    const unknownFailure = spawnSync(
+      process.execPath,
+      [installedBin, "--output", "json", "does-not-exist"],
+      {
+        cwd: installedPackageRoot,
+        encoding: "utf8",
+        env: installedEnvironment,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    expect(unknownFailure.status).toBe(2);
+    expect(unknownFailure.stderr).toBe("");
+    expect(JSON.parse(unknownFailure.stdout)).toMatchObject({
+      command: "does-not-exist",
+      status: "error",
+      error: { code: "INVALID_USAGE" },
+    });
+  }, 15_000);
 });

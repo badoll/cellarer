@@ -1,8 +1,9 @@
 import { StoreMutationConflictError } from "@cellarer/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { commandRegistry } from "../src/protocol/command-registry.js";
 import { CliHandledError } from "../src/protocol/errors.js";
 import { handleCliBoundaryError } from "../src/protocol/execution.js";
-import { CliInputError } from "../src/protocol/input.js";
+import { CliInputError, validateJsonSchema } from "../src/protocol/input.js";
 import { runCli } from "../src/runner.js";
 
 const originalStdoutWrite = process.stdout.write;
@@ -42,11 +43,14 @@ describe("top-level CLI parse boundary", () => {
 
     expect(captured.stderr).toBe("");
     expect(captured.stdout.trimEnd().split("\n")).toHaveLength(1);
-    expect(JSON.parse(captured.stdout)).toMatchObject({
+    const envelope = JSON.parse(captured.stdout) as unknown;
+    expect(envelope).toMatchObject({
       command: expectedCommand,
       status: "error",
       error: { code: "INVALID_USAGE" },
     });
+    const definition = commandRegistry.find(({ command }) => command === expectedCommand);
+    if (definition) expect(validateJsonSchema(envelope, definition.outputSchema)).toEqual([]);
     expect(process.exitCode).toBe(2);
   });
 

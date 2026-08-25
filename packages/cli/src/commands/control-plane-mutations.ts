@@ -15,11 +15,10 @@ import { Command } from "commander";
 import { resolveContext } from "../context.js";
 import { createSafeConsole } from "../output.js";
 import {
-  type CliCommandOutcome,
-  commandFailure,
-  commandSuccess,
-  executeCliCommand,
-} from "../protocol/execution.js";
+  type CommandContractMetadata,
+  defineCommandContract,
+} from "../protocol/command-contract.js";
+import { type CliCommandOutcome, commandFailure, commandSuccess } from "../protocol/execution.js";
 import { CliInputError, type CliInvocation } from "../protocol/input.js";
 
 interface MutationOpts {
@@ -41,274 +40,201 @@ interface CollectionMutationOpts extends MutationOpts {
   readonly collection?: unknown;
 }
 
-export function addAgentMutationCommands(command: Command): Command {
-  for (const action of ["enable", "disable", "reset"] as const) {
-    const builtInOnly = action === "reset";
-    command.addCommand(
-      new Command(action)
-        .description(
-          builtInOnly
-            ? "reset a built-in adapter override"
-            : `${action} an agent through a planned adapter override`,
-        )
-        .argument("[agentId]", builtInOnly ? "built-in adapter id" : "adapter id")
-        .option("--dry-run", "仅返回 revisioned plan，不写入")
-        .action(async (agentId: string | undefined, opts: MutationOpts, leaf: Command) => {
-          await runMutation(leaf, async (invocation) => {
-            const exactAgentId = requiredString(agentId, "agentId", invocation);
+type BuiltinAgentAction = "enable" | "disable" | "configure" | "reset";
+type CustomAdapterAction = "add" | "update" | "remove";
+type CollectionAction = "create" | "update" | "delete" | "set-members" | "set-defaults";
+
+interface AgentMutationInput extends AdapterMutationOpts {
+  readonly agentId?: string;
+}
+
+interface CollectionMutationInput extends CollectionMutationOpts {
+  readonly collectionName?: string;
+}
+
+export function createBuiltinAgentMutationCommandContract<
+  TCommand extends "agent.enable" | "agent.disable" | "agent.configure" | "agent.reset",
+>(definition: CommandContractMetadata<TCommand>, action: BuiltinAgentAction) {
+  const builtInOnly = action === "reset" || action === "configure";
+  return defineCommandContract<TCommand, AgentMutationInput, PlannedControlPlaneMutationDto>(
+    definition,
+    {
+      createCommand: () => {
+        const command = new Command(action)
+          .description(
+            action === "reset"
+              ? "reset a built-in adapter override"
+              : action === "configure"
+                ? "configure a built-in adapter override"
+                : `${action} an agent through a planned adapter override`,
+          )
+          .argument("[agentId]", builtInOnly ? "built-in adapter id" : "adapter id");
+        if (action === "configure") {
+          command.option("--adapter <json>", "typed adapter override JSON");
+        }
+        return command.option("--dry-run", "仅返回 revisioned plan，不写入");
+      },
+      normalize: ({ actionArguments, command }) => ({
+        agentId: actionArguments[0] as string | undefined,
+        ...command.opts<AdapterMutationOpts>(),
+      }),
+      execute: (input, { invocation }) =>
+        executeMutation(async () => {
+          const agentId = requiredString(input.agentId, "agentId", invocation);
+          if (action === "configure") {
+            const adapter = parseAdapterPatch(input.adapter, "adapter", invocation);
             const ctx = await resolveContext({}, "required");
             return mutateBuiltinAgent(ctx.env, {
               storeRoot: ctx.storeRoot,
-              agentId: exactAgentId,
+              agentId,
               action,
-              dryRun: opts.dryRun,
+              adapter,
+              dryRun: input.dryRun,
             });
-          });
-        }),
-    );
-  }
-
-  command.addCommand(
-    new Command("configure")
-      .description("configure a built-in adapter override")
-      .argument("[agentId]", "built-in adapter id")
-      .option("--adapter <json>", "typed adapter override JSON")
-      .option("--dry-run", "仅返回 revisioned plan，不写入")
-      .action(async (agentId: string | undefined, opts: AdapterMutationOpts, leaf: Command) => {
-        await runMutation(leaf, async (invocation) => {
-          const exactAgentId = requiredString(agentId, "agentId", invocation);
-          const adapter = parseAdapterPatch(opts.adapter, "adapter", invocation);
+          }
           const ctx = await resolveContext({}, "required");
           return mutateBuiltinAgent(ctx.env, {
             storeRoot: ctx.storeRoot,
-            agentId: exactAgentId,
-            action: "configure",
-            adapter,
-            dryRun: opts.dryRun,
+            agentId,
+            action,
+            dryRun: input.dryRun,
           });
-        });
-      }),
+        }),
+      presentText: presentMutation,
+      mapError: () => undefined,
+    },
   );
+}
 
-  for (const action of ["add", "update"] as const) {
-    command.addCommand(
-      new Command(action)
-        .description(`${action} a declarative custom adapter`)
-        .argument("[agentId]", "custom adapter id")
-        .option("--adapter <json>", "typed complete custom adapter JSON")
-        .option("--dry-run", "仅返回 revisioned plan，不写入")
-        .action(async (agentId: string | undefined, opts: AdapterMutationOpts, leaf: Command) => {
-          await runMutation(leaf, async (invocation) => {
-            const exactAgentId = requiredString(agentId, "agentId", invocation);
-            const adapter = parseAdapterBody(opts.adapter, "adapter", invocation);
+export function createCustomAdapterMutationCommandContract<
+  TCommand extends "agent.add" | "agent.update" | "agent.remove",
+>(definition: CommandContractMetadata<TCommand>, action: CustomAdapterAction) {
+  return defineCommandContract<TCommand, AgentMutationInput, PlannedControlPlaneMutationDto>(
+    definition,
+    {
+      createCommand: () => {
+        const command = new Command(action)
+          .description(
+            action === "remove"
+              ? "remove a custom adapter when no dependencies remain"
+              : `${action} a declarative custom adapter`,
+          )
+          .argument("[agentId]", "custom adapter id");
+        if (action !== "remove") {
+          command.option("--adapter <json>", "typed complete custom adapter JSON");
+        }
+        return command.option("--dry-run", "仅返回 revisioned plan，不写入");
+      },
+      normalize: ({ actionArguments, command }) => ({
+        agentId: actionArguments[0] as string | undefined,
+        ...command.opts<AdapterMutationOpts>(),
+      }),
+      execute: (input, { invocation }) =>
+        executeMutation(async () => {
+          const agentId = requiredString(input.agentId, "agentId", invocation);
+          if (action === "remove") {
             const ctx = await resolveContext({}, "required");
             return mutateCustomAdapter(ctx.env, {
               storeRoot: ctx.storeRoot,
-              agentId: exactAgentId,
+              agentId,
               action,
-              adapter,
-              dryRun: opts.dryRun,
+              dryRun: input.dryRun,
             });
-          });
-        }),
-    );
-  }
-
-  command.addCommand(
-    new Command("remove")
-      .description("remove a custom adapter when no dependencies remain")
-      .argument("[agentId]", "custom adapter id")
-      .option("--dry-run", "仅返回 revisioned plan，不写入")
-      .action(async (agentId: string | undefined, opts: MutationOpts, leaf: Command) => {
-        await runMutation(leaf, async (invocation) => {
-          const exactAgentId = requiredString(agentId, "agentId", invocation);
+          }
+          const adapter = parseAdapterBody(input.adapter, "adapter", invocation);
           const ctx = await resolveContext({}, "required");
           return mutateCustomAdapter(ctx.env, {
             storeRoot: ctx.storeRoot,
-            agentId: exactAgentId,
-            action: "remove",
-            dryRun: opts.dryRun,
+            agentId,
+            action,
+            adapter,
+            dryRun: input.dryRun,
           });
-        });
-      }),
+        }),
+      presentText: presentMutation,
+      mapError: () => undefined,
+    },
   );
-  return command;
 }
 
-export function addConfigMutationCommands(command: Command): Command {
-  command.addCommand(
-    new Command("update")
-      .description("update typed non-secret settings")
-      .option("--settings <json>", "typed settings JSON")
-      .option("--dry-run", "仅返回 revisioned plan，不写入")
-      .action(async (opts: SettingsMutationOpts, leaf: Command) => {
-        await runMutation(leaf, async (invocation) => {
-          const input = requiredJson(opts.settings, "settings", invocation);
-          let settings: ReturnType<typeof parseControlPlaneSettingsPatch>;
-          try {
-            settings = parseControlPlaneSettingsPatch(input);
-          } catch (error) {
-            throw invalidTypedInput("settings", error, invocation);
+export function createConfigMutationCommandContract<
+  TCommand extends "config.update" | "config.reset",
+>(definition: CommandContractMetadata<TCommand>, action: "update" | "reset") {
+  return defineCommandContract<TCommand, SettingsMutationOpts, PlannedControlPlaneMutationDto>(
+    definition,
+    {
+      createCommand: () =>
+        action === "update"
+          ? new Command("update")
+              .description("update typed non-secret settings")
+              .option("--settings <json>", "typed settings JSON")
+              .option("--dry-run", "仅返回 revisioned plan，不写入")
+          : new Command("reset")
+              .description("reset typed non-secret settings to packaged defaults")
+              .option("--field <names>", "method,secretMode,os；逗号分隔")
+              .option("--dry-run", "仅返回 revisioned plan，不写入"),
+      normalize: ({ command }) => command.opts<SettingsMutationOpts>(),
+      execute: (input, { invocation }) =>
+        executeMutation(async () => {
+          if (action === "update") {
+            const rawSettings = requiredJson(input.settings, "settings", invocation);
+            let settings: ReturnType<typeof parseControlPlaneSettingsPatch>;
+            try {
+              settings = parseControlPlaneSettingsPatch(rawSettings);
+            } catch (error) {
+              throw invalidTypedInput("settings", error, invocation);
+            }
+            const ctx = await resolveContext({}, "required");
+            return mutateControlPlaneSettings(ctx.env, {
+              storeRoot: ctx.storeRoot,
+              action,
+              settings,
+              dryRun: input.dryRun,
+            });
           }
-          const ctx = await resolveContext({}, "required");
-          return mutateControlPlaneSettings(ctx.env, {
-            storeRoot: ctx.storeRoot,
-            action: "update",
-            settings,
-            dryRun: opts.dryRun,
-          });
-        });
-      }),
-  );
-
-  command.addCommand(
-    new Command("reset")
-      .description("reset typed non-secret settings to packaged defaults")
-      .option("--field <names>", "method,secretMode,os；逗号分隔")
-      .option("--dry-run", "仅返回 revisioned plan，不写入")
-      .action(async (opts: SettingsMutationOpts, leaf: Command) => {
-        await runMutation(leaf, async (invocation) => {
           let fields: ReturnType<typeof parseControlPlaneSettingFields>;
           try {
-            fields = parseControlPlaneSettingFields(parseList(opts.field));
+            fields = parseControlPlaneSettingFields(parseList(input.field));
           } catch (error) {
             throw invalidTypedInput("fields", error, invocation);
           }
           const ctx = await resolveContext({}, "required");
           return mutateControlPlaneSettings(ctx.env, {
             storeRoot: ctx.storeRoot,
-            action: "reset",
+            action,
             fields,
-            dryRun: opts.dryRun,
+            dryRun: input.dryRun,
           });
-        });
-      }),
+        }),
+      presentText: presentMutation,
+      mapError: () => undefined,
+    },
   );
-  return command;
 }
 
-export function addCollectionMutationCommands(command: Command): Command {
-  command.addCommand(
-    new Command("create")
-      .description("create a collection from exact immutable resource IDs")
-      .argument("[collectionName]", "collection name")
-      .option("--description <text>", "collection description")
-      .option("--resource <ids>", "immutable resource IDs, comma separated")
-      .option("--dry-run", "仅返回 revisioned plan，不写入")
-      .action(
-        async (collectionName: string | undefined, opts: CollectionMutationOpts, leaf: Command) => {
-          await runMutation(leaf, async (invocation) => {
-            const exactCollectionName = requiredString(
-              collectionName,
-              "collectionName",
-              invocation,
-            );
-            const resourceIds = requiredList(opts.resource, "resourceIds", invocation, true);
-            const ctx = await resolveContext({}, "required");
-            return mutateCollection(ctx.env, {
-              storeRoot: ctx.storeRoot,
-              action: "create",
-              collectionName: exactCollectionName,
-              ...(opts.description === undefined ? {} : { description: opts.description }),
-              resourceIds,
-              dryRun: opts.dryRun,
-            });
-          });
-        },
-      ),
-  );
-
-  command.addCommand(
-    new Command("update")
-      .description("update collection metadata")
-      .argument("[collectionName]", "collection name")
-      .option("--description <text>", "replacement collection description")
-      .option("--dry-run", "仅返回 revisioned plan，不写入")
-      .action(
-        async (collectionName: string | undefined, opts: CollectionMutationOpts, leaf: Command) => {
-          await runMutation(leaf, async (invocation) => {
-            const exactCollectionName = requiredString(
-              collectionName,
-              "collectionName",
-              invocation,
-            );
-            const description = requiredString(opts.description, "description", invocation, true);
-            const ctx = await resolveContext({}, "required");
-            return mutateCollection(ctx.env, {
-              storeRoot: ctx.storeRoot,
-              action: "update",
-              collectionName: exactCollectionName,
-              description,
-              dryRun: opts.dryRun,
-            });
-          });
-        },
-      ),
-  );
-
-  command.addCommand(
-    new Command("delete")
-      .description("delete an unselected collection")
-      .argument("[collectionName]", "collection name")
-      .option("--dry-run", "仅返回 revisioned plan，不写入")
-      .action(async (collectionName: string | undefined, opts: MutationOpts, leaf: Command) => {
-        await runMutation(leaf, async (invocation) => {
-          const exactCollectionName = requiredString(collectionName, "collectionName", invocation);
-          const ctx = await resolveContext({}, "required");
-          return mutateCollection(ctx.env, {
-            storeRoot: ctx.storeRoot,
-            action: "delete",
-            collectionName: exactCollectionName,
-            dryRun: opts.dryRun,
-          });
-        });
+export function createCollectionMutationCommandContract<
+  TCommand extends
+    | "collection.create"
+    | "collection.update"
+    | "collection.delete"
+    | "collection.members.set"
+    | "collection.defaults.set",
+>(definition: CommandContractMetadata<TCommand>, action: CollectionAction) {
+  return defineCommandContract<TCommand, CollectionMutationInput, PlannedControlPlaneMutationDto>(
+    definition,
+    {
+      createCommand: () => createCollectionMutationLeaf(action),
+      normalize: ({ actionArguments, command }) => ({
+        ...(action === "set-defaults"
+          ? {}
+          : { collectionName: actionArguments[0] as string | undefined }),
+        ...command.opts<CollectionMutationOpts>(),
       }),
-  );
-
-  command.addCommand(
-    new Command("members").description("manage exact collection membership").addCommand(
-      new Command("set")
-        .description("replace collection members with immutable resource IDs")
-        .argument("[collectionName]", "collection name")
-        .option("--resource <ids>", "immutable resource IDs, comma separated")
-        .option("--dry-run", "仅返回 revisioned plan，不写入")
-        .action(
-          async (
-            collectionName: string | undefined,
-            opts: CollectionMutationOpts,
-            leaf: Command,
-          ) => {
-            await runMutation(leaf, async (invocation) => {
-              const exactCollectionName = requiredString(
-                collectionName,
-                "collectionName",
-                invocation,
-              );
-              const resourceIds = requiredList(opts.resource, "resourceIds", invocation, true);
-              const ctx = await resolveContext({}, "required");
-              return mutateCollection(ctx.env, {
-                storeRoot: ctx.storeRoot,
-                action: "set-members",
-                collectionName: exactCollectionName,
-                resourceIds,
-                dryRun: opts.dryRun,
-              });
-            });
-          },
-        ),
-    ),
-  );
-
-  command.addCommand(
-    new Command("defaults").description("manage default desired collections").addCommand(
-      new Command("set")
-        .description("replace default desired collections")
-        .option("--collection <names>", "collection names, comma separated")
-        .option("--dry-run", "仅返回 revisioned plan，不写入")
-        .action(async (opts: CollectionMutationOpts, leaf: Command) => {
-          await runMutation(leaf, async (invocation) => {
+      execute: (input, { invocation }) =>
+        executeMutation(async () => {
+          if (action === "set-defaults") {
             const collectionNames = requiredList(
-              opts.collection,
+              input.collection,
               "collectionNames",
               invocation,
               false,
@@ -316,46 +242,115 @@ export function addCollectionMutationCommands(command: Command): Command {
             const ctx = await resolveContext({}, "required");
             return mutateCollection(ctx.env, {
               storeRoot: ctx.storeRoot,
-              action: "set-defaults",
+              action,
               collectionNames,
-              dryRun: opts.dryRun,
+              dryRun: input.dryRun,
             });
+          }
+          const collectionName = requiredString(input.collectionName, "collectionName", invocation);
+          if (action === "create" || action === "set-members") {
+            const resourceIds = requiredList(input.resource, "resourceIds", invocation, true);
+            const ctx = await resolveContext({}, "required");
+            return mutateCollection(ctx.env, {
+              storeRoot: ctx.storeRoot,
+              action,
+              collectionName,
+              ...(action === "create" && input.description !== undefined
+                ? { description: input.description }
+                : {}),
+              resourceIds,
+              dryRun: input.dryRun,
+            });
+          }
+          if (action === "update") {
+            const description = requiredString(input.description, "description", invocation, true);
+            const ctx = await resolveContext({}, "required");
+            return mutateCollection(ctx.env, {
+              storeRoot: ctx.storeRoot,
+              action,
+              collectionName,
+              description,
+              dryRun: input.dryRun,
+            });
+          }
+          const ctx = await resolveContext({}, "required");
+          return mutateCollection(ctx.env, {
+            storeRoot: ctx.storeRoot,
+            action,
+            collectionName,
+            dryRun: input.dryRun,
           });
         }),
-    ),
+      presentText: presentMutation,
+      mapError: () => undefined,
+    },
   );
-  return command;
 }
 
-async function runMutation(
-  command: Command,
-  run: (invocation: CliInvocation) => Promise<PlannedControlPlaneMutationDto>,
-): Promise<void> {
-  await executeCliCommand(
-    command,
-    async ({ invocation }): Promise<CliCommandOutcome<PlannedControlPlaneMutationDto>> => {
-      try {
-        return commandSuccess(await run(invocation));
-      } catch (error) {
-        if (error instanceof ControlPlaneDependencyError) {
-          return commandFailure({
-            code: "DOMAIN_VALIDATION_FAILED",
-            message: error.message,
-            details: error.details,
-          });
-        }
-        if (error instanceof ControlPlaneValidationError) {
-          return commandFailure({
-            code: "DOMAIN_VALIDATION_FAILED",
-            message: error.message,
-            details: error.details,
-          });
-        }
-        throw error;
-      }
-    },
-    (outcome) => presentMutation(outcome),
-  );
+export function addCollectionMutationGroups(command: Command): Command {
+  return command
+    .addCommand(new Command("members").description("manage exact collection membership"))
+    .addCommand(new Command("defaults").description("manage default desired collections"));
+}
+
+function createCollectionMutationLeaf(action: CollectionAction): Command {
+  if (action === "set-defaults") {
+    return new Command("set")
+      .description("replace default desired collections")
+      .option("--collection <names>", "collection names, comma separated")
+      .option("--dry-run", "仅返回 revisioned plan，不写入");
+  }
+  const command = new Command(action === "set-members" ? "set" : action);
+  if (action === "create") {
+    return command
+      .description("create a collection from exact immutable resource IDs")
+      .argument("[collectionName]", "collection name")
+      .option("--description <text>", "collection description")
+      .option("--resource <ids>", "immutable resource IDs, comma separated")
+      .option("--dry-run", "仅返回 revisioned plan，不写入");
+  }
+  if (action === "update") {
+    return command
+      .description("update collection metadata")
+      .argument("[collectionName]", "collection name")
+      .option("--description <text>", "replacement collection description")
+      .option("--dry-run", "仅返回 revisioned plan，不写入");
+  }
+  if (action === "set-members") {
+    return command
+      .description("replace collection members with immutable resource IDs")
+      .argument("[collectionName]", "collection name")
+      .option("--resource <ids>", "immutable resource IDs, comma separated")
+      .option("--dry-run", "仅返回 revisioned plan，不写入");
+  }
+  return command
+    .description("delete an unselected collection")
+    .argument("[collectionName]", "collection name")
+    .option("--dry-run", "仅返回 revisioned plan，不写入");
+}
+
+async function executeMutation(
+  run: () => Promise<PlannedControlPlaneMutationDto>,
+): Promise<CliCommandOutcome<PlannedControlPlaneMutationDto>> {
+  try {
+    return commandSuccess(await run());
+  } catch (error) {
+    if (error instanceof ControlPlaneDependencyError) {
+      return commandFailure({
+        code: "DOMAIN_VALIDATION_FAILED",
+        message: error.message,
+        details: error.details,
+      });
+    }
+    if (error instanceof ControlPlaneValidationError) {
+      return commandFailure({
+        code: "DOMAIN_VALIDATION_FAILED",
+        message: error.message,
+        details: error.details,
+      });
+    }
+    throw error;
+  }
 }
 
 function presentMutation(outcome: CliCommandOutcome<PlannedControlPlaneMutationDto>): void {

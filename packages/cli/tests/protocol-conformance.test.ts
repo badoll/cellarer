@@ -50,8 +50,9 @@ vi.mock("@cellarer/web", () => ({
   WEB_CLIENT_ASSET_ROOT: "/tmp/cellarer-test-web-assets",
 }));
 
-const [{ buildProgram }, { commandRegistry }] = await Promise.all([
+const [{ buildProgram }, { createCliCommandCatalog }, { commandRegistry }] = await Promise.all([
   import("../src/program.js"),
+  import("../src/commands/command-catalog.js"),
   import("../src/protocol/command-registry.js"),
 ]);
 
@@ -380,6 +381,62 @@ describe("CLI command registry protocol conformance", () => {
 
   it("defines one invocation case for every registered command", () => {
     expect(Object.keys(commandCases)).toEqual(commandRegistry.map(({ command }) => command));
+  });
+
+  it("derives every protocol projection from one closed aggregate catalog", () => {
+    const catalog = createCliCommandCatalog();
+    const definitions = catalog.definitions;
+    const schemaIds = definitions.flatMap((definition) => [
+      definition.inputSchemaId,
+      definition.outputSchemaId,
+      ...(definition.eventSchemaId ? [definition.eventSchemaId] : []),
+    ]);
+    const publishedSchemas = catalog.getSchemaBundle()?.schemas ?? [];
+    const publishedSchemaById = new Map(
+      publishedSchemas.map(({ schemaId, schema }) => [schemaId, schema]),
+    );
+    const publishedSchemaIds = publishedSchemas.map(({ schemaId }) => schemaId);
+
+    expect(catalog.definitions).toBe(catalog.contracts);
+    expect(definitions.map(({ command }) => command)).toEqual(
+      commandRegistry.map(({ command }) => command),
+    );
+    expect(catalog.contracts.map(({ catalogOrder }) => catalogOrder)).toEqual(
+      catalog.contracts.map((_, index) => index),
+    );
+    expect(new Set(schemaIds).size).toBe(schemaIds.length);
+    expect(publishedSchemaIds).toEqual(
+      expect.arrayContaining([
+        ...schemaIds,
+        "urn:cellarer:cli:protocol:1.0:warning",
+        "urn:cellarer:cli:protocol:1.0:error",
+      ]),
+    );
+    expect(publishedSchemaIds).toHaveLength(schemaIds.length + 2);
+
+    for (const definition of definitions) {
+      const inputFields = Object.keys(
+        definition.inputSchema.properties?.input?.properties ?? {},
+      ).sort();
+      const boundFields = [...new Set(definition.inputBindings.map(({ field }) => field))].sort();
+      const bindingSources = definition.inputBindings.map(({ option, positional }) =>
+        option === undefined ? `positional:${positional}` : `option:${option}`,
+      );
+
+      expect(boundFields, definition.command).toEqual(inputFields);
+      expect(new Set(bindingSources).size, definition.command).toBe(bindingSources.length);
+      expect(publishedSchemaById.get(definition.inputSchemaId), definition.command).toBe(
+        definition.inputSchema,
+      );
+      expect(publishedSchemaById.get(definition.outputSchemaId), definition.command).toBe(
+        definition.outputSchema,
+      );
+      if (definition.eventSchemaId) {
+        expect(publishedSchemaById.get(definition.eventSchemaId), definition.command).toBe(
+          definition.eventSchema,
+        );
+      }
+    }
   });
 
   it.each([
@@ -897,6 +954,30 @@ describe("CLI command registry protocol conformance", () => {
       status: "error",
       error: { code: "POLICY_VIOLATION" },
     });
+    expect(process.exitCode).toBe(3);
+  });
+
+  it("rejects secret mutation authority before reading protected input", async () => {
+    await initializeStore();
+    authorityCredentials.clear();
+
+    const captured = await invoke([
+      "--output",
+      "json",
+      "secret",
+      "add",
+      "authority-first-token",
+      "--fd",
+      "2",
+      "--passphrase-fd",
+      "2",
+    ]);
+
+    expect(JSON.parse(captured.stdout)).toMatchObject({
+      status: "error",
+      error: { code: "POLICY_VIOLATION" },
+    });
+    expect(`${captured.stdout}${captured.stderr}`).not.toContain("inherited descriptor");
     expect(process.exitCode).toBe(3);
   });
 

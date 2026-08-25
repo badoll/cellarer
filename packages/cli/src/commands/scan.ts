@@ -12,11 +12,14 @@ import { Command } from "commander";
 import { resolveContext } from "../context.js";
 import { createSafeConsole } from "../output.js";
 import {
+  type CommandContractMetadata,
+  defineCommandContract,
+} from "../protocol/command-contract.js";
+import {
   cliErrorFromOperation,
   commandFailure,
   commandSuccess,
   commandWarnings,
-  executeCliCommand,
   publicOperationResult,
 } from "../protocol/execution.js";
 import {
@@ -50,6 +53,10 @@ interface ScanCommandData {
   readonly operation?: PresentedOperationResult;
 }
 
+interface ScanCommandInput {
+  readonly opts: ScanOpts;
+}
+
 function resolveCaps(opts: ScanOpts): ("rules" | "mcp" | "skills")[] | undefined {
   const caps: ("rules" | "mcp" | "skills")[] = [];
   if (opts.rules) caps.push("rules");
@@ -60,111 +67,120 @@ function resolveCaps(opts: ScanOpts): ("rules" | "mcp" | "skills")[] | undefined
 
 // 扫描回写(import):agent/目录现有配置 → 规范化 + 脱敏 → 写库房。
 // scan 默认即非交互(无确认提示):用 --dry-run 预览、完整 kind/name/source selector 缩小范围。
-export function scanCommand(resolve = resolveContext): Command {
-  return new Command("scan")
-    .description("扫描 agent 现有 rules/mcp/skills 回写库房(密钥自动脱敏为占位符)")
-    .option("-a, --agent <id>", "扫描指定 agent")
-    .option("--dir <path>", "扫描指定工程目录(project scope)")
-    .option("--rules", "仅扫 rules")
-    .option("--mcp", "仅扫 mcp")
-    .option("--skills", "仅扫 skills")
-    .option("--into-collection <collection>", "给导入资源归入 collection")
-    .option("--conflict <strategy>", "冲突策略:keep-theirs(默认)| keep-mine | copy")
-    .option("--select <json>", "精确 selector JSON 数组：kind/name/source")
-    .option("--dry-run", "仅预览发现项,不写库房")
-    .option("--secret-mode <mode>", "密钥来源:env(默认)| vault | keychain")
-    .option("--vault-passphrase-fd <number>", "从继承的文件描述符读取 vault 口令")
-    .option("--keychain-service <name>", "keychain service 名称(默认 cellarer)")
-    .option("--json", "JSON 输出(兼容别名;等价 --output json)")
-    .action(async (opts: ScanOpts, command: Command) => {
-      await executeCliCommand(
-        command,
-        async (execution) => {
-          const invocation = execution.invocation;
-          const selectItems = parseExactSelections(opts.select, invocation);
-          const capabilities = resolveCaps(opts);
-          assertNonInteractiveMutationInput(
-            "scan",
-            {
-              agent: opts.agent,
-              capabilities,
-              dryRun: opts.dryRun,
-            },
-            invocation,
-          );
-          const ctx = await resolve(opts, opts.dryRun ? "none" : "required");
-          if (ctx.agents.length !== 1) {
-            throw new CliInputError(
-              "INPUT_REQUIRED",
-              "scan requires exactly one agent",
-              { fields: ["agent"] },
-              invocation,
-            );
-          }
-          if (opts.conflict && !CONFLICTS.includes(opts.conflict as ConflictStrategy)) {
-            throw new CliInputError(
-              "INVALID_INPUT",
-              "Invalid conflict strategy",
-              { fields: ["conflict"] },
-              invocation,
-            );
-          }
-          const requestedSecretMode = parseSecretMode(opts.secretMode, invocation);
-          const secretMode = opts.dryRun ? "env" : requestedSecretMode;
-          const vaultPassphrase =
-            secretMode === "vault"
-              ? await readProtectedPassphraseInput(opts.vaultPassphraseFd, undefined, {
-                  nonInteractive: invocation.nonInteractive,
-                  invocation,
-                })
-              : undefined;
-          const scanArgs = {
-            storeRoot: ctx.storeRoot,
-            agent: ctx.agents[0] as string,
-            scope: ctx.scope,
-            dir: ctx.dir,
-            intoCollection: opts.intoCollection,
-            conflict: opts.conflict as ConflictStrategy | undefined,
-            capabilities,
-            selectItems,
-            secretMode,
-            vaultPassphrase,
-            keychainService: opts.keychainService,
-          };
-
-          execution.event("SCAN_STARTED", { phase: "scan", current: 0, total: 1 });
-          let data: ScanCommandData;
-          let observableContext: unknown;
-          if (opts.dryRun) {
-            const plan = await scanPlan(ctx.env, scanArgs);
-            data = { plan, imported: [] };
-            observableContext = plan;
-          } else {
-            const result = await applyScan(ctx.env, scanArgs);
-            data = {
-              plan: result.plan,
-              imported: result.imported,
-              operation: publicOperationResult(result.operation),
-            };
-            observableContext = result;
-          }
-          execution.event("SCAN_COMPLETED", { phase: "scan", current: 1, total: 1 });
-          const warnings = commandWarnings(data.plan.warnings, "SCAN_WARNING");
-          const error =
-            !opts.dryRun && data.operation
-              ? cliErrorFromPresentedOperation(data.operation)
-              : undefined;
-          return error
-            ? commandFailure(error, data, warnings, observableContext)
-            : commandSuccess(data, warnings, observableContext);
+export function createScanCommandContract(
+  definition: CommandContractMetadata<"scan">,
+  resolve: typeof resolveContext = resolveContext,
+) {
+  const dryRunOutcomes = new WeakSet<object>();
+  return defineCommandContract<
+    "scan",
+    ScanCommandInput,
+    ScanCommandData,
+    { readonly phase: string; readonly current: number; readonly total: number }
+  >(definition, {
+    createCommand: () =>
+      new Command("scan")
+        .description("扫描 agent 现有 rules/mcp/skills 回写库房(密钥自动脱敏为占位符)")
+        .option("-a, --agent <id>", "扫描指定 agent")
+        .option("--dir <path>", "扫描指定工程目录(project scope)")
+        .option("--rules", "仅扫 rules")
+        .option("--mcp", "仅扫 mcp")
+        .option("--skills", "仅扫 skills")
+        .option("--into-collection <collection>", "给导入资源归入 collection")
+        .option("--conflict <strategy>", "冲突策略:keep-theirs(默认)| keep-mine | copy")
+        .option("--select <json>", "精确 selector JSON 数组：kind/name/source")
+        .option("--dry-run", "仅预览发现项,不写库房")
+        .option("--secret-mode <mode>", "密钥来源:env(默认)| vault | keychain")
+        .option("--vault-passphrase-fd <number>", "从继承的文件描述符读取 vault 口令")
+        .option("--keychain-service <name>", "keychain service 名称(默认 cellarer)")
+        .option("--json", "JSON 输出(兼容别名;等价 --output json)"),
+    normalize: ({ command }) => ({ opts: command.opts<ScanOpts>() }),
+    execute: async ({ opts }, execution) => {
+      const invocation = execution.invocation;
+      const selectItems = parseExactSelections(opts.select, invocation);
+      const capabilities = resolveCaps(opts);
+      assertNonInteractiveMutationInput(
+        "scan",
+        {
+          agent: opts.agent,
+          capabilities,
+          dryRun: opts.dryRun,
         },
-        (outcome) => {
-          const data = outcome.data;
-          if (!data) return;
-          printScanText(data, opts);
-        },
+        invocation,
       );
-    });
+      const ctx = await resolve(opts, opts.dryRun ? "none" : "required");
+      if (ctx.agents.length !== 1) {
+        throw new CliInputError(
+          "INPUT_REQUIRED",
+          "scan requires exactly one agent",
+          { fields: ["agent"] },
+          invocation,
+        );
+      }
+      if (opts.conflict && !CONFLICTS.includes(opts.conflict as ConflictStrategy)) {
+        throw new CliInputError(
+          "INVALID_INPUT",
+          "Invalid conflict strategy",
+          { fields: ["conflict"] },
+          invocation,
+        );
+      }
+      const requestedSecretMode = parseSecretMode(opts.secretMode, invocation);
+      const secretMode = opts.dryRun ? "env" : requestedSecretMode;
+      const vaultPassphrase =
+        secretMode === "vault"
+          ? await readProtectedPassphraseInput(opts.vaultPassphraseFd, undefined, {
+              nonInteractive: invocation.nonInteractive,
+              invocation,
+            })
+          : undefined;
+      const scanArgs = {
+        storeRoot: ctx.storeRoot,
+        agent: ctx.agents[0] as string,
+        scope: ctx.scope,
+        dir: ctx.dir,
+        intoCollection: opts.intoCollection,
+        conflict: opts.conflict as ConflictStrategy | undefined,
+        capabilities,
+        selectItems,
+        secretMode,
+        vaultPassphrase,
+        keychainService: opts.keychainService,
+      };
+
+      execution.event("SCAN_STARTED", { phase: "scan", current: 0, total: 1 });
+      let data: ScanCommandData;
+      let observableContext: unknown;
+      if (opts.dryRun) {
+        const plan = await scanPlan(ctx.env, scanArgs);
+        data = { plan, imported: [] };
+        observableContext = plan;
+      } else {
+        const result = await applyScan(ctx.env, scanArgs);
+        data = {
+          plan: result.plan,
+          imported: result.imported,
+          operation: publicOperationResult(result.operation),
+        };
+        observableContext = result;
+      }
+      execution.event("SCAN_COMPLETED", { phase: "scan", current: 1, total: 1 });
+      const warnings = commandWarnings(data.plan.warnings, "SCAN_WARNING");
+      const error =
+        !opts.dryRun && data.operation ? cliErrorFromPresentedOperation(data.operation) : undefined;
+      const outcome = error
+        ? commandFailure(error, data, warnings, observableContext)
+        : commandSuccess(data, warnings, observableContext);
+      if (opts.dryRun) dryRunOutcomes.add(outcome);
+      return outcome;
+    },
+    presentText: (outcome) => {
+      const data = outcome.data;
+      if (!data) return;
+      printScanText(data, dryRunOutcomes.has(outcome));
+    },
+    mapError: () => undefined,
+  });
 }
 
 function parseExactSelections(
@@ -232,10 +248,10 @@ function cliErrorFromPresentedOperation(operation: PresentedOperationResult) {
   return cliErrorFromOperation(operation);
 }
 
-function printScanText(data: ScanCommandData, opts: ScanOpts): void {
+function printScanText(data: ScanCommandData, dryRun: boolean): void {
   const output = createSafeConsole(data);
   for (const warning of data.plan.warnings) output.warn(`⚠ ${warning}`);
-  if (opts.dryRun) {
+  if (dryRun) {
     if (data.plan.items.length === 0) {
       output.log("未发现可回写的资源。");
       return;

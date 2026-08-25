@@ -4,11 +4,16 @@ import { parseAgents, resolveContext } from "../context.js";
 import { printMutation } from "../mutation-output.js";
 import { safeConsole as console } from "../output.js";
 import {
+  type CommandContractExecution,
+  type CommandContractMetadata,
+  defineCommandContract,
+} from "../protocol/command-contract.js";
+import {
+  type CliCommandOutcome,
   cliErrorFromMutationConflict,
   commandFailure,
   commandSuccess,
   commandWarnings,
-  executeCliCommand,
 } from "../protocol/execution.js";
 import { assertNonInteractiveMutationInput, CliInputError } from "../protocol/input.js";
 import { readProtectedPassphraseInput } from "./secret.js";
@@ -25,7 +30,24 @@ interface RevertOpts {
 }
 
 // 依据台账回滚下发。
-export function revertCommand(): Command {
+export function createRevertCommandContract(definition: CommandContractMetadata<"revert">) {
+  return defineCommandContract<
+    "revert",
+    RevertOpts,
+    Awaited<ReturnType<typeof revert>>,
+    { readonly phase: string; readonly current: number; readonly total: number }
+  >(definition, {
+    createCommand: createRevertCommand,
+    normalize: ({ command }) => command.opts<RevertOpts>(),
+    execute: executeRevert,
+    presentText: (outcome, opts) => {
+      if (outcome.data) printRevertText(outcome.data, opts);
+    },
+    mapError: () => undefined,
+  });
+}
+
+function createRevertCommand(): Command {
   return new Command("revert")
     .description("依据台账回滚下发")
     .option("-a, --agent <ids>", "指定 agent")
@@ -35,73 +57,71 @@ export function revertCommand(): Command {
     .option("--acknowledge <tokens>", "确认 dry-run 返回的精确漂移 token(逗号分隔)")
     .option("--snapshot-passphrase-fd <number>", "从继承的文件描述符读取 snapshot 口令")
     .option("--dry-run", "仅预览,不落地")
-    .option("--json", "输出完整 Core revert plan/result")
-    .action(async (opts: RevertOpts, command: Command) => {
-      await executeCliCommand(
-        command,
-        async (execution) => {
-          const invocation = execution.invocation;
-          assertNonInteractiveMutationInput(
-            "revert",
-            {
-              agents: parseAgents(opts.agent),
-              dir: opts.dir,
-              all: opts.all,
-              dryRun: opts.dryRun,
-            },
-            invocation,
-          );
-          const ctx = await resolveContext(opts, "required");
-          const hasSelector = ctx.agents.length > 0 || ctx.dir !== undefined;
-          if (!hasSelector && !opts.all && !opts.dryRun) {
-            throw new CliInputError(
-              "INPUT_REQUIRED",
-              "revert requires agents, dir, or explicit all selection",
-              { fields: ["agents|dir|all"] },
-              invocation,
-            );
-          }
-          const snapshotPassphrase =
-            !opts.dryRun && (opts.acknowledge || opts.snapshotPassphraseFd)
-              ? await readProtectedPassphraseInput(opts.snapshotPassphraseFd, undefined, {
-                  nonInteractive: invocation.nonInteractive,
-                  invocation,
-                })
-              : undefined;
-          execution.event("REVERT_STARTED", { phase: "revert", current: 0, total: 1 });
-          const result = await revert(ctx.env, {
-            storeRoot: ctx.storeRoot,
-            scope: ctx.scopeFilter,
-            dir: ctx.dir,
-            agents: ctx.agents.length > 0 ? ctx.agents : undefined,
-            acknowledgements: parseTokens(opts.acknowledge),
-            snapshotPassphrase,
-            keepBackups: opts.keepBackups,
-            dryRun: opts.dryRun,
-          });
-          execution.event("REVERT_COMPLETED", { phase: "revert", current: 1, total: 1 });
-          const warnings = commandWarnings(result.warnings, "REVERT_WARNING");
-          const operationConflict =
-            result.mutation.result && !result.mutation.result.ok
-              ? cliErrorFromMutationConflict(result.mutation.result.conflict)
-              : undefined;
-          const error =
-            operationConflict ??
-            (result.failures.length > 0
-              ? { code: "PARTIAL_FAILURE" as const, message: "Revert reported action failures" }
-              : result.plan.conflicts.length > 0 ||
-                  (!opts.dryRun && result.plan.targets.some((target) => target.blocked))
-                ? { code: "TARGET_CONFLICT" as const, message: "Revert plan is blocked" }
-                : undefined);
-          return error ? commandFailure(error, result, warnings) : commandSuccess(result, warnings);
-        },
-        (outcome) => {
-          const result = outcome.data;
-          if (!result) return;
-          printRevertText(result, opts);
-        },
-      );
-    });
+    .option("--json", "输出完整 Core revert plan/result");
+}
+
+async function executeRevert(
+  opts: RevertOpts,
+  execution: CommandContractExecution<{
+    readonly phase: string;
+    readonly current: number;
+    readonly total: number;
+  }>,
+): Promise<CliCommandOutcome<Awaited<ReturnType<typeof revert>>>> {
+  const invocation = execution.invocation;
+  assertNonInteractiveMutationInput(
+    "revert",
+    {
+      agents: parseAgents(opts.agent),
+      dir: opts.dir,
+      all: opts.all,
+      dryRun: opts.dryRun,
+    },
+    invocation,
+  );
+  const ctx = await resolveContext(opts, "required");
+  const hasSelector = ctx.agents.length > 0 || ctx.dir !== undefined;
+  if (!hasSelector && !opts.all && !opts.dryRun) {
+    throw new CliInputError(
+      "INPUT_REQUIRED",
+      "revert requires agents, dir, or explicit all selection",
+      { fields: ["agents|dir|all"] },
+      invocation,
+    );
+  }
+  const snapshotPassphrase =
+    !opts.dryRun && (opts.acknowledge || opts.snapshotPassphraseFd)
+      ? await readProtectedPassphraseInput(opts.snapshotPassphraseFd, undefined, {
+          nonInteractive: invocation.nonInteractive,
+          invocation,
+        })
+      : undefined;
+  execution.event("REVERT_STARTED", { phase: "revert", current: 0, total: 1 });
+  const result = await revert(ctx.env, {
+    storeRoot: ctx.storeRoot,
+    scope: ctx.scopeFilter,
+    dir: ctx.dir,
+    agents: ctx.agents.length > 0 ? ctx.agents : undefined,
+    acknowledgements: parseTokens(opts.acknowledge),
+    snapshotPassphrase,
+    keepBackups: opts.keepBackups,
+    dryRun: opts.dryRun,
+  });
+  execution.event("REVERT_COMPLETED", { phase: "revert", current: 1, total: 1 });
+  const warnings = commandWarnings(result.warnings, "REVERT_WARNING");
+  const operationConflict =
+    result.mutation.result && !result.mutation.result.ok
+      ? cliErrorFromMutationConflict(result.mutation.result.conflict)
+      : undefined;
+  const error =
+    operationConflict ??
+    (result.failures.length > 0
+      ? { code: "PARTIAL_FAILURE" as const, message: "Revert reported action failures" }
+      : result.plan.conflicts.length > 0 ||
+          (!opts.dryRun && result.plan.targets.some((target) => target.blocked))
+        ? { code: "TARGET_CONFLICT" as const, message: "Revert plan is blocked" }
+        : undefined);
+  return error ? commandFailure(error, result, warnings) : commandSuccess(result, warnings);
 }
 
 function printRevertText(result: Awaited<ReturnType<typeof revert>>, opts: RevertOpts): void {

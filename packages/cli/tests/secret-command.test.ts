@@ -1,13 +1,59 @@
+import type { Command } from "commander";
 import { describe, expect, it, vi } from "vitest";
+import { createCliCommandCatalog } from "../src/commands/command-catalog.js";
 import {
   readProtectedDescriptorInput,
   readProtectedPassphraseInput,
   readProtectedSecretInput,
-  secretCommand,
 } from "../src/commands/secret.js";
+import { buildProgram } from "../src/program.js";
+import { commandRegistry } from "../src/protocol/command-registry.js";
 import { CliInputError } from "../src/protocol/input.js";
 
+const SECURITY_COMMANDS = [
+  "authority.rotate",
+  "secret.add",
+  "secret.ls",
+  "secret.rm",
+  "operation.recover",
+] as const;
+
+function secretCommand(): Command {
+  return findLeaf(buildProgram(), "secret");
+}
+
 describe("secret command protected input", () => {
+  it("drives secret, authority, and recovery leaves from parity-preserving contracts", () => {
+    const catalog = createCliCommandCatalog();
+    const contracts = catalog.contracts.filter(({ command }) =>
+      SECURITY_COMMANDS.includes(command as (typeof SECURITY_COMMANDS)[number]),
+    );
+
+    expect(contracts.map(({ command }) => command)).toEqual(SECURITY_COMMANDS);
+    const program = buildProgram();
+    for (const contract of contracts) {
+      const published = commandRegistry.find(({ command }) => command === contract.command);
+      expect(published).toBeDefined();
+      expect(protocolProjection(contract)).toEqual(
+        protocolProjection(published as NonNullable<typeof published>),
+      );
+      expect(commanderProjection(findLeaf(program, contract.command))).toEqual(
+        commanderProjection(contract.createCommand()),
+      );
+    }
+
+    const add = contracts.find(({ command }) => command === "secret.add");
+    const addInput = add?.inputSchema.properties?.input;
+    const addOutput = add?.outputSchema.properties?.data;
+    expect(addInput?.properties).not.toHaveProperty("value");
+    expect(addInput?.properties).not.toHaveProperty("passphrase");
+    expect(addOutput?.properties).not.toHaveProperty("value");
+    expect(addOutput?.properties).not.toHaveProperty("passphrase");
+    expect(
+      findLeaf(program, "secret.add").registeredArguments.map((argument) => argument.name()),
+    ).toEqual(["name"]);
+  });
+
   it("does not register a positional value or value-bearing option", () => {
     const add = secretCommand().commands.find((command) => command.name() === "add");
     expect(add?.registeredArguments.map((argument) => argument.name())).toEqual(["name"]);
@@ -209,3 +255,48 @@ describe("secret command protected input", () => {
     expect(readHidden).not.toHaveBeenCalled();
   });
 });
+
+function protocolProjection(definition: (typeof commandRegistry)[number]) {
+  return {
+    command: definition.command,
+    mutability: definition.mutability,
+    streaming: definition.streaming,
+    requiredFeatures: definition.requiredFeatures,
+    inputSchemaId: definition.inputSchemaId,
+    outputSchemaId: definition.outputSchemaId,
+    eventSchemaId: definition.eventSchemaId,
+    inputSchema: definition.inputSchema,
+    outputSchema: definition.outputSchema,
+    eventSchema: definition.eventSchema,
+    inputBindings: definition.inputBindings,
+  };
+}
+
+function commanderProjection(command: Command) {
+  return {
+    name: command.name(),
+    description: command.description(),
+    arguments: command.registeredArguments.map((argument) => ({
+      name: argument.name(),
+      description: argument.description,
+      required: argument.required,
+      variadic: argument.variadic,
+    })),
+    options: command.options.map((option) => ({
+      flags: option.flags,
+      description: option.description,
+      mandatory: option.mandatory,
+      variadic: option.variadic,
+    })),
+  };
+}
+
+function findLeaf(program: Command, path: string): Command {
+  let current = program;
+  for (const segment of path.split(".")) {
+    const child = current.commands.find((candidate) => candidate.name() === segment);
+    if (!child) throw new Error(`missing Commander path ${path}`);
+    current = child;
+  }
+  return current;
+}

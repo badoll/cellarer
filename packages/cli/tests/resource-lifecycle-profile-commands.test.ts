@@ -2,6 +2,7 @@ import { closeSync, promises as fs, mkdtempSync, openSync, realpathSync } from "
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createCliCommandCatalog } from "../src/commands/command-catalog.js";
 import { HEADLESS_MUTATION_AUTHORITY_ENV } from "../src/mutation-authority.js";
 import { buildProgram } from "../src/program.js";
 import { commandRegistry } from "../src/protocol/command-registry.js";
@@ -69,6 +70,23 @@ describe("resource lifecycle and sync-profile commands", () => {
     await fs.rm(root, { recursive: true, force: true });
   });
 
+  it("drives every lifecycle and sync leaf from one parity-preserving domain catalog", () => {
+    const catalog = createCliCommandCatalog();
+    const contracts = catalog.contracts.filter(({ command }) =>
+      COMMANDS.includes(command as (typeof COMMANDS)[number]),
+    );
+
+    expect(contracts.map(({ command }) => command)).toEqual(COMMANDS);
+    for (const contract of contracts) {
+      const definition = commandRegistry.find(({ command }) => command === contract.command);
+      expect(definition).toBeDefined();
+      expect(protocolProjection(contract)).toEqual(protocolProjection(definition));
+      expect(commanderProjection(findLeaf(buildProgram(), contract.command))).toEqual(
+        commanderProjection(contract.createCommand()),
+      );
+    }
+  });
+
   it("registers every lifecycle/profile schema and executable leaf", () => {
     expect(commandRegistry.map(({ command }) => command)).toEqual(expect.arrayContaining(COMMANDS));
     const program = buildProgram();
@@ -103,7 +121,10 @@ describe("resource lifecycle and sync-profile commands", () => {
     const created = await invoke(["profile", "create", "daily", "--desired", desired], "json");
     expect(created, JSON.stringify(created)).toMatchObject({
       status: "success",
-      data: { profile: { profileId: "daily" }, operation: { ok: true } },
+      data: {
+        profile: { profileId: "daily" },
+        operation: { ok: true, receipt: { outcome: "committed" } },
+      },
     });
     expect(await invoke(["profile", "list"], "jsonl")).toMatchObject({
       status: "success",
@@ -116,10 +137,15 @@ describe("resource lifecycle and sync-profile commands", () => {
       "json",
     );
     const plan = (planned.data as { mutationPlan: unknown }).mutationPlan;
+    const target = (
+      planned.data as { plan: { actions: readonly { target: string; capability?: string }[] } }
+    ).plan.actions.find((action) => action.capability === "rules")?.target;
+    if (!target) throw new Error("expected planned rule target");
     expect(planned).toMatchObject({
       status: "success",
       data: { profile: { profileId: "daily" }, resolvedResources: [{ resourceId: "rules/style" }] },
     });
+    await expect(fs.lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
     expect(
       await invoke(
         [
@@ -133,7 +159,14 @@ describe("resource lifecycle and sync-profile commands", () => {
         ],
         "jsonl",
       ),
-    ).toMatchObject({ status: "success", data: { profileId: "daily", operation: { ok: true } } });
+    ).toMatchObject({
+      status: "success",
+      data: {
+        profileId: "daily",
+        operation: { ok: true, receipt: { outcome: "committed" } },
+      },
+    });
+    await expect(fs.readFile(target, "utf8")).resolves.toContain("# Style");
     expect(
       await invoke(["sync", "verify", "daily", "--workspace-root", join(root, "project")], "json"),
     ).toMatchObject({
@@ -329,4 +362,52 @@ async function readTreeText(path: string): Promise<string> {
     else if (entry.isFile()) values.push((await fs.readFile(child)).toString("utf8"));
   }
   return values.join("\n");
+}
+
+function protocolProjection(
+  definition: (typeof commandRegistry)[number] | undefined,
+): Record<string, unknown> | undefined {
+  if (!definition) return undefined;
+  return {
+    command: definition.command,
+    mutability: definition.mutability,
+    streaming: definition.streaming,
+    requiredFeatures: definition.requiredFeatures,
+    inputSchemaId: definition.inputSchemaId,
+    outputSchemaId: definition.outputSchemaId,
+    eventSchemaId: definition.eventSchemaId,
+    inputSchema: definition.inputSchema,
+    outputSchema: definition.outputSchema,
+    eventSchema: definition.eventSchema,
+    inputBindings: definition.inputBindings,
+  };
+}
+
+function commanderProjection(command: ReturnType<typeof buildProgram>) {
+  return {
+    name: command.name(),
+    description: command.description(),
+    arguments: command.registeredArguments.map((argument) => ({
+      name: argument.name(),
+      description: argument.description,
+      required: argument.required,
+      variadic: argument.variadic,
+    })),
+    options: command.options.map((option) => ({
+      flags: option.flags,
+      description: option.description,
+      mandatory: option.mandatory,
+      variadic: option.variadic,
+    })),
+  };
+}
+
+function findLeaf(program: ReturnType<typeof buildProgram>, path: string) {
+  let current = program;
+  for (const segment of path.split(".")) {
+    const child = current.commands.find((candidate) => candidate.name() === segment);
+    if (!child) throw new Error(`missing Commander path ${path}`);
+    current = child;
+  }
+  return current;
 }

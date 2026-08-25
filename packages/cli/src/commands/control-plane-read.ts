@@ -30,10 +30,13 @@ import { Command } from "commander";
 import { resolveContext } from "../context.js";
 import { createSafeConsole } from "../output.js";
 import {
+  type CommandContractMetadata,
+  defineCommandContract,
+} from "../protocol/command-contract.js";
+import {
   cliErrorFromOperation,
   commandFailure,
   commandSuccess,
-  executeCliCommand,
   publicOperationResult,
 } from "../protocol/execution.js";
 import { CliInputError, type CliInvocation } from "../protocol/input.js";
@@ -76,374 +79,204 @@ type OperationRecoveryCommandData =
   | { readonly diagnosis: ReturnType<typeof mutationRecoveryPresentation> }
   | { readonly operation: ReturnType<typeof publicOperationResult> };
 
-export function resourceCommand(): Command {
-  return new Command("resource")
-    .description("检查受管与已发现资源")
-    .addCommand(resourceListCommand())
-    .addCommand(resourceShowCommand());
+export function resourceCommandRoot(): Command {
+  return new Command("resource").description("检查受管与已发现资源");
 }
 
-export function agentCommand(): Command {
-  return new Command("agent")
-    .description("检查 agent adapter 状态与目标")
-    .addCommand(agentListCommand())
-    .addCommand(agentShowCommand());
+export function agentCommandRoot(): Command {
+  return new Command("agent").description("检查 agent adapter 状态与目标");
 }
 
-export function collectionCommand(): Command {
-  return new Command("collection")
-    .description("检查 collection 与精确成员")
-    .addCommand(collectionListCommand())
-    .addCommand(collectionShowCommand());
+export function collectionCommandRoot(): Command {
+  return new Command("collection").description("检查 collection 与精确成员");
 }
 
-export function configCommand(): Command {
-  return new Command("config")
-    .description("检查和验证 cellarer 配置")
-    .addCommand(configShowCommand())
-    .addCommand(configValidateCommand());
+export function configCommandRoot(): Command {
+  return new Command("config").description("检查和验证 cellarer 配置");
 }
 
-export function diffCommand(): Command {
-  return verificationCommand("diff", "比较期望配置与已应用状态", async (ctx, opts) =>
-    diffControlPlane(ctx.env, opts),
-  );
+export function discoveryCommandRoot(): Command {
+  return new Command("discovery").description("检查 agent 中的可发现资源");
 }
 
-export function verifyCommand(): Command {
-  return verificationCommand("verify", "组合验证期望状态、磁盘漂移和恢复状态", async (ctx, opts) =>
-    verifyControlPlane(ctx.env, opts),
-  );
-}
-
-export function summaryCommand(): Command {
-  return addVerificationOptions(new Command("summary").description("汇总本地控制平面状态"))
-    .option("--limit <count>", "最多返回的活动记录数")
-    .option("--no-include-plan-coverage", "跳过只读 plan coverage")
-    .action(async (opts: SummaryOpts, command: Command) => {
-      await executeCliCommand(
-        command,
-        async ({ invocation }) => {
-          const ctx = await resolveContext(
-            { agent: opts.agent, dir: opts.dir, collection: opts.collection },
-            "optional",
-          );
-          const scope = parseScope(opts.scope, invocation) ?? ctx.scope;
-          const method = parseEnum(opts.method, ["symlink", "copy"] as const, "method", invocation);
-          const mcpStrategy = parseEnum(
-            opts.mcpStrategy,
-            ["merge", "overwrite"] as const,
-            "mcpStrategy",
-            invocation,
-          );
-          const activityLimit = parseInteger(opts.limit, "activityLimit", invocation);
-          return commandSuccess(
-            await summaryControlPlane(ctx.env, {
-              storeRoot: ctx.storeRoot,
-              scope,
-              agents: ctx.agents,
-              ...(ctx.dir ? { dir: ctx.dir } : {}),
-              ...(parseList(opts.collection) ? { collections: parseList(opts.collection) } : {}),
-              ...(selectedCapabilities(opts) ? { capabilities: selectedCapabilities(opts) } : {}),
-              ...(method ? { method } : {}),
-              ...(mcpStrategy ? { mcpStrategy } : {}),
-              ...(activityLimit === undefined ? {} : { activityLimit }),
-              ...(opts.includePlanCoverage === undefined
-                ? {}
-                : { includePlanCoverage: opts.includePlanCoverage }),
-            }),
-          );
-        },
-        (outcome) => {
-          if (!outcome.ok) return;
-          const output = createSafeConsole(outcome.data);
-          output.log(`resources: ${outcome.data.artifactCounts.total}`);
-          output.log(
-            `agents: ${outcome.data.agentCounts.ready} ready, ${outcome.data.agentCounts.warning} warning`,
-          );
-          output.log(
-            `drift: ${Object.values(outcome.data.driftCounts).reduce((total, count) => total + count, 0)}`,
-          );
-        },
+export function createDiscoverySummaryCommandContract(
+  definition: CommandContractMetadata<"discovery.summary">,
+) {
+  return defineCommandContract<
+    "discovery.summary",
+    { readonly destination?: string; readonly dir?: string; readonly agent?: string },
+    Awaited<ReturnType<typeof discoverySummaryControlPlane>>
+  >(definition, {
+    createCommand: () =>
+      new Command("summary")
+        .description("汇总 agent 目标中的可发现资源")
+        .option("--destination <destination>", "目标:user | project")
+        .option("--dir <path>", "project 目录")
+        .option("-a, --agent <ids>", "agent id，逗号分隔"),
+    normalize: ({ command }) =>
+      command.opts<{ destination?: string; dir?: string; agent?: string }>(),
+    execute: async (opts, { invocation }) => {
+      const destination = parseDestination(
+        requireValue(opts.destination, "destination", invocation),
+        invocation,
       );
-    });
-}
-
-export function planCommand(): Command {
-  return addVerificationOptions(
-    new Command("plan").description("生成只读、authority-sealed apply plan"),
-  ).action(async (opts: PlanOpts, command: Command) => {
-    await executeCliCommand(
-      command,
-      async ({ invocation }) => {
-        const ctx = await resolveContext(
-          { agent: opts.agent, dir: opts.dir, collection: opts.collection },
-          "required",
-        );
-        if (ctx.agents.length === 0) {
-          throw new CliInputError(
-            "INPUT_REQUIRED",
-            "plan requires at least one agent",
-            { fields: ["agents"] },
-            invocation,
-          );
-        }
-        const scope = parseScope(opts.scope, invocation) ?? ctx.scope;
-        if (scope === "project" && !ctx.dir) {
-          throw new CliInputError(
-            "INPUT_REQUIRED",
-            "project scope requires dir",
-            { fields: ["dir"] },
-            invocation,
-          );
-        }
-        const method = parseEnum(opts.method, ["symlink", "copy"] as const, "method", invocation);
-        const mcpStrategy = parseEnum(
-          opts.mcpStrategy,
-          ["merge", "overwrite"] as const,
-          "mcpStrategy",
-          invocation,
-        );
-        const prepared = await planApplyMutation(ctx.env, {
-          storeRoot: ctx.storeRoot,
-          scope,
-          agents: ctx.agents,
-          ...(ctx.dir ? { dir: ctx.dir } : {}),
-          ...(parseList(opts.collection) ? { collections: parseList(opts.collection) } : {}),
-          ...(selectedCapabilities(opts) ? { capabilities: selectedCapabilities(opts) } : {}),
-          ...(method ? { method: method as LinkMethod } : {}),
-          ...(mcpStrategy ? { mcpStrategy } : {}),
-          dryRun: true,
-        });
-        return commandSuccess({ plan: prepared.mutationPlan, preview: prepared.plan });
-      },
-      (outcome) => {
-        if (!outcome.ok) return;
-        const output = createSafeConsole(outcome.data);
-        output.log(`plan ${outcome.data.plan.planId} @ revision ${outcome.data.plan.baseRevision}`);
-        for (const action of outcome.data.preview.actions) {
-          output.log(`  [${action.op}] ${action.agent} ${action.capability} → ${action.target}`);
-        }
-      },
-    );
+      const ctx = await resolveContext({ agent: opts.agent, dir: opts.dir }, "none");
+      const data = await discoverySummaryControlPlane(ctx.env, {
+        storeRoot: ctx.storeRoot,
+        destination,
+        ...(ctx.dir ? { dir: ctx.dir } : {}),
+        ...(ctx.agents.length > 0 ? { agents: ctx.agents } : {}),
+      });
+      return commandSuccess(data);
+    },
+    presentText: (outcome) => {
+      if (!outcome.ok) return;
+      const output = createSafeConsole(outcome.data);
+      output.log(`discovery (${outcome.data.destination}):`);
+      output.log(
+        `  rules=${outcome.data.totals.rules} mcp=${outcome.data.totals.mcp} skills=${outcome.data.totals.skills}`,
+      );
+      for (const warning of outcome.data.warnings) output.warn(`⚠ ${warning}`);
+    },
+    mapError: () => undefined,
   });
 }
 
-export function discoverySummaryCommand(): Command {
-  const summary = new Command("summary")
-    .description("汇总 agent 目标中的可发现资源")
-    .option("--destination <destination>", "目标:user | project")
-    .option("--dir <path>", "project 目录")
-    .option("-a, --agent <ids>", "agent id，逗号分隔")
-    .action(
-      async (opts: { destination?: string; dir?: string; agent?: string }, command: Command) => {
-        await executeCliCommand(
-          command,
-          async ({ invocation }) => {
-            const destination = parseDestination(
-              requireValue(opts.destination, "destination", invocation),
+export function operationCommandRoot(): Command {
+  return new Command("operation").description("检查事务操作证据");
+}
+
+export function createOperationRecoverCommandContract(
+  definition: CommandContractMetadata<"operation.recover">,
+) {
+  type RecoveryInput = {
+    readonly operationId?: string;
+    readonly opts: { readonly snapshotPassphraseFd?: string; readonly dryRun?: boolean };
+  };
+  return defineCommandContract<"operation.recover", RecoveryInput, OperationRecoveryCommandData>(
+    definition,
+    {
+      createCommand: () =>
+        new Command("recover")
+          .description("按持久化证据恢复中断操作")
+          .argument("[operationId]", "中断操作 ID")
+          .option("--snapshot-passphrase-fd <number>", "从继承的文件描述符读取 snapshot 口令")
+          .option("--dry-run", "仅诊断 recovery evidence，不执行恢复"),
+      normalize: ({ actionArguments, command }) => ({
+        operationId: actionArguments[0] as string | undefined,
+        opts: command.opts<RecoveryInput["opts"]>(),
+      }),
+      execute: async ({ operationId, opts }, { invocation }) => {
+        const id = requireValue(operationId, "operationId", invocation);
+        const ctx = await resolveContext({}, "required");
+        if (opts.dryRun) {
+          const requested = await diagnoseInterruptedOperation(ctx.env, ctx.storeRoot, id);
+          if (!requested.found) {
+            return commandFailure({
+              code: "DOMAIN_VALIDATION_FAILED",
+              message: requested.message,
+              details: { operationId: requested.operationId, reason: requested.status },
+            });
+          }
+          return commandSuccess({
+            diagnosis: mutationRecoveryPresentation(requested.diagnosis),
+          });
+        }
+        const snapshotPassphrase = opts.snapshotPassphraseFd
+          ? await readProtectedPassphraseInput(opts.snapshotPassphraseFd, undefined, {
+              nonInteractive: invocation.nonInteractive,
               invocation,
-            );
-            const ctx = await resolveContext({ agent: opts.agent, dir: opts.dir }, "none");
-            const data = await discoverySummaryControlPlane(ctx.env, {
-              storeRoot: ctx.storeRoot,
-              destination,
-              ...(ctx.dir ? { dir: ctx.dir } : {}),
-              ...(ctx.agents.length > 0 ? { agents: ctx.agents } : {}),
-            });
-            return commandSuccess(data);
-          },
-          (outcome) => {
-            if (!outcome.ok) return;
-            const output = createSafeConsole(outcome.data);
-            output.log(`discovery (${outcome.data.destination}):`);
-            output.log(
-              `  rules=${outcome.data.totals.rules} mcp=${outcome.data.totals.mcp} skills=${outcome.data.totals.skills}`,
-            );
-            for (const warning of outcome.data.warnings) output.warn(`⚠ ${warning}`);
-          },
+            })
+          : undefined;
+        const operation = await recoverInterruptedOperation(ctx.env, ctx.storeRoot, {
+          operationId: id,
+          ...(snapshotPassphrase ? { snapshotPassphrase } : {}),
+        });
+        const data = { operation: publicOperationResult(operation) };
+        const error = cliErrorFromOperation(operation);
+        return error ? commandFailure(error, data) : commandSuccess(data);
+      },
+      presentText: (outcome) => {
+        const output = createSafeConsole(outcome.ok ? outcome.data : outcome.error);
+        if (!outcome.ok) {
+          output.error(outcome.error.message);
+          return;
+        }
+        if ("diagnosis" in outcome.data) {
+          output.log(`recovery: ${outcome.data.diagnosis.status}`);
+          const recoveryError = outcome.data.diagnosis.error;
+          const detail =
+            recoveryError && "guidance" in recoveryError
+              ? recoveryError.guidance
+              : recoveryError?.message;
+          if (detail) output.log(`  ${detail}`);
+          return;
+        }
+        output.log(
+          outcome.data.operation.ok
+            ? `recovered ${outcome.data.operation.receipt.operationId}`
+            : "recovery requires manual handling",
         );
       },
-    );
-  return new Command("discovery").description("检查 agent 中的可发现资源").addCommand(summary);
-}
-
-export function operationCommand(): Command {
-  const list = new Command("list")
-    .description("列出已脱敏的操作回执")
-    .option("--limit <count>", "最多返回的回执数")
-    .action(async (opts: { limit?: string | number }, command: Command) => {
-      await executeCliCommand(
-        command,
-        async ({ invocation }) => {
-          const ctx = await resolveContext({}, "none");
-          const limit = parseInteger(opts.limit, "limit", invocation);
-          return commandSuccess(
-            await listControlPlaneOperations(ctx.env, {
-              storeRoot: ctx.storeRoot,
-              ...(limit === undefined ? {} : { limit }),
-            }),
-          );
-        },
-        (outcome) => {
-          if (!outcome.ok) return;
-          const output = createSafeConsole(outcome.data);
-          if (outcome.data.operations.length === 0) {
-            output.log("暂无操作回执。");
-            return;
-          }
-          for (const operation of outcome.data.operations) {
-            output.log(
-              `${operation.operationId} ${operation.operation} ${operation.outcome} r${operation.baseRevision}→r${operation.resultingRevision}`,
-            );
-          }
-        },
-      );
-    });
-  const show = new Command("show")
-    .description("按 ID 检查已脱敏的操作回执")
-    .argument("[operationId]", "操作 ID")
-    .action(async (operationId: string | undefined, _opts: unknown, command: Command) => {
-      await executeCliCommand(
-        command,
-        async ({ invocation }) => {
-          const id = requireValue(operationId, "operationId", invocation);
-          const ctx = await resolveContext({}, "none");
-          return commandSuccess(
-            await showControlPlaneOperation(ctx.env, { storeRoot: ctx.storeRoot, operationId: id }),
-          );
-        },
-        (outcome) => {
-          if (!outcome.ok) return;
-          const output = createSafeConsole(outcome.data);
-          if (!outcome.data.operation) {
-            output.log("未找到操作回执。");
-            return;
-          }
-          const operation = outcome.data.operation;
-          output.log(`${operation.operationId} ${operation.operation} ${operation.outcome}`);
-          output.log(`  plan: ${operation.planId}`);
-          output.log(`  recovery: ${operation.recoveryStatus}`);
-        },
-      );
-    });
-  const recover = new Command("recover")
-    .description("按持久化证据恢复中断操作")
-    .argument("[operationId]", "中断操作 ID")
-    .option("--snapshot-passphrase-fd <number>", "从继承的文件描述符读取 snapshot 口令")
-    .option("--dry-run", "仅诊断 recovery evidence，不执行恢复")
-    .action(
-      async (
-        operationId: string | undefined,
-        opts: { snapshotPassphraseFd?: string; dryRun?: boolean },
-        command: Command,
-      ) => {
-        await executeCliCommand<OperationRecoveryCommandData>(
-          command,
-          async ({ invocation }) => {
-            const id = requireValue(operationId, "operationId", invocation);
-            const ctx = await resolveContext({}, "required");
-            if (opts.dryRun) {
-              const requested = await diagnoseInterruptedOperation(ctx.env, ctx.storeRoot, id);
-              if (!requested.found) {
-                return commandFailure({
-                  code: "DOMAIN_VALIDATION_FAILED",
-                  message: requested.message,
-                  details: { operationId: requested.operationId, reason: requested.status },
-                });
-              }
-              return commandSuccess({
-                diagnosis: mutationRecoveryPresentation(requested.diagnosis),
-              });
-            }
-            const snapshotPassphrase = opts.snapshotPassphraseFd
-              ? await readProtectedPassphraseInput(opts.snapshotPassphraseFd, undefined, {
-                  nonInteractive: invocation.nonInteractive,
-                  invocation,
-                })
-              : undefined;
-            const operation = await recoverInterruptedOperation(ctx.env, ctx.storeRoot, {
-              operationId: id,
-              ...(snapshotPassphrase ? { snapshotPassphrase } : {}),
-            });
-            const data = { operation: publicOperationResult(operation) };
-            const error = cliErrorFromOperation(operation);
-            return error ? commandFailure(error, data) : commandSuccess(data);
-          },
-          (outcome) => {
-            const output = createSafeConsole(outcome.ok ? outcome.data : outcome.error);
-            if (!outcome.ok) {
-              output.error(outcome.error.message);
-              return;
-            }
-            if ("diagnosis" in outcome.data) {
-              output.log(`recovery: ${outcome.data.diagnosis.status}`);
-              const recoveryError = outcome.data.diagnosis.error;
-              const detail =
-                recoveryError && "guidance" in recoveryError
-                  ? recoveryError.guidance
-                  : recoveryError?.message;
-              if (detail) output.log(`  ${detail}`);
-              return;
-            }
-            output.log(
-              outcome.data.operation.ok
-                ? `recovered ${outcome.data.operation.receipt.operationId}`
-                : "recovery requires manual handling",
-            );
-          },
-        );
-      },
-    );
-  return new Command("operation")
-    .description("检查事务操作证据")
-    .addCommand(list)
-    .addCommand(show)
-    .addCommand(recover);
-}
-
-function resourceListCommand(): Command {
-  return addResourceQueryOptions(new Command("list").description("列出资源")).action(
-    async (opts: ResourceQueryOpts, command: Command) => {
-      await executeCliCommand(
-        command,
-        async ({ invocation }) => {
-          const { ctx, query } = await resourceQuery(opts, invocation);
-          return commandSuccess(await listControlPlaneResources(ctx.env, query));
-        },
-        (outcome) => {
-          if (!outcome.ok) return;
-          const output = createSafeConsole(outcome.data);
-          if (outcome.data.resources.length === 0) output.log("未找到匹配资源。");
-          for (const resource of outcome.data.resources) printResource(resource, output);
-          for (const warning of outcome.data.warnings) output.warn(`⚠ ${warning}`);
-        },
-      );
+      mapError: () => undefined,
     },
   );
 }
 
-function resourceShowCommand(): Command {
-  return addResourceQueryOptions(
-    new Command("show").description("按不可变 ID 检查资源").argument("[resourceId]", "资源 ID"),
-  ).action(async (resourceId: string | undefined, opts: ResourceQueryOpts, command: Command) => {
-    await executeCliCommand(
-      command,
-      async ({ invocation }) => {
-        const id = requireValue(resourceId, "resourceId", invocation);
-        const { ctx, query } = await resourceQuery(opts, invocation);
-        return commandSuccess(
-          await showControlPlaneResource(ctx.env, { ...query, resourceId: id }),
-        );
-      },
-      (outcome) => {
-        if (!outcome.ok) return;
-        const output = createSafeConsole(outcome.data);
-        if (outcome.data.resource) printResource(outcome.data.resource, output, true);
-        else output.log("未找到资源。");
-        for (const warning of outcome.data.warnings) output.warn(`⚠ ${warning}`);
-      },
-    );
+export function createResourceListCommandContract(
+  definition: CommandContractMetadata<"resource.list">,
+) {
+  return defineCommandContract<
+    "resource.list",
+    ResourceQueryOpts,
+    Awaited<ReturnType<typeof listControlPlaneResources>>
+  >(definition, {
+    createCommand: () => addResourceQueryOptions(new Command("list").description("列出资源")),
+    normalize: ({ command }) => command.opts<ResourceQueryOpts>(),
+    execute: async (opts, { invocation }) => {
+      const { ctx, query } = await resourceQuery(opts, invocation);
+      return commandSuccess(await listControlPlaneResources(ctx.env, query));
+    },
+    presentText: (outcome) => {
+      if (!outcome.ok) return;
+      const output = createSafeConsole(outcome.data);
+      if (outcome.data.resources.length === 0) output.log("未找到匹配资源。");
+      for (const resource of outcome.data.resources) printResource(resource, output);
+      for (const warning of outcome.data.warnings) output.warn(`⚠ ${warning}`);
+    },
+    mapError: () => undefined,
+  });
+}
+
+export function createResourceShowCommandContract(
+  definition: CommandContractMetadata<"resource.show">,
+) {
+  return defineCommandContract<
+    "resource.show",
+    { readonly resourceId?: string; readonly opts: ResourceQueryOpts },
+    Awaited<ReturnType<typeof showControlPlaneResource>>
+  >(definition, {
+    createCommand: () =>
+      addResourceQueryOptions(
+        new Command("show").description("按不可变 ID 检查资源").argument("[resourceId]", "资源 ID"),
+      ),
+    normalize: ({ actionArguments, command }) => ({
+      resourceId: actionArguments[0] as string | undefined,
+      opts: command.opts<ResourceQueryOpts>(),
+    }),
+    execute: async ({ resourceId, opts }, { invocation }) => {
+      const id = requireValue(resourceId, "resourceId", invocation);
+      const { ctx, query } = await resourceQuery(opts, invocation);
+      return commandSuccess(await showControlPlaneResource(ctx.env, { ...query, resourceId: id }));
+    },
+    presentText: (outcome) => {
+      if (!outcome.ok) return;
+      const output = createSafeConsole(outcome.data);
+      if (outcome.data.resource) printResource(outcome.data.resource, output, true);
+      else output.log("未找到资源。");
+      for (const warning of outcome.data.warnings) output.warn(`⚠ ${warning}`);
+    },
+    mapError: () => undefined,
   });
 }
 
@@ -490,62 +323,75 @@ async function resourceQuery(opts: ResourceQueryOpts, invocation: CliInvocation)
   };
 }
 
-function agentListCommand(): Command {
-  return addAgentQueryOptions(new Command("list").description("列出 agent adapter")).action(
-    async (opts: AgentQueryOpts, command: Command) => {
-      await executeCliCommand(
-        command,
-        async ({ invocation }) => {
-          const ctx = await resolveContext({ agent: opts.agent, dir: opts.dir }, "none");
-          const scope = parseScope(opts.scope, invocation) ?? ctx.scope;
-          return commandSuccess(
-            await listControlPlaneAgents(ctx.env, {
-              storeRoot: ctx.storeRoot,
-              scope,
-              ...(ctx.dir ? { dir: ctx.dir } : {}),
-              ...(ctx.agents.length > 0 ? { agents: ctx.agents } : {}),
-            }),
-          );
-        },
-        (outcome) => {
-          if (!outcome.ok) return;
-          const output = createSafeConsole(outcome.data);
-          if (outcome.data.agents.length === 0) output.log("未找到匹配 agent。");
-          for (const agent of outcome.data.agents) printAgent(agent, output);
-          for (const warning of outcome.data.warnings) output.warn(`⚠ ${warning}`);
-        },
+export function createAgentListCommandContract(definition: CommandContractMetadata<"agent.list">) {
+  return defineCommandContract<
+    "agent.list",
+    AgentQueryOpts,
+    Awaited<ReturnType<typeof listControlPlaneAgents>>
+  >(definition, {
+    createCommand: () =>
+      addAgentQueryOptions(new Command("list").description("列出 agent adapter")),
+    normalize: ({ command }) => command.opts<AgentQueryOpts>(),
+    execute: async (opts, { invocation }) => {
+      const ctx = await resolveContext({ agent: opts.agent, dir: opts.dir }, "none");
+      const scope = parseScope(opts.scope, invocation) ?? ctx.scope;
+      return commandSuccess(
+        await listControlPlaneAgents(ctx.env, {
+          storeRoot: ctx.storeRoot,
+          scope,
+          ...(ctx.dir ? { dir: ctx.dir } : {}),
+          ...(ctx.agents.length > 0 ? { agents: ctx.agents } : {}),
+        }),
       );
     },
-  );
+    presentText: (outcome) => {
+      if (!outcome.ok) return;
+      const output = createSafeConsole(outcome.data);
+      if (outcome.data.agents.length === 0) output.log("未找到匹配 agent。");
+      for (const agent of outcome.data.agents) printAgent(agent, output);
+      for (const warning of outcome.data.warnings) output.warn(`⚠ ${warning}`);
+    },
+    mapError: () => undefined,
+  });
 }
 
-function agentShowCommand(): Command {
-  return addAgentQueryOptions(
-    new Command("show").description("按 adapter ID 检查 agent").argument("[agentId]", "agent ID"),
-  ).action(async (agentId: string | undefined, opts: AgentQueryOpts, command: Command) => {
-    await executeCliCommand(
-      command,
-      async ({ invocation }) => {
-        const id = requireValue(agentId, "agentId", invocation);
-        const ctx = await resolveContext({ agent: opts.agent, dir: opts.dir }, "none");
-        const scope = parseScope(opts.scope, invocation) ?? ctx.scope;
-        return commandSuccess(
-          await showControlPlaneAgent(ctx.env, {
-            storeRoot: ctx.storeRoot,
-            scope,
-            agentId: id,
-            ...(ctx.dir ? { dir: ctx.dir } : {}),
-          }),
-        );
-      },
-      (outcome) => {
-        if (!outcome.ok) return;
-        const output = createSafeConsole(outcome.data);
-        if (outcome.data.agent) printAgent(outcome.data.agent, output, true);
-        else output.log("未找到 agent。");
-        for (const warning of outcome.data.warnings) output.warn(`⚠ ${warning}`);
-      },
-    );
+export function createAgentShowCommandContract(definition: CommandContractMetadata<"agent.show">) {
+  return defineCommandContract<
+    "agent.show",
+    { readonly agentId?: string; readonly opts: AgentQueryOpts },
+    Awaited<ReturnType<typeof showControlPlaneAgent>>
+  >(definition, {
+    createCommand: () =>
+      addAgentQueryOptions(
+        new Command("show")
+          .description("按 adapter ID 检查 agent")
+          .argument("[agentId]", "agent ID"),
+      ),
+    normalize: ({ actionArguments, command }) => ({
+      agentId: actionArguments[0] as string | undefined,
+      opts: command.opts<AgentQueryOpts>(),
+    }),
+    execute: async ({ agentId, opts }, { invocation }) => {
+      const id = requireValue(agentId, "agentId", invocation);
+      const ctx = await resolveContext({ agent: opts.agent, dir: opts.dir }, "none");
+      const scope = parseScope(opts.scope, invocation) ?? ctx.scope;
+      return commandSuccess(
+        await showControlPlaneAgent(ctx.env, {
+          storeRoot: ctx.storeRoot,
+          scope,
+          agentId: id,
+          ...(ctx.dir ? { dir: ctx.dir } : {}),
+        }),
+      );
+    },
+    presentText: (outcome) => {
+      if (!outcome.ok) return;
+      const output = createSafeConsole(outcome.data);
+      if (outcome.data.agent) printAgent(outcome.data.agent, output, true);
+      else output.log("未找到 agent。");
+      for (const warning of outcome.data.warnings) output.warn(`⚠ ${warning}`);
+    },
+    mapError: () => undefined,
   });
 }
 
@@ -556,178 +402,387 @@ function addAgentQueryOptions(command: Command): Command {
     .option("-a, --agent <ids>", "agent id，逗号分隔");
 }
 
-function collectionListCommand(): Command {
-  return new Command("list").description("列出 collections").action(async (_opts, command) => {
-    await executeCliCommand(
-      command,
-      async () => {
-        const ctx = await resolveContext({}, "none");
-        return commandSuccess(
-          await listControlPlaneCollections(ctx.env, { storeRoot: ctx.storeRoot }),
+export function createCollectionListCommandContract(
+  definition: CommandContractMetadata<"collection.list">,
+) {
+  return defineCommandContract<
+    "collection.list",
+    undefined,
+    Awaited<ReturnType<typeof listControlPlaneCollections>>
+  >(definition, {
+    createCommand: () => new Command("list").description("列出 collections"),
+    normalize: () => undefined,
+    execute: async () => {
+      const ctx = await resolveContext({}, "none");
+      return commandSuccess(
+        await listControlPlaneCollections(ctx.env, { storeRoot: ctx.storeRoot }),
+      );
+    },
+    presentText: (outcome) => {
+      if (!outcome.ok) return;
+      const output = createSafeConsole(outcome.data);
+      if (outcome.data.collections.length === 0) output.log("暂无 collections。");
+      for (const collection of outcome.data.collections) printCollection(collection, output);
+    },
+    mapError: () => undefined,
+  });
+}
+
+export function createCollectionShowCommandContract(
+  definition: CommandContractMetadata<"collection.show">,
+) {
+  return defineCommandContract<
+    "collection.show",
+    string | undefined,
+    Awaited<ReturnType<typeof showControlPlaneCollection>>
+  >(definition, {
+    createCommand: () =>
+      new Command("show")
+        .description("按名称检查 collection")
+        .argument("[collectionName]", "collection 名称"),
+    normalize: ({ actionArguments }) => actionArguments[0] as string | undefined,
+    execute: async (collectionName, { invocation }) => {
+      const name = requireValue(collectionName, "collectionName", invocation);
+      const ctx = await resolveContext({}, "none");
+      return commandSuccess(
+        await showControlPlaneCollection(ctx.env, {
+          storeRoot: ctx.storeRoot,
+          collectionName: name,
+        }),
+      );
+    },
+    presentText: (outcome) => {
+      if (!outcome.ok) return;
+      const output = createSafeConsole(outcome.data);
+      if (outcome.data.collection) printCollection(outcome.data.collection, output, true);
+      else output.log("未找到 collection。");
+    },
+    mapError: () => undefined,
+  });
+}
+
+export function createConfigShowCommandContract(
+  definition: CommandContractMetadata<"config.show">,
+) {
+  return defineCommandContract<
+    "config.show",
+    undefined,
+    Awaited<ReturnType<typeof showControlPlaneConfig>>
+  >(definition, {
+    createCommand: () => new Command("show").description("显示当前解析后的配置"),
+    normalize: () => undefined,
+    execute: async () => {
+      const ctx = await resolveContext({}, "none");
+      return commandSuccess(await showControlPlaneConfig(ctx.env, { storeRoot: ctx.storeRoot }));
+    },
+    presentText: (outcome) => {
+      if (!outcome.ok) return;
+      const output = createSafeConsole(outcome.data);
+      output.log(`revision: ${outcome.data.revision}`);
+      output.log(JSON.stringify(outcome.data.config, null, 2));
+    },
+    mapError: () => undefined,
+  });
+}
+
+export function createConfigValidateCommandContract(
+  definition: CommandContractMetadata<"config.validate">,
+) {
+  return defineCommandContract<
+    "config.validate",
+    { readonly config?: unknown },
+    ReturnType<typeof validateControlPlaneConfig>
+  >(definition, {
+    createCommand: () =>
+      new Command("validate")
+        .description("验证结构化配置，不写入 store")
+        .option("--config <json>", "要验证的 JSON 配置"),
+    normalize: ({ command }) => command.opts<{ config?: unknown }>(),
+    execute: async (opts, { invocation }) => {
+      if (opts.config === undefined) {
+        throw new CliInputError(
+          "INPUT_REQUIRED",
+          "config validate requires a structured config",
+          { fields: ["config"] },
+          invocation,
         );
-      },
-      (outcome) => {
-        if (!outcome.ok) return;
-        const output = createSafeConsole(outcome.data);
-        if (outcome.data.collections.length === 0) output.log("暂无 collections。");
-        for (const collection of outcome.data.collections) printCollection(collection, output);
-      },
-    );
+      }
+      return commandSuccess(validateControlPlaneConfig(parseJson(opts.config, invocation)));
+    },
+    presentText: (outcome) => {
+      if (!outcome.ok) return;
+      const output = createSafeConsole(outcome.data);
+      if (outcome.data.valid) {
+        output.log("配置有效。");
+        return;
+      }
+      output.error("配置无效:");
+      for (const issue of outcome.data.issues) output.error(`  ${issue.path}: ${issue.message}`);
+    },
+    mapError: () => undefined,
   });
 }
 
-function collectionShowCommand(): Command {
-  return new Command("show")
-    .description("按名称检查 collection")
-    .argument("[collectionName]", "collection 名称")
-    .action(async (collectionName: string | undefined, _opts: unknown, command: Command) => {
-      await executeCliCommand(
-        command,
-        async ({ invocation }) => {
-          const name = requireValue(collectionName, "collectionName", invocation);
-          const ctx = await resolveContext({}, "none");
-          return commandSuccess(
-            await showControlPlaneCollection(ctx.env, {
-              storeRoot: ctx.storeRoot,
-              collectionName: name,
-            }),
-          );
-        },
-        (outcome) => {
-          if (!outcome.ok) return;
-          const output = createSafeConsole(outcome.data);
-          if (outcome.data.collection) printCollection(outcome.data.collection, output, true);
-          else output.log("未找到 collection。");
-        },
+export function createDiffCommandContract(definition: CommandContractMetadata<"diff">) {
+  return defineCommandContract<
+    "diff",
+    VerificationOpts,
+    Awaited<ReturnType<typeof diffControlPlane>>
+  >(definition, {
+    createCommand: () =>
+      addVerificationOptions(new Command("diff").description("比较期望配置与已应用状态")),
+    normalize: ({ command }) => command.opts<VerificationOpts>(),
+    execute: async (opts, { invocation }) => {
+      const { ctx, query } = await verificationQuery(opts, invocation);
+      return commandSuccess(await diffControlPlane(ctx.env, query));
+    },
+    presentText: (outcome) => {
+      if (!outcome.ok) return;
+      const output = createSafeConsole(outcome.data);
+      output.log(
+        `desired-vs-applied: ${outcome.data.status} (revision ${outcome.data.storeRevision})`,
       );
-    });
-}
-
-function configShowCommand(): Command {
-  return new Command("show").description("显示当前解析后的配置").action(async (_opts, command) => {
-    await executeCliCommand(
-      command,
-      async () => {
-        const ctx = await resolveContext({}, "none");
-        return commandSuccess(await showControlPlaneConfig(ctx.env, { storeRoot: ctx.storeRoot }));
-      },
-      (outcome) => {
-        if (!outcome.ok) return;
-        const output = createSafeConsole(outcome.data);
-        output.log(`revision: ${outcome.data.revision}`);
-        output.log(JSON.stringify(outcome.data.config, null, 2));
-      },
-    );
+      for (const item of outcome.data.items)
+        output.log(`  ${item.status ?? "?"} ${item.target ?? ""}`);
+    },
+    mapError: () => undefined,
   });
 }
 
-function configValidateCommand(): Command {
-  return new Command("validate")
-    .description("验证结构化配置，不写入 store")
-    .option("--config <json>", "要验证的 JSON 配置")
-    .action(async (opts: { config?: unknown }, command: Command) => {
-      await executeCliCommand(
-        command,
-        async ({ invocation }) => {
-          if (opts.config === undefined) {
-            throw new CliInputError(
-              "INPUT_REQUIRED",
-              "config validate requires a structured config",
-              { fields: ["config"] },
-              invocation,
-            );
-          }
-          return commandSuccess(validateControlPlaneConfig(parseJson(opts.config, invocation)));
-        },
-        (outcome) => {
-          if (!outcome.ok) return;
-          const output = createSafeConsole(outcome.data);
-          if (outcome.data.valid) {
-            output.log("配置有效。");
-            return;
-          }
-          output.error("配置无效:");
-          for (const issue of outcome.data.issues)
-            output.error(`  ${issue.path}: ${issue.message}`);
-        },
-      );
-    });
+export function createVerifyCommandContract(definition: CommandContractMetadata<"verify">) {
+  return defineCommandContract<
+    "verify",
+    VerificationOpts,
+    Awaited<ReturnType<typeof verifyControlPlane>>
+  >(definition, {
+    createCommand: () =>
+      addVerificationOptions(
+        new Command("verify").description("组合验证期望状态、磁盘漂移和恢复状态"),
+      ),
+    normalize: ({ command }) => command.opts<VerificationOpts>(),
+    execute: async (opts, { invocation }) => {
+      const { ctx, query } = await verificationQuery(opts, invocation);
+      return commandSuccess(await verifyControlPlane(ctx.env, query));
+    },
+    presentText: (outcome) => {
+      if (!outcome.ok) return;
+      const output = createSafeConsole(outcome.data);
+      output.log(outcome.data.healthy ? "验证通过。" : "验证发现问题。");
+      output.log(`  desired-vs-applied: ${outcome.data.desiredVsApplied.status}`);
+      output.log(`  applied-vs-disk: ${outcome.data.appliedVsDisk.status}`);
+      output.log(`  recovery: ${outcome.data.recovery.status}`);
+    },
+    mapError: () => undefined,
+  });
 }
 
-function verificationCommand<T>(
-  name: "diff" | "verify",
-  description: string,
-  run: (
-    ctx: Awaited<ReturnType<typeof resolveContext>>,
-    opts: {
-      storeRoot: string;
-      scope: Scope;
-      dir?: string;
-      agents: string[];
-      collections?: string[];
-      capabilities?: Capability[];
-      method?: "symlink" | "copy";
-      mcpStrategy?: "merge" | "overwrite";
-    },
-  ) => Promise<T>,
-): Command {
-  return addVerificationOptions(new Command(name).description(description)).action(
-    async (opts: VerificationOpts, command: Command) => {
-      await executeCliCommand(
-        command,
-        async ({ invocation }) => {
-          const ctx = await resolveContext(
-            { agent: opts.agent, dir: opts.dir, collection: opts.collection },
-            "optional",
-          );
-          const scope = parseScope(opts.scope, invocation) ?? ctx.scope;
-          const method = parseEnum(opts.method, ["symlink", "copy"] as const, "method", invocation);
-          const mcpStrategy = parseEnum(
-            opts.mcpStrategy,
-            ["merge", "overwrite"] as const,
-            "mcpStrategy",
-            invocation,
-          );
-          const data = await run(ctx, {
-            storeRoot: ctx.storeRoot,
-            scope,
-            agents: ctx.agents,
-            ...(ctx.dir ? { dir: ctx.dir } : {}),
-            ...(parseList(opts.collection) ? { collections: parseList(opts.collection) } : {}),
-            ...(selectedCapabilities(opts) ? { capabilities: selectedCapabilities(opts) } : {}),
-            ...(method ? { method } : {}),
-            ...(mcpStrategy ? { mcpStrategy } : {}),
-          });
-          return commandSuccess(data);
-        },
-        (outcome) => {
-          if (!outcome.ok) return;
-          const output = createSafeConsole(outcome.data);
-          if (name === "diff") {
-            const data = outcome.data as {
-              storeRevision: number;
-              status: string;
-              items: readonly { status?: string; target?: string }[];
-            };
-            output.log(`desired-vs-applied: ${data.status} (revision ${data.storeRevision})`);
-            for (const item of data.items)
-              output.log(`  ${item.status ?? "?"} ${item.target ?? ""}`);
-          } else {
-            const data = outcome.data as {
-              healthy: boolean;
-              desiredVsApplied: { status: string };
-              appliedVsDisk: { status: string };
-              recovery: { status: string };
-            };
-            output.log(data.healthy ? "验证通过。" : "验证发现问题。");
-            output.log(`  desired-vs-applied: ${data.desiredVsApplied.status}`);
-            output.log(`  applied-vs-disk: ${data.appliedVsDisk.status}`);
-            output.log(`  recovery: ${data.recovery.status}`);
-          }
-        },
+export function createSummaryCommandContract(definition: CommandContractMetadata<"summary">) {
+  return defineCommandContract<
+    "summary",
+    SummaryOpts,
+    Awaited<ReturnType<typeof summaryControlPlane>>
+  >(definition, {
+    createCommand: () =>
+      addVerificationOptions(new Command("summary").description("汇总本地控制平面状态"))
+        .option("--limit <count>", "最多返回的活动记录数")
+        .option("--no-include-plan-coverage", "跳过只读 plan coverage"),
+    normalize: ({ command }) => command.opts<SummaryOpts>(),
+    execute: async (opts, { invocation }) => {
+      const { ctx, query } = await verificationQuery(opts, invocation);
+      const activityLimit = parseInteger(opts.limit, "activityLimit", invocation);
+      return commandSuccess(
+        await summaryControlPlane(ctx.env, {
+          ...query,
+          ...(activityLimit === undefined ? {} : { activityLimit }),
+          ...(opts.includePlanCoverage === undefined
+            ? {}
+            : { includePlanCoverage: opts.includePlanCoverage }),
+        }),
       );
     },
+    presentText: (outcome) => {
+      if (!outcome.ok) return;
+      const output = createSafeConsole(outcome.data);
+      output.log(`resources: ${outcome.data.artifactCounts.total}`);
+      output.log(
+        `agents: ${outcome.data.agentCounts.ready} ready, ${outcome.data.agentCounts.warning} warning`,
+      );
+      output.log(
+        `drift: ${Object.values(outcome.data.driftCounts).reduce((total, count) => total + count, 0)}`,
+      );
+    },
+    mapError: () => undefined,
+  });
+}
+
+export function createPlanCommandContract(definition: CommandContractMetadata<"plan">) {
+  type Prepared = Awaited<ReturnType<typeof planApplyMutation>>;
+  return defineCommandContract<
+    "plan",
+    PlanOpts,
+    { readonly plan: Prepared["mutationPlan"]; readonly preview: Prepared["plan"] }
+  >(definition, {
+    createCommand: () =>
+      addVerificationOptions(
+        new Command("plan").description("生成只读、authority-sealed apply plan"),
+      ),
+    normalize: ({ command }) => command.opts<PlanOpts>(),
+    execute: async (opts, { invocation }) => {
+      const ctx = await resolveContext(
+        { agent: opts.agent, dir: opts.dir, collection: opts.collection },
+        "required",
+      );
+      if (ctx.agents.length === 0) {
+        throw new CliInputError(
+          "INPUT_REQUIRED",
+          "plan requires at least one agent",
+          { fields: ["agents"] },
+          invocation,
+        );
+      }
+      const scope = parseScope(opts.scope, invocation) ?? ctx.scope;
+      if (scope === "project" && !ctx.dir) {
+        throw new CliInputError(
+          "INPUT_REQUIRED",
+          "project scope requires dir",
+          { fields: ["dir"] },
+          invocation,
+        );
+      }
+      const method = parseEnum(opts.method, ["symlink", "copy"] as const, "method", invocation);
+      const mcpStrategy = parseEnum(
+        opts.mcpStrategy,
+        ["merge", "overwrite"] as const,
+        "mcpStrategy",
+        invocation,
+      );
+      const prepared = await planApplyMutation(ctx.env, {
+        storeRoot: ctx.storeRoot,
+        scope,
+        agents: ctx.agents,
+        ...(ctx.dir ? { dir: ctx.dir } : {}),
+        ...(parseList(opts.collection) ? { collections: parseList(opts.collection) } : {}),
+        ...(selectedCapabilities(opts) ? { capabilities: selectedCapabilities(opts) } : {}),
+        ...(method ? { method: method as LinkMethod } : {}),
+        ...(mcpStrategy ? { mcpStrategy } : {}),
+        dryRun: true,
+      });
+      return commandSuccess({ plan: prepared.mutationPlan, preview: prepared.plan });
+    },
+    presentText: (outcome) => {
+      if (!outcome.ok) return;
+      const output = createSafeConsole(outcome.data);
+      output.log(`plan ${outcome.data.plan.planId} @ revision ${outcome.data.plan.baseRevision}`);
+      for (const action of outcome.data.preview.actions) {
+        output.log(`  [${action.op}] ${action.agent} ${action.capability} → ${action.target}`);
+      }
+    },
+    mapError: () => undefined,
+  });
+}
+
+export function createOperationListCommandContract(
+  definition: CommandContractMetadata<"operation.list">,
+) {
+  return defineCommandContract<
+    "operation.list",
+    { readonly limit?: string | number },
+    Awaited<ReturnType<typeof listControlPlaneOperations>>
+  >(definition, {
+    createCommand: () =>
+      new Command("list")
+        .description("列出已脱敏的操作回执")
+        .option("--limit <count>", "最多返回的回执数"),
+    normalize: ({ command }) => command.opts<{ limit?: string | number }>(),
+    execute: async (opts, { invocation }) => {
+      const ctx = await resolveContext({}, "none");
+      const limit = parseInteger(opts.limit, "limit", invocation);
+      return commandSuccess(
+        await listControlPlaneOperations(ctx.env, {
+          storeRoot: ctx.storeRoot,
+          ...(limit === undefined ? {} : { limit }),
+        }),
+      );
+    },
+    presentText: (outcome) => {
+      if (!outcome.ok) return;
+      const output = createSafeConsole(outcome.data);
+      if (outcome.data.operations.length === 0) {
+        output.log("暂无操作回执。");
+        return;
+      }
+      for (const operation of outcome.data.operations) {
+        output.log(
+          `${operation.operationId} ${operation.operation} ${operation.outcome} r${operation.baseRevision}→r${operation.resultingRevision}`,
+        );
+      }
+    },
+    mapError: () => undefined,
+  });
+}
+
+export function createOperationShowCommandContract(
+  definition: CommandContractMetadata<"operation.show">,
+) {
+  return defineCommandContract<
+    "operation.show",
+    string | undefined,
+    Awaited<ReturnType<typeof showControlPlaneOperation>>
+  >(definition, {
+    createCommand: () =>
+      new Command("show")
+        .description("按 ID 检查已脱敏的操作回执")
+        .argument("[operationId]", "操作 ID"),
+    normalize: ({ actionArguments }) => actionArguments[0] as string | undefined,
+    execute: async (operationId, { invocation }) => {
+      const id = requireValue(operationId, "operationId", invocation);
+      const ctx = await resolveContext({}, "none");
+      return commandSuccess(
+        await showControlPlaneOperation(ctx.env, { storeRoot: ctx.storeRoot, operationId: id }),
+      );
+    },
+    presentText: (outcome) => {
+      if (!outcome.ok) return;
+      const output = createSafeConsole(outcome.data);
+      if (!outcome.data.operation) {
+        output.log("未找到操作回执。");
+        return;
+      }
+      const operation = outcome.data.operation;
+      output.log(`${operation.operationId} ${operation.operation} ${operation.outcome}`);
+      output.log(`  plan: ${operation.planId}`);
+      output.log(`  recovery: ${operation.recoveryStatus}`);
+    },
+    mapError: () => undefined,
+  });
+}
+
+async function verificationQuery(opts: VerificationOpts, invocation: CliInvocation) {
+  const ctx = await resolveContext(
+    { agent: opts.agent, dir: opts.dir, collection: opts.collection },
+    "optional",
   );
+  const scope = parseScope(opts.scope, invocation) ?? ctx.scope;
+  const method = parseEnum(opts.method, ["symlink", "copy"] as const, "method", invocation);
+  const mcpStrategy = parseEnum(
+    opts.mcpStrategy,
+    ["merge", "overwrite"] as const,
+    "mcpStrategy",
+    invocation,
+  );
+  return {
+    ctx,
+    query: {
+      storeRoot: ctx.storeRoot,
+      scope,
+      agents: ctx.agents,
+      ...(ctx.dir ? { dir: ctx.dir } : {}),
+      ...(parseList(opts.collection) ? { collections: parseList(opts.collection) } : {}),
+      ...(selectedCapabilities(opts) ? { capabilities: selectedCapabilities(opts) } : {}),
+      ...(method ? { method } : {}),
+      ...(mcpStrategy ? { mcpStrategy } : {}),
+    },
+  };
 }
 
 function addVerificationOptions(command: Command): Command {

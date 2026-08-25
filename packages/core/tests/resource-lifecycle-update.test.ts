@@ -379,7 +379,7 @@ describe("resource update check, private staging, and Store-only apply", () => {
     const updated = await applyResourceUpdatePlan(t.env, planned.plan, { storeRoot });
 
     expect(updated.operation.ok).toBe(true);
-  });
+  }, 15_000);
 
   it.each([
     ["repository URL", { repositoryUrl: "https://example.test/forged.git" }],

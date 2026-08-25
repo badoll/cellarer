@@ -1,8 +1,8 @@
+import type { Command } from "commander";
 import { describe, expect, it } from "vitest";
-import {
-  controlPlaneCommandRegistry,
-  getCommandDefinition,
-} from "../src/protocol/command-registry.js";
+import { createCliCommandCatalog } from "../src/commands/command-catalog.js";
+import { buildProgram } from "../src/program.js";
+import { commandRegistry, getCommandDefinition } from "../src/protocol/command-registry.js";
 import { validateJsonSchema } from "../src/protocol/input.js";
 
 const EXPECTED_COMMANDS = [
@@ -38,23 +38,79 @@ const EXPECTED_COMMANDS = [
   "plan",
 ] as const;
 
+const CONTROL_PLANE_READ_COMMANDS = [
+  "resource.list",
+  "resource.show",
+  "agent.list",
+  "agent.show",
+  "collection.list",
+  "collection.show",
+  "config.show",
+  "config.validate",
+  "diff",
+  "verify",
+  "summary",
+  "operation.list",
+  "operation.show",
+  "plan",
+] as const;
+
+const controlPlaneCommandDefinitions = createCliCommandCatalog().contracts.filter(({ command }) =>
+  EXPECTED_COMMANDS.includes(command as (typeof EXPECTED_COMMANDS)[number]),
+);
+
 describe("complete control-plane command contracts", () => {
+  it("drives every control-plane read leaf from one parity-preserving domain catalog", () => {
+    const catalog = createCliCommandCatalog();
+    const contracts = catalog.contracts.filter(({ command }) =>
+      CONTROL_PLANE_READ_COMMANDS.includes(command as (typeof CONTROL_PLANE_READ_COMMANDS)[number]),
+    );
+
+    expect(contracts.map(({ command }) => command)).toEqual(CONTROL_PLANE_READ_COMMANDS);
+    expect(catalog.definitions.map(({ command }) => command)).toEqual(
+      commandRegistry.map(({ command }) => command),
+    );
+
+    const program = buildProgram();
+    const roots = new Set(CONTROL_PLANE_READ_COMMANDS.map((command) => command.split(".")[0]));
+    for (const root of roots) {
+      const rootCommand = findLeaf(program, root);
+      expect(rootCommand.commands.length === 0 ? [root] : collectLeafCommands(rootCommand)).toEqual(
+        commandRegistry
+          .map(({ command }) => command)
+          .filter((command) => command === root || command.startsWith(`${root}.`))
+          .map((command) => (command === root ? command : command.slice(root.length + 1))),
+      );
+    }
+    for (const contract of contracts) {
+      const published = commandRegistry.find(({ command }) => command === contract.command);
+      expect(published).toBeDefined();
+      expect(protocolProjection(contract)).toEqual(
+        protocolProjection(published as NonNullable<typeof published>),
+      );
+
+      expect(commanderProjection(findLeaf(program, contract.command))).toEqual(
+        commanderProjection(contract.createCommand()),
+      );
+    }
+  });
+
   it("registers the complete planned surface with unique input and output schemas", () => {
-    expect(controlPlaneCommandRegistry.map(({ command }) => command)).toEqual(EXPECTED_COMMANDS);
+    expect(controlPlaneCommandDefinitions.map(({ command }) => command)).toEqual(EXPECTED_COMMANDS);
     const schemaIds = new Set(
-      controlPlaneCommandRegistry.flatMap(({ inputSchemaId, outputSchemaId }) => [
+      controlPlaneCommandDefinitions.flatMap(({ inputSchemaId, outputSchemaId }) => [
         inputSchemaId,
         outputSchemaId,
       ]),
     );
     expect(schemaIds.size).toBe(EXPECTED_COMMANDS.length * 2);
-    for (const definition of controlPlaneCommandRegistry) {
+    for (const definition of controlPlaneCommandDefinitions) {
       expect(definition.outputSchema.properties?.data?.additionalProperties).toBe(false);
     }
   });
 
   it("records capability traits and a read-only plan for every mutation", () => {
-    for (const definition of controlPlaneCommandRegistry) {
+    for (const definition of controlPlaneCommandDefinitions) {
       if (definition.mutability === "read") continue;
       expect(definition.requiredFeatures, definition.command).toEqual(
         expect.arrayContaining(["mutation-authority", "plan-apply"]),
@@ -68,8 +124,8 @@ describe("complete control-plane command contracts", () => {
 
   it("publishes canonical DTO roots instead of command-specific ad hoc shapes", () => {
     const outputData = (command: string) =>
-      controlPlaneCommandRegistry.find((definition) => definition.command === command)?.outputSchema
-        .properties?.data;
+      controlPlaneCommandDefinitions.find((definition) => definition.command === command)
+        ?.outputSchema.properties?.data;
 
     expect(outputData("resource.list")?.properties).toHaveProperty("resources");
     expect(outputData("agent.list")?.properties).toHaveProperty("agents");
@@ -207,3 +263,55 @@ describe("complete control-plane command contracts", () => {
     expect(recoverOutput?.properties?.operation?.additionalProperties).toBe(false);
   });
 });
+
+function protocolProjection(definition: (typeof commandRegistry)[number]) {
+  return {
+    command: definition.command,
+    mutability: definition.mutability,
+    streaming: definition.streaming,
+    requiredFeatures: definition.requiredFeatures,
+    inputSchemaId: definition.inputSchemaId,
+    outputSchemaId: definition.outputSchemaId,
+    eventSchemaId: definition.eventSchemaId,
+    inputSchema: definition.inputSchema,
+    outputSchema: definition.outputSchema,
+    eventSchema: definition.eventSchema,
+    inputBindings: definition.inputBindings,
+  };
+}
+
+function commanderProjection(command: Command) {
+  return {
+    name: command.name(),
+    description: command.description(),
+    arguments: command.registeredArguments.map((argument) => ({
+      name: argument.name(),
+      description: argument.description,
+      required: argument.required,
+      variadic: argument.variadic,
+    })),
+    options: command.options.map((option) => ({
+      flags: option.flags,
+      description: option.description,
+      mandatory: option.mandatory,
+      variadic: option.variadic,
+    })),
+  };
+}
+
+function findLeaf(program: Command, path: string): Command {
+  let current = program;
+  for (const segment of path.split(".")) {
+    const child = current.commands.find((candidate) => candidate.name() === segment);
+    if (!child) throw new Error(`missing Commander path ${path}`);
+    current = child;
+  }
+  return current;
+}
+
+function collectLeafCommands(command: Command, prefix = ""): string[] {
+  return command.commands.flatMap((child) => {
+    const identity = prefix ? `${prefix}.${child.name()}` : child.name();
+    return child.commands.length === 0 ? [identity] : collectLeafCommands(child, identity);
+  });
+}

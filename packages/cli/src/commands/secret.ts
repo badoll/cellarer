@@ -11,10 +11,13 @@ import { Command } from "commander";
 import { resolveContext } from "../context.js";
 import { safeConsole as console } from "../output.js";
 import {
+  type CommandContractMetadata,
+  defineCommandContract,
+} from "../protocol/command-contract.js";
+import {
   cliErrorFromOperation,
   commandFailure,
   commandSuccess,
-  executeCliCommand,
   publicOperationResult,
 } from "../protocol/execution.js";
 import { CliInputError, type CliInvocation } from "../protocol/input.js";
@@ -52,137 +55,151 @@ interface SecretMutationData {
   readonly operation: PresentedOperationResult;
 }
 
-export function secretCommand(): Command {
-  const cmd = new Command("secret").description("密钥管理(age vault;ls 只列名不列值)");
+export function secretCommandRoot(): Command {
+  return new Command("secret").description("密钥管理(age vault;ls 只列名不列值)");
+}
 
-  // add <name>:值仅可来自 hidden TTY、stdin 或继承描述符，绝不进入 argv。
-  cmd
-    .command("add [name]")
-    .description("新增/更新一个密钥(真值加密入 vault,绝不打印)")
-    .option("--provider <provider>", "存储提供方:vault(默认)|keychain", "vault")
-    .option("--stdin", "从标准输入读取密钥值")
-    .option("--fd <number>", "从继承的文件描述符读取密钥值")
-    .option("--passphrase-fd <number>", "从继承的文件描述符读取 vault 口令")
-    .action(async (name: string | undefined, opts: SecretOpts, command: Command) => {
-      await executeCliCommand(
-        command,
-        async (execution) => {
-          const invocation = execution.invocation;
-          const requiredName = requireSecretName(name, invocation);
-          const provider = resolveProvider(opts.provider, invocation);
-          const protectedOptions = { nonInteractive: invocation.nonInteractive, invocation };
-          const plaintext = await readProtectedSecretInput(opts, undefined, protectedOptions);
-          const vaultPassphrase =
-            provider === "vault"
-              ? await readProtectedPassphraseInput(opts.passphraseFd, undefined, protectedOptions)
-              : undefined;
-          const { env, storeRoot } = await resolveContext({}, "required");
-          const result = await setStoredSecret(env, storeRoot, {
-            provider,
-            name: requiredName,
-            value: plaintext,
-            ...(provider === "vault" ? { vaultPassphrase } : {}),
-          });
-          const data: SecretMutationData = {
-            provider: result.provider,
-            name: result.name,
-            operation: publicOperationResult(result.operation),
-          };
-          const error = cliErrorFromOperation(result.operation);
-          return error ? commandFailure(error, data, [], result) : commandSuccess(data, [], result);
-        },
-        (outcome) => {
-          if (!outcome.data) return;
-          if (outcome.ok) {
-            console.log(
-              `✓ 已写入密钥 "${outcome.data.name}"(${outcome.data.provider},未回显真值)。`,
-            );
-          } else {
-            console.error(outcome.error.message);
-          }
-        },
-      );
-    });
+export function createSecretAddCommandContract(definition: CommandContractMetadata<"secret.add">) {
+  return defineCommandContract<
+    "secret.add",
+    { readonly name?: string; readonly opts: SecretOpts },
+    SecretMutationData
+  >(definition, {
+    createCommand: () =>
+      new Command("add")
+        .description("新增/更新一个密钥(真值加密入 vault,绝不打印)")
+        .argument("[name]")
+        .option("--provider <provider>", "存储提供方:vault(默认)|keychain", "vault")
+        .option("--stdin", "从标准输入读取密钥值")
+        .option("--fd <number>", "从继承的文件描述符读取密钥值")
+        .option("--passphrase-fd <number>", "从继承的文件描述符读取 vault 口令"),
+    normalize: ({ actionArguments, command }) => ({
+      name: actionArguments[0] as string | undefined,
+      opts: command.opts<SecretOpts>(),
+    }),
+    execute: async ({ name, opts }, { invocation }) => {
+      const requiredName = requireSecretName(name, invocation);
+      const provider = resolveProvider(opts.provider, invocation);
+      const { env, storeRoot } = await resolveContext({}, "required");
+      const protectedOptions = { nonInteractive: invocation.nonInteractive, invocation };
+      const plaintext = await readProtectedSecretInput(opts, undefined, protectedOptions);
+      const vaultPassphrase =
+        provider === "vault"
+          ? await readProtectedPassphraseInput(opts.passphraseFd, undefined, protectedOptions)
+          : undefined;
+      const result = await setStoredSecret(env, storeRoot, {
+        provider,
+        name: requiredName,
+        value: plaintext,
+        ...(provider === "vault" ? { vaultPassphrase } : {}),
+      });
+      const data: SecretMutationData = {
+        provider: result.provider,
+        name: result.name,
+        operation: publicOperationResult(result.operation),
+      };
+      const error = cliErrorFromOperation(result.operation);
+      return error ? commandFailure(error, data, [], result) : commandSuccess(data, [], result);
+    },
+    presentText: (outcome) => {
+      if (!outcome.data) return;
+      if (outcome.ok) {
+        console.log(`✓ 已写入密钥 "${outcome.data.name}"(${outcome.data.provider},未回显真值)。`);
+      } else {
+        console.error(outcome.error.message);
+      }
+    },
+    mapError: () => undefined,
+  });
+}
 
-  // ls:只列引用名,绝不列值。
-  cmd
-    .command("ls")
-    .description("列出 vault 中的密钥引用名(不显示真值)")
-    .option("--passphrase-fd <number>", "从继承的文件描述符读取 vault 口令")
-    .action(async (opts: SecretOpts, command: Command) => {
-      await executeCliCommand(
-        command,
-        async (execution) => {
-          const invocation = execution.invocation;
-          const passphrase = await readProtectedPassphraseInput(opts.passphraseFd, undefined, {
-            nonInteractive: invocation.nonInteractive,
-            invocation,
-          });
-          const { env, storeRoot } = await resolveContext({});
-          const names = await listStoredSecretNames(env, storeRoot, {
-            provider: "vault",
-            vaultPassphrase: passphrase,
-          });
-          return commandSuccess({ names });
-        },
-        (outcome) => {
-          if (!outcome.ok) return;
-          if (outcome.data.names.length === 0) {
-            console.log("vault 为空。");
-            return;
-          }
-          console.log("密钥引用名:");
-          for (const name of outcome.data.names) console.log(`  ${name}`);
-        },
-      );
-    });
+export function createSecretListCommandContract(definition: CommandContractMetadata<"secret.ls">) {
+  return defineCommandContract<"secret.ls", SecretOpts, { readonly names: readonly string[] }>(
+    definition,
+    {
+      createCommand: () =>
+        new Command("ls")
+          .description("列出 vault 中的密钥引用名(不显示真值)")
+          .option("--passphrase-fd <number>", "从继承的文件描述符读取 vault 口令"),
+      normalize: ({ command }) => command.opts<SecretOpts>(),
+      execute: async (opts, { invocation }) => {
+        const { env, storeRoot } = await resolveContext({});
+        const passphrase = await readProtectedPassphraseInput(opts.passphraseFd, undefined, {
+          nonInteractive: invocation.nonInteractive,
+          invocation,
+        });
+        const names = await listStoredSecretNames(env, storeRoot, {
+          provider: "vault",
+          vaultPassphrase: passphrase,
+        });
+        return commandSuccess({ names });
+      },
+      presentText: (outcome) => {
+        if (!outcome.ok) return;
+        if (outcome.data.names.length === 0) {
+          console.log("vault 为空。");
+          return;
+        }
+        console.log("密钥引用名:");
+        for (const name of outcome.data.names) console.log(`  ${name}`);
+      },
+      mapError: () => undefined,
+    },
+  );
+}
 
-  // rm <name>:删除一个密钥。
-  cmd
-    .command("rm [name]")
-    .description("删除一个密钥")
-    .option("--provider <provider>", "存储提供方:vault(默认)|keychain", "vault")
-    .option("--passphrase-fd <number>", "从继承的文件描述符读取 vault 口令")
-    .action(async (name: string | undefined, opts: SecretOpts, command: Command) => {
-      await executeCliCommand(
-        command,
-        async (execution) => {
-          const invocation = execution.invocation;
-          const requiredName = requireSecretName(name, invocation);
-          const provider = resolveProvider(opts.provider, invocation);
-          const vaultPassphrase =
-            provider === "vault"
-              ? await readProtectedPassphraseInput(opts.passphraseFd, undefined, {
-                  nonInteractive: invocation.nonInteractive,
-                  invocation,
-                })
-              : undefined;
-          const { env, storeRoot } = await resolveContext({}, "required");
-          const result = await deleteStoredSecret(env, storeRoot, {
-            provider,
-            name: requiredName,
-            ...(provider === "vault" ? { vaultPassphrase } : {}),
-          });
-          const data: SecretMutationData = {
-            provider: result.provider,
-            name: result.name,
-            operation: publicOperationResult(result.operation),
-          };
-          const error = cliErrorFromOperation(result.operation);
-          return error ? commandFailure(error, data, [], result) : commandSuccess(data, [], result);
-        },
-        (outcome) => {
-          if (!outcome.data) return;
-          if (outcome.ok) {
-            console.log(`✓ 已删除密钥 "${outcome.data.name}"(${outcome.data.provider})。`);
-          } else {
-            console.error(outcome.error.message);
-          }
-        },
-      );
-    });
-
-  return cmd;
+export function createSecretRemoveCommandContract(
+  definition: CommandContractMetadata<"secret.rm">,
+) {
+  return defineCommandContract<
+    "secret.rm",
+    { readonly name?: string; readonly opts: SecretOpts },
+    SecretMutationData
+  >(definition, {
+    createCommand: () =>
+      new Command("rm")
+        .description("删除一个密钥")
+        .argument("[name]")
+        .option("--provider <provider>", "存储提供方:vault(默认)|keychain", "vault")
+        .option("--passphrase-fd <number>", "从继承的文件描述符读取 vault 口令"),
+    normalize: ({ actionArguments, command }) => ({
+      name: actionArguments[0] as string | undefined,
+      opts: command.opts<SecretOpts>(),
+    }),
+    execute: async ({ name, opts }, { invocation }) => {
+      const requiredName = requireSecretName(name, invocation);
+      const provider = resolveProvider(opts.provider, invocation);
+      const { env, storeRoot } = await resolveContext({}, "required");
+      const vaultPassphrase =
+        provider === "vault"
+          ? await readProtectedPassphraseInput(opts.passphraseFd, undefined, {
+              nonInteractive: invocation.nonInteractive,
+              invocation,
+            })
+          : undefined;
+      const result = await deleteStoredSecret(env, storeRoot, {
+        provider,
+        name: requiredName,
+        ...(provider === "vault" ? { vaultPassphrase } : {}),
+      });
+      const data: SecretMutationData = {
+        provider: result.provider,
+        name: result.name,
+        operation: publicOperationResult(result.operation),
+      };
+      const error = cliErrorFromOperation(result.operation);
+      return error ? commandFailure(error, data, [], result) : commandSuccess(data, [], result);
+    },
+    presentText: (outcome) => {
+      if (!outcome.data) return;
+      if (outcome.ok) {
+        console.log(`✓ 已删除密钥 "${outcome.data.name}"(${outcome.data.provider})。`);
+      } else {
+        console.error(outcome.error.message);
+      }
+    },
+    mapError: () => undefined,
+  });
 }
 
 export async function readProtectedSecretInput(

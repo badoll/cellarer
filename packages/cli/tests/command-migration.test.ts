@@ -143,15 +143,80 @@ describe("CLI command protocol migration", () => {
     const commandDir = new URL("../src/commands/", import.meta.url);
     const sources = await Promise.all(
       (await fs.readdir(commandDir))
-        .filter((name) => name.endsWith(".ts"))
+        .filter(
+          (name) =>
+            name.endsWith(".ts") && name !== "command-catalog.ts" && !name.endsWith("-catalog.ts"),
+        )
         .map(async (name) => [name, await fs.readFile(new URL(name, commandDir), "utf8")] as const),
     );
 
     for (const [name, source] of sources) {
-      expect(source, name).toContain("executeCliCommand");
+      expect(source, name).toMatch(/executeCliCommand|defineCommandContract/);
       expect(source, name).not.toContain("process.exitCode");
       expect(source, name).not.toMatch(/console\.(?:log|warn|error)\(JSON\.stringify\(/);
     }
+  });
+
+  it("keeps the aggregate contracts as the only command-definition authority", async () => {
+    const sourceRoot = new URL("../src/", import.meta.url);
+    const sourceFiles = [
+      "commands/command-catalog.ts",
+      "protocol/command-contract.ts",
+      "protocol/command-schema-fragments.ts",
+      "protocol/input.ts",
+      "protocol/renderer.ts",
+    ];
+    const sources = await Promise.all(
+      sourceFiles.map(
+        async (name) => [name, await fs.readFile(new URL(name, sourceRoot), "utf8")] as const,
+      ),
+    );
+
+    for (const [name, source] of sources) {
+      expect(source, name).not.toMatch(/commandDefinitionSeeds|getCommandDefinitionSeed/);
+      expect(source, name).not.toContain("defineCommandContractFromDefinition");
+    }
+    expect(sources.find(([name]) => name === "commands/command-catalog.ts")?.[1]).not.toMatch(
+      /createCommandCatalog\([\s\S]*?,\s*[^)]*COMMANDS/,
+    );
+    expect(
+      sources.find(([name]) => name === "protocol/command-schema-fragments.ts")?.[1],
+    ).not.toMatch(/command:\s*["`]/);
+  });
+
+  it("guards against partial catalogs, optional definitions, and replaceable renderer authority", async () => {
+    const sourceRoot = new URL("../src/", import.meta.url);
+    const commandDirectory = new URL("commands/", sourceRoot);
+    const domainCatalogNames = (await fs.readdir(commandDirectory)).filter(
+      (name) => name.endsWith("-catalog.ts") && name !== "command-catalog.ts",
+    );
+    const domainCatalogs = await Promise.all(
+      domainCatalogNames.map(
+        async (name) => [name, await fs.readFile(new URL(name, commandDirectory), "utf8")] as const,
+      ),
+    );
+    for (const [name, source] of domainCatalogs) {
+      expect(source, name).not.toMatch(/\bCommandCatalog\b|\bcreateCommandCatalog\b/);
+    }
+
+    const [commandContract, input, execution, renderer] = await Promise.all(
+      [
+        "protocol/command-contract.ts",
+        "protocol/input.ts",
+        "protocol/execution.ts",
+        "protocol/renderer.ts",
+      ].map((name) => fs.readFile(new URL(name, sourceRoot), "utf8")),
+    );
+    expect(commandContract).not.toMatch(/\bgetDefinition\b|\bcommandFromContract\b/);
+    expect(input).not.toMatch(/definitionLookup|CommandDefinitionLookup/);
+    expect(renderer).not.toMatch(/readonly authority|readonly definition\?|readonly allowUnknown/);
+    expect(commandContract).toContain(
+      "catalog.resolveExecutableMatch(catalog.matchExecutable(command))",
+    );
+    expect(commandContract).toContain('"definition" in options');
+    expect(execution).not.toContain("definitionForBoundaryInvocation");
+    expect(execution).not.toMatch(/allowUnknownCommand|authority:/);
+    expect(execution).toMatch(/createProtocolRenderer\(\{[\s\S]{0,120}command:/);
   });
 
   function testRoot(prefix: string): string {

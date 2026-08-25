@@ -14,11 +14,16 @@ import { parseAgents, resolveContext } from "../context.js";
 import { printMutation } from "../mutation-output.js";
 import { createSafeConsole } from "../output.js";
 import {
+  type CommandContractExecution,
+  type CommandContractMetadata,
+  defineCommandContract,
+} from "../protocol/command-contract.js";
+import {
+  type CliCommandOutcome,
   cliErrorFromMutationConflict,
   commandFailure,
   commandSuccess,
   commandWarnings,
-  executeCliCommand,
 } from "../protocol/execution.js";
 import {
   assertExternalMutationPlanInput,
@@ -72,7 +77,22 @@ function selectedCapabilities(opts: ApplyOpts): Capability[] {
 }
 
 // 下发(distribute):库房资源 → agent。支持 rules / mcp / skills。
-export function applyCommand(): Command {
+export function createApplyCommandContract(definition: CommandContractMetadata<"apply">) {
+  return defineCommandContract<
+    "apply",
+    ApplyOpts,
+    ApplyCommandData,
+    { readonly phase: string; readonly current: number; readonly total: number }
+  >(definition, {
+    createCommand: createApplyCommand,
+    normalize: ({ command }) => command.opts<ApplyOpts>(),
+    execute: (opts, execution) => executeApply(opts, execution, definition.input.properties?.plan),
+    presentText: presentApplyText,
+    mapError: () => undefined,
+  });
+}
+
+function createApplyCommand(): Command {
   return new Command("apply")
     .description("下发库房资源到 agent(默认全局;指定 --dir 则下发到该工程)")
     .option("--plan <json>", "执行 plan 或 settings dry-run 返回的 exact sealed plan")
@@ -91,160 +111,164 @@ export function applyCommand(): Command {
     .option("--override-drift <tokens>", "确认 plan 返回的精确漂移覆盖 token(逗号分隔)")
     .option("--snapshot-passphrase-fd <number>", "从继承的文件描述符读取 snapshot 口令")
     .option("--dry-run", "仅预览,不落地")
-    .option("--json", "输出完整 Core apply plan/result")
-    .action(async (opts: ApplyOpts, command: Command) => {
-      await executeCliCommand<ApplyCommandData>(
-        command,
-        async (execution) => {
-          const invocation = execution.invocation;
-          const suppliedPlan = parseMutationPlanInput(opts.plan, invocation);
-          if (suppliedPlan) {
-            assertSealedPlanInputIsUnambiguous(opts, suppliedPlan.operation, invocation);
-            if (suppliedPlan.operation !== "apply" && suppliedPlan.operation !== "settings") {
-              return commandFailure<ApplyCommandData>({
-                code: "DOMAIN_VALIDATION_FAILED",
-                message: "The sealed plan operation is not supported by apply",
-                details: { coreCode: "INVALID_PLAN" },
-              });
-            }
-            const ctx = await resolveContext({}, "required");
-            if (suppliedPlan.operation === "settings") {
-              execution.event("APPLY_STARTED", { phase: "apply", current: 0, total: 1 });
-              const applied = await applyControlPlaneMutationPlan(ctx.env, suppliedPlan, {
-                storeRoot: ctx.storeRoot,
-              });
-              execution.event("APPLY_COMPLETED", { phase: "apply", current: 1, total: 1 });
-              const data = {
-                plan: applied.plan,
-                changedFields: applied.changedFields,
-                mutation: applied.mutation,
-                ...(applied.receipt ? { receipt: applied.receipt } : {}),
-              };
-              if (applied.operation.ok) return commandSuccess(data);
-              const conflict = applied.operation.conflict;
-              const error = cliErrorFromMutationConflict(conflict);
-              return conflict.code === "INVALID_PLAN" || conflict.code === "INVALID_PLAN_DIGEST"
-                ? commandFailure<ApplyCommandData>(error)
-                : commandFailure(error, data);
-            }
-            const preflight = preflightApplyMutationPlan(ctx.env, suppliedPlan, ctx.storeRoot);
-            if (!preflight.ok) {
-              return commandFailure(cliErrorFromMutationConflict(preflight.conflict));
-            }
-            const secretMode = parseSecretMode(opts.secretMode, invocation);
-            const vaultPassphrase =
-              preflight.requiresCellarerSecretResolution && secretMode === "vault"
-                ? await readProtectedPassphraseInput(opts.vaultPassphraseFd, undefined, {
-                    nonInteractive: invocation.nonInteractive,
-                    invocation,
-                  })
-                : undefined;
-            const snapshotPassphrase = preflight.requiresSnapshotPassphrase
-              ? await readProtectedPassphraseInput(opts.snapshotPassphraseFd, undefined, {
-                  nonInteractive: invocation.nonInteractive,
-                  invocation,
-                })
-              : undefined;
-            execution.event("APPLY_STARTED", { phase: "apply", current: 0, total: 1 });
-            const applied = await applyMutationPlan(ctx.env, suppliedPlan, {
-              storeRoot: ctx.storeRoot,
-              ...(snapshotPassphrase ? { snapshotPassphrase } : {}),
-              ...(secretMode ? { secretMode } : {}),
-              ...(vaultPassphrase ? { vaultPassphrase } : {}),
-              ...(opts.keychainService ? { keychainService: opts.keychainService } : {}),
-            });
-            execution.event("APPLY_COMPLETED", { phase: "apply", current: 1, total: 1 });
-            const { operation: _operation, ...result } = applied;
-            const warnings = commandWarnings(result.plan.warnings, "APPLY_WARNING");
-            const error = applyCommandError(result);
-            return error
-              ? commandFailure(error, result, warnings)
-              : commandSuccess(result, warnings);
-          }
-          const secretMode = parseSecretMode(opts.secretMode, invocation);
-          const explicitCapabilities = selectedCapabilities(opts);
-          assertNonInteractiveMutationInput(
-            "apply",
-            {
-              agents: parseAgents(opts.agent),
-              capabilities: explicitCapabilities,
-              dryRun: opts.dryRun,
-            },
-            invocation,
-          );
-          const ctx = await resolveContext(opts, "required");
-          if (ctx.agents.length === 0) {
-            throw new CliInputError(
-              "INPUT_REQUIRED",
-              "apply requires at least one agent",
-              { fields: ["agents"] },
-              invocation,
-            );
-          }
-          const method: LinkMethod | undefined = opts.copy ? "copy" : undefined;
-          const capabilities =
-            explicitCapabilities.length > 0
-              ? explicitCapabilities
-              : (["rules", "mcp", "skills"] satisfies Capability[]);
-          const vaultPassphrase =
-            secretMode === "vault"
-              ? await readProtectedPassphraseInput(opts.vaultPassphraseFd, undefined, {
-                  nonInteractive: invocation.nonInteractive,
-                  invocation,
-                })
-              : undefined;
-          const needsSnapshotPassphrase =
-            !opts.dryRun && Boolean(opts.replaceUnowned || opts.overrideDrift);
-          const snapshotPassphrase = needsSnapshotPassphrase
-            ? await readProtectedPassphraseInput(opts.snapshotPassphraseFd, undefined, {
-                nonInteractive: invocation.nonInteractive,
-                invocation,
-              })
-            : undefined;
+    .option("--json", "输出完整 Core apply plan/result");
+}
 
-          execution.event("APPLY_STARTED", { phase: "apply", current: 0, total: 1 });
-          const result = await apply(ctx.env, {
-            storeRoot: ctx.storeRoot,
-            scope: ctx.scope,
-            dir: ctx.dir,
-            agents: ctx.agents,
-            collections: ctx.collections,
-            capabilities,
-            method,
-            mcpStrategy: opts.mcpOverwrite ? "overwrite" : undefined,
-            secretMode,
-            vaultPassphrase,
-            keychainService: opts.keychainService,
-            replaceUnowned: parseTokens(opts.replaceUnowned),
-            overrideDrift: parseTokens(opts.overrideDrift),
-            snapshotPassphrase,
-            dryRun: opts.dryRun,
-          });
-          execution.event("APPLY_COMPLETED", { phase: "apply", current: 1, total: 1 });
-          const warnings = commandWarnings(result.plan.warnings, "APPLY_WARNING");
-          const error = applyCommandError(result);
-          return error ? commandFailure(error, result, warnings) : commandSuccess(result, warnings);
-        },
-        (outcome) => {
-          const result = outcome.data;
-          if (!result) {
-            if (!outcome.ok) createSafeConsole(outcome.error).error(outcome.error.message);
-            return;
-          }
-          const resultConsole = createSafeConsole(result);
-          if ("changedFields" in result) {
-            printMutation(result.mutation, resultConsole);
-            return;
-          }
-          printApplyText(result, opts, resultConsole);
-        },
-      );
+async function executeApply(
+  opts: ApplyOpts,
+  execution: CommandContractExecution<{
+    readonly phase: string;
+    readonly current: number;
+    readonly total: number;
+  }>,
+  planSchema: import("../protocol/schemas.js").JsonSchema | undefined,
+): Promise<CliCommandOutcome<ApplyCommandData>> {
+  const invocation = execution.invocation;
+  const suppliedPlan = parseMutationPlanInput(opts.plan, invocation, planSchema);
+  if (suppliedPlan) {
+    assertSealedPlanInputIsUnambiguous(opts, suppliedPlan.operation, invocation);
+    if (suppliedPlan.operation !== "apply" && suppliedPlan.operation !== "settings") {
+      return commandFailure<ApplyCommandData>({
+        code: "DOMAIN_VALIDATION_FAILED",
+        message: "The sealed plan operation is not supported by apply",
+        details: { coreCode: "INVALID_PLAN" },
+      });
+    }
+    const ctx = await resolveContext({}, "required");
+    if (suppliedPlan.operation === "settings") {
+      execution.event("APPLY_STARTED", { phase: "apply", current: 0, total: 1 });
+      const applied = await applyControlPlaneMutationPlan(ctx.env, suppliedPlan, {
+        storeRoot: ctx.storeRoot,
+      });
+      execution.event("APPLY_COMPLETED", { phase: "apply", current: 1, total: 1 });
+      const data = {
+        plan: applied.plan,
+        changedFields: applied.changedFields,
+        mutation: applied.mutation,
+        ...(applied.receipt ? { receipt: applied.receipt } : {}),
+      };
+      if (applied.operation.ok) return commandSuccess(data);
+      const conflict = applied.operation.conflict;
+      const error = cliErrorFromMutationConflict(conflict);
+      return conflict.code === "INVALID_PLAN" || conflict.code === "INVALID_PLAN_DIGEST"
+        ? commandFailure<ApplyCommandData>(error)
+        : commandFailure(error, data);
+    }
+    const preflight = preflightApplyMutationPlan(ctx.env, suppliedPlan, ctx.storeRoot);
+    if (!preflight.ok) {
+      return commandFailure(cliErrorFromMutationConflict(preflight.conflict));
+    }
+    const secretMode = parseSecretMode(opts.secretMode, invocation);
+    const vaultPassphrase =
+      preflight.requiresCellarerSecretResolution && secretMode === "vault"
+        ? await readProtectedPassphraseInput(opts.vaultPassphraseFd, undefined, {
+            nonInteractive: invocation.nonInteractive,
+            invocation,
+          })
+        : undefined;
+    const snapshotPassphrase = preflight.requiresSnapshotPassphrase
+      ? await readProtectedPassphraseInput(opts.snapshotPassphraseFd, undefined, {
+          nonInteractive: invocation.nonInteractive,
+          invocation,
+        })
+      : undefined;
+    execution.event("APPLY_STARTED", { phase: "apply", current: 0, total: 1 });
+    const applied = await applyMutationPlan(ctx.env, suppliedPlan, {
+      storeRoot: ctx.storeRoot,
+      ...(snapshotPassphrase ? { snapshotPassphrase } : {}),
+      ...(secretMode ? { secretMode } : {}),
+      ...(vaultPassphrase ? { vaultPassphrase } : {}),
+      ...(opts.keychainService ? { keychainService: opts.keychainService } : {}),
     });
+    execution.event("APPLY_COMPLETED", { phase: "apply", current: 1, total: 1 });
+    const { operation: _operation, ...result } = applied;
+    const warnings = commandWarnings(result.plan.warnings, "APPLY_WARNING");
+    const error = applyCommandError(result);
+    return error ? commandFailure(error, result, warnings) : commandSuccess(result, warnings);
+  }
+  const secretMode = parseSecretMode(opts.secretMode, invocation);
+  const explicitCapabilities = selectedCapabilities(opts);
+  assertNonInteractiveMutationInput(
+    "apply",
+    {
+      agents: parseAgents(opts.agent),
+      capabilities: explicitCapabilities,
+      dryRun: opts.dryRun,
+    },
+    invocation,
+  );
+  const ctx = await resolveContext(opts, "required");
+  if (ctx.agents.length === 0) {
+    throw new CliInputError(
+      "INPUT_REQUIRED",
+      "apply requires at least one agent",
+      { fields: ["agents"] },
+      invocation,
+    );
+  }
+  const method: LinkMethod | undefined = opts.copy ? "copy" : undefined;
+  const capabilities =
+    explicitCapabilities.length > 0
+      ? explicitCapabilities
+      : (["rules", "mcp", "skills"] satisfies Capability[]);
+  const vaultPassphrase =
+    secretMode === "vault"
+      ? await readProtectedPassphraseInput(opts.vaultPassphraseFd, undefined, {
+          nonInteractive: invocation.nonInteractive,
+          invocation,
+        })
+      : undefined;
+  const needsSnapshotPassphrase =
+    !opts.dryRun && Boolean(opts.replaceUnowned || opts.overrideDrift);
+  const snapshotPassphrase = needsSnapshotPassphrase
+    ? await readProtectedPassphraseInput(opts.snapshotPassphraseFd, undefined, {
+        nonInteractive: invocation.nonInteractive,
+        invocation,
+      })
+    : undefined;
+
+  execution.event("APPLY_STARTED", { phase: "apply", current: 0, total: 1 });
+  const result = await apply(ctx.env, {
+    storeRoot: ctx.storeRoot,
+    scope: ctx.scope,
+    dir: ctx.dir,
+    agents: ctx.agents,
+    collections: ctx.collections,
+    capabilities,
+    method,
+    mcpStrategy: opts.mcpOverwrite ? "overwrite" : undefined,
+    secretMode,
+    vaultPassphrase,
+    keychainService: opts.keychainService,
+    replaceUnowned: parseTokens(opts.replaceUnowned),
+    overrideDrift: parseTokens(opts.overrideDrift),
+    snapshotPassphrase,
+    dryRun: opts.dryRun,
+  });
+  execution.event("APPLY_COMPLETED", { phase: "apply", current: 1, total: 1 });
+  const warnings = commandWarnings(result.plan.warnings, "APPLY_WARNING");
+  const error = applyCommandError(result);
+  return error ? commandFailure(error, result, warnings) : commandSuccess(result, warnings);
+}
+
+function presentApplyText(outcome: CliCommandOutcome<ApplyCommandData>, opts: ApplyOpts): void {
+  const result = outcome.data;
+  if (!result) {
+    if (!outcome.ok) createSafeConsole(outcome.error).error(outcome.error.message);
+    return;
+  }
+  const resultConsole = createSafeConsole(result);
+  if ("changedFields" in result) {
+    printMutation(result.mutation, resultConsole);
+    return;
+  }
+  printApplyText(result, opts, resultConsole);
 }
 
 function parseMutationPlanInput(
   value: unknown,
   invocation: CliInvocation,
+  planSchema: import("../protocol/schemas.js").JsonSchema | undefined,
 ): MutationPlan | undefined {
   if (value === undefined) return undefined;
   let parsed: unknown = value;
@@ -258,7 +282,7 @@ function parseMutationPlanInput(
       invocation,
     );
   }
-  assertExternalMutationPlanInput(parsed, invocation);
+  assertExternalMutationPlanInput(parsed, invocation, planSchema);
   return parsed;
 }
 

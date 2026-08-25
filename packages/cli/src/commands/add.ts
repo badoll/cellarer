@@ -10,11 +10,15 @@ import { resolveContext } from "../context.js";
 import { createCliGitClient } from "../git-client.js";
 import { createSafeConsole } from "../output.js";
 import {
+  type CommandContractMetadata,
+  defineCommandContract,
+} from "../protocol/command-contract.js";
+import {
+  type CliCommandOutcome,
   cliErrorFromOperation,
   commandFailure,
   commandSuccess,
   commandWarnings,
-  executeCliCommand,
   publicOperationResult,
 } from "../protocol/execution.js";
 import { CliInputError, type CliInvocation } from "../protocol/input.js";
@@ -47,7 +51,24 @@ interface AddCommandData {
 }
 
 // 从源导入资源到库房。CLI 是薄壳:解析参数 + 注入 GitClient effect + 展示 core report。
-export function addCommand(): Command {
+export function createAddCommandContract(definition: CommandContractMetadata<"add">) {
+  return defineCommandContract<
+    "add",
+    { readonly source?: string; readonly opts: AddCliOpts },
+    AddCommandData
+  >(definition, {
+    createCommand: createAddCommand,
+    normalize: ({ actionArguments, command }) => ({
+      source: actionArguments[0] as string | undefined,
+      opts: command.opts<AddCliOpts>(),
+    }),
+    execute: executeAdd,
+    presentText: presentAddText,
+    mapError: () => undefined,
+  });
+}
+
+function createAddCommand(): Command {
   return new Command("add")
     .description("从本地路径或 GitHub source 导入资源到库房")
     .argument("[source]", "源:本地 .md/.json/skill 目录、GitHub owner/repo 或 GitHub URL")
@@ -60,76 +81,78 @@ export function addCommand(): Command {
     .option("--secret-mode <mode>", "密钥来源:env(默认)| vault | keychain")
     .option("--vault-passphrase-fd <number>", "从继承的文件描述符读取 vault 口令")
     .option("--keychain-service <name>", "keychain service 名称(默认 cellarer)")
-    .option("--json", "输出 JSON report")
-    .action(async (source: string | undefined, opts: AddCliOpts, command: Command) => {
-      await executeCliCommand(
-        command,
-        async (execution) => {
-          const invocation = execution.invocation;
-          if (!source) {
-            throw new CliInputError(
-              "INPUT_REQUIRED",
-              "add requires an explicit source",
-              { fields: ["source"] },
-              invocation,
-            );
-          }
-          if ((opts.skill?.length ?? 0) > 0 && opts.all) {
-            throw new CliInputError(
-              "INPUT_AMBIGUITY",
-              "--skill and --all are mutually exclusive",
-              { fields: ["skills", "all"] },
-              invocation,
-            );
-          }
-          const ctx = await resolveContext({}, opts.list ? "optional" : "required");
-          const secretMode = parseSecretMode(opts.secretMode, invocation);
-          const vaultPassphrase =
-            secretMode === "vault"
-              ? await readProtectedPassphraseInput(opts.vaultPassphraseFd, undefined, {
-                  nonInteractive: invocation.nonInteractive,
-                  invocation,
-                })
-              : undefined;
-          const result = await add(ctx.env, {
-            storeRoot: ctx.storeRoot,
-            source,
-            force: opts.force,
-            list: opts.list,
-            skills: opts.skill,
-            all: opts.all,
-            collection: opts.collection,
-            yes: opts.yes,
-            gitClient: createCliGitClient(),
-            secretMode,
-            vaultPassphrase,
-            keychainService: opts.keychainService,
-          });
-          const data: AddCommandData = {
-            imported: result.imported,
-            skipped: result.skipped,
-            rejected: result.rejected,
-            candidates: result.candidates,
-            ...(result.operation ? { operation: publicOperationResult(result.operation) } : {}),
-          };
-          const warnings = commandWarnings(result.warnings, "ADD_WARNING");
-          const error = result.operation ? cliErrorFromOperation(result.operation) : undefined;
-          const partialError =
-            result.rejected.length > 0
-              ? { code: "PARTIAL_FAILURE" as const, message: "One or more resources were rejected" }
-              : undefined;
-          const failure = error ?? partialError;
-          return failure
-            ? commandFailure(failure, data, warnings, result)
-            : commandSuccess(data, warnings, result);
-        },
-        (outcome) => {
-          const data = outcome.data;
-          if (!data) return;
-          printResult(data, opts, outcome.warnings, createSafeConsole(outcome.context));
-        },
-      );
-    });
+    .option("--json", "输出 JSON report");
+}
+
+async function executeAdd(
+  { source, opts }: { readonly source?: string; readonly opts: AddCliOpts },
+  { invocation }: { readonly invocation: CliInvocation },
+): Promise<CliCommandOutcome<AddCommandData>> {
+  if (!source) {
+    throw new CliInputError(
+      "INPUT_REQUIRED",
+      "add requires an explicit source",
+      { fields: ["source"] },
+      invocation,
+    );
+  }
+  if ((opts.skill?.length ?? 0) > 0 && opts.all) {
+    throw new CliInputError(
+      "INPUT_AMBIGUITY",
+      "--skill and --all are mutually exclusive",
+      { fields: ["skills", "all"] },
+      invocation,
+    );
+  }
+  const ctx = await resolveContext({}, opts.list ? "optional" : "required");
+  const secretMode = parseSecretMode(opts.secretMode, invocation);
+  const vaultPassphrase =
+    secretMode === "vault"
+      ? await readProtectedPassphraseInput(opts.vaultPassphraseFd, undefined, {
+          nonInteractive: invocation.nonInteractive,
+          invocation,
+        })
+      : undefined;
+  const result = await add(ctx.env, {
+    storeRoot: ctx.storeRoot,
+    source,
+    force: opts.force,
+    list: opts.list,
+    skills: opts.skill,
+    all: opts.all,
+    collection: opts.collection,
+    yes: opts.yes,
+    gitClient: createCliGitClient(),
+    secretMode,
+    vaultPassphrase,
+    keychainService: opts.keychainService,
+  });
+  const data: AddCommandData = {
+    imported: result.imported,
+    skipped: result.skipped,
+    rejected: result.rejected,
+    candidates: result.candidates,
+    ...(result.operation ? { operation: publicOperationResult(result.operation) } : {}),
+  };
+  const warnings = commandWarnings(result.warnings, "ADD_WARNING");
+  const error = result.operation ? cliErrorFromOperation(result.operation) : undefined;
+  const partialError =
+    result.rejected.length > 0
+      ? { code: "PARTIAL_FAILURE" as const, message: "One or more resources were rejected" }
+      : undefined;
+  const failure = error ?? partialError;
+  return failure
+    ? commandFailure(failure, data, warnings, result)
+    : commandSuccess(data, warnings, result);
+}
+
+function presentAddText(
+  outcome: CliCommandOutcome<AddCommandData>,
+  { opts }: { readonly opts: AddCliOpts },
+): void {
+  const data = outcome.data;
+  if (!data) return;
+  printResult(data, opts, outcome.warnings, createSafeConsole(outcome.context));
 }
 
 function parseSecretMode(

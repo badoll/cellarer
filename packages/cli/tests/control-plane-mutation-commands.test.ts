@@ -8,6 +8,7 @@ import {
   createDurableMutationPlan,
 } from "../../core/src/protocol/canonical.js";
 import { publishOperationJournal } from "../../core/src/protocol/journal.js";
+import { createCliCommandCatalog } from "../src/commands/command-catalog.js";
 import { resolveContext } from "../src/context.js";
 import { HEADLESS_MUTATION_AUTHORITY_ENV } from "../src/mutation-authority.js";
 import { buildProgram } from "../src/program.js";
@@ -29,6 +30,12 @@ const MUTATION_COMMANDS = [
   "config.update",
   "config.reset",
   "operation.recover",
+] as const;
+
+const STORE_TARGET_MUTATION_COMMANDS = [
+  "apply",
+  "revert",
+  ...MUTATION_COMMANDS.slice(0, -1),
 ] as const;
 
 describe("control-plane agent and config mutation commands", () => {
@@ -58,6 +65,25 @@ describe("control-plane agent and config mutation commands", () => {
     else process.env[HEADLESS_MUTATION_AUTHORITY_ENV] = previousAuthority;
     process.exitCode = previousExitCode;
     await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("drives every ordinary Store and target mutation from one parity-preserving domain catalog", () => {
+    const catalog = createCliCommandCatalog();
+    const contracts = catalog.contracts.filter(({ command }) =>
+      STORE_TARGET_MUTATION_COMMANDS.includes(
+        command as (typeof STORE_TARGET_MUTATION_COMMANDS)[number],
+      ),
+    );
+
+    expect(contracts.map(({ command }) => command)).toEqual(STORE_TARGET_MUTATION_COMMANDS);
+    for (const contract of contracts) {
+      const definition = commandRegistry.find(({ command }) => command === contract.command);
+      expect(definition).toBeDefined();
+      expect(protocolProjection(contract)).toEqual(protocolProjection(definition));
+      expect(commanderProjection(findLeaf(buildProgram(), contract.command))).toEqual(
+        commanderProjection(contract.createCommand()),
+      );
+    }
   });
 
   it("registers each executable group-3 leaf", () => {
@@ -464,4 +490,52 @@ async function invoke(args: readonly string[]): Promise<Record<string, unknown>>
   expect(stderr).toEqual([]);
   expect(stdout).toHaveLength(1);
   return JSON.parse(stdout[0] as string) as Record<string, unknown>;
+}
+
+function protocolProjection(
+  definition: (typeof commandRegistry)[number] | undefined,
+): Record<string, unknown> | undefined {
+  if (!definition) return undefined;
+  return {
+    command: definition.command,
+    mutability: definition.mutability,
+    streaming: definition.streaming,
+    requiredFeatures: definition.requiredFeatures,
+    inputSchemaId: definition.inputSchemaId,
+    outputSchemaId: definition.outputSchemaId,
+    eventSchemaId: definition.eventSchemaId,
+    inputSchema: definition.inputSchema,
+    outputSchema: definition.outputSchema,
+    eventSchema: definition.eventSchema,
+    inputBindings: definition.inputBindings,
+  };
+}
+
+function commanderProjection(command: ReturnType<typeof buildProgram>) {
+  return {
+    name: command.name(),
+    description: command.description(),
+    arguments: command.registeredArguments.map((argument) => ({
+      name: argument.name(),
+      description: argument.description,
+      required: argument.required,
+      variadic: argument.variadic,
+    })),
+    options: command.options.map((option) => ({
+      flags: option.flags,
+      description: option.description,
+      mandatory: option.mandatory,
+      variadic: option.variadic,
+    })),
+  };
+}
+
+function findLeaf(program: ReturnType<typeof buildProgram>, path: string) {
+  let current = program;
+  for (const segment of path.split(".")) {
+    const child = current.commands.find((candidate) => candidate.name() === segment);
+    if (!child) throw new Error(`missing Commander path ${path}`);
+    current = child;
+  }
+  return current;
 }

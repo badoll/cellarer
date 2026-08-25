@@ -1,12 +1,22 @@
 import { readFileSync } from "node:fs";
 import { CLI_PROTOCOL_VERSION } from "@cellarer/core";
+import type { Command } from "commander";
 import { afterEach, describe, expect, it } from "vitest";
+import { createCliCommandCatalog } from "../src/commands/command-catalog.js";
 import { buildProgram } from "../src/program.js";
+import { commandFromCatalog } from "../src/protocol/command-contract.js";
 import { commandRegistry, commandSchemas } from "../src/protocol/command-registry.js";
 import { CLI_ERROR_SCHEMA, CLI_WARNING_SCHEMA } from "../src/protocol/schemas.js";
 
 const originalStdoutWrite = process.stdout.write;
 const originalExitCode = process.exitCode;
+const INITIALIZATION_DISCOVERY_COMMANDS = [
+  "init",
+  "scan",
+  "capabilities",
+  "schema",
+  "discovery.summary",
+] as const;
 
 interface TestEnvelope {
   readonly status: string;
@@ -21,6 +31,34 @@ afterEach(() => {
 });
 
 describe("CLI protocol discovery", () => {
+  it("drives initialization and discovery leaves from one parity-preserving domain catalog", () => {
+    const aggregate = createCliCommandCatalog();
+    const contracts = aggregate.contracts.filter(({ command }) =>
+      INITIALIZATION_DISCOVERY_COMMANDS.includes(
+        command as (typeof INITIALIZATION_DISCOVERY_COMMANDS)[number],
+      ),
+    );
+
+    expect(contracts.map(({ command }) => command)).toEqual(INITIALIZATION_DISCOVERY_COMMANDS);
+    expect(aggregate.definitions).toBe(aggregate.contracts);
+    expect(aggregate.definitions.map(({ command }) => command)).toEqual(
+      commandRegistry.map(({ command }) => command),
+    );
+
+    const program = buildProgram();
+    for (const contract of contracts) {
+      const published = commandRegistry.find(({ command }) => command === contract.command);
+      expect(published).toBeDefined();
+      expect(protocolProjection(contract)).toEqual(
+        protocolProjection(published as NonNullable<typeof published>),
+      );
+
+      const registered = findLeaf(program, contract.command);
+      const declared = contract.createCommand();
+      expect(commanderProjection(registered)).toEqual(commanderProjection(declared));
+    }
+  });
+
   it("reports capabilities directly from the typed command registry", async () => {
     const program = buildProgram();
     expect(program.commands.find((command) => command.name() === "capabilities")).toBeDefined();
@@ -43,6 +81,24 @@ describe("CLI protocol discovery", () => {
         requiredFeatures: [...definition.requiredFeatures],
       })),
     });
+  });
+
+  it("keeps standalone discovery backed by the complete aggregate", async () => {
+    const stdout: string[] = [];
+    process.stdout.write = ((chunk: unknown) => {
+      stdout.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    const command = commandFromCatalog(createCliCommandCatalog(), "capabilities");
+    command.option("--json");
+
+    await command.parseAsync(["node", "capabilities", "--json"], { from: "node" });
+
+    const envelope = JSON.parse(stdout.join("")) as TestEnvelope;
+    expect((envelope.data.commands as unknown[]).length).toBe(commandRegistry.length);
+    expect(
+      (envelope.data.commands as Array<{ command: string }>).map(({ command }) => command),
+    ).toEqual(commandRegistry.map(({ command }) => command));
   });
 
   it("returns one reported schema by identifier", async () => {
@@ -126,6 +182,51 @@ describe("CLI installed version metadata", () => {
     expect(buildProgram().version()).toBe(packageMetadata.version);
   });
 });
+
+function protocolProjection(definition: (typeof commandRegistry)[number]) {
+  return {
+    command: definition.command,
+    mutability: definition.mutability,
+    streaming: definition.streaming,
+    requiredFeatures: definition.requiredFeatures,
+    inputSchemaId: definition.inputSchemaId,
+    outputSchemaId: definition.outputSchemaId,
+    eventSchemaId: definition.eventSchemaId,
+    inputSchema: definition.inputSchema,
+    outputSchema: definition.outputSchema,
+    eventSchema: definition.eventSchema,
+    inputBindings: definition.inputBindings,
+  };
+}
+
+function commanderProjection(command: Command) {
+  return {
+    name: command.name(),
+    description: command.description(),
+    arguments: command.registeredArguments.map((argument) => ({
+      name: argument.name(),
+      description: argument.description,
+      required: argument.required,
+      variadic: argument.variadic,
+    })),
+    options: command.options.map((option) => ({
+      flags: option.flags,
+      description: option.description,
+      mandatory: option.mandatory,
+      variadic: option.variadic,
+    })),
+  };
+}
+
+function findLeaf(program: Command, path: string): Command {
+  let current = program;
+  for (const segment of path.split(".")) {
+    const child = current.commands.find((candidate) => candidate.name() === segment);
+    if (!child) throw new Error(`missing Commander path ${path}`);
+    current = child;
+  }
+  return current;
+}
 
 async function invokeJson(args: readonly string[]): Promise<TestEnvelope> {
   const stdout: string[] = [];

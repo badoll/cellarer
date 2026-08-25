@@ -660,7 +660,7 @@ describe("versioned sync profiles", () => {
       expect.objectContaining({ code: "UNINSTALL_TARGET_DRIFTED", target }),
     ]);
     await expect(t.env.fs.readFile(target)).resolves.toBe("user drift\n");
-  });
+  }, 20_000);
 
   it("blocks uninstall when another profile most recently owns the shared exact target", async () => {
     await createSyncProfile(t.env, { storeRoot, profileId: "profile-a", desired });

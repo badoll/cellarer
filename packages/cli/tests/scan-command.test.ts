@@ -3,9 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRealEnv, type Env } from "@cellarer/core";
 import { afterEach, describe, expect, it } from "vitest";
-import { scanCommand } from "../src/commands/scan.js";
+import { createCliCommandCatalog } from "../src/commands/command-catalog.js";
 import type { ResolvedContext } from "../src/context.js";
 import type { MutationAuthorityCompositionMode } from "../src/mutation-authority.js";
+import { commandFromCatalog } from "../src/protocol/command-contract.js";
+
+function scanCommand(resolve: () => Promise<ResolvedContext>) {
+  const catalog = createCliCommandCatalog({
+    scanContextResolver: resolve,
+  });
+  return commandFromCatalog(catalog, "scan");
+}
 
 describe("CLI scan least-privilege composition", () => {
   const cleanups: Array<() => Promise<void>> = [];

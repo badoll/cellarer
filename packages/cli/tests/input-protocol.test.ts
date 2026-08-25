@@ -1,12 +1,20 @@
 import { CLI_PROTOCOL_VERSION } from "@cellarer/core";
 import { Command } from "commander";
 import { describe, expect, it, vi } from "vitest";
+import { createCliCommandCatalog } from "../src/commands/command-catalog.js";
 import {
   assertNonInteractiveMutationInput,
+  type CliInputBoundaryIo,
   CliInputError,
   getCliInvocation,
-  installCliInputBoundary,
+  installCliInputBoundary as installCatalogInputBoundary,
 } from "../src/protocol/input.js";
+
+const catalog = createCliCommandCatalog();
+
+function installCliInputBoundary(program: Command, io: CliInputBoundaryIo): void {
+  installCatalogInputBoundary(program, io, catalog);
+}
 
 function statusProgram(
   request: unknown = {
@@ -34,6 +42,33 @@ function statusProgram(
 }
 
 describe("agent CLI structured input boundary", () => {
+  it("fails closed when a Commander-known action has no canonical active definition", async () => {
+    const incomplete = createCliCommandCatalog();
+    const program = new Command().name("cellarer");
+    installCatalogInputBoundary(
+      program,
+      {
+        stdinIsTTY: false,
+        readInput: async () =>
+          JSON.stringify({
+            protocolVersion: CLI_PROTOCOL_VERSION,
+            command: "known-missing",
+            input: {},
+          }),
+      },
+      incomplete,
+    );
+    program.command("known-missing").action(() => {
+      throw new Error("missing definition reached action execution");
+    });
+
+    await expect(
+      program.parseAsync(["node", "cellarer", "--input", "-", "known-missing"], {
+        from: "node",
+      }),
+    ).rejects.toThrow(/known executable command known-missing is absent/i);
+  });
+
   it.each([
     [
       ["--output", "jsonl", "--non-interactive", "status"],

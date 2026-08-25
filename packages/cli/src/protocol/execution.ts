@@ -13,6 +13,7 @@ import {
 } from "@cellarer/core";
 import { type Command, CommanderError } from "commander";
 import { createSafeConsole } from "../output.js";
+import type { CommandCatalog } from "./command-contract.js";
 import { CliHandledError } from "./errors.js";
 import { CLI_EXIT_CODE, type CliExitCode, exitCodeForError } from "./exit-mapper.js";
 import { CliInputError, type CliInvocation, getCliInvocation } from "./input.js";
@@ -105,14 +106,16 @@ export async function executeCliCommand<TData>(
   command: Command,
   execute: (execution: CliCommandExecution) => Promise<CliCommandOutcome<TData>>,
   presentText: (outcome: CliCommandOutcome<TData>) => void,
+  catalog: CommandCatalog,
+  commandIdentity: string,
 ): Promise<void> {
   const invocation = getCliInvocation(command);
   let renderer: ProtocolRenderer | undefined;
 
   try {
     if (invocation.output !== "text") {
-      renderer = createProtocolRenderer({
-        command: invocation.command,
+      renderer = catalog.createProtocolRenderer({
+        command: commandIdentity,
         output: invocation.output,
         requestId: invocation.requestId,
       });

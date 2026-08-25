@@ -1,40 +1,22 @@
 import { Command } from "commander";
-import { addCommand } from "./commands/add.js";
-import { agentsCommand } from "./commands/agents.js";
-import { applyCommand } from "./commands/apply.js";
-import { authorityCommand } from "./commands/authority.js";
+import { authorityCommandRoot } from "./commands/authority.js";
 import {
-  addAgentMutationCommands,
-  addCollectionMutationCommands,
-  addConfigMutationCommands,
-} from "./commands/control-plane-mutations.js";
+  createCliCommandCatalog,
+  getDefaultCliCommandCatalog,
+} from "./commands/command-catalog.js";
+import { addCollectionMutationGroups } from "./commands/control-plane-mutations.js";
 import {
-  agentCommand,
-  collectionCommand,
-  configCommand,
-  diffCommand,
-  discoverySummaryCommand,
-  operationCommand,
-  planCommand,
-  resourceCommand,
-  summaryCommand,
-  verifyCommand,
+  agentCommandRoot,
+  collectionCommandRoot,
+  configCommandRoot,
+  discoveryCommandRoot,
+  operationCommandRoot,
+  resourceCommandRoot,
 } from "./commands/control-plane-read.js";
-import { capabilitiesCommand, schemaCommand } from "./commands/discovery.js";
-import { doctorCommand } from "./commands/doctor.js";
-import { type InitAgentSelector, initCommand } from "./commands/init.js";
-import { lsCommand } from "./commands/ls.js";
-import {
-  addResourceLifecycleCommands,
-  profileCommand,
-  syncProfileCommand,
-} from "./commands/resource-lifecycle.js";
-import { revertCommand } from "./commands/revert.js";
-import { scanCommand } from "./commands/scan.js";
-import { secretCommand } from "./commands/secret.js";
-import { statusCommand } from "./commands/status.js";
-import { uiCommand } from "./commands/ui.js";
-import { commandRegistry } from "./protocol/command-registry.js";
+import type { InitAgentSelector } from "./commands/init.js";
+import { profileCommandRoot, syncProfileCommandRoot } from "./commands/resource-lifecycle.js";
+import { secretCommandRoot } from "./commands/secret.js";
+import { type CommandCatalog, executeCommandContract } from "./protocol/command-contract.js";
 import { type CliInputBoundaryIo, installCliInputBoundary } from "./protocol/input.js";
 import { CLI_PACKAGE_VERSION } from "./version.js";
 
@@ -51,67 +33,70 @@ export function buildProgram(
     .description("多 AI agent 的 skills / mcp / rules 全局统一管理工具")
     .version(CLI_PACKAGE_VERSION);
 
-  installCliInputBoundary(program, inputIo);
+  const catalog = initAgentSelector
+    ? createCliCommandCatalog({ initAgentSelector })
+    : getDefaultCliCommandCatalog();
+  installCliInputBoundary(program, inputIo, catalog);
 
-  registerCommandTree(program, initAgentSelector);
+  registerCommandTree(program, catalog);
 
   return program;
 }
 
-const commandFactories: Readonly<Record<string, () => Command>> = {
-  add: addCommand,
-  agents: agentsCommand,
-  ls: lsCommand,
-  apply: applyCommand,
-  authority: authorityCommand,
-  scan: scanCommand,
-  revert: revertCommand,
-  status: statusCommand,
-  secret: secretCommand,
-  doctor: doctorCommand,
-  ui: uiCommand,
-  capabilities: capabilitiesCommand,
-  schema: schemaCommand,
-  resource: () => addResourceLifecycleCommands(resourceCommand()),
-  profile: profileCommand,
-  sync: syncProfileCommand,
-  agent: () => addAgentMutationCommands(agentCommand()),
-  collection: () => addCollectionMutationCommands(collectionCommand()),
-  config: () => addConfigMutationCommands(configCommand()),
-  diff: diffCommand,
-  verify: verifyCommand,
-  summary: summaryCommand,
-  plan: planCommand,
-  discovery: discoverySummaryCommand,
-  operation: operationCommand,
+const commandContainerFactories: Readonly<Record<string, () => Command>> = {
+  authority: authorityCommandRoot,
+  secret: secretCommandRoot,
+  resource: resourceCommandRoot,
+  profile: profileCommandRoot,
+  sync: syncProfileCommandRoot,
+  agent: agentCommandRoot,
+  collection: () => addCollectionMutationGroups(collectionCommandRoot()),
+  config: configCommandRoot,
+  discovery: discoveryCommandRoot,
+  operation: operationCommandRoot,
 };
 
-function registerCommandTree(program: Command, initAgentSelector?: InitAgentSelector): void {
-  const factories: Readonly<Record<string, () => Command>> = {
-    ...commandFactories,
-    init: () => initCommand(initAgentSelector),
-  };
+function registerCommandTree(program: Command, catalog: CommandCatalog): void {
   const registryRoots = [
-    ...new Set(commandRegistry.map(({ command }) => command.split(".", 1)[0] as string)),
+    ...new Set(catalog.definitions.map(({ command }) => command.split(".", 1)[0] as string)),
   ];
-  const unregisteredFactories = Object.keys(factories).filter(
+  const unregisteredContainers = Object.keys(commandContainerFactories).filter(
     (command) => !registryRoots.includes(command),
   );
-  if (unregisteredFactories.length > 0) {
+  if (unregisteredContainers.length > 0) {
     throw new Error(
-      `command factories are absent from the registry: ${unregisteredFactories.join(", ")}`,
+      `command containers are absent from the catalog: ${unregisteredContainers.join(", ")}`,
     );
   }
   for (const root of registryRoots) {
-    const factory = factories[root];
-    if (!factory) throw new Error(`registered command ${root} has no command factory`);
-    program.addCommand(factory());
+    const createContainer = commandContainerFactories[root];
+    if (createContainer) program.addCommand(createContainer());
   }
+  catalog.registerCommander(program, (command, context) =>
+    executeCommandContract(catalog, catalog.requireContract(command), context),
+  );
 
+  orderCommandTree(
+    program,
+    catalog.definitions.map(({ command }) => command),
+  );
   const registeredLeaves = collectLeafCommands(program).sort();
-  const protocolLeaves = commandRegistry.map(({ command }) => command).sort();
-  if (registeredLeaves.join("\0") !== protocolLeaves.join("\0")) {
-    throw new Error("Commander command tree does not match the public command registry");
+  catalog.assertExecutableParity(registeredLeaves);
+}
+
+function orderCommandTree(command: Command, definitionPaths: readonly string[], prefix = ""): void {
+  const rankByPath = new Map(definitionPaths.map((path, index) => [path, index]));
+  const rank = (child: Command): number => {
+    const identity = prefix ? `${prefix}.${child.name()}` : child.name();
+    const leafRanks = definitionPaths
+      .filter((path) => path === identity || path.startsWith(`${identity}.`))
+      .map((path) => rankByPath.get(path) as number);
+    return Math.min(...leafRanks);
+  };
+  (command.commands as Command[]).sort((left, right) => rank(left) - rank(right));
+  for (const child of command.commands) {
+    const identity = prefix ? `${prefix}.${child.name()}` : child.name();
+    orderCommandTree(child, definitionPaths, identity);
   }
 }
 

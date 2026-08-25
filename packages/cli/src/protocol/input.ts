@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import type { CliCommandRequest, CliError, CliErrorCode, MutationPlan } from "@cellarer/core";
 import type { Command } from "commander";
-import { getCommandDefinition } from "./command-registry.js";
+import type { CommandCatalog } from "./command-contract.js";
+import type { CommandDefinition } from "./command-types.js";
 import type { JsonSchema } from "./schemas.js";
 
 export type CliOutput = "text" | "json" | "jsonl";
@@ -56,8 +57,10 @@ const invocations = new WeakMap<Command, CliInvocation>();
 
 export function installCliInputBoundary(
   program: Command,
-  io: CliInputBoundaryIo = defaultInputIo(),
+  io: CliInputBoundaryIo | undefined,
+  catalog: CommandCatalog,
 ): void {
+  io ??= defaultInputIo();
   program
     .option("--output <format>", "输出格式:text | json | jsonl")
     .option("--non-interactive", "禁止交互提示;缺少必需输入时失败")
@@ -97,13 +100,20 @@ export function installCliInputBoundary(
     }
 
     if (inputSource === undefined) return;
-    const request = await readAndValidateRequest(inputSource, command, io, invocation);
+    const matched = catalog.resolveExecutableMatch(catalog.matchExecutable(command));
+    if (matched.kind !== "known") {
+      throw new TypeError(
+        `known executable command ${command} is absent from the active command composition`,
+      );
+    }
+    const definition = matched.definition;
+    const request = await readAndValidateRequest(inputSource, command, io, invocation, definition);
     invocation = {
       ...invocation,
       ...(request.requestId === undefined ? {} : { requestId: request.requestId }),
     };
     invocations.set(actionCommand, invocation);
-    applyStructuredInput(actionCommand, command, request.input, invocation);
+    applyStructuredInput(actionCommand, command, request.input, invocation, definition);
   });
 }
 
@@ -159,6 +169,7 @@ async function readAndValidateRequest(
   command: string,
   io: CliInputBoundaryIo,
   invocation: CliInvocation,
+  definition: CommandDefinition,
 ): Promise<CliCommandRequest<Record<string, unknown>>> {
   let serialized: string;
   try {
@@ -184,18 +195,10 @@ async function readAndValidateRequest(
     );
   }
 
-  const definition = getCommandDefinition(command);
-  if (!definition) {
-    throw new CliInputError(
-      "INVALID_USAGE",
-      "Structured input is not supported for this command",
-      { command },
-      invocation,
-    );
-  }
   if (command === "apply" && isObject(parsed) && isObject(parsed.input)) {
     const plan = parsed.input.plan;
-    if (plan !== undefined) assertExternalMutationPlanInput(plan, invocation);
+    const planSchema = definition.inputSchema.properties?.input?.properties?.plan;
+    if (plan !== undefined) assertExternalMutationPlanInput(plan, invocation, planSchema);
   }
   const issues = validateJsonSchema(parsed, definition.inputSchema);
   if (issues.length > 0) {
@@ -212,9 +215,9 @@ async function readAndValidateRequest(
 export function assertExternalMutationPlanInput(
   value: unknown,
   invocation: CliInvocation,
+  schema: JsonSchema | undefined,
 ): asserts value is MutationPlan {
-  const schema = getCommandDefinition("apply")?.inputSchema.properties?.input?.properties?.plan;
-  if (!schema) throw new TypeError("apply plan schema is not registered");
+  if (!schema) throw new TypeError("apply contract does not define a plan schema");
   const issues = validateJsonSchema(value, schema, "$.input.plan");
   if (issues.length === 0) return;
   throw new CliInputError(
@@ -230,8 +233,9 @@ function applyStructuredInput(
   command: string,
   input: Record<string, unknown>,
   invocation: CliInvocation,
+  definition: CommandDefinition,
 ): void {
-  const bindings = getCommandDefinition(command)?.inputBindings ?? [];
+  const bindings = definition.inputBindings;
   const suppliedFields = new Set(Object.keys(input));
   const ambiguous = new Set<string>();
 
