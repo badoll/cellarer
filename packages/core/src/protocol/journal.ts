@@ -1,6 +1,7 @@
 import { join, resolve } from "node:path";
 import type { Env, ProtectedJournalTip } from "../env.js";
 import { assertSafeAtomicPublicationPath } from "../fs/safety.js";
+import { isInventorySecretAdoptionExternalEffect } from "../secrets/adoption-provider.js";
 import {
   observableOptionsForEnv,
   registerObservableMutationAuthorization,
@@ -230,6 +231,7 @@ function assertOperationJournal(
   if (typeof value === "object" && value !== null) {
     if ("statePublications" in value) journalKeys.push("statePublications");
     if ("completedReceipt" in value) journalKeys.push("completedReceipt");
+    if ("externalEffects" in value) journalKeys.push("externalEffects");
   }
   if (
     !hasExactKeys(value, journalKeys) ||
@@ -257,20 +259,22 @@ function assertOperationJournal(
   }
   assertSafeOperationId(journal.operationId);
   assertSupportedMutationPlanRuntime(journal.plan);
+  const durablePlanKeys = [
+    "actions",
+    "authorization",
+    "baseRevision",
+    "digest",
+    "durableDigest",
+    "expires",
+    "normalizedInputsDigest",
+    "operation",
+    "planId",
+    "schemaVersion",
+    "targetPreconditions",
+  ];
+  if (journal.plan.externalEffects !== undefined) durablePlanKeys.push("externalEffects");
   if (
-    !hasExactKeys(journal.plan, [
-      "actions",
-      "authorization",
-      "baseRevision",
-      "digest",
-      "durableDigest",
-      "expires",
-      "normalizedInputsDigest",
-      "operation",
-      "planId",
-      "schemaVersion",
-      "targetPreconditions",
-    ]) ||
+    !hasExactKeys(journal.plan, durablePlanKeys) ||
     !MUTATION_OPERATIONS.includes(journal.plan.operation) ||
     typeof journal.plan.planId !== "string" ||
     typeof journal.plan.normalizedInputsDigest !== "string" ||
@@ -319,6 +323,20 @@ function assertOperationJournal(
     ) {
       throw new Error("operation journal durable action has an invalid runtime schema");
     }
+  }
+  const declaredExternalEffects = journal.plan.externalEffects ?? [];
+  if (
+    (journal.plan.externalEffects !== undefined &&
+      (!Array.isArray(journal.plan.externalEffects) ||
+        journal.plan.externalEffects.length !== 1 ||
+        !journal.plan.externalEffects.every(isInventorySecretAdoptionExternalEffect))) ||
+    new Set(declaredExternalEffects.map(({ effectId }) => effectId)).size !==
+      declaredExternalEffects.length ||
+    (declaredExternalEffects.length > 0 &&
+      (journal.plan.operation !== "store-import" || journal.externalEffects === undefined)) ||
+    (declaredExternalEffects.length === 0 && journal.externalEffects !== undefined)
+  ) {
+    throw new Error("operation journal external effect declaration is invalid");
   }
   for (const precondition of journal.plan.targetPreconditions) {
     if (
@@ -385,6 +403,7 @@ function assertOperationJournal(
         !sameTargetState(planned.postcondition, action.receipt.after) &&
         !(
           (journal.status === "executing" ||
+            journal.status === "recovery-required" ||
             (journal.status === "completed" &&
               journal.completedReceipt?.outcome === "compensated")) &&
           action.receipt.outcome === "compensated" &&
@@ -400,6 +419,33 @@ function assertOperationJournal(
         (action.status === "succeeded" && action.receipt.outcome === "failed")
       ) {
         throw new Error("operation journal action status does not match its receipt outcome");
+      }
+    }
+  }
+  if (journal.externalEffects !== undefined) {
+    if (
+      !Array.isArray(journal.externalEffects) ||
+      journal.externalEffects.length !== declaredExternalEffects.length
+    ) {
+      throw new Error("operation journal external effect receipt is invalid");
+    }
+    for (const [index, effect] of journal.externalEffects.entries()) {
+      const declaration = declaredExternalEffects[index];
+      const effectKeys =
+        effect.status === "succeeded" ? ["effectId", "evidence", "status"] : ["effectId", "status"];
+      if (
+        !declaration ||
+        !hasExactKeys(effect, effectKeys) ||
+        effect.effectId !== declaration.effectId ||
+        !["pending", "succeeded"].includes(effect.status) ||
+        (effect.status === "succeeded" &&
+          (!hasExactKeys(effect.evidence, ["cleanupCommand", "provider", "status", "targetName"]) ||
+            effect.evidence.status !== "provider-created-store-unpublished" ||
+            canonicalJson(effect.evidence.provider) !== canonicalJson(declaration.provider) ||
+            effect.evidence.targetName !== declaration.targetName ||
+            effect.evidence.cleanupCommand !== declaration.cleanupCommand))
+      ) {
+        throw new Error("operation journal external effect receipt is invalid");
       }
     }
   }
@@ -431,6 +477,12 @@ function assertOperationJournal(
   ) {
     throw new Error("operation journal status does not match its durable action receipts");
   }
+  if (
+    journal.status === "prepared" &&
+    journal.externalEffects?.some(({ status }) => status !== "pending")
+  ) {
+    throw new Error("prepared operation journal contains a completed external effect");
+  }
   if (journal.status === "completed" && journal.completedReceipt === undefined) {
     throw new Error("completed operation journal is missing its exact receipt");
   }
@@ -457,6 +509,14 @@ function assertOperationJournal(
       canonicalJson(receipt.actionReceipts) !== canonicalJson(journalReceipts)
     ) {
       throw new Error("completed receipt does not match its operation journal");
+    }
+    if (
+      (receipt.outcome === "committed" &&
+        journal.externalEffects?.some(({ status }) => status !== "succeeded")) ||
+      (receipt.outcome === "compensated" &&
+        journal.externalEffects?.some(({ status }) => status === "succeeded"))
+    ) {
+      throw new Error("completed receipt conflicts with its external effect phase");
     }
   }
   registerObservableMutationAuthorization(

@@ -1,4 +1,7 @@
-import type { InventoryFindingCode } from "../protocol/client-types.js";
+import type {
+  InventoryFindingCode,
+  InventorySecretAdoptionOffer,
+} from "../protocol/client-types.js";
 import type { SafeRecursiveSnapshot } from "../secrets/safe-tree.js";
 import type { InventorySource } from "./enumerator.js";
 
@@ -33,6 +36,7 @@ export interface InventoryCandidateObservation {
   readonly source: InventorySource;
   readonly relativePath?: string;
   readonly findings: readonly InventoryFindingCode[];
+  readonly secretAdoptions: readonly InventorySecretAdoptionOffer[];
 }
 
 export interface CapturedInventoryCandidateObservation extends InventoryCandidateObservation {

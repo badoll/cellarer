@@ -230,6 +230,11 @@ cellarer inventory refresh --agent codex --dir "$PWD"
 cellarer --output json inventory import plan \
   --candidate '<candidate-id>' --agent codex --dir "$PWD"
 cellarer inventory import apply --plan '<mutationPlan JSON returned by plan>'
+cellarer --output json inventory adopt plan \
+  --candidate '<candidate-id>' \
+  --selector '{"kind":"header","server":"example","name":"Authorization"}' \
+  --provider keychain
+cellarer inventory adopt apply --plan '<mutationPlan JSON returned by plan>' --confirm
 cellarer resource list --kind skills
 cellarer resource show skills/nextjs
 ```
@@ -245,6 +250,27 @@ cross-process `mutationPlan`. `inventory import apply` accepts only that plan,
 revalidates its bindings, and publishes one Store revision. Neither command
 writes agent targets. Use `--into-collection <id>` on planning to add every
 imported resource to one existing collection in the same Store operation.
+
+Inventory offers reference-only secret adoption only for an MCP candidate with
+one unambiguous supported plaintext field. Supported selectors are stdio
+environment entries, stdio flag assignments or values, remote headers, and
+unique remote URL query parameters. Rules, skills, custom MCP payloads,
+malformed selectors, duplicate URL parameters, and candidates with multiple
+adoptable fields remain blocked. The selector is metadata; the secret value is
+never accepted in argv, structured input, HTTP, logs, or browser state.
+
+`inventory adopt plan` is read-only, makes zero provider calls, and binds the
+exact candidate, source evidence, Store revision, selector, provider, absent
+entry precondition, and reference-bearing Store actions into the sealed plan.
+`inventory adopt apply` requires `--confirm`, revalidates those bindings before
+provider interaction, and permits exactly one atomic create-if-absent attempt.
+The runtime composition must supply a compatible narrow provider capability;
+an unavailable provider or existing entry returns a typed rejection without
+read, list, overwrite, or delete fallback. If the provider entry is created but
+Store publication fails, the result and recovery diagnosis preserve the exact
+provider/reference and manual `cellarer secret rm ... --provider ...` cleanup
+command. Cellarer never silently deletes that orphan and never writes the
+source or any agent target.
 
 Use the resource lifecycle only when needed:
 
@@ -584,6 +610,8 @@ GET /api/v1/inventory?dir=/absolute/project
 GET /api/v1/inventory/{agentId}?dir=/absolute/project
 POST /api/v1/inventory/import/plan
 POST /api/v1/inventory/import/apply
+POST /api/v1/inventory/adoption/plan
+POST /api/v1/inventory/adoption/apply
 ```
 
 All JSON operations return a versioned envelope with request ID, status,
@@ -611,6 +639,16 @@ It disables import for incomplete Inventory, requires one exact confirmation,
 and surfaces stale-plan refresh/replan guidance without a silent retry. A
 successful import offers Library and Sync as separate next actions; neither
 Inventory review nor import writes an agent target.
+
+The two adoption routes accept only selector/provider metadata or the exact
+unchanged `mutationPlan`; unknown plaintext-shaped or provider-operation fields
+are rejected before the narrow Core service is called. Planning remains
+available without an apply provider capability and makes no provider call.
+Apply returns the typed adoption status, including stable orphan cleanup
+evidence when Store publication fails. The bundled UI renders the selector and
+derived reference name, lets the user choose a supported provider, reviews the
+plan, and requires a separate exact confirmation. It contains no secret-value
+input or general provider handle.
 
 The superseded `GET /api/v1/discovery`, `POST /api/v1/scan/plan`,
 `POST /api/v1/scan/apply`, `POST /api/v1/import/plan`, and

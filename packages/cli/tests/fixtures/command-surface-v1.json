@@ -153,7 +153,9 @@
     "sync.uninstall",
     "inventory.refresh",
     "inventory.import.plan",
-    "inventory.import.apply"
+    "inventory.import.apply",
+    "inventory.adopt.plan",
+    "inventory.adopt.apply"
   ],
   "commands": [
     {
@@ -2321,6 +2323,194 @@
           {
             "field": "dryRun",
             "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "inventory.adopt.apply",
+      "aliases": [],
+      "description": "经显式确认后应用未改动的 secret-adoption receipt",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "--plan <json>",
+          "attributeName": "plan",
+          "description": "inventory adopt plan 返回的完整 mutationPlan JSON",
+          "short": null,
+          "long": "--plan",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": true,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--confirm",
+          "attributeName": "confirm",
+          "description": "确认创建精确缺失的 provider reference 并发布 Store 引用",
+          "short": null,
+          "long": "--confirm",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": [
+          "inventory-secret-adoption",
+          "reference-only-secrets",
+          "mutation-authority",
+          "plan-apply",
+          "human-confirmation"
+        ],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:inventory.adopt.apply:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:inventory.adopt.apply:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "mutationPlan",
+            "option": "plan",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "confirmed",
+            "option": "confirm",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "inventory.adopt.plan",
+      "aliases": [],
+      "description": "为一个受支持的 MCP 字段生成 reference-only adoption receipt",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "--candidate <id>",
+          "attributeName": "candidate",
+          "description": "精确的 Inventory candidate ID",
+          "short": null,
+          "long": "--candidate",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": true,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--selector <json>",
+          "attributeName": "selector",
+          "description": "Inventory finding 返回的精确字段 selector JSON",
+          "short": null,
+          "long": "--selector",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": true,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--provider <provider>",
+          "attributeName": "provider",
+          "description": "vault 或 keychain",
+          "short": null,
+          "long": "--provider",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": true,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "-a, --agent <id>",
+          "attributeName": "agent",
+          "description": "精确的已注册 agent id",
+          "short": "-a",
+          "long": "--agent",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dir <path>",
+          "attributeName": "dir",
+          "description": "当前 project 根目录",
+          "short": null,
+          "long": "--dir",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": [
+          "unified-resource-inventory",
+          "inventory-secret-adoption",
+          "reference-only-secrets",
+          "mutation-authority",
+          "plan-apply"
+        ],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:inventory.adopt.plan:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:inventory.adopt.plan:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "candidateId",
+            "option": "candidate",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "selector",
+            "option": "selector",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "provider",
+            "option": "provider",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "agentId",
+            "option": "agent",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "dir",
+            "option": "dir",
             "positional": null,
             "encoded": false
           }

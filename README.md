@@ -96,6 +96,29 @@ node packages/cli/dist/bin.js inventory import apply \
   --plan '<mutationPlan JSON returned by plan>'
 ```
 
+For a blocked MCP candidate with one `secret-adoption-required` finding, copy
+the finding's exact selector into a reference-only adoption plan. Supported
+fields are stdio environment entries and flag arguments, plus remote headers
+and unique URL query parameters. Rule/Skill candidates, custom MCP shapes,
+malformed or ambiguous fields, and multiple candidate secret fields remain
+blocked:
+
+```bash
+node packages/cli/dist/bin.js --output json inventory adopt plan \
+  --candidate '<candidate-id>' \
+  --selector '{"kind":"environment","server":"example","name":"API_TOKEN"}' \
+  --provider vault
+node packages/cli/dist/bin.js inventory adopt apply \
+  --plan '<mutationPlan JSON returned by plan>' --confirm
+```
+
+Planning is read-only and never contacts a secret provider. Apply requires a
+runtime composition with an atomic create-if-absent provider capability; it
+never accepts a secret value in argv or machine input and never overwrites an
+existing entry. If provider creation succeeds but Store publication fails, the
+typed result preserves the exact manual cleanup command and cellarer does not
+silently delete the orphaned reference.
+
 Use this repository's README as a real Rule input and an isolated project
 directory as the target:
 

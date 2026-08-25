@@ -9,7 +9,13 @@ export {
   type ClientApiRouteDefinition,
   createClientOpenApiDocument,
 } from "./api-contract.js";
-export { type AppDeps, type AppType, createApp } from "./app.js";
+export {
+  type AppDeps,
+  type AppType,
+  bindInventorySecretAdoptionService,
+  createApp,
+  type InventorySecretAdoptionService,
+} from "./app.js";
 export {
   type ServeOptions,
   type SidecarAuthentication,

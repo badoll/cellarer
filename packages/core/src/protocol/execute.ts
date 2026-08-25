@@ -1,12 +1,13 @@
 import type { Env, MutationAuthorityLease } from "../env.js";
 import { assertSafeAtomicPublicationPath } from "../fs/safety.js";
+import { isInventorySecretAdoptionExternalEffect } from "../secrets/adoption-provider.js";
 import { containsObservableKnownValue, observableKnownValues } from "../secrets/observable.js";
 import { sha256 } from "../store/checksum.js";
 import { fingerprintTarget } from "../target-ownership.js";
 import {
   acquireCurrentMutationAuthorityLease,
   assertStrictMutationPlanRuntime,
-  createDurableMutationPlan,
+  createDurableMutationPlanWithExternalEffects,
   verifyMutationPlanAuthorization,
   verifyMutationPlanDigest,
 } from "./canonical.js";
@@ -18,9 +19,11 @@ import {
   removeOperationJournal,
 } from "./journal.js";
 import type {
+  DurableOperationExternalEffect,
   LockOwnerEvidence,
   MutationPlan,
   OperationActionReceipt,
+  OperationExternalEffectReceipt,
   OperationJournal,
   OperationJournalAction,
   OperationReceipt,
@@ -52,6 +55,8 @@ export type AuthorizeOperationAction = (
   | { readonly ok: false; readonly receipt: OperationActionReceipt }
 >;
 
+export type RecordOperationExternalEffect = (effectId: string) => Promise<void>;
+
 export async function executeMutationPlan(
   env: Env,
   storeRoot: string,
@@ -60,12 +65,14 @@ export async function executeMutationPlan(
     operationId: string,
     recordAction: RecordOperationAction,
     authorizeAction: AuthorizeOperationAction,
+    recordExternalEffect: RecordOperationExternalEffect,
   ) => Promise<MutationExecution>,
   options: {
     readonly validatePreflightBeforeObservation?: () => Promise<OperationResult | null>;
     readonly validateBeforeObservationUnderLock?: () => Promise<OperationResult | null>;
     readonly validateUnderLock?: () => Promise<OperationResult | null>;
     readonly authorityLease?: MutationAuthorityLease;
+    readonly externalEffects?: readonly DurableOperationExternalEffect[];
   } = {},
 ): Promise<OperationResult> {
   try {
@@ -91,6 +98,10 @@ export async function executeMutationPlan(
   if (preflight) {
     if (!suppliedAuthorityLease) await authorityLease.release();
     return preflight;
+  }
+  if (!validExternalEffects(plan, options.externalEffects)) {
+    if (!suppliedAuthorityLease) await authorityLease.release();
+    return invalidPlanResult();
   }
   try {
     const provenancePreflight = await options.validatePreflightBeforeObservation?.();
@@ -158,7 +169,9 @@ export async function executeMutationPlan(
     const initialJournal: OperationJournalInput = {
       schemaVersion: 1,
       operationId,
-      plan: createDurableMutationPlan(env, storeRoot, plan),
+      plan: createDurableMutationPlanWithExternalEffects(env, storeRoot, plan, {
+        externalEffects: options.externalEffects,
+      }),
       nextRevision: resultingRevision,
       status: "prepared",
       startedAt,
@@ -168,6 +181,14 @@ export async function executeMutationPlan(
         target: action.target,
         status: "pending",
       })),
+      ...(options.externalEffects && options.externalEffects.length > 0
+        ? {
+            externalEffects: options.externalEffects.map(({ effectId }) => ({
+              effectId,
+              status: "pending" as const,
+            })),
+          }
+        : {}),
     };
     journal = await publishOperationJournal(env, storeRoot, initialJournal);
     journal = withJournalStatus(journal, "executing", env.now().toISOString());
@@ -241,7 +262,43 @@ export async function executeMutationPlan(
       return { ok: false, receipt };
     };
 
-    const execution = await execute(operationId, recordAction, authorizeAction);
+    const recordExternalEffect: RecordOperationExternalEffect = async (effectId) => {
+      if (!journal) throw new Error("operation journal is not initialized");
+      const declaration = journal.plan.externalEffects?.find(
+        (candidate) => candidate.effectId === effectId,
+      );
+      const index = journal.externalEffects?.findIndex(
+        (candidate) => candidate.effectId === effectId,
+      );
+      const current =
+        index === undefined || index < 0 ? undefined : journal.externalEffects?.[index];
+      if (!declaration || index === undefined || index < 0 || !current) {
+        throw new TypeError(`external effect ${effectId} is not authorized by the durable plan`);
+      }
+      if (current.status === "succeeded") return;
+      const evidence = {
+        status: "provider-created-store-unpublished" as const,
+        provider: declaration.provider,
+        targetName: declaration.targetName,
+        cleanupCommand: declaration.cleanupCommand,
+      };
+      const externalEffects: OperationExternalEffectReceipt[] = [
+        ...(journal.externalEffects ?? []),
+      ];
+      externalEffects[index] = { effectId, status: "succeeded", evidence };
+      journal = await publishOperationJournal(env, storeRoot, {
+        ...journal,
+        updatedAt: env.now().toISOString(),
+        externalEffects,
+      });
+    };
+
+    const execution = await execute(
+      operationId,
+      recordAction,
+      authorizeAction,
+      recordExternalEffect,
+    );
     for (const receipt of execution.actionReceipts) await recordAction(receipt);
 
     const actionReceipts = journal.actions.flatMap((action) =>
@@ -270,11 +327,13 @@ export async function executeMutationPlan(
         operationId,
         failedActionIds,
       };
-      const noTargetChanged = journal.actions.every(
-        (action) =>
-          action.status !== "pending" &&
-          sameTargetState(action.receipt.before, action.receipt.after),
-      );
+      const noTargetChanged =
+        !journal.externalEffects?.some(({ status }) => status === "succeeded") &&
+        journal.actions.every(
+          (action) =>
+            action.status !== "pending" &&
+            sameTargetState(action.receipt.before, action.receipt.after),
+        );
       const crossedUnverifiedPublicationBoundary = journal.actions.some(
         (action) =>
           action.status === "failed" &&
@@ -318,6 +377,9 @@ export async function executeMutationPlan(
     }
     if (journal.actions.some((action) => action.status === "pending")) {
       throw new Error("mutation execution returned before every action receipt was persisted");
+    }
+    if (journal.externalEffects?.some(({ status }) => status !== "succeeded")) {
+      throw new Error("mutation execution returned before every external effect was persisted");
     }
 
     const statePublicationInputs = execution.statePublications ?? [];
@@ -423,11 +485,56 @@ export async function executeMutationPlan(
         ...(recoveryJournal ? { journal: recoveryJournal } : {}),
       };
     }
+    if (
+      journal &&
+      journal.status !== "completed" &&
+      journal.externalEffects?.some(({ status }) => status === "succeeded")
+    ) {
+      const recoveryJournal = await publishOperationJournal(env, storeRoot, {
+        ...journal,
+        status: "recovery-required",
+        updatedAt: env.now().toISOString(),
+      }).catch(() => journal);
+      return {
+        ok: false,
+        conflict: {
+          code: "MANUAL_RECOVERY_REQUIRED",
+          message: "manual recovery is required",
+          operationId,
+          targets: plan.actions.map(({ target }) => target),
+          guidance:
+            "an authorized external effect completed before the Store mutation could commit",
+        },
+        journal: recoveryJournal,
+      };
+    }
     throw error;
   } finally {
     if (!releaseAttempted) await acquired.lock.release();
     if (!suppliedAuthorityLease) await authorityLease.release();
   }
+}
+
+function validExternalEffects(
+  plan: MutationPlan,
+  effects: readonly DurableOperationExternalEffect[] | undefined,
+): boolean {
+  if (effects === undefined || effects.length === 0) return true;
+  if (
+    plan.operation !== "store-import" ||
+    plan.normalizedInputs.mutationKind !== "inventory-secret-adoption" ||
+    effects.length !== 1 ||
+    new Set(effects.map(({ effectId }) => effectId)).size !== effects.length
+  ) {
+    return false;
+  }
+  const effect = effects[0];
+  return Boolean(
+    effect &&
+      isInventorySecretAdoptionExternalEffect(effect) &&
+      JSON.stringify(effect.provider) === JSON.stringify(plan.normalizedInputs.provider) &&
+      effect.targetName === plan.normalizedInputs.targetName,
+  );
 }
 
 function recoveryLockConflict(owner: LockOwnerEvidence): OperationResult {

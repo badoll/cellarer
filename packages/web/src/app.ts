@@ -7,7 +7,9 @@
 import {
   type ActivityAction,
   AGENT_ID_PATTERN,
+  type AppliedInventorySecretAdoption,
   applyControlPlaneMutationPlan,
+  applyInventorySecretAdoptionPlan,
   applyInventoryStoreImportPlan,
   applyMutationPlan,
   applyResourceBundleImportPlan,
@@ -36,6 +38,8 @@ import {
   diffControlPlane,
   type Env,
   getClientReadiness,
+  InventorySecretAdoptionPlanningError,
+  type InventorySecretFieldSelector,
   InventoryStoreImportPlanningError,
   listActivity,
   listControlPlaneAgents,
@@ -51,6 +55,7 @@ import {
   mutateControlPlaneSettings,
   mutateCustomAdapter,
   type PlannedControlPlaneMutationDto,
+  type PlannedInventorySecretAdoption,
   parseAgentAdapterMutationBody,
   parseAgentEnabledMutationBody,
   parseCollectionCreateMutationBody,
@@ -60,6 +65,7 @@ import {
   parseControlPlaneSettingsMutationBody,
   planApplyMutation,
   planAvailableResourceUpdate,
+  planInventorySecretAdoption,
   planInventoryStoreImport,
   planResourceBundleImport,
   planResourceExport,
@@ -100,6 +106,12 @@ export interface AppDeps {
   env: Env;
   storeRoot: string;
   auth: AppAuthentication;
+  inventorySecretAdoption?: InventorySecretAdoptionService;
+}
+
+export interface InventorySecretAdoptionService {
+  plan(input: InventorySecretAdoptionPlanBody): Promise<PlannedInventorySecretAdoption>;
+  apply(mutationPlan: MutationPlan): Promise<AppliedInventorySecretAdoption>;
 }
 
 export type AppAuthentication =
@@ -249,6 +261,18 @@ interface InventoryStoreImportApplyBody {
   mutationPlan: MutationPlan;
 }
 
+interface InventorySecretAdoptionPlanBody {
+  candidateId: string;
+  selector: InventorySecretFieldSelector;
+  provider: "vault" | "keychain";
+  agentId?: string;
+  dir?: string;
+}
+
+interface InventorySecretAdoptionApplyBody {
+  mutationPlan: MutationPlan;
+}
+
 type AgentPlanBody =
   | { action: "set-enabled"; agentId: string; enabled: boolean }
   | { action: "upsert-adapter"; agentId: string; kind: "builtin" | "custom"; adapter: unknown }
@@ -321,6 +345,118 @@ function parseInventoryImportCandidateIds(raw: unknown): string[] {
     });
   }
   return raw as string[];
+}
+
+function parseInventorySecretAdoptionPlanBody(raw: unknown): InventorySecretAdoptionPlanBody {
+  const body = exactObject(raw, ["candidateId", "selector", "provider", "agentId", "dir"]);
+  if (typeof body.candidateId !== "string" || body.candidateId.length === 0) {
+    throw new ClientApiInputError("Inventory candidate ID is invalid", {
+      fields: ["candidateId"],
+    });
+  }
+  const selector = parseInventorySecretFieldSelector(body.selector);
+  if (body.provider !== "vault" && body.provider !== "keychain") {
+    throw new ClientApiInputError("Inventory adoption provider is invalid", {
+      fields: ["provider"],
+    });
+  }
+  const agentId =
+    body.agentId === undefined
+      ? undefined
+      : typeof body.agentId === "string"
+        ? parseInventoryAgentId(body.agentId)
+        : (() => {
+            throw new ClientApiInputError("Inventory agent ID is invalid", {
+              fields: ["agentId"],
+            });
+          })();
+  const dir =
+    body.dir === undefined
+      ? undefined
+      : typeof body.dir === "string"
+        ? parseInventoryDir(body.dir)
+        : (() => {
+            throw new ClientApiInputError("Inventory project root is invalid", {
+              fields: ["dir"],
+            });
+          })();
+  return {
+    candidateId: body.candidateId,
+    selector,
+    provider: body.provider,
+    ...(agentId ? { agentId } : {}),
+    ...(dir ? { dir } : {}),
+  };
+}
+
+function parseInventorySecretAdoptionApplyBody(raw: unknown): InventorySecretAdoptionApplyBody {
+  const body = exactObject(raw, ["mutationPlan"]);
+  if (typeof body.mutationPlan !== "object" || body.mutationPlan === null) {
+    throw new ClientApiInputError("Inventory adoption plan is invalid", {
+      fields: ["mutationPlan"],
+    });
+  }
+  return { mutationPlan: body.mutationPlan as MutationPlan };
+}
+
+function parseInventorySecretFieldSelector(raw: unknown): InventorySecretFieldSelector {
+  const kind =
+    typeof raw === "object" && raw !== null && "kind" in raw
+      ? (raw as { readonly kind?: unknown }).kind
+      : undefined;
+  const selector = exactObject(
+    raw,
+    kind === "argument" ? ["kind", "server", "name", "index", "style"] : ["kind", "server", "name"],
+  );
+  if (
+    typeof selector.server !== "string" ||
+    selector.server.length === 0 ||
+    typeof selector.name !== "string" ||
+    selector.name.length === 0
+  ) {
+    throw new ClientApiInputError("Inventory adoption selector is invalid", {
+      fields: ["selector"],
+    });
+  }
+  if (["environment", "header", "url-query"].includes(String(selector.kind))) {
+    return {
+      kind: selector.kind as "environment" | "header" | "url-query",
+      server: selector.server,
+      name: selector.name,
+    };
+  }
+  if (
+    selector.kind === "argument" &&
+    typeof selector.index === "number" &&
+    Number.isSafeInteger(selector.index) &&
+    selector.index >= 0 &&
+    (selector.style === "assignment" || selector.style === "value")
+  ) {
+    return {
+      kind: "argument",
+      server: selector.server,
+      name: selector.name,
+      index: selector.index,
+      style: selector.style,
+    };
+  }
+  throw new ClientApiInputError("Inventory adoption selector is invalid", {
+    fields: ["selector"],
+  });
+}
+
+function exactObject(raw: unknown, allowedKeys: readonly string[]): Record<string, unknown> {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new ClientApiInputError("request body must be an object", { fields: ["body"] });
+  }
+  const record = raw as Record<string, unknown>;
+  const unexpected = Object.keys(record).filter((key) => !allowedKeys.includes(key));
+  if (unexpected.length > 0) {
+    throw new ClientApiInputError("request body has unsupported fields", {
+      fields: unexpected.sort(),
+    });
+  }
+  return record;
 }
 
 // project scope 必须带 dir,否则 core 会以 server cwd 为工程根,把文件写进进程启动目录(且无 .gitignore 守护)。
@@ -496,7 +632,11 @@ function clientMutationFailure(requestId: string, conflict: MutationConflict) {
 }
 
 export function createApp(inputDeps: AppDeps) {
-  const { secretStore: _secretStore, ...webEnv } = inputDeps.env;
+  const {
+    secretStore: _secretStore,
+    inventorySecretAdoptionProvider: _inventorySecretAdoptionProvider,
+    ...webEnv
+  } = inputDeps.env;
   const deps: AppDeps = {
     ...inputDeps,
     env: webEnv,
@@ -555,6 +695,16 @@ export function createApp(inputDeps: AppDeps) {
         );
       }
       if (err instanceof InventoryStoreImportPlanningError) {
+        return c.json(
+          clientFailure(id, {
+            code: err.code,
+            message: err.message,
+            details: { reason: err.reason },
+          }),
+          400,
+        );
+      }
+      if (err instanceof InventorySecretAdoptionPlanningError) {
         return c.json(
           clientFailure(id, {
             code: err.code,
@@ -1345,6 +1495,20 @@ export function createApp(inputDeps: AppDeps) {
       const payload = clientSuccess(requestId(c), applied);
       return withCorePayload(c.json(payload), payload);
     })
+    .post("/api/v1/inventory/adoption/plan", async (c) => {
+      const service = requireInventorySecretAdoptionService(deps);
+      const body = parseInventorySecretAdoptionPlanBody(await parseJsonBody(() => c.req.json()));
+      const planned = await service.plan(body);
+      const payload = clientSuccess(requestId(c), planned);
+      return withCorePayload(c.json(payload), payload);
+    })
+    .post("/api/v1/inventory/adoption/apply", async (c) => {
+      const service = requireInventorySecretAdoptionService(deps);
+      const body = parseInventorySecretAdoptionApplyBody(await parseJsonBody(() => c.req.json()));
+      const applied = await service.apply(body.mutationPlan);
+      const payload = clientSuccess(requestId(c), applied);
+      return withCorePayload(c.json(payload), payload);
+    })
     .post("/api/v1/diff", async (c) => {
       const body = await parseJsonBody(() => c.req.json<DistributeBody>());
       return c.json(
@@ -1411,6 +1575,36 @@ export function createApp(inputDeps: AppDeps) {
     );
 
   return api;
+}
+
+export function bindInventorySecretAdoptionService(
+  env: Env,
+  storeRoot: string,
+): InventorySecretAdoptionService {
+  return Object.freeze({
+    plan: (input: InventorySecretAdoptionPlanBody) =>
+      planInventorySecretAdoption(env, {
+        storeRoot,
+        candidateId: input.candidateId,
+        selector: input.selector,
+        provider: input.provider,
+        refresh: {
+          ...(input.agentId ? { agentId: input.agentId } : {}),
+          ...(input.dir ? { projectRoot: input.dir } : {}),
+        },
+      }),
+    apply: (mutationPlan: MutationPlan) =>
+      applyInventorySecretAdoptionPlan(env, mutationPlan, { storeRoot }),
+  });
+}
+
+function requireInventorySecretAdoptionService(deps: AppDeps): InventorySecretAdoptionService {
+  if (!deps.inventorySecretAdoption) {
+    throw new ClientApiInputError("Inventory secret adoption is unavailable", {
+      capability: "inventory-secret-adoption",
+    });
+  }
+  return deps.inventorySecretAdoption;
 }
 
 function exactLoopbackOrigin(hostHeader: string | undefined, requestUrl: string): string {

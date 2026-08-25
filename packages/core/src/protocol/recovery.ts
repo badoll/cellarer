@@ -17,6 +17,7 @@ import {
   canonicalJson,
   withCurrentMutationAuthorityLease,
 } from "./canonical.js";
+import type { InventorySecretAdoptionOrphanEvidence } from "./client-types.js";
 import { targetState } from "./execute.js";
 import {
   DEFAULT_OPERATION_RECEIPT_RETENTION,
@@ -61,6 +62,7 @@ export interface MutationRecoveryDiagnosis {
   readonly lockOwner: LockOwnerEvidence | null;
   readonly recoveryLockOwner: LockOwnerEvidence | null;
   readonly receipt: OperationReceipt | null;
+  readonly orphanEvidence?: InventorySecretAdoptionOrphanEvidence;
   readonly message: string;
 }
 
@@ -204,12 +206,14 @@ async function diagnoseMutationRecoveryWithAuthorityLease(
     };
   }
   if (!(await isDurableRecoveryAuthorized(env, storeRoot, journal))) {
+    const orphanEvidence = inventorySecretAdoptionOrphanEvidence(journal);
     return {
       status: "manual-recovery-required",
       journal,
       lockOwner,
       recoveryLockOwner,
       receipt: null,
+      ...(orphanEvidence ? { orphanEvidence } : {}),
       message: "durable operation cannot be authorized from current trusted store state",
     };
   }
@@ -322,6 +326,9 @@ async function isDurableRecoveryAuthorized(
   ) {
     return false;
   }
+  // External provider effects are diagnosable but cannot be replayed or compensated by Store
+  // recovery. Their presence therefore keeps the operation manual-only.
+  if ((journal.plan.externalEffects?.length ?? 0) > 0) return false;
   if (journal.plan.operation === "store-import") {
     if (
       journal.plan.actions.every((action) =>
@@ -371,6 +378,15 @@ async function isDurableRecoveryAuthorized(
   // Apply/revert durable actions intentionally omit the executable payload and canonical options.
   // Their origin and helper derivation therefore cannot be independently proven after a crash.
   return false;
+}
+
+function inventorySecretAdoptionOrphanEvidence(
+  journal: OperationJournal,
+): InventorySecretAdoptionOrphanEvidence | null {
+  const succeeded = journal.externalEffects?.filter(({ status }) => status === "succeeded") ?? [];
+  if (succeeded.length !== 1) return null;
+  const effect = succeeded[0];
+  return effect?.status === "succeeded" ? effect.evidence : null;
 }
 
 function isInventoryStoreImportRecoveryAuthorized(

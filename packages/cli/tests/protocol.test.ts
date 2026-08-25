@@ -808,6 +808,8 @@ describe("agent CLI protocol foundation", () => {
       "inventory.refresh",
       "inventory.import.plan",
       "inventory.import.apply",
+      "inventory.adopt.plan",
+      "inventory.adopt.apply",
     ]);
 
     const schemaIds = new Set<string>();

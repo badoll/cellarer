@@ -307,6 +307,18 @@ const commandCases = {
     "codex",
   ],
   "inventory.import.apply": () => ["inventory", "import", "apply", "--plan", "{}"],
+  "inventory.adopt.plan": () => [
+    "inventory",
+    "adopt",
+    "plan",
+    "--candidate",
+    "inventory-candidate:v1:mcp:missing",
+    "--selector",
+    '{"kind":"environment","server":"missing","name":"API_TOKEN"}',
+    "--provider",
+    "vault",
+  ],
+  "inventory.adopt.apply": () => ["inventory", "adopt", "apply", "--plan", "{}", "--confirm"],
 } satisfies Record<RegisteredCommand, CommandCase>;
 
 function profileDesired(): string {

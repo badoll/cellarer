@@ -226,6 +226,18 @@ export type {
   SymlinkType,
 } from "./env.js";
 export {
+  type AppliedInventorySecretAdoption,
+  type ApplyInventorySecretAdoptionPlanOptions,
+  applyInventorySecretAdoptionPlan,
+  type InventorySecretAdoptionApplyStatus,
+  InventorySecretAdoptionPlanningError,
+  type InventorySecretAdoptionPlanningReason,
+  type InventorySecretAdoptionRefreshScope,
+  type PlanInventorySecretAdoptionOptions,
+  type PlannedInventorySecretAdoption,
+  planInventorySecretAdoption,
+} from "./inventory/adoption.js";
+export {
   type AppliedInventoryStoreImport,
   type ApplyInventoryStoreImportPlanOptions,
   applyInventoryStoreImportPlan,
@@ -325,6 +337,11 @@ export type {
   InventoryManagedMatch,
   InventoryRefreshResult,
   InventoryRelatedAdapter,
+  InventorySecretAdoptionOffer,
+  InventorySecretAdoptionOrphanEvidence,
+  InventorySecretAdoptionProvider,
+  InventorySecretFieldSelector,
+  InventorySecretProviderPrecondition,
   InventorySourceProvenance,
 } from "./protocol/client-types.js";
 export { targetState } from "./protocol/execute.js";
@@ -491,6 +508,12 @@ export {
   type StagedResourceUpdate,
   stageResourceUpdate,
 } from "./resources/update.js";
+export type {
+  InventorySecretAdoptionProviderPort,
+  InventorySecretReferenceBinding,
+  InventorySecretReferenceCreateResult,
+  ReadBoundInventorySecretValue,
+} from "./secrets/adoption-provider.js";
 // secrets
 export {
   assertMutationAuthorityCredentialTarget,

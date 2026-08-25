@@ -30,6 +30,9 @@ import {
   createInventoryImportApplyCommandContract,
   createInventoryImportPlanCommandContract,
   createInventoryRefreshCommandContract,
+  createInventorySecretAdoptionApplyCommandContract,
+  createInventorySecretAdoptionPlanCommandContract,
+  type InventorySecretAdoptionCommandService,
 } from "./inventory.js";
 import { createResourceLifecycleSyncDomain } from "./resource-lifecycle-sync-catalog.js";
 import { createSecretAuthorityRecoveryDomain } from "./secret-authority-recovery-catalog.js";
@@ -37,7 +40,10 @@ import { createStoreArtifactDomain } from "./store-artifact-catalog.js";
 import { createStoreTargetMutationDomain } from "./store-target-mutation-catalog.js";
 
 export function createCliCommandCatalog(
-  options: { readonly initInventoryImportConfirmer?: InitInventoryImportConfirmer } = {},
+  options: {
+    readonly initInventoryImportConfirmer?: InitInventoryImportConfirmer;
+    readonly inventorySecretAdoptionService?: InventorySecretAdoptionCommandService;
+  } = {},
 ): CommandCatalog {
   let catalog: CommandCatalog | undefined;
   const provider: ProtocolDiscoveryProvider = {
@@ -46,7 +52,7 @@ export function createCliCommandCatalog(
   };
   catalog = createCommandCatalog([
     createInitializationDiscoveryDomain(options, provider),
-    createInventoryDomain(),
+    createInventoryDomain(options.inventorySecretAdoptionService),
     createStoreArtifactDomain(),
     createControlPlaneReadDomain(),
     createStoreTargetMutationDomain(),
@@ -57,7 +63,7 @@ export function createCliCommandCatalog(
   return catalog;
 }
 
-function createInventoryDomain(): CommandDomain {
+function createInventoryDomain(service?: InventorySecretAdoptionCommandService): CommandDomain {
   return defineCommandDomain({
     id: "inventory",
     contracts: [
@@ -116,6 +122,63 @@ function createInventoryDomain(): CommandDomain {
           bindings: [s.option("mutationPlan", "plan", s.stringifyJson)],
           output: s.inventoryImportApplyOutput,
         }),
+      ),
+      createInventorySecretAdoptionPlanCommandContract(
+        defineContractMetadata({
+          command: "inventory.adopt.plan",
+          catalogOrder: 65,
+          mutability: "write",
+          requiredFeatures: [
+            "unified-resource-inventory",
+            "inventory-secret-adoption",
+            "reference-only-secrets",
+            "mutation-authority",
+            "plan-apply",
+          ],
+          input: s.jsonSchema.object(
+            {
+              candidateId: s.jsonSchema.string({ minLength: 1 }),
+              selector: s.inventorySecretFieldSelector,
+              provider: s.provider,
+              agentId: s.agentId,
+              dir: s.jsonSchema.string({ minLength: 1 }),
+            },
+            ["candidateId", "selector", "provider"],
+          ),
+          bindings: [
+            s.option("candidateId", "candidate"),
+            s.option("selector", undefined, s.stringifyJson),
+            s.option("provider"),
+            s.option("agentId", "agent"),
+            s.option("dir"),
+          ],
+          output: s.inventorySecretAdoptionPlanOutput,
+        }),
+        service,
+      ),
+      createInventorySecretAdoptionApplyCommandContract(
+        defineContractMetadata({
+          command: "inventory.adopt.apply",
+          catalogOrder: 66,
+          mutability: "write",
+          requiredFeatures: [
+            "inventory-secret-adoption",
+            "reference-only-secrets",
+            "mutation-authority",
+            "plan-apply",
+            "human-confirmation",
+          ],
+          input: s.jsonSchema.object(
+            { mutationPlan: s.inventorySecretAdoptionMutationPlan, confirmed: { const: true } },
+            ["mutationPlan", "confirmed"],
+          ),
+          bindings: [
+            s.option("mutationPlan", "plan", s.stringifyJson),
+            s.option("confirmed", "confirm"),
+          ],
+          output: s.inventorySecretAdoptionApplyOutput,
+        }),
+        service,
       ),
     ],
   });

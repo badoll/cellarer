@@ -13,6 +13,7 @@ import { sha256 } from "../store/checksum.js";
 import type { AssertExact, ExactContract } from "./client-types.js";
 import type {
   DurableMutationPlan,
+  DurableOperationExternalEffect,
   MutationAuthorizationEnvelope,
   MutationOperation,
   MutationPlan,
@@ -486,6 +487,15 @@ export function createDurableMutationPlan(
   storeRoot: string,
   plan: MutationPlan,
 ): DurableMutationPlan {
+  return createDurableMutationPlanWithExternalEffects(env, storeRoot, plan, {});
+}
+
+export function createDurableMutationPlanWithExternalEffects(
+  env: Env,
+  storeRoot: string,
+  plan: MutationPlan,
+  options: { readonly externalEffects?: readonly DurableOperationExternalEffect[] },
+): DurableMutationPlan {
   assertSupportedMutationPlanRuntime(plan);
   if (!verifyMutationPlanDigest(plan) || !verifyMutationPlanAuthorization(env, storeRoot, plan)) {
     throw new TypeError("cannot persist an unauthorized mutation plan");
@@ -505,6 +515,9 @@ export function createDurableMutationPlan(
       ...(["keychain-secret-set", "keychain-secret-delete"].includes(kind) ? { payload } : {}),
       ...(postcondition === undefined ? {} : { postcondition }),
     })),
+    ...(options.externalEffects && options.externalEffects.length > 0
+      ? { externalEffects: options.externalEffects }
+      : {}),
     expires: plan.expires,
     digest: plan.digest,
   };

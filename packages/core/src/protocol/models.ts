@@ -1,6 +1,8 @@
 import type {
   ActionPrecondition,
   CanonicalJsonObject,
+  InventorySecretAdoptionOrphanEvidence,
+  InventorySecretAdoptionProvider,
   MutationAuthorizationDomain,
   MutationAuthorizationEnvelope,
   MutationConflict,
@@ -65,6 +67,22 @@ export interface DurableMutationPlanAction {
   readonly postcondition?: TargetStateReceipt;
 }
 
+export interface DurableOperationExternalEffect {
+  readonly effectId: string;
+  readonly kind: "secret-reference-create";
+  readonly provider: InventorySecretAdoptionProvider;
+  readonly targetName: string;
+  readonly cleanupCommand: string;
+}
+
+export type OperationExternalEffectReceipt =
+  | { readonly effectId: string; readonly status: "pending" }
+  | {
+      readonly effectId: string;
+      readonly status: "succeeded";
+      readonly evidence: InventorySecretAdoptionOrphanEvidence;
+    };
+
 // Durable journals retain only the exact plan receipt and digests needed to validate recovery
 // evidence. Raw normalized inputs and action payloads remain in the caller-supplied in-memory plan.
 export interface DurableMutationPlan {
@@ -75,6 +93,7 @@ export interface DurableMutationPlan {
   readonly normalizedInputsDigest: string;
   readonly targetPreconditions: readonly ActionPrecondition[];
   readonly actions: readonly DurableMutationPlanAction[];
+  readonly externalEffects?: readonly DurableOperationExternalEffect[];
   readonly expires: PlanExpiry;
   readonly digest: string;
   readonly durableDigest: string;
@@ -127,6 +146,7 @@ export interface OperationJournal {
   readonly startedAt: string;
   readonly updatedAt: string;
   readonly actions: readonly OperationJournalAction[];
+  readonly externalEffects?: readonly OperationExternalEffectReceipt[];
   readonly statePublications?: readonly OperationStatePublication[];
   readonly completedReceipt?: OperationReceipt;
   readonly authorization: MutationAuthorizationEnvelope<typeof OPERATION_JOURNAL_DOMAIN>;

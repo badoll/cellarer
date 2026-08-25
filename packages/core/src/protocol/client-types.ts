@@ -442,6 +442,7 @@ export type InventoryFindingCode =
   | "INVALID_STRUCTURE"
   | "PARSE_FAILED"
   | "PROBABLE_SECRET"
+  | "secret-adoption-required"
   | "CONFLICT"
   | "STORE_SNAPSHOT_STALE"
   | "STORE_SNAPSHOT_UNSAFE"
@@ -453,6 +454,7 @@ export type InventoryFindingRemediation =
   | "retry-refresh"
   | "fix-structure"
   | "remove-secret-values"
+  | "adopt-supported-secret"
   | "resolve-conflict"
   | "repair-store";
 
@@ -462,6 +464,41 @@ export interface InventoryFinding {
   readonly scope: "refresh" | "source" | "candidate";
   readonly remediation: InventoryFindingRemediation;
   readonly sourceId?: string;
+  readonly adoption?: InventorySecretAdoptionOffer;
+}
+
+export type InventorySecretFieldSelector =
+  | {
+      readonly kind: "environment" | "header" | "url-query";
+      readonly server: string;
+      readonly name: string;
+    }
+  | {
+      readonly kind: "argument";
+      readonly server: string;
+      readonly name: string;
+      readonly index: number;
+      readonly style: "assignment" | "value";
+    };
+
+export interface InventorySecretAdoptionOffer {
+  readonly selector: InventorySecretFieldSelector;
+  readonly targetName: string;
+}
+
+export type InventorySecretAdoptionProvider =
+  | { readonly kind: "vault" }
+  | { readonly kind: "keychain"; readonly service: "cellarer" };
+
+export interface InventorySecretProviderPrecondition {
+  readonly state: "absent";
+}
+
+export interface InventorySecretAdoptionOrphanEvidence {
+  readonly status: "provider-created-store-unpublished";
+  readonly provider: InventorySecretAdoptionProvider;
+  readonly targetName: string;
+  readonly cleanupCommand: string;
 }
 
 export interface InventoryRelatedAdapter {

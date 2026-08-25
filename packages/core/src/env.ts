@@ -7,6 +7,7 @@ import type {
   MutationAuthorizationEnvelope,
   MutationOperation,
 } from "./protocol/models.js";
+import type { InventorySecretAdoptionProviderPort } from "./secrets/adoption-provider.js";
 
 export type Platform = "darwin" | "linux" | "win32" | (string & {});
 
@@ -220,5 +221,8 @@ export interface Env {
   // Composition must inject this before any executable mutation is planned or accepted. It stays
   // optional at the type boundary so read-only Core services remain usable when authority is absent.
   mutationAuthority?: MutationAuthority;
+  // Exact create-if-absent adoption capability. It deliberately exposes no provider browsing,
+  // read, overwrite, or delete operation.
+  inventorySecretAdoptionProvider?: InventorySecretAdoptionProviderPort;
   resourceSourceTransport?: ResourceSourceTransport;
 }

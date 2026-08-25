@@ -393,6 +393,20 @@ const CLIENT_API_ROUTE_BASES = [
     summary: "Apply an unchanged Inventory Store import receipt",
   },
   {
+    operationId: "planInventorySecretAdoption",
+    method: "post",
+    path: "/api/v1/inventory/adoption/plan",
+    authentication: "mutation",
+    summary: "Plan exact reference-only adoption for one supported Inventory secret field",
+  },
+  {
+    operationId: "applyInventorySecretAdoption",
+    method: "post",
+    path: "/api/v1/inventory/adoption/apply",
+    authentication: "mutation",
+    summary: "Apply an unchanged confirmed Inventory secret-adoption plan",
+  },
+  {
     operationId: "getDiff",
     method: "post",
     path: "/api/v1/diff",
@@ -1145,6 +1159,7 @@ function bodySchemaFor(operationId: string): ClientJsonSchema {
       };
     case "applyControlPlaneMutation":
     case "applyInventoryStoreImport":
+    case "applyInventorySecretAdoption":
     case "applySync":
     case "applyProfileMutation":
     case "applyResourceUpdate":
@@ -1158,6 +1173,17 @@ function bodySchemaFor(operationId: string): ClientJsonSchema {
           intoCollection: nonEmptyStringSchema,
         },
         ["candidateIds"],
+      );
+    case "planInventorySecretAdoption":
+      return objectSchema(
+        {
+          candidateId: nonEmptyStringSchema,
+          selector: inventorySecretFieldSelectorSchema,
+          provider: enumSchema(["vault", "keychain"]),
+          agentId: agentIdSchema,
+          dir: nonEmptyStringSchema,
+        },
+        ["candidateId", "selector", "provider"],
       );
     case "planSync":
       return syncBodySchema;
@@ -1697,6 +1723,64 @@ const resourceSyncTargetSchema = objectSchema(
   },
   ["agent", "destination", "scope", "target", "state"],
 );
+const inventorySecretFieldSelectorSchema = {
+  oneOf: [
+    objectSchema(
+      {
+        kind: enumSchema(["environment", "header", "url-query"]),
+        server: nonEmptyStringSchema,
+        name: nonEmptyStringSchema,
+      },
+      ["kind", "server", "name"],
+    ),
+    objectSchema(
+      {
+        kind: { const: "argument" },
+        server: nonEmptyStringSchema,
+        name: nonEmptyStringSchema,
+        index: integerSchema(),
+        style: enumSchema(["assignment", "value"]),
+      },
+      ["kind", "server", "name", "index", "style"],
+    ),
+  ],
+} as const satisfies ClientJsonSchema;
+const inventorySecretAdoptionProviderSchema = {
+  oneOf: [
+    objectSchema({ kind: { const: "vault" } }, ["kind"]),
+    objectSchema({ kind: { const: "keychain" }, service: { const: "cellarer" } }, [
+      "kind",
+      "service",
+    ]),
+  ],
+} as const satisfies ClientJsonSchema;
+const inventorySecretAdoptionOfferSchema = objectSchema(
+  { selector: inventorySecretFieldSelectorSchema, targetName: nonEmptyStringSchema },
+  ["selector", "targetName"],
+);
+const inventorySecretAdoptionOrphanEvidenceSchema = objectSchema(
+  {
+    status: { const: "provider-created-store-unpublished" },
+    provider: inventorySecretAdoptionProviderSchema,
+    targetName: nonEmptyStringSchema,
+    cleanupCommand: stringSchema({
+      pattern: "^cellarer secret rm [a-z0-9][a-z0-9-]* --provider (vault|keychain)$",
+    }),
+  },
+  ["status", "provider", "targetName", "cleanupCommand"],
+);
+const inventorySecretAdoptionExternalEffectSchema = objectSchema(
+  {
+    effectId: nonEmptyStringSchema,
+    kind: { const: "secret-reference-create" },
+    provider: inventorySecretAdoptionProviderSchema,
+    targetName: nonEmptyStringSchema,
+    cleanupCommand: stringSchema({
+      pattern: "^cellarer secret rm [a-z0-9][a-z0-9-]* --provider (vault|keychain)$",
+    }),
+  },
+  ["effectId", "kind", "provider", "targetName", "cleanupCommand"],
+);
 const resourceInventoryFindingSchema = objectSchema(
   {
     code: enumSchema([
@@ -1710,6 +1794,7 @@ const resourceInventoryFindingSchema = objectSchema(
       "INVALID_STRUCTURE",
       "PARSE_FAILED",
       "PROBABLE_SECRET",
+      "secret-adoption-required",
       "CONFLICT",
       "STORE_SNAPSHOT_STALE",
       "STORE_SNAPSHOT_UNSAFE",
@@ -1724,10 +1809,12 @@ const resourceInventoryFindingSchema = objectSchema(
       "retry-refresh",
       "fix-structure",
       "remove-secret-values",
+      "adopt-supported-secret",
       "resolve-conflict",
       "repair-store",
     ]),
     sourceId: nonEmptyStringSchema,
+    adoption: inventorySecretAdoptionOfferSchema,
   },
   ["code", "severity", "scope", "remediation"],
 );
@@ -2542,6 +2629,7 @@ const durableMutationPlanSchema = objectSchema(
       ),
     ),
     actions: arraySchema(durablePlanActionSchema),
+    externalEffects: arraySchema(inventorySecretAdoptionExternalEffectSchema),
     expires: {
       oneOf: [
         objectSchema({ policy: { const: "none" } }, ["policy"]),
@@ -2604,6 +2692,22 @@ const operationJournalSchema = objectSchema(
             receipt: operationActionReceiptSchema,
           },
           ["actionId", "target", "status", "receipt"],
+        ),
+      ],
+    }),
+    externalEffects: arraySchema({
+      oneOf: [
+        objectSchema({ effectId: nonEmptyStringSchema, status: { const: "pending" } }, [
+          "effectId",
+          "status",
+        ]),
+        objectSchema(
+          {
+            effectId: nonEmptyStringSchema,
+            status: { const: "succeeded" },
+            evidence: inventorySecretAdoptionOrphanEvidenceSchema,
+          },
+          ["effectId", "status", "evidence"],
         ),
       ],
     }),
@@ -2883,6 +2987,7 @@ const inventoryFindingSchema = objectSchema(
       "INVALID_STRUCTURE",
       "PARSE_FAILED",
       "PROBABLE_SECRET",
+      "secret-adoption-required",
       "CONFLICT",
       "STORE_SNAPSHOT_STALE",
       "STORE_SNAPSHOT_UNSAFE",
@@ -2897,10 +3002,12 @@ const inventoryFindingSchema = objectSchema(
       "retry-refresh",
       "fix-structure",
       "remove-secret-values",
+      "adopt-supported-secret",
       "resolve-conflict",
       "repair-store",
     ]),
     sourceId: nonEmptyStringSchema,
+    adoption: inventorySecretAdoptionOfferSchema,
   },
   ["code", "severity", "scope", "remediation"],
 );
@@ -3048,6 +3155,34 @@ const inventoryStoreImportApplyDataSchema = objectSchema(
   },
   ["mutationPlan", "candidateIds", "resourceIds", "operation", "warnings"],
 );
+const inventorySecretAdoptionPlanDataSchema = objectSchema(
+  {
+    inventory: inventoryRefreshDataSchema,
+    candidateId: nonEmptyStringSchema,
+    selector: inventorySecretFieldSelectorSchema,
+    provider: inventorySecretAdoptionProviderSchema,
+    targetName: nonEmptyStringSchema,
+    mutationPlan: mutationPlanSchema,
+  },
+  ["inventory", "candidateId", "selector", "provider", "targetName", "mutationPlan"],
+);
+const inventorySecretAdoptionApplyDataSchema = objectSchema(
+  {
+    mutationPlan: mutationPlanSchema,
+    candidateId: nullableSchema(nonEmptyStringSchema),
+    provider: nullableSchema(inventorySecretAdoptionProviderSchema),
+    targetName: nullableSchema(nonEmptyStringSchema),
+    status: enumSchema([
+      "applied",
+      "rejected",
+      "provider-precondition-conflict",
+      "orphaned-reference",
+    ]),
+    operation: operationResultDataSchema,
+    orphan: inventorySecretAdoptionOrphanEvidenceSchema,
+  },
+  ["mutationPlan", "candidateId", "provider", "targetName", "status", "operation"],
+);
 export type InventoryRefreshSchemaContract = AssertSchemaContract<
   ExactSchemaContract<typeof inventoryRefreshDataSchema, InventoryRefreshResult>
 >;
@@ -3064,6 +3199,7 @@ const mutationRecoveryDiagnosisDataSchema = objectSchema(
     lockOwner: nullableSchema(lockOwnerEvidenceSchema),
     recoveryLockOwner: nullableSchema(lockOwnerEvidenceSchema),
     receipt: nullableSchema(operationReceiptDataSchema),
+    orphanEvidence: inventorySecretAdoptionOrphanEvidenceSchema,
     message: stringSchema(),
   },
   ["status", "journal", "lockOwner", "recoveryLockOwner", "receipt", "message"],
@@ -3235,6 +3371,10 @@ function successDataSchemaFor(operationId: string): ClientJsonSchema {
       return inventoryStoreImportPlanDataSchema;
     case "applyInventoryStoreImport":
       return inventoryStoreImportApplyDataSchema;
+    case "planInventorySecretAdoption":
+      return inventorySecretAdoptionPlanDataSchema;
+    case "applyInventorySecretAdoption":
+      return inventorySecretAdoptionApplyDataSchema;
     case "getDiff":
       return objectSchema(
         {

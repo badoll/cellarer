@@ -71,12 +71,20 @@ describe("Inventory CLI protocol", () => {
     });
 
     const inventory = buildProgram().commands.find((command) => command.name() === "inventory");
-    expect(inventory?.commands.map((command) => command.name())).toEqual(["refresh", "import"]);
+    expect(inventory?.commands.map((command) => command.name())).toEqual([
+      "refresh",
+      "import",
+      "adopt",
+    ]);
     expect(inventory?.commands[0]?.options.map((option) => option.long)).toEqual([
       "--agent",
       "--dir",
     ]);
     expect(inventory?.commands[1]?.commands.map((command) => command.name())).toEqual([
+      "plan",
+      "apply",
+    ]);
+    expect(inventory?.commands[2]?.commands.map((command) => command.name())).toEqual([
       "plan",
       "apply",
     ]);

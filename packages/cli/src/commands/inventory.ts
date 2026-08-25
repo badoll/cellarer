@@ -1,10 +1,16 @@
 import {
+  type AppliedInventorySecretAdoption,
   type AppliedInventoryStoreImport,
+  applyInventorySecretAdoptionPlan,
   applyInventoryStoreImportPlan,
   type InventoryRefreshResult,
+  InventorySecretAdoptionPlanningError,
+  type InventorySecretFieldSelector,
   InventoryStoreImportPlanningError,
   type MutationPlan,
+  type PlannedInventorySecretAdoption,
   type PlannedInventoryStoreImport,
+  planInventorySecretAdoption,
   planInventoryStoreImport,
   refreshInventory,
 } from "@cellarer/core";
@@ -30,6 +36,22 @@ interface InventoryImportPlanInput extends InventoryRefreshInput {
 
 interface InventoryImportApplyInput {
   readonly mutationPlan?: unknown;
+}
+
+interface InventorySecretAdoptionPlanInput extends InventoryRefreshInput {
+  readonly candidateId: string;
+  readonly selector: InventorySecretFieldSelector;
+  readonly provider: "vault" | "keychain";
+}
+
+interface InventorySecretAdoptionApplyInput {
+  readonly mutationPlan?: unknown;
+  readonly confirmed: boolean;
+}
+
+export interface InventorySecretAdoptionCommandService {
+  plan(input: InventorySecretAdoptionPlanInput): Promise<PlannedInventorySecretAdoption>;
+  apply(mutationPlan: MutationPlan): Promise<AppliedInventorySecretAdoption>;
 }
 
 export function inventoryCommandRoot(): Command {
@@ -229,6 +251,137 @@ export function createInventoryImportApplyCommandContract(
   });
 }
 
+export function createInventorySecretAdoptionPlanCommandContract(
+  definition: CommandContractMetadata<"inventory.adopt.plan">,
+  service?: InventorySecretAdoptionCommandService,
+) {
+  return defineCommandContract<
+    "inventory.adopt.plan",
+    InventorySecretAdoptionPlanInput,
+    PlannedInventorySecretAdoption
+  >(definition, {
+    createCommand: () =>
+      new Command("plan")
+        .description("为一个受支持的 MCP 字段生成 reference-only adoption receipt")
+        .requiredOption("--candidate <id>", "精确的 Inventory candidate ID")
+        .requiredOption("--selector <json>", "Inventory finding 返回的精确字段 selector JSON")
+        .requiredOption("--provider <provider>", "vault 或 keychain")
+        .option("-a, --agent <id>", "精确的已注册 agent id")
+        .option("--dir <path>", "当前 project 根目录"),
+    normalize: ({ command }) => {
+      const opts = command.opts<{
+        readonly candidate: string;
+        readonly selector: unknown;
+        readonly provider: "vault" | "keychain";
+        readonly agent?: string;
+        readonly dir?: string;
+      }>();
+      return {
+        candidateId: opts.candidate,
+        selector: parseSelector(opts.selector, getCliInvocation(command)),
+        provider: opts.provider,
+        ...(opts.agent ? { agentId: opts.agent } : {}),
+        ...(opts.dir ? { dir: opts.dir } : {}),
+      };
+    },
+    execute: async (input) => {
+      if (service) return commandSuccess(await service.plan(input));
+      const ctx = await resolveContext(
+        {
+          ...(input.agentId ? { agent: input.agentId } : {}),
+          ...(input.dir ? { dir: input.dir } : {}),
+        },
+        "required",
+      );
+      return commandSuccess(
+        await planInventorySecretAdoption(ctx.env, {
+          storeRoot: ctx.storeRoot,
+          candidateId: input.candidateId,
+          selector: input.selector,
+          provider: input.provider,
+          refresh: {
+            ...(input.agentId ? { agentId: input.agentId } : {}),
+            ...(ctx.dir ? { projectRoot: ctx.dir } : {}),
+          },
+        }),
+      );
+    },
+    presentText: (outcome) => {
+      const output = createSafeConsole(outcome);
+      if (!outcome.ok) {
+        output.error(outcome.error.message);
+        return;
+      }
+      output.log(
+        `inventory adoption plan ${outcome.data.mutationPlan.planId}: candidate=${outcome.data.candidateId} target=${outcome.data.targetName} provider=${outcome.data.provider.kind}`,
+      );
+    },
+    mapError: (error) =>
+      error instanceof InventorySecretAdoptionPlanningError
+        ? { code: error.code, message: error.message, details: { reason: error.reason } }
+        : undefined,
+  });
+}
+
+export function createInventorySecretAdoptionApplyCommandContract(
+  definition: CommandContractMetadata<"inventory.adopt.apply">,
+  service?: InventorySecretAdoptionCommandService,
+) {
+  return defineCommandContract<
+    "inventory.adopt.apply",
+    InventorySecretAdoptionApplyInput,
+    AppliedInventorySecretAdoption
+  >(definition, {
+    createCommand: () =>
+      new Command("apply")
+        .description("经显式确认后应用未改动的 secret-adoption receipt")
+        .requiredOption("--plan <json>", "inventory adopt plan 返回的完整 mutationPlan JSON")
+        .option("--confirm", "确认创建精确缺失的 provider reference 并发布 Store 引用"),
+    normalize: ({ command }) => {
+      const opts = command.opts<{ readonly plan?: unknown; readonly confirm?: boolean }>();
+      return {
+        mutationPlan: parseMutationPlan(opts.plan, getCliInvocation(command)),
+        confirmed: opts.confirm === true,
+      };
+    },
+    execute: async (input, execution) => {
+      if (!input.confirmed) {
+        throw new CliInputError(
+          "INPUT_REQUIRED",
+          "explicit adoption confirmation is required",
+          { fields: ["confirmed"] },
+          execution.invocation,
+        );
+      }
+      const result = service
+        ? await service.apply(input.mutationPlan as MutationPlan)
+        : await (async () => {
+            const ctx = await resolveContext({}, "required");
+            return applyInventorySecretAdoptionPlan(ctx.env, input.mutationPlan as MutationPlan, {
+              storeRoot: ctx.storeRoot,
+            });
+          })();
+      const error = cliErrorFromOperation(result.operation);
+      return error
+        ? commandFailure<AppliedInventorySecretAdoption>(error, result)
+        : commandSuccess(result);
+    },
+    presentText: (outcome) => {
+      const output = createSafeConsole(outcome);
+      const result = outcome.ok ? outcome.data : outcome.data;
+      if (!result) {
+        if (!outcome.ok) output.error(outcome.error.message);
+        return;
+      }
+      output.log(
+        `inventory adoption ${result.status}: target=${result.targetName ?? "untrusted"} provider=${result.provider?.kind ?? "untrusted"}`,
+      );
+      if (result.orphan) output.warn(`cleanup=${result.orphan.cleanupCommand}`);
+    },
+    mapError: () => undefined,
+  });
+}
+
 function parseMutationPlan(value: unknown, invocation: CliInvocation): MutationPlan {
   if (value === undefined) {
     throw new CliInputError(
@@ -246,6 +399,20 @@ function parseMutationPlan(value: unknown, invocation: CliInvocation): MutationP
       "INVALID_INPUT",
       "plan must be valid JSON",
       { fields: ["mutationPlan"] },
+      invocation,
+    );
+  }
+}
+
+function parseSelector(value: unknown, invocation: CliInvocation): InventorySecretFieldSelector {
+  if (typeof value !== "string") return value as InventorySecretFieldSelector;
+  try {
+    return JSON.parse(value) as InventorySecretFieldSelector;
+  } catch {
+    throw new CliInputError(
+      "INVALID_INPUT",
+      "selector must be valid JSON",
+      { fields: ["selector"] },
       invocation,
     );
   }

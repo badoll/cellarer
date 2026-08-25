@@ -13,6 +13,7 @@ import {
   UnsafeRecursiveSourceError,
 } from "../secrets/safe-tree.js";
 import { sha256 } from "../store/checksum.js";
+import { inventorySecretAdoptionOffers } from "./adoption-fields.js";
 import type { InventorySource } from "./enumerator.js";
 import type {
   CapturedInventoryCandidateObservation,
@@ -105,6 +106,9 @@ function inspectMcp(
   const content = snapshot.files[0]?.content ?? "";
   if (content.trim().length === 0) return frozenInspection([], []);
   const structured = scanStructuredFileSecretFindings(source.path, content);
+  const adoptionAmbiguous = structured.some(
+    (finding) => finding.rule === "duplicate-key" || finding.rule === "structured-parse-error",
+  );
   const hasSecret =
     scanTextForSecrets(content).length > 0 ||
     structured.some((finding) => finding.rule !== "structured-parse-error");
@@ -113,16 +117,23 @@ function inspectMcp(
     const candidates = Object.entries(decoded.servers)
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([name, server]) => {
+        const secretAdoptions = adoptionAmbiguous
+          ? []
+          : inventorySecretAdoptionOffers(name, server);
         const canonical = canonicalJson(serverToRaw(server));
         const serialized = `${JSON.stringify(serverToRaw(server), null, 2)}\n`;
         return observation(
           source,
           snapshot,
           name,
-          hasSecret ? ["PROBABLE_SECRET"] : [],
+          [
+            ...(hasSecret ? (["PROBABLE_SECRET"] as const) : []),
+            ...(secretAdoptions.length > 0 ? (["secret-adoption-required"] as const) : []),
+          ],
           filePublication(snapshot, serialized),
           name,
           sha256(canonical),
+          secretAdoptions,
         );
       });
     return frozenInspection(candidates, []);
@@ -183,6 +194,7 @@ function observation(
   publication: CapturedInventoryPublication,
   relativePath?: string,
   contentFingerprint = snapshot.fingerprint,
+  secretAdoptions: CapturedInventoryCandidateObservation["secretAdoptions"] = Object.freeze([]),
 ): CapturedInventoryCandidateObservation {
   return Object.freeze({
     kind: source.kind,
@@ -195,6 +207,7 @@ function observation(
     publication,
     ...(relativePath ? { relativePath } : {}),
     findings: Object.freeze([...new Set(findings)].sort()),
+    secretAdoptions: Object.freeze([...secretAdoptions]),
   });
 }
 

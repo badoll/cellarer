@@ -7,7 +7,7 @@ import { CLIENT_API_CONTRACT_ID, CLIENT_API_VERSION, type Env } from "@cellarer/
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
-import { type AppAuthentication, createApp } from "./app.js";
+import { type AppAuthentication, bindInventorySecretAdoptionService, createApp } from "./app.js";
 import { cspHeader, hostGuard } from "./security.js";
 
 export interface ServeOptions {
@@ -74,6 +74,7 @@ export function buildServerApp(opts: Omit<ServeOptions, "port">): Hono {
       env: opts.env,
       storeRoot: opts.storeRoot,
       auth,
+      inventorySecretAdoption: bindInventorySecretAdoptionService(opts.env, opts.storeRoot),
     }),
   );
 

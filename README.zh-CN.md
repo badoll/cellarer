@@ -86,6 +86,25 @@ node packages/cli/dist/bin.js inventory import apply \
   --plan '<plan 返回的 mutationPlan JSON>'
 ```
 
+对于只有一个 `secret-adoption-required` finding 的受阻 MCP candidate，可把 finding 中的
+精确 selector 原样用于 reference-only adoption plan。支持 stdio 环境变量与 flag 参数，
+以及 remote header 与唯一 URL query 参数。Rule/Skill candidate、custom MCP 结构、
+malformed 或 ambiguous 字段，以及含多个候选密钥字段的 candidate 仍然受阻：
+
+```bash
+node packages/cli/dist/bin.js --output json inventory adopt plan \
+  --candidate '<candidate-id>' \
+  --selector '{"kind":"environment","server":"example","name":"API_TOKEN"}' \
+  --provider vault
+node packages/cli/dist/bin.js inventory adopt apply \
+  --plan '<plan 返回的 mutationPlan JSON>' --confirm
+```
+
+Planning 只读且绝不访问 secret provider。Apply 要求 runtime composition 提供原子
+create-if-absent provider capability；argv 与 machine input 都不接受密钥真值，也绝不覆盖
+已有 entry。如果 provider 创建成功但 Store publication 失败，typed result 会保留精确的
+人工 cleanup command，cellarer 不会静默删除 orphaned reference。
+
 使用仓库自己的 README 作为真实 Rule 输入，并用隔离目录作为 project target：
 
 ```bash

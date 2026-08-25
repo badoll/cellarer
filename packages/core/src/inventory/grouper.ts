@@ -70,6 +70,19 @@ function projectCandidate(
   const state = codes.size > 0 ? "needs-attention" : match ? "in-store" : "ready";
   const sources = projectSources(env, observations);
   const relatedAdapters = mergeAdapters(sources.flatMap((source) => source.adapters));
+  const adoptionOffers = new Map(
+    observations
+      .flatMap((observation) => observation.secretAdoptions)
+      .map((adoption) => [JSON.stringify(adoption), adoption]),
+  );
+  const findings = [
+    ...[...codes]
+      .filter((code) => code !== "secret-adoption-required")
+      .map((code) => inventoryFinding(code, "candidate")),
+    ...[...adoptionOffers.values()].map((adoption) =>
+      inventoryFinding("secret-adoption-required", "candidate", undefined, adoption),
+    ),
+  ].sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
 
   return Object.freeze({
     id,
@@ -80,7 +93,7 @@ function projectCandidate(
     defaultSelected: state === "ready",
     sources,
     relatedAdapters,
-    findings: Object.freeze([...codes].sort().map((code) => inventoryFinding(code, "candidate"))),
+    findings: Object.freeze(findings),
     ...(match
       ? { managedMatch: { resourceId: match.resourceId, revisionId: match.revisionId } }
       : {}),
@@ -172,6 +185,7 @@ export function inventoryFinding(
   code: InventoryFindingCode,
   scope: InventoryFinding["scope"],
   sourceId?: string,
+  adoption?: InventoryFinding["adoption"],
 ): InventoryFinding {
   const finding = Object.freeze({
     code,
@@ -179,6 +193,7 @@ export function inventoryFinding(
     scope,
     remediation: findingRemediation(code),
     ...(sourceId ? { sourceId } : {}),
+    ...(adoption ? { adoption } : {}),
   });
   return finding;
 }
@@ -195,6 +210,7 @@ function findingRemediation(code: InventoryFindingCode): InventoryFindingRemedia
   if (code === "SNAPSHOT_STALE" || code === "STORE_SNAPSHOT_STALE") return "retry-refresh";
   if (code === "INVALID_STRUCTURE" || code === "PARSE_FAILED") return "fix-structure";
   if (code === "PROBABLE_SECRET") return "remove-secret-values";
+  if (code === "secret-adoption-required") return "adopt-supported-secret";
   if (code === "CONFLICT") return "resolve-conflict";
   if (code === "STORE_SNAPSHOT_UNSAFE" || code === "STORE_PROJECTION_FAILED") {
     return "repair-store";

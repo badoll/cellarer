@@ -2,6 +2,9 @@ import {
   CLIENT_API_CONTRACT_ID,
   CLIENT_API_VERSION,
   type InventoryRefreshResult,
+  type InventorySecretAdoptionOrphanEvidence,
+  type InventorySecretAdoptionProvider,
+  type InventorySecretFieldSelector,
   type MutationPlan,
   type PostCommitInventoryRefresh,
 } from "@cellarer/core/client-api";
@@ -160,6 +163,57 @@ export async function applyInventoryStoreImport(
 ): Promise<InventoryStoreImportApplyResult> {
   return readApiJson<InventoryStoreImportApplyResult>(
     await apiFetch("/api/v1/inventory/import/apply", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mutationPlan }),
+    }),
+  );
+}
+
+export interface InventorySecretAdoptionPlanInput {
+  readonly candidateId: string;
+  readonly selector: InventorySecretFieldSelector;
+  readonly provider: "vault" | "keychain";
+  readonly agentId?: string;
+  readonly dir?: string;
+}
+
+export interface InventorySecretAdoptionPlanResult {
+  readonly inventory: InventoryRefreshResult;
+  readonly candidateId: string;
+  readonly selector: InventorySecretFieldSelector;
+  readonly provider: InventorySecretAdoptionProvider;
+  readonly targetName: string;
+  readonly mutationPlan: MutationPlan;
+}
+
+export interface InventorySecretAdoptionApplyResult {
+  readonly mutationPlan: MutationPlan;
+  readonly candidateId: string | null;
+  readonly provider: InventorySecretAdoptionProvider | null;
+  readonly targetName: string | null;
+  readonly status: "applied" | "rejected" | "provider-precondition-conflict" | "orphaned-reference";
+  readonly operation: { readonly ok: boolean };
+  readonly orphan?: InventorySecretAdoptionOrphanEvidence;
+}
+
+export async function planInventorySecretAdoption(
+  input: InventorySecretAdoptionPlanInput,
+): Promise<InventorySecretAdoptionPlanResult> {
+  return readApiJson<InventorySecretAdoptionPlanResult>(
+    await apiFetch("/api/v1/inventory/adoption/plan", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  );
+}
+
+export async function applyInventorySecretAdoption(
+  mutationPlan: MutationPlan,
+): Promise<InventorySecretAdoptionApplyResult> {
+  return readApiJson<InventorySecretAdoptionApplyResult>(
+    await apiFetch("/api/v1/inventory/adoption/apply", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ mutationPlan }),

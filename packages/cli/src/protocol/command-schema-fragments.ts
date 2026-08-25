@@ -74,6 +74,35 @@ const resourceState = jsonSchema.enumeration([
   "blocked",
 ]);
 const contentFingerprint = jsonSchema.string({ pattern: "^sha256:[0-9a-f]{64}$" });
+const inventorySecretFieldSelector: JsonSchema = {
+  oneOf: [
+    dataObject(["kind", "server", "name"], {
+      kind: jsonSchema.enumeration(["environment", "header", "url-query"]),
+      server: jsonSchema.string({ minLength: 1 }),
+      name: jsonSchema.string({ minLength: 1 }),
+    }),
+    dataObject(["kind", "server", "name", "index", "style"], {
+      kind: { const: "argument" },
+      server: jsonSchema.string({ minLength: 1 }),
+      name: jsonSchema.string({ minLength: 1 }),
+      index: jsonSchema.integer(),
+      style: jsonSchema.enumeration(["assignment", "value"]),
+    }),
+  ],
+};
+const inventorySecretAdoptionProvider: JsonSchema = {
+  oneOf: [
+    dataObject(["kind"], { kind: { const: "vault" } }),
+    dataObject(["kind", "service"], {
+      kind: { const: "keychain" },
+      service: { const: "cellarer" },
+    }),
+  ],
+};
+const inventorySecretAdoptionOffer = dataObject(["selector", "targetName"], {
+  selector: inventorySecretFieldSelector,
+  targetName: jsonSchema.string({ minLength: 1 }),
+});
 const inventoryFinding = dataObject(["code", "severity", "scope", "remediation"], {
   code: jsonSchema.enumeration([
     "ADAPTER_DETECTION_FAILED",
@@ -86,6 +115,7 @@ const inventoryFinding = dataObject(["code", "severity", "scope", "remediation"]
     "INVALID_STRUCTURE",
     "PARSE_FAILED",
     "PROBABLE_SECRET",
+    "secret-adoption-required",
     "CONFLICT",
     "STORE_SNAPSHOT_STALE",
     "STORE_SNAPSHOT_UNSAFE",
@@ -100,10 +130,12 @@ const inventoryFinding = dataObject(["code", "severity", "scope", "remediation"]
     "retry-refresh",
     "fix-structure",
     "remove-secret-values",
+    "adopt-supported-secret",
     "resolve-conflict",
     "repair-store",
   ]),
   sourceId: jsonSchema.string({ minLength: 1 }),
+  adoption: inventorySecretAdoptionOffer,
 });
 const inventoryRelatedAdapter = dataObject(["id", "displayName", "enabled", "detected"], {
   id: agentId,
@@ -1083,6 +1115,103 @@ const inventoryImportPlanOutput = dataObject(["inventory", "candidateIds", "muta
   candidateIds: stringArray,
   mutationPlan: inventoryImportMutationPlan,
 });
+const inventorySecretAdoptionSourceBinding = dataObject(
+  ["adapterId", "path", "fingerprint", "physicalIdentity"],
+  {
+    adapterId: agentId,
+    path: jsonSchema.string({ minLength: 1 }),
+    fingerprint: contentFingerprint,
+    physicalIdentity: jsonSchema.string({ minLength: 1 }),
+  },
+);
+const inventorySecretProviderPrecondition = dataObject(["state"], {
+  state: { const: "absent" },
+});
+const inventorySecretAdoptionContentPayload = dataObject(
+  [
+    "candidateId",
+    "provider",
+    "providerPrecondition",
+    "provenance",
+    "publication",
+    "resourceId",
+    "selector",
+    "source",
+    "targetName",
+  ],
+  {
+    candidateId: jsonSchema.string({ minLength: 1 }),
+    provider: inventorySecretAdoptionProvider,
+    providerPrecondition: inventorySecretProviderPrecondition,
+    provenance: jsonSchema.array(inventorySource),
+    publication: {
+      ...inventoryImportPublication,
+      oneOf: [
+        dataObject(["kind", "data", "mode", "fingerprint"], {
+          kind: { const: "file" },
+          data: jsonSchema.string(),
+          mode: jsonSchema.integer(),
+          fingerprint: contentFingerprint,
+        }),
+      ],
+    },
+    resourceId: jsonSchema.string({ minLength: 1 }),
+    selector: inventorySecretFieldSelector,
+    source: inventorySecretAdoptionSourceBinding,
+    targetName: jsonSchema.string({ minLength: 1 }),
+  },
+);
+const inventorySecretAdoptionAction: JsonSchema = {
+  oneOf: [
+    typedMutationPlanAction(
+      "inventory-resource-content",
+      inventorySecretAdoptionContentPayload,
+      true,
+    ),
+    typedMutationPlanAction("inventory-resource-metadata", inventoryImportMetadataPayload, true),
+  ],
+};
+const inventorySecretAdoptionNormalizedInputs = dataObject(
+  [
+    "candidateId",
+    "candidateName",
+    "mutationKind",
+    "provider",
+    "providerPrecondition",
+    "refreshScope",
+    "selector",
+    "targetName",
+  ],
+  {
+    candidateId: jsonSchema.string({ minLength: 1 }),
+    candidateName: jsonSchema.string({ minLength: 1 }),
+    mutationKind: { const: "inventory-secret-adoption" },
+    provider: inventorySecretAdoptionProvider,
+    providerPrecondition: inventorySecretProviderPrecondition,
+    refreshScope: dataObject(["agentId", "projectRoot"], {
+      agentId: nullableNonEmptyString,
+      projectRoot: nullableNonEmptyString,
+    }),
+    selector: inventorySecretFieldSelector,
+    targetName: jsonSchema.string({ minLength: 1 }),
+  },
+);
+const inventorySecretAdoptionMutationPlan = sealedMutationPlan(
+  "store-import",
+  inventorySecretAdoptionNormalizedInputs,
+  jsonSchema.array(inventorySecretAdoptionAction),
+);
+const inventorySecretAdoptionPlanOutput = dataObject(
+  ["inventory", "candidateId", "selector", "provider", "targetName", "mutationPlan"],
+  {
+    inventory: inventoryRefreshOutput,
+    candidateId: jsonSchema.string({ minLength: 1 }),
+    selector: inventorySecretFieldSelector,
+    provider: inventorySecretAdoptionProvider,
+    targetName: jsonSchema.string({ minLength: 1 }),
+    mutationPlan: inventorySecretAdoptionMutationPlan,
+  },
+);
 const applyMutationPlan: JsonSchema = { oneOf: [distributionMutationPlan, settingsMutationPlan] };
 const lockOwnerEvidence = dataObject(["operationId", "processId", "hostname", "acquiredAt"], {
   operationId: jsonSchema.string({ minLength: 1 }),
@@ -1175,6 +1304,34 @@ const presentedOperationResult = dataObject(["ok"], {
   receipt: operationReceipt,
   conflict: mutationConflict,
 });
+const inventorySecretAdoptionOrphanEvidence = dataObject(
+  ["status", "provider", "targetName", "cleanupCommand"],
+  {
+    status: { const: "provider-created-store-unpublished" },
+    provider: inventorySecretAdoptionProvider,
+    targetName: jsonSchema.string({ minLength: 1 }),
+    cleanupCommand: jsonSchema.string({
+      pattern: "^cellarer secret rm [a-z0-9][a-z0-9-]* --provider (vault|keychain)$",
+    }),
+  },
+);
+const inventorySecretAdoptionApplyOutput = dataObject(
+  ["mutationPlan", "candidateId", "provider", "targetName", "status", "operation"],
+  {
+    mutationPlan: inventorySecretAdoptionMutationPlan,
+    candidateId: nullableNonEmptyString,
+    provider: { oneOf: [...(inventorySecretAdoptionProvider.oneOf ?? []), { type: "null" }] },
+    targetName: nullableNonEmptyString,
+    status: jsonSchema.enumeration([
+      "applied",
+      "rejected",
+      "provider-precondition-conflict",
+      "orphaned-reference",
+    ]),
+    operation: presentedOperationResult,
+    orphan: inventorySecretAdoptionOrphanEvidence,
+  },
+);
 const inventoryImportApplyOutput = dataObject(
   ["mutationPlan", "candidateIds", "resourceIds", "operation", "warnings"],
   {
@@ -1293,6 +1450,7 @@ const mutationRecoveryDiagnosis = dataObject(["status"], {
   planId: jsonSchema.string({ minLength: 1 }),
   baseRevision: jsonSchema.integer(),
   error: mutationConflict,
+  orphanEvidence: inventorySecretAdoptionOrphanEvidence,
 });
 const mutationRecoveryPresentation = mutationRecoveryDiagnosis;
 const resourceListOutput = dataObject(["generatedAt", "resources", "counts", "warnings"], {
@@ -1873,6 +2031,10 @@ export const commandSchemaFragments = Object.freeze({
   exactResourceSelector,
   importedArtifact,
   inventoryRefreshOutput,
+  inventorySecretAdoptionApplyOutput,
+  inventorySecretAdoptionMutationPlan,
+  inventorySecretAdoptionPlanOutput,
+  inventorySecretFieldSelector,
   inventoryImportApplyOutput,
   inventoryImportMutationPlan,
   inventoryImportPlanOutput,

@@ -112,7 +112,7 @@ const BOUNDARY_ROLE_INVENTORY: Readonly<Record<BoundaryRole, readonly string[]>>
     "secrets/types.ts",
     "secrets/vault-path.ts",
   ],
-  port: ["env.ts", "secrets/provider-ports.ts"],
+  port: ["env.ts", "secrets/adoption-provider.ts", "secrets/provider-ports.ts"],
   provider: ["secrets/keychain-provider.ts", "secrets/provider-adapters.ts", "secrets/vault.ts"],
   runtime: [
     "real-env.ts",

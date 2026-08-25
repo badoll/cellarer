@@ -196,6 +196,11 @@ cellarer inventory refresh --agent codex --dir "$PWD"
 cellarer --output json inventory import plan \
   --candidate '<candidate-id>' --agent codex --dir "$PWD"
 cellarer inventory import apply --plan '<plan 返回的 mutationPlan JSON>'
+cellarer --output json inventory adopt plan \
+  --candidate '<candidate-id>' \
+  --selector '{"kind":"header","server":"example","name":"Authorization"}' \
+  --provider keychain
+cellarer inventory adopt apply --plan '<plan 返回的 mutationPlan JSON>' --confirm
 cellarer resource list --kind skills
 cellarer resource show skills/nextjs
 ```
@@ -209,6 +214,22 @@ authority-sealed、可跨进程使用的 `mutationPlan`。`inventory import appl
 重新验证绑定，并发布一个 Store revision。两个命令都不会写入 agent target。规划时可用
 `--into-collection <id>`，在同一个 Store operation 中把全部导入资源加入一个现有
 collection。
+
+Inventory 只为恰好有一个无歧义受支持明文字段的 MCP candidate 提供 reference-only secret
+adoption。支持的 selector 包括 stdio 环境变量、stdio flag assignment 或 value、remote
+header，以及唯一的 remote URL query 参数。Rules、skills、custom MCP payload、malformed
+selector、重复 URL 参数，以及含多个可 adopt 字段的 candidate 仍然受阻。Selector 只是
+metadata；argv、structured input、HTTP、日志与 browser state 都不接受密钥真值。
+
+`inventory adopt plan` 只读、provider 调用为零，并把精确 candidate、source evidence、Store
+revision、selector、provider、absent-entry precondition 与只含引用的 Store actions 绑定进
+sealed plan。`inventory adopt apply` 要求 `--confirm`，在 provider interaction 前重新验证全部
+绑定，而且只允许一次原子 create-if-absent 尝试。Runtime composition 必须提供兼容的窄
+provider capability；provider unavailable 或 entry 已存在时返回 typed rejection，不会回退到
+read、list、overwrite 或 delete。如果 provider entry 已创建而 Store publication 失败，结果
+与 recovery diagnosis 会保留精确 provider/reference 以及人工
+`cellarer secret rm ... --provider ...` cleanup command。cellarer 绝不静默删除该 orphan，
+也不会改写 source 或任何 agent target。
 
 只在需要时使用 resource lifecycle：
 
@@ -515,6 +536,8 @@ GET /api/v1/inventory?dir=/absolute/project
 GET /api/v1/inventory/{agentId}?dir=/absolute/project
 POST /api/v1/inventory/import/plan
 POST /api/v1/inventory/import/apply
+POST /api/v1/inventory/adoption/plan
+POST /api/v1/inventory/adoption/apply
 ```
 
 所有 JSON operation 返回包含 request ID、status、warnings，以及 data 或 typed error 的
@@ -536,6 +559,13 @@ Inventory-first onboarding 开始，支持按 kind、source、adapter 与 state 
 provenance，并只采用 Core defaults。Inventory 不完整时禁用导入；导入需要一次精确确认；
 plan 过期时只展示 refresh/replan 指引，不会静默重试。导入成功后，Library 与 Sync 作为
 独立 next action 展示；Inventory 审查和导入都不会写入 agent target。
+
+两个 adoption route 只接受 selector/provider metadata 或精确且未修改的 `mutationPlan`；
+未知的 plaintext-shaped 或 provider-operation 字段会在窄 Core service 被调用前拒绝。即使
+apply provider capability 暂不可用，planning 仍可用且不会调用 provider。Apply 返回 typed
+adoption status；Store publication 失败时包含稳定的 orphan cleanup evidence。随包 UI 只渲染
+selector 与派生 reference name，允许选择受支持 provider、审查 plan，并要求独立的精确确认；
+client code 中没有 secret-value input 或 general provider handle。
 
 旧的 `GET /api/v1/discovery`、`POST /api/v1/scan/plan`、
 `POST /api/v1/scan/apply`、`POST /api/v1/import/plan` 与

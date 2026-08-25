@@ -2,9 +2,17 @@ import type {
   InventoryCandidate,
   InventoryCandidateState,
   InventoryRefreshResult,
+  InventorySecretAdoptionOffer,
 } from "@cellarer/core/client-api";
 import { useEffect, useState } from "react";
-import { applyInventoryStoreImport, fetchInventory, planInventoryStoreImport } from "./api.js";
+import {
+  applyInventorySecretAdoption,
+  applyInventoryStoreImport,
+  fetchInventory,
+  type InventorySecretAdoptionPlanResult,
+  planInventorySecretAdoption,
+  planInventoryStoreImport,
+} from "./api.js";
 import { DashboardIcon } from "./dashboard-icons.js";
 import {
   canPlanInventoryImport,
@@ -34,12 +42,27 @@ const STATE_LABELS: Record<InventoryCandidateState, string> = {
   "in-store": "In Store",
 };
 
+export type InventorySecretAdoptionViewState =
+  | "idle"
+  | "planning"
+  | "review"
+  | "applying"
+  | "applied"
+  | "failed";
+
 export function InventoryPage(props: { readonly onNavigate?: (page: Page) => void }) {
   const [onboarding, setOnboarding] = useState<InventoryOnboardingState>(() =>
     createInventoryOnboardingState(),
   );
   const [filters, setFilters] = useState<InventoryFilters>(EMPTY_INVENTORY_FILTERS);
   const [reloadKey, setReloadKey] = useState(0);
+  const [adoptionProvider, setAdoptionProvider] = useState<"vault" | "keychain">("vault");
+  const [adoption, setAdoption] = useState<{
+    readonly candidateId: string | null;
+    readonly state: InventorySecretAdoptionViewState;
+    readonly plan: InventorySecretAdoptionPlanResult | null;
+    readonly message?: string;
+  }>({ candidateId: null, state: "idle", plan: null });
 
   useEffect(() => {
     let alive = true;
@@ -88,6 +111,61 @@ export function InventoryPage(props: { readonly onNavigate?: (page: Page) => voi
       );
     } catch (error) {
       setOnboarding((current) => inventoryImportFailed(current, error));
+    }
+  }
+
+  async function reviewSecretAdoption(
+    candidate: InventoryCandidate,
+    offer: InventorySecretAdoptionOffer,
+  ) {
+    setAdoption({ candidateId: candidate.id, state: "planning", plan: null });
+    try {
+      const plan = await planInventorySecretAdoption({
+        candidateId: candidate.id,
+        selector: offer.selector,
+        provider: adoptionProvider,
+      });
+      setAdoption({ candidateId: candidate.id, state: "review", plan });
+    } catch {
+      setAdoption({
+        candidateId: candidate.id,
+        state: "failed",
+        plan: null,
+        message: "Adoption planning failed. Refresh Inventory and review the candidate again.",
+      });
+    }
+  }
+
+  async function confirmSecretAdoption() {
+    if (!adoption.plan) return;
+    setAdoption((current) => ({ ...current, state: "applying" }));
+    try {
+      const applied = await applyInventorySecretAdoption(adoption.plan.mutationPlan);
+      if (!applied.operation.ok || applied.status !== "applied") {
+        const cleanup = applied.orphan?.cleanupCommand;
+        setAdoption({
+          candidateId: adoption.candidateId,
+          state: "failed",
+          plan: adoption.plan,
+          message: cleanup
+            ? `Store publication failed. Review the typed orphan evidence and run: ${cleanup}`
+            : "Secret adoption was rejected. Refresh Inventory before replanning.",
+        });
+        return;
+      }
+      setAdoption({
+        candidateId: adoption.candidateId,
+        state: "applied",
+        plan: null,
+        message: "Reference-only adoption completed. Refresh Inventory to review Store state.",
+      });
+    } catch {
+      setAdoption({
+        candidateId: adoption.candidateId,
+        state: "failed",
+        plan: adoption.plan,
+        message: "Secret adoption failed. Review recovery status before retrying.",
+      });
     }
   }
 
@@ -148,6 +226,13 @@ export function InventoryPage(props: { readonly onNavigate?: (page: Page) => voi
             onSelectionChange={(candidateId, selected) =>
               setOnboarding((current) => inventorySelectionChanged(current, candidateId, selected))
             }
+            adoptionProvider={adoptionProvider}
+            adoptionCandidateId={adoption.candidateId}
+            adoptionState={adoption.state}
+            adoptionMessage={adoption.message}
+            onAdoptionProviderChange={setAdoptionProvider}
+            onPlanAdoption={reviewSecretAdoption}
+            onApplyAdoption={confirmSecretAdoption}
           />
         </>
       ) : onboarding.phase === "failed" ? (
@@ -293,6 +378,16 @@ export function InventoryResultView(props: {
   readonly selectedCandidateIds?: readonly string[];
   readonly selectionDisabled?: boolean;
   readonly onSelectionChange?: (candidateId: string, selected: boolean) => void;
+  readonly adoptionProvider?: "vault" | "keychain";
+  readonly adoptionCandidateId?: string | null;
+  readonly adoptionState?: InventorySecretAdoptionViewState;
+  readonly adoptionMessage?: string;
+  readonly onAdoptionProviderChange?: (provider: "vault" | "keychain") => void;
+  readonly onPlanAdoption?: (
+    candidate: InventoryCandidate,
+    offer: InventorySecretAdoptionOffer,
+  ) => void;
+  readonly onApplyAdoption?: () => void;
 }) {
   const { result } = props;
   const candidates = props.candidates ?? result.candidates;
@@ -379,12 +474,35 @@ export function InventoryResultView(props: {
                       <span className="muted">None</span>
                     ) : (
                       candidate.findings.map((finding) => (
-                        <span
-                          className="muted-row"
-                          key={`${finding.code}:${finding.sourceId ?? "candidate"}`}
-                        >
-                          {finding.code} · {finding.remediation}
-                        </span>
+                        <div key={`${finding.code}:${finding.sourceId ?? "candidate"}`}>
+                          <span className="muted-row">
+                            {finding.code} · {finding.remediation}
+                          </span>
+                          {finding.adoption ? (
+                            <InventorySecretAdoptionView
+                              candidate={candidate}
+                              offer={finding.adoption}
+                              provider={props.adoptionProvider ?? "vault"}
+                              state={
+                                props.adoptionCandidateId === candidate.id
+                                  ? (props.adoptionState ?? "idle")
+                                  : "idle"
+                              }
+                              message={
+                                props.adoptionCandidateId === candidate.id
+                                  ? props.adoptionMessage
+                                  : undefined
+                              }
+                              onProviderChange={props.onAdoptionProviderChange}
+                              onPlan={() => {
+                                if (finding.adoption) {
+                                  props.onPlanAdoption?.(candidate, finding.adoption);
+                                }
+                              }}
+                              onApply={props.onApplyAdoption}
+                            />
+                          ) : null}
+                        </div>
                       ))
                     )}
                   </td>
@@ -400,6 +518,57 @@ export function InventoryResultView(props: {
         ))}
       </section>
     </>
+  );
+}
+
+export function InventorySecretAdoptionView(props: {
+  readonly candidate: InventoryCandidate;
+  readonly offer?: InventorySecretAdoptionOffer;
+  readonly provider: "vault" | "keychain";
+  readonly state: InventorySecretAdoptionViewState;
+  readonly message?: string;
+  readonly onProviderChange?: (provider: "vault" | "keychain") => void;
+  readonly onPlan?: () => void;
+  readonly onApply?: () => void;
+}) {
+  const offer =
+    props.offer ?? props.candidate.findings.find((finding) => finding.adoption)?.adoption;
+  if (!offer) return null;
+  const busy = props.state === "planning" || props.state === "applying";
+  return (
+    <section
+      className="inventory-adoption"
+      aria-label={`Adopt secret reference for ${props.candidate.name}`}
+    >
+      <strong>Adopt secret reference</strong>
+      <span className="muted-row mono">
+        {offer.selector.kind}:{offer.selector.name} → {offer.targetName}
+      </span>
+      <label>
+        Provider
+        <select
+          aria-label={`Provider for ${props.candidate.name}`}
+          value={props.provider}
+          disabled={busy || props.state === "review"}
+          onChange={(event) =>
+            props.onProviderChange?.(event.currentTarget.value as "vault" | "keychain")
+          }
+        >
+          <option value="vault">Vault</option>
+          <option value="keychain">Keychain</option>
+        </select>
+      </label>
+      {props.state === "review" ? (
+        <button type="button" className="action" onClick={props.onApply}>
+          Confirm exact adoption
+        </button>
+      ) : (
+        <button type="button" className="action secondary" disabled={busy} onClick={props.onPlan}>
+          {props.state === "planning" ? "Planning..." : "Review adoption plan"}
+        </button>
+      )}
+      {props.message ? <span className="muted-row">{props.message}</span> : null}
+    </section>
   );
 }
 
