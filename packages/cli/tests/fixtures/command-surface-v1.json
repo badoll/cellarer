@@ -11,7 +11,6 @@
       "ls",
       "apply",
       "authority",
-      "scan",
       "revert",
       "status",
       "secret",
@@ -26,7 +25,6 @@
       "diff",
       "verify",
       "summary",
-      "discovery",
       "operation",
       "plan",
       "profile",
@@ -99,7 +97,6 @@
     "ls",
     "apply",
     "authority.rotate",
-    "scan",
     "revert",
     "status",
     "secret.add",
@@ -134,7 +131,6 @@
     "diff",
     "verify",
     "summary",
-    "discovery.summary",
     "operation.list",
     "operation.show",
     "operation.recover",
@@ -2198,84 +2194,6 @@
       }
     },
     {
-      "path": "discovery.summary",
-      "aliases": [],
-      "description": "汇总 agent 目标中的可发现资源",
-      "arguments": [],
-      "options": [
-        {
-          "flags": "--destination <destination>",
-          "attributeName": "destination",
-          "description": "目标:user | project",
-          "short": null,
-          "long": "--destination",
-          "required": true,
-          "optional": false,
-          "variadic": false,
-          "mandatory": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null
-        },
-        {
-          "flags": "--dir <path>",
-          "attributeName": "dir",
-          "description": "project 目录",
-          "short": null,
-          "long": "--dir",
-          "required": true,
-          "optional": false,
-          "variadic": false,
-          "mandatory": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null
-        },
-        {
-          "flags": "-a, --agent <ids>",
-          "attributeName": "agent",
-          "description": "agent id，逗号分隔",
-          "short": "-a",
-          "long": "--agent",
-          "required": true,
-          "optional": false,
-          "variadic": false,
-          "mandatory": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null
-        }
-      ],
-      "protocol": {
-        "mutability": "read",
-        "streaming": false,
-        "requiredFeatures": [],
-        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:discovery.summary:input",
-        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:discovery.summary:output",
-        "eventSchemaId": null,
-        "inputBindings": [
-          {
-            "field": "destination",
-            "option": "destination",
-            "positional": null,
-            "encoded": false
-          },
-          {
-            "field": "dir",
-            "option": "dir",
-            "positional": null,
-            "encoded": false
-          },
-          {
-            "field": "agents",
-            "option": "agent",
-            "positional": null,
-            "encoded": true
-          }
-        ]
-      }
-    },
-    {
       "path": "doctor",
       "aliases": [],
       "description": "检查库房、adapter 注册表、agent 探测与目标路径写权限",
@@ -4252,278 +4170,6 @@
           {
             "field": "dryRun",
             "option": "dryRun",
-            "positional": null,
-            "encoded": false
-          }
-        ]
-      }
-    },
-    {
-      "path": "scan",
-      "aliases": [],
-      "description": "扫描 agent 现有 rules/mcp/skills 回写库房(密钥自动脱敏为占位符)",
-      "arguments": [],
-      "options": [
-        {
-          "flags": "-a, --agent <id>",
-          "attributeName": "agent",
-          "description": "扫描指定 agent",
-          "short": "-a",
-          "long": "--agent",
-          "required": true,
-          "optional": false,
-          "variadic": false,
-          "mandatory": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null
-        },
-        {
-          "flags": "--dir <path>",
-          "attributeName": "dir",
-          "description": "扫描指定工程目录(project scope)",
-          "short": null,
-          "long": "--dir",
-          "required": true,
-          "optional": false,
-          "variadic": false,
-          "mandatory": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null
-        },
-        {
-          "flags": "--rules",
-          "attributeName": "rules",
-          "description": "仅扫 rules",
-          "short": null,
-          "long": "--rules",
-          "required": false,
-          "optional": false,
-          "variadic": false,
-          "mandatory": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null
-        },
-        {
-          "flags": "--mcp",
-          "attributeName": "mcp",
-          "description": "仅扫 mcp",
-          "short": null,
-          "long": "--mcp",
-          "required": false,
-          "optional": false,
-          "variadic": false,
-          "mandatory": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null
-        },
-        {
-          "flags": "--skills",
-          "attributeName": "skills",
-          "description": "仅扫 skills",
-          "short": null,
-          "long": "--skills",
-          "required": false,
-          "optional": false,
-          "variadic": false,
-          "mandatory": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null
-        },
-        {
-          "flags": "--into-collection <collection>",
-          "attributeName": "intoCollection",
-          "description": "给导入资源归入 collection",
-          "short": null,
-          "long": "--into-collection",
-          "required": true,
-          "optional": false,
-          "variadic": false,
-          "mandatory": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null
-        },
-        {
-          "flags": "--conflict <strategy>",
-          "attributeName": "conflict",
-          "description": "冲突策略:keep-theirs(默认)| keep-mine | copy",
-          "short": null,
-          "long": "--conflict",
-          "required": true,
-          "optional": false,
-          "variadic": false,
-          "mandatory": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null
-        },
-        {
-          "flags": "--select <json>",
-          "attributeName": "select",
-          "description": "精确 selector JSON 数组：kind/name/source",
-          "short": null,
-          "long": "--select",
-          "required": true,
-          "optional": false,
-          "variadic": false,
-          "mandatory": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null
-        },
-        {
-          "flags": "--dry-run",
-          "attributeName": "dryRun",
-          "description": "仅预览发现项,不写库房",
-          "short": null,
-          "long": "--dry-run",
-          "required": false,
-          "optional": false,
-          "variadic": false,
-          "mandatory": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null
-        },
-        {
-          "flags": "--secret-mode <mode>",
-          "attributeName": "secretMode",
-          "description": "密钥来源:env(默认)| vault | keychain",
-          "short": null,
-          "long": "--secret-mode",
-          "required": true,
-          "optional": false,
-          "variadic": false,
-          "mandatory": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null
-        },
-        {
-          "flags": "--vault-passphrase-fd <number>",
-          "attributeName": "vaultPassphraseFd",
-          "description": "从继承的文件描述符读取 vault 口令",
-          "short": null,
-          "long": "--vault-passphrase-fd",
-          "required": true,
-          "optional": false,
-          "variadic": false,
-          "mandatory": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null
-        },
-        {
-          "flags": "--keychain-service <name>",
-          "attributeName": "keychainService",
-          "description": "keychain service 名称(默认 cellarer)",
-          "short": null,
-          "long": "--keychain-service",
-          "required": true,
-          "optional": false,
-          "variadic": false,
-          "mandatory": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null
-        },
-        {
-          "flags": "--json",
-          "attributeName": "json",
-          "description": "JSON 输出(兼容别名;等价 --output json)",
-          "short": null,
-          "long": "--json",
-          "required": false,
-          "optional": false,
-          "variadic": false,
-          "mandatory": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null
-        }
-      ],
-      "protocol": {
-        "mutability": "write",
-        "streaming": true,
-        "requiredFeatures": ["mutation-authority", "protected-secret-channel"],
-        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:scan:input",
-        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:scan:output",
-        "eventSchemaId": "urn:cellarer:cli:protocol:1.0:command:scan:event",
-        "inputBindings": [
-          {
-            "field": "agent",
-            "option": "agent",
-            "positional": null,
-            "encoded": false
-          },
-          {
-            "field": "dir",
-            "option": "dir",
-            "positional": null,
-            "encoded": false
-          },
-          {
-            "field": "capabilities",
-            "option": "rules",
-            "positional": null,
-            "encoded": false
-          },
-          {
-            "field": "capabilities",
-            "option": "mcp",
-            "positional": null,
-            "encoded": false
-          },
-          {
-            "field": "capabilities",
-            "option": "skills",
-            "positional": null,
-            "encoded": false
-          },
-          {
-            "field": "intoCollection",
-            "option": "intoCollection",
-            "positional": null,
-            "encoded": false
-          },
-          {
-            "field": "conflict",
-            "option": "conflict",
-            "positional": null,
-            "encoded": false
-          },
-          {
-            "field": "select",
-            "option": "select",
-            "positional": null,
-            "encoded": true
-          },
-          {
-            "field": "dryRun",
-            "option": "dryRun",
-            "positional": null,
-            "encoded": false
-          },
-          {
-            "field": "secretMode",
-            "option": "secretMode",
-            "positional": null,
-            "encoded": false
-          },
-          {
-            "field": "vaultPassphraseFd",
-            "option": "vaultPassphraseFd",
-            "positional": null,
-            "encoded": true
-          },
-          {
-            "field": "keychainService",
-            "option": "keychainService",
             "positional": null,
             "encoded": false
           }

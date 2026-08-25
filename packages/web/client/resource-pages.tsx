@@ -7,7 +7,6 @@ import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "./api.js";
 import { readApiJson } from "./api-state.js";
 import { DashboardIcon } from "./dashboard-icons.js";
-import { ImportDialog } from "./import-dialog.js";
 import {
   destinationLabel,
   type ResourceState,
@@ -52,7 +51,6 @@ export function ResourcePage(props: { kind: Capability }) {
     loading: true,
   });
   const [collection, setCollection] = useState("");
-  const [importOpen, setImportOpen] = useState(false);
   const [syncOpen, setSyncOpen] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const title = resourceKindLabel(props.kind);
@@ -116,10 +114,6 @@ export function ResourcePage(props: { kind: Capability }) {
                 ))}
               </datalist>
             </label>
-            <button type="button" className="action" onClick={() => setImportOpen(true)}>
-              <DashboardIcon name="scan" />
-              Import existing setup
-            </button>
             <button type="button" className="action" onClick={() => setSyncOpen(true)}>
               <DashboardIcon name="apply" />
               Sync to Agents
@@ -146,15 +140,6 @@ export function ResourcePage(props: { kind: Capability }) {
         <WarningList warnings={state.data.warnings} />
       )}
 
-      <ImportDialog
-        open={importOpen}
-        kind={props.kind}
-        onClose={() => setImportOpen(false)}
-        onImported={() => {
-          setImportOpen(false);
-          setReloadKey((value) => value + 1);
-        }}
-      />
       <SyncDialog
         open={syncOpen}
         kinds={[props.kind]}

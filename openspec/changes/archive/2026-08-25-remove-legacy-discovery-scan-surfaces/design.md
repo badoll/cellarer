@@ -8,7 +8,8 @@ Legacy discovery-summary reads and scan-backed mutation flows predate unified In
 
 - Leave Inventory refresh/import as the only supported discovery/import journey.
 - Remove legacy command, route, schema, browser, and public Core reachability as one reviewed integration.
-- Preserve generic transaction recovery and any minimum recovery-only decoding required for previously journaled scan mutations.
+- Preserve generic transaction diagnosis for previously journaled scan mutations without making
+  their payload executable through a retained scan decoder.
 - Prove package exports, declarations, OpenAPI, route registration, command capabilities, and first-party clients agree on the removal.
 
 **Non-Goals:**
@@ -31,10 +32,36 @@ The exact symbol and route manifest is refreshed after each dependency closes, t
 | Bundled client | discovery/scan API calls, state, actions, and fixtures | Inventory-first onboarding, Library, exact Store import, and separate Sync |
 | Core public API | `discoverySummary`, `discoverySummaryControlPlane`, `scanPlan`, `planScanMutation`, `applyScanMutationPlan`, `applyScan`, and unused scan-only DTO exports | accepted Inventory enumeration/import use cases and resource projections |
 | Core internal reads | resource-catalog dependence on scan orchestration | Inventory-backed or retained domain-owned safe observation selected after dependency closure |
-| Recovery | public creation/application of new scan plans | generic recovery plus minimum internal decoder/executor for already journaled authorized scan operations |
+| Recovery | public creation/application of new scan plans | generic typed diagnosis of historical scan action kinds as manual-only evidence |
 | Documentation | discovery/scan/import examples and migration guidance | Inventory refresh/import plan/apply commands |
 
-Keeping aliases was rejected because it preserves ambiguous product vocabulary and could reconstruct a legacy mutation outside exact Inventory receipts. Deleting recovery decoding together with public routes was rejected because route removal must not strand material write-ahead evidence.
+The post-dependency removal manifest is frozen to these concrete public identifiers and
+first-party consumers:
+
+| Boundary | Exact removed identifiers |
+| --- | --- |
+| CLI leaves | `scan`; `discovery.summary`; the now-empty `discovery` container |
+| CLI schemas | `urn:cellarer:cli:protocol:1.0:command:scan:input`, `:scan:output`, and `:scan:event`; `urn:cellarer:cli:protocol:1.0:command:discovery.summary:input` and `:discovery.summary:output` |
+| CLI implementation | `createScanCommandContract`, its `scanContextResolver` composition seam, `createDiscoverySummaryCommandContract`, and the scan/discovery-summary schema fragments that have no retained consumer |
+| Local API routes | `GET /api/v1/discovery`; `POST /api/v1/scan/plan`; `POST /api/v1/scan/apply`; `POST /api/v1/import/plan`; `POST /api/v1/import/apply` |
+| Local API operation IDs and schemas | `getDiscoverySummary`, `planScanMutation`, `applyScanMutation`, `planImportMutation`, `applyImportMutation`, `DiscoverySummaryResult`, and `ScanPlan` |
+| Bundled client | the dashboard discovery fetch/panel; the scan-backed `ImportDialog`; calls to `/api/v1/import/plan` and `/api/v1/import/apply`; their state, actions, types, styles, and fixtures |
+| Core root/control-plane exports | `discoverySummary`, `discoverySummaryControlPlane`, `scanPlan`, `planScanMutation`, `applyScanMutationPlan`, `applyScan`, `ScanOptions`, `ScanSelection`, `ScanResult`, `PlannedScanMutation`, and `ApplyScanMutationPlanOptions` |
+| Core browser-safe types | `AgentDiscoverySummary`, `DiscoverySummaryResult`, `ScanItem`, `ScanPlan`, and the active `DashboardSummaryResult.latestScanSummary` projection |
+| Core subpaths | `engine/scan` and `resources/discovery` cease to be emitted/packaged once their runtime consumers are removed |
+| Resource projection | `resourceCatalog(..., { includeDiscovered: true })` projects `refreshInventory` candidates, preserving Inventory candidate identity, provenance, findings/redaction, related-adapter presentation, and state instead of calling `scanPlan` |
+| Recovery-only retention | generic recovery continues recognizing historical `scan-rules`, `scan-mcp`, and `scan-skills` journal action kinds as typed, non-executable/manual-only evidence; no scan planner, decoder, provider, or executor remains reachable |
+
+Historical `scan-import` activity discriminants remain parseable as generic operation evidence, but
+the dashboard no longer promotes one as an active scan-summary field.
+
+The retained replacements are exactly `inventory.refresh`, `inventory.import.plan`, and
+`inventory.import.apply`; `/api/v1/inventory`, `/api/v1/inventory/import/plan`, and
+`/api/v1/inventory/import/apply`; `refreshInventory`, `planInventoryStoreImport`, and
+`applyInventoryStoreImportPlan`; plus generic `capabilities`, `schema`, resource, operation
+recovery, and Sync surfaces. These retained contracts are not renamed or reshaped by this change.
+
+Keeping aliases was rejected because it preserves ambiguous product vocabulary and could reconstruct a legacy mutation outside exact Inventory receipts. Deleting the generic journal recognizer together with public routes was rejected because route removal must not hide material write-ahead evidence; retaining the scan decoder/executor was rejected because the historical journal lacks independent durable authority to execute it.
 
 ### Remove reachability outside-in
 
@@ -46,9 +73,12 @@ Removing the engine first was rejected because callers could be left compiling a
 
 Unknown CLI leaves use the normal usage failure. Removed schema IDs use the stable unsupported-schema failure. Removed `/api/v1` routes return not found. None of these boundaries authorize, decode, replan, or invoke legacy Core operations. No handler accepts an old shape and translates it into Inventory selection.
 
-### Recovery compatibility is internal and non-advertised
+### Recovery evidence compatibility is internal and non-advertised
 
-An already journaled scan operation may remain decodable and recoverable through the generic recovery command if the current Store contains such evidence. That support is not registered as a scan command, route, schema, public planning API, or new-operation capability. Removing the decoder itself requires separate evidence that no supported recovery state depends on it.
+An already journaled scan operation remains diagnosable through the generic recovery command as
+typed manual-only evidence. The current durable journal cannot independently prove the originating
+legacy selection or payload, so it MUST NOT authorize decoding or execution. That support is not
+registered as a scan command, route, schema, public planning API, or new-operation capability.
 
 ## Attack Matrix
 
@@ -66,7 +96,7 @@ An already journaled scan operation may remain decodable and recoverable through
 
 ## Risks / Trade-offs
 
-- **[Risk] Removing scan exports strands recovery evidence.** → Retain only the minimum internal recovery path until a separately reviewed proof permits deletion.
+- **[Risk] Removing scan exports hides recovery evidence.** → Retain generic typed diagnosis of historical scan action kinds while leaving them manual-only and non-executable.
 - **[Risk] Resource catalog silently changes semantics.** → Freeze pre-removal parity against accepted Inventory identity, provenance, findings, and redaction.
 - **[Risk] One registry or schema still advertises a dead route.** → Generate and compare command, route, OpenAPI, client-type, declaration, and packed-consumer surfaces.
 - **[Risk] A compatibility translation recreates legacy selection.** → Require not-found/unsupported behavior and zero Core invocation for old inputs.
@@ -83,4 +113,4 @@ An already journaled scan operation may remain decodable and recoverable through
 
 ## Open Questions
 
-None. The recovery-only decoder decision remains bounded: it is retained unless implementation-time evidence proves it unnecessary without a Store-format or recovery-contract change.
+None. The recovery boundary is frozen to generic typed diagnosis without legacy scan decoding or execution.

@@ -5,7 +5,6 @@ import type {
   DashboardAgentReadiness,
   DashboardCoverageGroup,
   DashboardSummaryResult,
-  DiscoverySummaryResult,
 } from "@cellarer/core/client-api";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
@@ -13,10 +12,8 @@ import { AgentsPage } from "./agents-page.js";
 import { apiFetch } from "./api.js";
 import { readApiJson } from "./api-state.js";
 import { DashboardIcon, type DashboardIconName } from "./dashboard-icons.js";
-import { ImportDialog } from "./import-dialog.js";
 import { InventoryPage } from "./inventory-page.js";
 import {
-  destinationLabel,
   type Page,
   RESOURCE_KINDS,
   type ResourceState,
@@ -261,36 +258,23 @@ function DashboardPage(props: { onNavigate: (page: Page) => void }) {
 }
 
 function DashboardShell(props: { onNavigate: (page: Page) => void }) {
-  const [importOpen, setImportOpen] = useState(false);
-  const [reloadKey, setReloadKey] = useState(0);
-  const summaryState = useApi<DashboardSummaryResult>(
-    () => apiFetch("/api/v1/summary"),
-    [reloadKey],
-  );
+  const summaryState = useApi<DashboardSummaryResult>(() => apiFetch("/api/v1/summary"), []);
   const resourcesState = useApi<ControlPlaneResourceListDto>(
     () => apiFetch("/api/v1/resources"),
-    [reloadKey],
-  );
-  const discoveryState = useApi<DiscoverySummaryResult>(
-    () => apiFetch("/api/v1/discovery"),
-    [reloadKey],
+    [],
   );
   const summary = summaryState.data;
   const resourceCounts = resourcesState.data?.counts ?? null;
   const resourceCountsByKind = resourcesState.data
     ? countResourcesByKind(resourcesState.data.resources)
     : null;
-  const discovery = discoveryState.data;
-  const discoveryTotal = discovery
-    ? discovery.totals.rules + discovery.totals.mcp + discovery.totals.skills
-    : "...";
   const blockedSyncCount = resourceCounts
     ? resourceCounts.drifted + resourceCounts.missing + resourceCounts.blocked
     : null;
 
   return (
     <div className="page-stack">
-      <ApiErrorList errors={[summaryState.error, resourcesState.error, discoveryState.error]} />
+      <ApiErrorList errors={[summaryState.error, resourcesState.error]} />
       <section className="stat-grid" aria-label="Dashboard summary">
         <StatCard
           label="Managed Resources"
@@ -304,13 +288,9 @@ function DashboardShell(props: { onNavigate: (page: Page) => void }) {
           icon="artifacts"
         />
         <StatCard
-          label="Discovery"
-          value={discoveryTotal}
-          detail={
-            discovery
-              ? `${destinationLabel(discovery.destination)} sources`
-              : "Scanning readable files"
-          }
+          label="Inventory"
+          value={resourceCounts?.discovered ?? "..."}
+          detail="Read-only candidates from bounded sources"
           tone="amber"
           icon="scan"
         />
@@ -339,11 +319,15 @@ function DashboardShell(props: { onNavigate: (page: Page) => void }) {
       </section>
 
       <section className="dashboard-actions next-actions" aria-label="Next actions">
-        <button type="button" className="resource-shortcut" onClick={() => setImportOpen(true)}>
+        <button
+          type="button"
+          className="resource-shortcut"
+          onClick={() => props.onNavigate("inventory")}
+        >
           <DashboardIcon name="scan" />
           <span>
-            <strong>Import existing setup</strong>
-            <span>Preview before adding resources</span>
+            <strong>Review Inventory</strong>
+            <span>Inspect candidates before Store import</span>
           </span>
         </button>
         <button
@@ -421,22 +405,10 @@ function DashboardShell(props: { onNavigate: (page: Page) => void }) {
           </Panel>
         </div>
 
-        <Panel title="Discovery Summary" icon="rules" className="span-all">
-          <DiscoveryPanel discovery={discovery} />
-        </Panel>
-
         <Panel title="Recent Activity" icon="activity" className="span-all">
           <ActivityTable events={summary?.latestActivity ?? null} />
         </Panel>
       </section>
-      <ImportDialog
-        open={importOpen}
-        onClose={() => setImportOpen(false)}
-        onImported={() => {
-          setImportOpen(false);
-          setReloadKey((value) => value + 1);
-        }}
-      />
     </div>
   );
 }
@@ -537,54 +509,6 @@ function CoverageList(props: { groups: DashboardCoverageGroup[] | null }) {
           </div>
         </section>
       ))}
-    </div>
-  );
-}
-
-function DiscoveryPanel(props: { discovery: DiscoverySummaryResult | null }) {
-  if (!props.discovery) return <p className="empty-state">Loading discovery summary...</p>;
-  return (
-    <div className="discovery-panel">
-      <div className="mini-metrics">
-        {RESOURCE_KINDS.map((kind) => (
-          <div className="mini-metric" key={kind}>
-            <span>{resourceKindLabel(kind)}</span>
-            <strong>{props.discovery?.totals[kind] ?? 0}</strong>
-          </div>
-        ))}
-      </div>
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Agent</th>
-              <th>Detected</th>
-              <th>Rules</th>
-              <th>MCP</th>
-              <th>Skills</th>
-            </tr>
-          </thead>
-          <tbody>
-            {props.discovery.agents.map((agent) => (
-              <tr key={agent.agent}>
-                <td>
-                  <strong>{agent.displayName}</strong>
-                  <span className="muted-row mono">{agent.agent}</span>
-                </td>
-                <td>
-                  <AgentDetectBadge detected={agent.detected} />
-                </td>
-                <td>{agent.counts.rules}</td>
-                <td>{agent.counts.mcp}</td>
-                <td>{agent.counts.skills}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {props.discovery.warnings.length > 0 && (
-        <WarningList warnings={props.discovery.warnings} compact />
-      )}
     </div>
   );
 }
@@ -690,27 +614,6 @@ function ApiErrorList(props: { errors: Array<string | null> }) {
         <p key={error}>{error}</p>
       ))}
     </section>
-  );
-}
-
-function WarningList(props: { warnings: string[]; compact?: boolean }) {
-  if (props.warnings.length === 0) return null;
-  return (
-    <section className={props.compact ? "warning-list compact" : "warning-list"}>
-      {props.warnings.map((warning) => (
-        <p className="warn" key={warning}>
-          {warning}
-        </p>
-      ))}
-    </section>
-  );
-}
-
-function AgentDetectBadge(props: { detected: boolean }) {
-  return props.detected ? (
-    <span className="tag green">detected</span>
-  ) : (
-    <span className="tag amber">not found</span>
   );
 }
 

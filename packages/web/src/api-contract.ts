@@ -16,12 +16,9 @@ import type {
   DashboardAgentReadiness,
   DashboardCoverageGroup,
   DashboardSummaryResult,
-  DiscoverySummaryResult,
   DistributePlan,
   InventoryRefreshResult,
   MutationPlan,
-  ScanItem,
-  ScanPlan,
   SettingsSummary,
   StatusItem,
 } from "@cellarer/core/client-api";
@@ -368,13 +365,6 @@ const CLIENT_API_ROUTE_BASES = [
     summary: "Validate configuration without mutation",
   },
   {
-    operationId: "getDiscoverySummary",
-    method: "get",
-    path: "/api/v1/discovery",
-    authentication: "authenticated",
-    summary: "Summarize agent-native discovery",
-  },
-  {
     operationId: "refreshInventory",
     method: "get",
     path: "/api/v1/inventory",
@@ -450,34 +440,6 @@ const CLIENT_API_ROUTE_BASES = [
     path: "/api/v1/operations/{id}",
     authentication: "authenticated",
     summary: "Show one operation receipt",
-  },
-  {
-    operationId: "planScanMutation",
-    method: "post",
-    path: "/api/v1/scan/plan",
-    authentication: "mutation",
-    summary: "Plan an exact agent-source scan",
-  },
-  {
-    operationId: "applyScanMutation",
-    method: "post",
-    path: "/api/v1/scan/apply",
-    authentication: "mutation",
-    summary: "Apply an exact scan mutation plan",
-  },
-  {
-    operationId: "planImportMutation",
-    method: "post",
-    path: "/api/v1/import/plan",
-    authentication: "mutation",
-    summary: "Plan an exact destination-oriented import",
-  },
-  {
-    operationId: "applyImportMutation",
-    method: "post",
-    path: "/api/v1/import/apply",
-    authentication: "mutation",
-    summary: "Apply an exact destination-oriented import plan",
   },
   {
     operationId: "planRevertMutation",
@@ -969,41 +931,6 @@ function resultEnvelopeSchema(dataSchema: ClientJsonSchema): ClientJsonSchema {
   return { oneOf: [successEnvelopeSchema(dataSchema), errorEnvelopeSchema] };
 }
 
-const scanSelectionSchema = objectSchema(
-  {
-    kind: capabilitySchema,
-    name: nonEmptyStringSchema,
-    source: nonEmptyStringSchema,
-  },
-  ["kind", "name", "source"],
-);
-
-const scanBodySchema = objectSchema(
-  {
-    agent: nonEmptyStringSchema,
-    scope: scopeSchema,
-    dir: nonEmptyStringSchema,
-    capabilities: capabilityArraySchema,
-    conflict: enumSchema(["keep-theirs", "keep-mine", "copy"]),
-    selectItems: arraySchema(scanSelectionSchema),
-    intoCollection: nonEmptyStringSchema,
-  },
-  ["agent"],
-);
-
-const importBodySchema = objectSchema(
-  {
-    agent: nonEmptyStringSchema,
-    destination: destinationSchema,
-    dir: nonEmptyStringSchema,
-    capabilities: capabilityArraySchema,
-    conflict: enumSchema(["keep-theirs", "keep-mine", "copy"]),
-    selectItems: arraySchema(scanSelectionSchema),
-    intoCollection: nonEmptyStringSchema,
-  },
-  ["agent"],
-);
-
 const distributeBodySchema = objectSchema({
   agents: stringArraySchema,
   scope: scopeSchema,
@@ -1112,12 +1039,6 @@ function querySchemaFor(operationId: string): ClientJsonSchema {
       });
     case "showAgent":
       return objectSchema({ scope: scopeSchema, dir: nonEmptyStringSchema });
-    case "getDiscoverySummary":
-      return objectSchema({
-        agents: nonEmptyStringSchema,
-        destination: destinationSchema,
-        dir: nonEmptyStringSchema,
-      });
     case "refreshInventory":
     case "refreshInventoryByAgent":
       return objectSchema({ dir: nonEmptyStringSchema });
@@ -1226,8 +1147,6 @@ function bodySchemaFor(operationId: string): ClientJsonSchema {
     case "applyInventoryStoreImport":
     case "applySync":
     case "applyProfileMutation":
-    case "applyScanMutation":
-    case "applyImportMutation":
     case "applyResourceUpdate":
       return mutationPlanBodySchema;
     case "planInventoryStoreImport":
@@ -1266,10 +1185,6 @@ function bodySchemaFor(operationId: string): ClientJsonSchema {
     case "getDiff":
     case "getVerification":
       return distributeBodySchema;
-    case "planScanMutation":
-      return scanBodySchema;
-    case "planImportMutation":
-      return importBodySchema;
     case "planRevertMutation":
       return revertBodySchema;
     case "applyRevertMutation":
@@ -1509,35 +1424,6 @@ export type DistributePlanSchemaContract = AssertSchemaContract<
   ExactSchemaContract<typeof distributePlanDefinitionSchema, DistributePlan>
 >;
 const distributePlanDataSchema = componentSchema("DistributePlan");
-
-const scanItemSchema = objectSchema(
-  {
-    kind: capabilitySchema,
-    name: nonEmptyStringSchema,
-    status: enumSchema(["new", "conflict"]),
-    action: enumSchema(["import", "skip"]),
-    secretRefs: stringArraySchema,
-    source: nonEmptyStringSchema,
-  },
-  ["kind", "name", "status", "action", "source"],
-);
-export type ScanItemSchemaContract = AssertSchemaContract<
-  ExactSchemaContract<typeof scanItemSchema, ScanItem>
->;
-
-const scanPlanDefinitionSchema = objectSchema(
-  {
-    agent: nonEmptyStringSchema,
-    scope: scopeSchema,
-    items: arraySchema(scanItemSchema),
-    warnings: stringArraySchema,
-  },
-  ["agent", "scope", "items", "warnings"],
-);
-export type ScanPlanSchemaContract = AssertSchemaContract<
-  ExactSchemaContract<typeof scanPlanDefinitionSchema, ScanPlan>
->;
-const scanPlanDataSchema = componentSchema("ScanPlan");
 
 const revertPlanDataSchema = objectSchema(
   {
@@ -1811,6 +1697,59 @@ const resourceSyncTargetSchema = objectSchema(
   },
   ["agent", "destination", "scope", "target", "state"],
 );
+const resourceInventoryFindingSchema = objectSchema(
+  {
+    code: enumSchema([
+      "ADAPTER_DETECTION_FAILED",
+      "ADAPTER_PATHS_FAILED",
+      "SOURCE_OUTSIDE_BOUNDARY",
+      "SOURCE_UNREADABLE",
+      "UNSAFE_LINK",
+      "UNSUPPORTED_SNAPSHOT",
+      "SNAPSHOT_STALE",
+      "INVALID_STRUCTURE",
+      "PARSE_FAILED",
+      "PROBABLE_SECRET",
+      "CONFLICT",
+      "STORE_SNAPSHOT_STALE",
+      "STORE_SNAPSHOT_UNSAFE",
+      "STORE_PROJECTION_FAILED",
+    ]),
+    severity: enumSchema(["warning", "blocked"]),
+    scope: enumSchema(["refresh", "source", "candidate"]),
+    remediation: enumSchema([
+      "review-adapter",
+      "check-source-access",
+      "remove-unsafe-link",
+      "retry-refresh",
+      "fix-structure",
+      "remove-secret-values",
+      "resolve-conflict",
+      "repair-store",
+    ]),
+    sourceId: nonEmptyStringSchema,
+  },
+  ["code", "severity", "scope", "remediation"],
+);
+const resourceInventoryAdapterSchema = objectSchema(
+  {
+    id: nonEmptyStringSchema,
+    displayName: nonEmptyStringSchema,
+    enabled: booleanSchema,
+    detected: booleanSchema,
+  },
+  ["id", "displayName", "enabled", "detected"],
+);
+const resourceInventorySourceSchema = objectSchema(
+  {
+    id: nonEmptyStringSchema,
+    kind: capabilitySchema,
+    scope: scopeSchema,
+    location: nonEmptyStringSchema,
+    adapters: arraySchema(resourceInventoryAdapterSchema),
+  },
+  ["id", "kind", "scope", "location", "adapters"],
+);
 const resourceDtoDefinitionSchema = objectSchema(
   {
     id: nonEmptyStringSchema,
@@ -1821,14 +1760,36 @@ const resourceDtoDefinitionSchema = objectSchema(
     currentRevision: resourceRevisionSchema,
     provenance: resourceSourceDescriptorSchema,
     discovered: objectSchema(
-      { agent: nonEmptyStringSchema, destination: destinationSchema, source: nonEmptyStringSchema },
-      ["agent", "destination", "source"],
+      {
+        agent: nonEmptyStringSchema,
+        destination: destinationSchema,
+        source: nonEmptyStringSchema,
+        candidateId: nonEmptyStringSchema,
+        defaultSelected: booleanSchema,
+        sources: arraySchema(resourceInventorySourceSchema),
+        relatedAdapters: arraySchema(resourceInventoryAdapterSchema),
+        findings: arraySchema(resourceInventoryFindingSchema),
+      },
+      [
+        "agent",
+        "destination",
+        "source",
+        "candidateId",
+        "defaultSelected",
+        "sources",
+        "relatedAdapters",
+        "findings",
+      ],
     ),
     membership: objectSchema({ collections: stringArraySchema }, ["collections"]),
-    selection: objectSchema({ desired: booleanSchema, collections: stringArraySchema }, [
-      "desired",
-      "collections",
-    ]),
+    selection: objectSchema(
+      {
+        desired: booleanSchema,
+        collections: stringArraySchema,
+        inventoryDefault: booleanSchema,
+      },
+      ["desired", "collections"],
+    ),
     validation: objectSchema(
       {
         status: enumSchema(["valid", "warning", "invalid"]),
@@ -2317,21 +2278,6 @@ const cellarerConfigOutputSchema = objectSchema(cellarerConfigOutputProperties, 
 const secretRefStatSchema = objectSchema(
   { name: nonEmptyStringSchema, ledgerEntryCount: integerSchema() },
   ["name", "ledgerEntryCount"],
-);
-const discoveryCountSchema = objectSchema(
-  { rules: integerSchema(), mcp: integerSchema(), skills: integerSchema() },
-  ["rules", "mcp", "skills"],
-);
-const discoveryAgentSchema = objectSchema(
-  {
-    agent: nonEmptyStringSchema,
-    displayName: nonEmptyStringSchema,
-    detected: booleanSchema,
-    root: nonEmptyStringSchema,
-    counts: discoveryCountSchema,
-    warnings: stringArraySchema,
-  },
-  ["agent", "displayName", "detected", "counts", "warnings"],
 );
 const resourceDependencyReportSchema = objectSchema(
   {
@@ -2874,7 +2820,6 @@ const dashboardSummaryDataSchema = objectSchema(
     distributionCoverage: arraySchema(componentSchema("DashboardCoverage")),
     driftItems: arraySchema(statusItemSchema),
     latestActivity: arraySchema(componentSchema("ActivityEvent")),
-    latestScanSummary: componentSchema("ActivityEvent"),
     warnings: stringArraySchema,
   },
   [
@@ -2923,21 +2868,6 @@ const settingsSummaryDataSchema = objectSchema(
 );
 export type SettingsSummarySchemaContract = AssertSchemaContract<
   ExactSchemaContract<typeof settingsSummaryDataSchema, SettingsSummary>
->;
-
-const discoverySummaryDataSchema = objectSchema(
-  {
-    generatedAt: nonEmptyStringSchema,
-    destination: destinationSchema,
-    dir: nonEmptyStringSchema,
-    totals: discoveryCountSchema,
-    agents: arraySchema(discoveryAgentSchema),
-    warnings: stringArraySchema,
-  },
-  ["generatedAt", "destination", "totals", "agents", "warnings"],
-);
-export type DiscoverySummarySchemaContract = AssertSchemaContract<
-  ExactSchemaContract<typeof discoverySummaryDataSchema, DiscoverySummaryResult>
 >;
 
 const inventoryFindingSchema = objectSchema(
@@ -3298,8 +3228,6 @@ function successDataSchemaFor(operationId: string): ClientJsonSchema {
         },
         ["valid", "issues"],
       );
-    case "getDiscoverySummary":
-      return discoverySummaryDataSchema;
     case "refreshInventory":
     case "refreshInventoryByAgent":
       return inventoryRefreshDataSchema;
@@ -3342,22 +3270,6 @@ function successDataSchemaFor(operationId: string): ClientJsonSchema {
           ),
         },
         ["operation"],
-      );
-    case "planScanMutation":
-    case "planImportMutation":
-      return objectSchema({ plan: scanPlanDataSchema, mutationPlan: mutationPlanSchema }, [
-        "plan",
-        "mutationPlan",
-      ]);
-    case "applyScanMutation":
-    case "applyImportMutation":
-      return objectSchema(
-        {
-          plan: scanPlanDataSchema,
-          imported: arraySchema(scanItemSchema),
-          operation: operationResultDataSchema,
-        },
-        ["plan", "imported", "operation"],
       );
     case "planRevertMutation":
       return objectSchema({ plan: revertPlanDataSchema, mutationPlan: mutationPlanSchema }, [
@@ -3724,7 +3636,6 @@ export function createClientOpenApiDocument(
         },
         MutationPlan: mutationPlanDefinitionSchema,
         DistributePlan: distributePlanDefinitionSchema,
-        ScanPlan: scanPlanDefinitionSchema,
         MutationConflict: mutationConflictDataSchema,
         OperationReceipt: operationReceiptDefinitionSchema,
         OperationResult: operationResultDefinitionSchema,

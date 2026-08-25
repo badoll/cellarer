@@ -406,31 +406,6 @@ describe("versioned HTTP mutation journeys", () => {
     expect(filesystemEffects).toBe(0);
   });
 
-  it("round-trips a Core scan plan through versioned HTTP without apply-time rescanning", async () => {
-    await env.fs.mkdir(join(root, "home", ".claude"), { recursive: true });
-    await env.fs.writeFile(join(root, "home", ".claude", "CLAUDE.md"), "# HTTP rules\n");
-
-    const plannedResponse = await post("/api/v1/scan/plan", {
-      agent: "claude-code",
-      scope: "global",
-      capabilities: ["rules"],
-    });
-    expect(plannedResponse.status).toBe(200);
-    const planned = (await plannedResponse.json()) as SuccessEnvelope<{
-      readonly plan: unknown;
-      readonly mutationPlan: MutationPlan;
-    }>;
-    const appliedResponse = await post("/api/v1/scan/apply", {
-      mutationPlan: JSON.parse(JSON.stringify(planned.data.mutationPlan)),
-    });
-    expect(appliedResponse.status).toBe(200);
-    const applied = (await appliedResponse.json()) as SuccessEnvelope<{
-      readonly operation: { readonly ok: boolean };
-    }>;
-
-    expect(applied.data.operation.ok).toBe(true);
-  });
-
   it("keeps first-run Inventory review, decline, exact import, and stale remediation separate", async () => {
     const firstSource = join(root, "home", ".codex", "skills", "first-run", "SKILL.md");
     const staleSource = join(root, "home", ".codex", "skills", "stale-run", "SKILL.md");

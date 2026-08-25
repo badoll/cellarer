@@ -274,24 +274,27 @@ cellarer sync uninstall project-team --workspace-root /workspace/app --dry-run
 Project profile 每次调用都需要当前绝对 workspace root。Apply 与 uninstall 仍遵守相同的
 所有权、事务、引用和恢复规则。
 
-### 扫描已有 Agent 配置
+### 迁移已有 Agent 配置
 
-从只读预览开始：
-
-```bash
-cellarer --output json scan --agent codex --dry-run
-```
-
-执行导入时，从预览复制完整 `kind`、`name` 和 `source` selector，并明确选择 capability：
+旧的 `scan` 与 `discovery summary` 命令已移除，也没有兼容 alias。先刷新 Inventory，
+从已注册的有界来源获取当前 candidate ID：
 
 ```bash
-cellarer scan --agent codex --rules --into-collection default \
-  --select '[{"kind":"rules","name":"team","source":"/absolute/path/AGENTS.md"}]'
+cellarer --output json inventory refresh --agent codex
 ```
 
-Dry-run 使用 environment-reference mode，不 provision 或查询 mutation authority、vault、
-keychain 凭据。可执行导入是普通 mutation；apply 时重新检查已捕获来源 fingerprint，不会
-重新扫描或改变选择。
+使用已审查的精确 candidate ID 生成 import plan，再原样应用规划返回且经 authority seal 的
+`mutationPlan`：
+
+```bash
+cellarer --output json inventory import plan \
+  --candidate '<candidate-id>' --into-collection default
+cellarer inventory import apply --plan '<plan 返回的 mutationPlan JSON>'
+```
+
+Inventory refresh 只读。Import 只写 Store，并重新检查已捕获的来源证据，不会重新选择
+candidate。下发仍是独立 operation：需要把 Store 资源写入 agent target 时，使用
+`apply --dry-run` 与 `apply`，或可复用 Sync profile。
 
 ### 验证、恢复与回滚
 
@@ -376,7 +379,7 @@ Core 业务逻辑通过 `Env` 获取文件系统、home、cwd、platform、envir
 secret-provider 与进程 lifetime effects，不直接读取 `process`、`os` 或 `node:fs`。测试
 因此可以使用临时 Store 与 fake/injected effects。
 
-### 下发与扫描流程
+### 下发与 Inventory 导入流程
 
 ```text
 Store resources
@@ -390,12 +393,11 @@ Store resources
 ```
 
 ```text
-Agent 原生文件
-  -> adapter paths 与 codecs
-  -> 安全捕获 snapshot
-  -> 规范化的 reference-only resources
-  -> 明确选择与 conflicts
-  -> immutable import plan
+已注册的有界 agent 来源
+  -> 安全的只读 Inventory refresh
+  -> 脱敏 provenance、findings 与 candidate ID
+  -> 精确的已审查 candidate 选择
+  -> immutable authority-sealed import plan
   -> Store mutation 与 receipt
 ```
 
@@ -534,6 +536,11 @@ Inventory-first onboarding 开始，支持按 kind、source、adapter 与 state 
 provenance，并只采用 Core defaults。Inventory 不完整时禁用导入；导入需要一次精确确认；
 plan 过期时只展示 refresh/replan 指引，不会静默重试。导入成功后，Library 与 Sync 作为
 独立 next action 展示；Inventory 审查和导入都不会写入 agent target。
+
+旧的 `GET /api/v1/discovery`、`POST /api/v1/scan/plan`、
+`POST /api/v1/scan/apply`、`POST /api/v1/import/plan` 与
+`POST /api/v1/import/apply` route 已移除并返回 not found。Client 必须使用上述 Inventory
+route；server 不会翻译旧 request 或捕获的 scan plan。
 
 ## 自定义 Adapter
 

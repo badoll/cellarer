@@ -31,11 +31,6 @@ import {
   type ResourceState,
   resourceCatalog,
 } from "./resources/catalog.js";
-import {
-  type DiscoverySummaryOptions,
-  type DiscoverySummaryResult,
-  discoverySummary,
-} from "./resources/discovery.js";
 import type { CellarerConfig } from "./store/config.js";
 import {
   loadConfig,
@@ -147,7 +142,6 @@ export interface ControlPlaneStatusDto {
 
 export type ControlPlaneVerifyDto = VerificationReport;
 export type ControlPlaneSummaryDto = Awaited<ReturnType<typeof dashboardSummary>>;
-export type ControlPlaneDiscoverySummaryDto = DiscoverySummaryResult;
 
 export interface ControlPlaneOperationSummaryDto {
   readonly operationId: string;
@@ -405,13 +399,6 @@ export function summaryControlPlane(
   return dashboardSummary(env, opts);
 }
 
-export function discoverySummaryControlPlane(
-  env: Env,
-  opts: DiscoverySummaryOptions,
-): Promise<ControlPlaneDiscoverySummaryDto> {
-  return discoverySummary(env, opts);
-}
-
 export async function listControlPlaneOperations(
   env: Env,
   opts: ControlPlaneOperationListOptions,
@@ -447,6 +434,11 @@ function resourceDto(resource: ResourceCatalogItem, selectedCollections: readonl
   if (resource.state === "blocked" && issues.length === 0) {
     issues.push(validationIssue(resource.id, "resource discovery is blocked"));
   }
+  for (const finding of resource.discovered?.findings ?? []) {
+    issues.push(
+      validationIssue(finding.sourceId ?? resource.id, `${finding.code}: ${finding.remediation}`),
+    );
+  }
   const validationStatus: "valid" | "warning" | "invalid" =
     resource.state === "blocked" ? "invalid" : issues.length > 0 ? "warning" : "valid";
   const desiredUsage = selected.map((collection) => readonlyProducer({ collection }));
@@ -463,6 +455,7 @@ function resourceDto(resource: ResourceCatalogItem, selectedCollections: readonl
     selection: readonlyProducer({
       desired: selected.length > 0,
       collections: readonlyList(selected),
+      ...(resource.discovered ? { inventoryDefault: resource.discovered.defaultSelected } : {}),
     }),
     validation: readonlyProducer({ status: validationStatus, issues: readonlyList(issues) }),
     secretReferenceNames: readonlyList(resource.secretRefs),

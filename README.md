@@ -7,8 +7,8 @@
 cellarer is for people who use several AI coding agents on the same machine.
 Instead of maintaining the same rules, MCP configuration, and skills in several
 agent-specific locations, you import them once, preview the exact changes, and
-sync them to selected agents. Cellarer can also scan existing agent
-configuration back into the store.
+sync them to selected agents. Unified Inventory provides the read-only view of
+existing agent configuration before an exact Store import.
 
 The project is built around three ideas:
 

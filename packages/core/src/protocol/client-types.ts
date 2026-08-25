@@ -342,22 +342,6 @@ export type CliErrorCode =
 
 export type ClientErrorCode = CliErrorCode;
 
-export interface ScanItem {
-  kind: Capability;
-  name: string;
-  status: "new" | "conflict";
-  action: "import" | "skip";
-  secretRefs?: string[];
-  source: string;
-}
-
-export interface ScanPlan {
-  agent: string;
-  scope: Scope;
-  items: ScanItem[];
-  warnings: string[];
-}
-
 export type ResourceState = "managed" | "discovered" | "synced" | "drifted" | "missing" | "blocked";
 export type Destination = "user" | "project";
 
@@ -418,6 +402,11 @@ export interface ResourceCatalogItem {
     agent: string;
     destination: Destination;
     source: string;
+    candidateId: string;
+    defaultSelected: boolean;
+    sources: readonly InventorySourceProvenance[];
+    relatedAdapters: readonly InventoryRelatedAdapter[];
+    findings: readonly InventoryFinding[];
   };
   syncTargets: ResourceSyncTarget[];
   secretRefs: string[];
@@ -437,24 +426,6 @@ export interface ResourceCatalogResult {
   generatedAt: string;
   resources: ResourceCatalogItem[];
   counts: ResourceCatalogCounts;
-  warnings: string[];
-}
-
-export interface AgentDiscoverySummary {
-  agent: string;
-  displayName: string;
-  detected: boolean;
-  root?: string;
-  counts: Record<Capability, number>;
-  warnings: string[];
-}
-
-export interface DiscoverySummaryResult {
-  generatedAt: string;
-  destination: Destination;
-  dir?: string;
-  totals: Record<Capability, number>;
-  agents: AgentDiscoverySummary[];
   warnings: string[];
 }
 
@@ -587,7 +558,11 @@ export interface ControlPlaneResourceDto {
   readonly provenance?: ResourceSourceDescriptor;
   readonly discovered?: ResourceCatalogItem["discovered"];
   readonly membership: { readonly collections: readonly string[] };
-  readonly selection: { readonly desired: boolean; readonly collections: readonly string[] };
+  readonly selection: {
+    readonly desired: boolean;
+    readonly collections: readonly string[];
+    readonly inventoryDefault?: boolean;
+  };
   readonly validation: ControlPlaneResourceValidation;
   readonly secretReferenceNames: readonly string[];
   readonly usage: {
@@ -751,7 +726,6 @@ export interface DashboardSummaryResult {
   distributionCoverage: DashboardCoverageGroup[];
   driftItems: StatusItem[];
   latestActivity: ActivityEvent[];
-  latestScanSummary?: ActivityEvent;
   warnings: string[];
 }
 

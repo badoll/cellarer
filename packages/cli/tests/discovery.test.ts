@@ -10,13 +10,7 @@ import { CLI_ERROR_SCHEMA, CLI_WARNING_SCHEMA } from "../src/protocol/schemas.js
 
 const originalStdoutWrite = process.stdout.write;
 const originalExitCode = process.exitCode;
-const INITIALIZATION_DISCOVERY_COMMANDS = [
-  "init",
-  "scan",
-  "capabilities",
-  "schema",
-  "discovery.summary",
-] as const;
+const INITIALIZATION_DISCOVERY_COMMANDS = ["init", "capabilities", "schema"] as const;
 
 interface TestEnvelope {
   readonly status: string;
@@ -170,6 +164,42 @@ describe("CLI protocol discovery", () => {
       status: "error",
       error: { code: "INVALID_INPUT" },
     });
+  });
+
+  it.each([
+    "urn:cellarer:cli:protocol:1.0:command:scan:input",
+    "urn:cellarer:cli:protocol:1.0:command:scan:output",
+    "urn:cellarer:cli:protocol:1.0:command:scan:event",
+    "urn:cellarer:cli:protocol:1.0:command:discovery.summary:input",
+    "urn:cellarer:cli:protocol:1.0:command:discovery.summary:output",
+  ])("returns the stable unsupported-schema failure for removed schema %s", async (schemaId) => {
+    const envelope = await invokeJson(["--output", "json", "schema", schemaId]);
+
+    expect(process.exitCode).toBe(2);
+    expect(envelope).toMatchObject({
+      command: "schema",
+      status: "error",
+      error: { code: "INVALID_INPUT" },
+    });
+  });
+
+  it("advertises Inventory replacements without legacy scan or discovery contracts", async () => {
+    const envelope = await invokeJson(["--output", "json", "capabilities"]);
+    const commands = (envelope.data.commands as Array<{ command: string }>).map(
+      ({ command }) => command,
+    );
+
+    expect(commands).toEqual(
+      expect.arrayContaining([
+        "inventory.refresh",
+        "inventory.import.plan",
+        "inventory.import.apply",
+        "resource.list",
+        "sync.plan",
+      ]),
+    );
+    expect(commands).not.toContain("scan");
+    expect(commands).not.toContain("discovery.summary");
   });
 });
 

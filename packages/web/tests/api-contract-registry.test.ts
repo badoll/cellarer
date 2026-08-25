@@ -267,12 +267,12 @@ describe("local client route registry", () => {
         readonly securitySchemes: Record<string, unknown>;
       };
     };
-    const scan = document.paths["/api/v1/scan/plan"]?.post;
+    const inventoryImport = document.paths["/api/v1/inventory/import/plan"]?.post;
     const browserBootstrap = document.paths["/api/v1/auth/session"]?.post;
 
-    expect(scan?.requestBody).toBeDefined();
+    expect(inventoryImport?.requestBody).toBeDefined();
     expect(browserBootstrap?.requestBody).toBeUndefined();
-    expect(Object.keys(scan?.responses ?? {}).sort()).toEqual([
+    expect(Object.keys(inventoryImport?.responses ?? {}).sort()).toEqual([
       "200",
       "400",
       "401",
@@ -280,8 +280,8 @@ describe("local client route registry", () => {
       "413",
       "500",
     ]);
-    expect(scan?.["x-cellarer-input-schema"]).toBeDefined();
-    expect(scan?.["x-cellarer-output-schema"]).toBeDefined();
+    expect(inventoryImport?.["x-cellarer-input-schema"]).toBeDefined();
+    expect(inventoryImport?.["x-cellarer-output-schema"]).toBeDefined();
     expect(document.components.securitySchemes).toEqual({
       localManagedClientAuth: { type: "http", scheme: "bearer" },
       localBrowserSession: { type: "apiKey", in: "cookie", name: "cellarer_session" },
@@ -289,6 +289,26 @@ describe("local client route registry", () => {
     for (const [name, schema] of Object.entries(document.components.schemas)) {
       assertClosedJsonSchema(schema, `components.schemas.${name}`);
     }
+  });
+
+  it("omits removed discovery, scan, and legacy import surfaces from routes and OpenAPI", () => {
+    const removedPaths = [
+      "/api/v1/discovery",
+      "/api/v1/scan/plan",
+      "/api/v1/scan/apply",
+      "/api/v1/import/plan",
+      "/api/v1/import/apply",
+    ];
+    const document = createClientOpenApiDocument() as {
+      readonly paths: Readonly<Record<string, unknown>>;
+      readonly components: { readonly schemas: Readonly<Record<string, unknown>> };
+    };
+
+    expect(CLIENT_API_ROUTES.map(({ path }) => path)).not.toEqual(
+      expect.arrayContaining(removedPaths),
+    );
+    expect(Object.keys(document.paths)).not.toEqual(expect.arrayContaining(removedPaths));
+    expect(document.components.schemas).not.toHaveProperty("ScanPlan");
   });
 
   it("publishes only the exact unconstrained recursive JsonValue structure", () => {
@@ -450,10 +470,6 @@ describe("local client route registry", () => {
       [
         "planSync conflicts",
         items(property(property(successData("planSync"), "plan"), "conflicts")),
-      ],
-      [
-        "planScan items",
-        items(property(property(successData("planScanMutation"), "plan"), "items")),
       ],
       ["resources", items(property(successData("listResources"), "resources"))],
       ["agents", items(property(successData("listAgents"), "agents"))],

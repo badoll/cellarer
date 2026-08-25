@@ -36,7 +36,6 @@ export {
   type ControlPlaneConfigDto,
   type ControlPlaneConfigValidationDto,
   type ControlPlaneDiffDto,
-  type ControlPlaneDiscoverySummaryDto,
   type ControlPlaneOperationDetailDto,
   type ControlPlaneOperationDetailOptions,
   type ControlPlaneOperationListDto,
@@ -54,7 +53,6 @@ export {
   type ControlPlaneValidationIssue,
   type ControlPlaneVerifyDto,
   diffControlPlane,
-  discoverySummaryControlPlane,
   listControlPlaneAgents,
   listControlPlaneCollections,
   listControlPlaneOperations,
@@ -162,20 +160,6 @@ export {
   planRevertMutation,
   revert,
 } from "./engine/revert.js";
-export {
-  type ApplyScanMutationPlanOptions,
-  applyScan,
-  applyScanMutationPlan,
-  type ConflictStrategy,
-  type PlannedScanMutation,
-  planScanMutation,
-  type ScanItem,
-  type ScanOptions,
-  type ScanPlan,
-  type ScanResult,
-  type ScanSelection,
-  scanPlan,
-} from "./engine/scan.js";
 export { status } from "./engine/status.js";
 export type {
   ApplyCallResult,
@@ -444,12 +428,6 @@ export type {
   ResourceSyncTarget,
 } from "./resources/catalog.js";
 export { resourceCatalog } from "./resources/catalog.js";
-export type {
-  AgentDiscoverySummary,
-  DiscoverySummaryOptions,
-  DiscoverySummaryResult,
-} from "./resources/discovery.js";
-export { discoverySummary } from "./resources/discovery.js";
 export {
   type AppliedResourceLifecycle,
   applyResourceBundleImportPlan,

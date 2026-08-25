@@ -128,10 +128,6 @@ async function dashboardSummaryImplementation(env: Env, opts: DashboardSummaryOp
   const driftCounts = driftCount(statusItems);
   const warnings = [...doctorReport.warnings, ...activity.warnings];
   const optionalDir: { dir?: string } = { dir: opts.dir };
-  const latestScan = activity.events.find((event) => event.action === "scan-import");
-  const optionalLatestScan: { latestScanSummary?: (typeof activity.events)[number] } = {
-    latestScanSummary: latestScan,
-  };
 
   return {
     generatedAt: env.now().toISOString(),
@@ -160,7 +156,6 @@ async function dashboardSummaryImplementation(env: Env, opts: DashboardSummaryOp
     distributionCoverage: coverage,
     driftItems: statusItems.filter((item) => item.status !== "ok"),
     latestActivity: activity.events,
-    ...optionalLatestScan,
     warnings,
   };
 }

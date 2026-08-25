@@ -31,7 +31,6 @@ const EXPECTED_COMMANDS = [
   "diff",
   "verify",
   "summary",
-  "discovery.summary",
   "operation.list",
   "operation.show",
   "operation.recover",

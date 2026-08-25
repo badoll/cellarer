@@ -195,7 +195,6 @@ describe("cli program wiring", () => {
         "collection",
         "config",
         "diff",
-        "discovery",
         "doctor",
         "init",
         "inventory",
@@ -205,7 +204,6 @@ describe("cli program wiring", () => {
         "profile",
         "resource",
         "revert",
-        "scan",
         "schema",
         "secret",
         "status",
@@ -366,19 +364,10 @@ describe("cli program wiring", () => {
     }
   });
 
-  it("scan exposes conflict/exact-select/dry-run/json flags", () => {
+  it("does not expose removed scan or discovery command roots", () => {
     const program = buildProgram();
-    const scan = program.commands.find((c) => c.name() === "scan");
-    const flags = scan?.options.map((o) => o.long) ?? [];
-    const shortFlags = scan?.options.map((o) => o.short) ?? [];
-    expect(flags).toContain("--agent");
-    expect(shortFlags).toContain("-a");
-    expect(flags).toContain("--conflict");
-    expect(flags).toContain("--into-collection");
-    expect(flags.some((flag) => /^--into-c(?:hannel)$/.test(flag))).toBe(false);
-    expect(flags).toContain("--select");
-    expect(flags).toContain("--dry-run");
-    expect(flags).toContain("--json");
+    expect(program.commands.find((command) => command.name() === "scan")).toBeUndefined();
+    expect(program.commands.find((command) => command.name() === "discovery")).toBeUndefined();
   });
 
   it("apply exposes ownership acknowledgement, snapshot, and JSON flags", () => {

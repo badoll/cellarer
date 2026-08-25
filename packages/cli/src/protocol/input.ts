@@ -128,7 +128,7 @@ export function getCliInvocation(command: Command): CliInvocation {
 }
 
 export function assertNonInteractiveMutationInput(
-  command: "apply" | "scan" | "revert",
+  command: "apply" | "revert",
   input: NonInteractiveMutationInput,
   invocation: Pick<CliInvocation, "output" | "nonInteractive">,
 ): void {
@@ -137,11 +137,6 @@ export function assertNonInteractiveMutationInput(
   const missing: string[] = [];
   if (command === "apply") {
     if (!input.agents || input.agents.length === 0) missing.push("agents");
-    if (!input.dryRun && (!input.capabilities || input.capabilities.length === 0)) {
-      missing.push("capabilities");
-    }
-  } else if (command === "scan") {
-    if (!input.agent) missing.push("agent");
     if (!input.dryRun && (!input.capabilities || input.capabilities.length === 0)) {
       missing.push("capabilities");
     }

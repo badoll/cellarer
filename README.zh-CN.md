@@ -6,7 +6,7 @@
 
 cellarer 面向在同一台机器上使用多个 AI coding agent 的开发者。你不再需要分别维护
 多份 rules、MCP 配置与 skills：将资源导入一次，预览将要发生的精确变更，再同步到
-选中的 agent。cellarer 也可以扫描已有的 agent 配置并导回 Store。
+选中的 agent。统一 Inventory 提供已有 agent 配置的只读视图，再按精确候选导入 Store。
 
 项目围绕三个原则设计：
 

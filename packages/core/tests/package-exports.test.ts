@@ -41,7 +41,6 @@ const baselineTouchedRootModules = new Set([
   "./control-plane.js",
   "./dashboard.js",
   "./engine/plan.js",
-  "./engine/scan.js",
   "./engine/status.js",
   "./engine/types.js",
   "./model/index.js",
@@ -50,7 +49,6 @@ const baselineTouchedRootModules = new Set([
   "./protocol/client.js",
   "./protocol/models.js",
   "./resources/catalog.js",
-  "./resources/discovery.js",
   "./resources/model.js",
   "./settings.js",
   "./store/config.js",
@@ -60,7 +58,6 @@ const baselineTouchedRootValues = [
   "listActivity",
   "summarizeActivity",
   "diffControlPlane",
-  "discoverySummaryControlPlane",
   "listControlPlaneAgents",
   "listControlPlaneCollections",
   "listControlPlaneOperations",
@@ -78,10 +75,6 @@ const baselineTouchedRootValues = [
   "statusIdentityKey",
   "inCollections",
   "plan",
-  "applyScan",
-  "applyScanMutationPlan",
-  "planScanMutation",
-  "scanPlan",
   "status",
   "canonicalJson",
   "canonicalMutationPlan",
@@ -100,7 +93,6 @@ const baselineTouchedRootValues = [
   "OPERATION_JOURNAL_SCHEMA_VERSION",
   "OPERATION_RECEIPT_SCHEMA_VERSION",
   "resourceCatalog",
-  "discoverySummary",
   "createResourceRecord",
   "InvalidResourceMetadataError",
   "loadResourceRecord",
@@ -147,7 +139,6 @@ const baselineTouchedRootTypes = [
   "ControlPlaneConfigDto",
   "ControlPlaneConfigValidationDto",
   "ControlPlaneDiffDto",
-  "ControlPlaneDiscoverySummaryDto",
   "ControlPlaneOperationDetailDto",
   "ControlPlaneOperationDetailOptions",
   "ControlPlaneOperationListDto",
@@ -174,14 +165,6 @@ const baselineTouchedRootTypes = [
   "DashboardSecretRefStat",
   "DashboardSummaryOptions",
   "DashboardSummaryResult",
-  "ApplyScanMutationPlanOptions",
-  "ConflictStrategy",
-  "PlannedScanMutation",
-  "ScanItem",
-  "ScanOptions",
-  "ScanPlan",
-  "ScanResult",
-  "ScanSelection",
   "ApplyCallResult",
   "ApplyFailure",
   "ApplyMutationContext",
@@ -287,9 +270,6 @@ const baselineTouchedRootTypes = [
   "ResourceCatalogResult",
   "ResourceState",
   "ResourceSyncTarget",
-  "AgentDiscoverySummary",
-  "DiscoverySummaryOptions",
-  "DiscoverySummaryResult",
   "CreateResourceRecordInput",
   "ResourceRecord",
   "ResourceRevision",
@@ -338,11 +318,6 @@ const baselineMigratedTypeModules = [
       "DashboardSecretRefStat",
       "DashboardSummaryResult",
     ],
-  },
-  {
-    alias: "Scan",
-    module: "engine/scan",
-    names: ["ScanItem", "ScanPlan"],
   },
   {
     alias: "EngineTypes",
@@ -422,11 +397,6 @@ const baselineMigratedTypeModules = [
       "ResourceState",
       "ResourceSyncTarget",
     ],
-  },
-  {
-    alias: "ResourceDiscovery",
-    module: "resources/discovery",
-    names: ["AgentDiscoverySummary", "DiscoverySummaryResult"],
   },
   {
     alias: "ResourceModel",
@@ -947,6 +917,49 @@ console.log(JSON.stringify({
     });
   });
 
+  it("omits discovery and scan runtime, declaration, and packed module surfaces", async () => {
+    await expect(installedRootRuntimeKeys()).resolves.not.toEqual(
+      expect.arrayContaining([
+        "applyScan",
+        "applyScanMutationPlan",
+        "planScanMutation",
+        "scanPlan",
+        "discoverySummary",
+        "discoverySummaryControlPlane",
+      ]),
+    );
+    for (const relativePath of [
+      "dist/engine/scan.js",
+      "dist/engine/scan.d.ts",
+      "dist/resources/discovery.js",
+      "dist/resources/discovery.d.ts",
+    ]) {
+      await expect(access(join(packageInstallRoot, relativePath))).rejects.toThrow();
+    }
+
+    const rootFixture = join(consumerRoot, "removed-root-types.mts");
+    await writeFile(
+      rootFixture,
+      `// @ts-expect-error removed discovery and scan exports are not public.
+import { discoverySummary, scanPlan, type ScanPlan } from "@cellarer/core";
+void [discoverySummary, scanPlan, undefined as unknown as ScanPlan];
+`,
+      "utf8",
+    );
+    expect(() => compileConsumer(rootFixture, false)).not.toThrow();
+
+    const portableFixture = join(portableConsumerRoot, "removed-portable-types.mts");
+    await writeFile(
+      portableFixture,
+      `// @ts-expect-error removed discovery and scan DTOs are not browser contracts.
+import type { DiscoverySummaryResult, ScanItem, ScanPlan } from "@cellarer/core/client-api";
+void (undefined as unknown as DiscoverySummaryResult | ScanItem | ScanPlan);
+`,
+      "utf8",
+    );
+    expect(() => compileConsumer(portableFixture, false)).not.toThrow();
+  });
+
   it("keeps legacy adapter type imports and assignments source-compatible", async () => {
     const fixturePath = join(consumerRoot, "legacy-adapter-types.mts");
     await writeFile(
@@ -1019,7 +1032,6 @@ void adapter;
   type DashboardAgentReadiness,
   type DashboardCoverageGroup,
   type DashboardSummaryResult,
-  type DiscoverySummaryResult,
   type Destination,
   type DistributePlan,
   type DriftStatus,
@@ -1027,8 +1039,6 @@ void adapter;
   type ResourceCatalogItem,
   type ResourceCatalogResult,
   type ResourceState,
-  type ScanItem,
-  type ScanPlan,
   type Scope,
   type SettingsSummary,
   type StatusItem,
@@ -1056,7 +1066,6 @@ type BrowserClientTypes =
   | DashboardAgentReadiness
   | DashboardCoverageGroup
   | DashboardSummaryResult
-  | DiscoverySummaryResult
   | Destination
   | ResourceCatalogItem
   | ResourceCatalogResult
@@ -1067,8 +1076,6 @@ type BrowserClientTypes =
   | DistributePlan
   | DriftStatus
   | MutationPlan
-  | ScanItem
-  | ScanPlan
   | SettingsSummary
   | StatusItem;
 type BrowserResourceState = ResourceState;
@@ -1157,11 +1164,9 @@ void [version, undefined as unknown as Env, undefined as unknown as MutationPlan
       },
       "dashboard.d.ts": { dashboardSummary: "Promise<DashboardSummaryResult>" },
       "engine/plan.d.ts": { plan: "Promise<DistributePlan>" },
-      "engine/scan.d.ts": { scanPlan: "Promise<ScanPlan>" },
       "engine/status.d.ts": { status: "Promise<StatusItem[]>" },
       "protocol/canonical.d.ts": { createMutationPlan: "MutationPlan" },
       "resources/catalog.d.ts": { resourceCatalog: "Promise<ResourceCatalogResult>" },
-      "resources/discovery.d.ts": { discoverySummary: "Promise<DiscoverySummaryResult>" },
       "settings.d.ts": { settingsSummary: "Promise<SettingsSummary>" },
     } as const;
 
@@ -1291,16 +1296,6 @@ describe("portable DTO runtime exactness mutations", () => {
       /ExactContract<ReturnType<typeof catalogItem>, ResourceCatalogItem>/u,
     ],
     [
-      "an optional field is added to the canonical discovery summary",
-      "src/protocol/client-types.ts",
-      (source: string) =>
-        source.replace(
-          "export interface DiscoverySummaryResult {\n  generatedAt: string;",
-          "export interface DiscoverySummaryResult {\n  traceId?: string;\n  generatedAt: string;",
-        ),
-      /ExactContract<Awaited<ReturnType<typeof discoverySummaryImplementation>>, DiscoverySummaryResult>/u,
-    ],
-    [
       "an optional field is added to the canonical dashboard summary",
       "src/protocol/client-types.ts",
       (source: string) =>
@@ -1369,26 +1364,6 @@ describe("portable DTO runtime exactness mutations", () => {
           "export interface ControlPlaneResourceDto {\n  id: string;",
         ),
       /ExactContract<ReturnType<typeof resourceDto>, ControlPlaneResourceDto>/u,
-    ],
-    [
-      "an optional field is added to the canonical scan plan",
-      "src/protocol/client-types.ts",
-      (source: string) =>
-        source.replace(
-          "export interface ScanPlan {\n  agent: string;",
-          "export interface ScanPlan {\n  traceId?: string;\n  agent: string;",
-        ),
-      /ExactContract<Awaited<ReturnType<typeof scanPlanImplementation>>, ScanPlan>/u,
-    ],
-    [
-      "an optional field is added to the canonical scan item",
-      "src/protocol/client-types.ts",
-      (source: string) =>
-        source.replace(
-          "export interface ScanItem {\n  kind: Capability;",
-          "export interface ScanItem {\n  traceId?: string;\n  kind: Capability;",
-        ),
-      /ExactContract<ReturnType<typeof scanItem>, ScanItem>/u,
     ],
     [
       "an optional field is added to the canonical distribute plan",
@@ -1507,16 +1482,6 @@ describe("portable DTO runtime exactness mutations", () => {
           'export type DriftStatus = "ok" | "drifted" | "missing" | "broken-link" | "unknown";',
         ),
       /ExactContract<ReturnType<typeof statusItem>, StatusItem>/u,
-    ],
-    [
-      "an optional field is added to the nested discovery agent DTO",
-      "src/protocol/client-types.ts",
-      (source: string) =>
-        source.replace(
-          "export interface AgentDiscoverySummary {\n  agent: string;",
-          "export interface AgentDiscoverySummary {\n  traceId?: string;\n  agent: string;",
-        ),
-      /ExactContract<Awaited<ReturnType<typeof summarizeAgent>>, AgentDiscoverySummary>/u,
     ],
   ])("fails compilation when %s", (_name, relativePath, mutate, expectedContract) => {
     const diagnostics = coreDiagnosticsWithSourceMutation(relativePath, mutate);

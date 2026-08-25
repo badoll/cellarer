@@ -6,7 +6,6 @@ import {
   type Destination,
   diagnoseInterruptedOperation,
   diffControlPlane,
-  discoverySummaryControlPlane,
   type LinkMethod,
   listControlPlaneAgents,
   listControlPlaneCollections,
@@ -93,53 +92,6 @@ export function collectionCommandRoot(): Command {
 
 export function configCommandRoot(): Command {
   return new Command("config").description("检查和验证 cellarer 配置");
-}
-
-export function discoveryCommandRoot(): Command {
-  return new Command("discovery").description("检查 agent 中的可发现资源");
-}
-
-export function createDiscoverySummaryCommandContract(
-  definition: CommandContractMetadata<"discovery.summary">,
-) {
-  return defineCommandContract<
-    "discovery.summary",
-    { readonly destination?: string; readonly dir?: string; readonly agent?: string },
-    Awaited<ReturnType<typeof discoverySummaryControlPlane>>
-  >(definition, {
-    createCommand: () =>
-      new Command("summary")
-        .description("汇总 agent 目标中的可发现资源")
-        .option("--destination <destination>", "目标:user | project")
-        .option("--dir <path>", "project 目录")
-        .option("-a, --agent <ids>", "agent id，逗号分隔"),
-    normalize: ({ command }) =>
-      command.opts<{ destination?: string; dir?: string; agent?: string }>(),
-    execute: async (opts, { invocation }) => {
-      const destination = parseDestination(
-        requireValue(opts.destination, "destination", invocation),
-        invocation,
-      );
-      const ctx = await resolveContext({ agent: opts.agent, dir: opts.dir }, "none");
-      const data = await discoverySummaryControlPlane(ctx.env, {
-        storeRoot: ctx.storeRoot,
-        destination,
-        ...(ctx.dir ? { dir: ctx.dir } : {}),
-        ...(ctx.agents.length > 0 ? { agents: ctx.agents } : {}),
-      });
-      return commandSuccess(data);
-    },
-    presentText: (outcome) => {
-      if (!outcome.ok) return;
-      const output = createSafeConsole(outcome.data);
-      output.log(`discovery (${outcome.data.destination}):`);
-      output.log(
-        `  rules=${outcome.data.totals.rules} mcp=${outcome.data.totals.mcp} skills=${outcome.data.totals.skills}`,
-      );
-      for (const warning of outcome.data.warnings) output.warn(`⚠ ${warning}`);
-    },
-    mapError: () => undefined,
-  });
 }
 
 export function operationCommandRoot(): Command {

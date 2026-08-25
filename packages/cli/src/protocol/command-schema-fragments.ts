@@ -407,15 +407,33 @@ const controlPlaneResource = dataObject(
     state: resourceState,
     currentRevision: resourceRevision,
     provenance: resourceSourceDescriptor,
-    discovered: dataObject(["agent", "destination", "source"], {
-      agent: jsonSchema.string({ minLength: 1 }),
-      destination,
-      source: jsonSchema.string({ minLength: 1 }),
-    }),
+    discovered: dataObject(
+      [
+        "agent",
+        "destination",
+        "source",
+        "candidateId",
+        "defaultSelected",
+        "sources",
+        "relatedAdapters",
+        "findings",
+      ],
+      {
+        agent: jsonSchema.string({ minLength: 1 }),
+        destination,
+        source: jsonSchema.string({ minLength: 1 }),
+        candidateId: jsonSchema.string({ minLength: 1 }),
+        defaultSelected: jsonSchema.boolean(),
+        sources: jsonSchema.array(inventorySource),
+        relatedAdapters: jsonSchema.array(inventoryRelatedAdapter),
+        findings: jsonSchema.array(inventoryFinding),
+      },
+    ),
     membership: dataObject(["collections"], { collections: stringArray }),
     selection: dataObject(["desired", "collections"], {
       desired: jsonSchema.boolean(),
       collections: stringArray,
+      inventoryDefault: jsonSchema.boolean(),
     }),
     validation: dataObject(["status", "issues"], {
       status: jsonSchema.enumeration(["valid", "warning", "invalid"]),
@@ -1486,27 +1504,6 @@ const summaryOutput = dataObject(
     distributionCoverage: jsonSchema.array(dashboardCoverage),
     driftItems: jsonSchema.array(statusItem),
     latestActivity: jsonSchema.array(activityEvent),
-    latestScanSummary: activityEvent,
-    warnings: stringArray,
-  },
-);
-const discoverySummaryOutput = dataObject(
-  ["generatedAt", "destination", "totals", "agents", "warnings"],
-  {
-    generatedAt: jsonSchema.string({ minLength: 1 }),
-    destination,
-    dir: jsonSchema.string({ minLength: 1 }),
-    totals: capabilityCounts,
-    agents: jsonSchema.array(
-      dataObject(["agent", "displayName", "detected", "counts", "warnings"], {
-        agent: jsonSchema.string({ minLength: 1 }),
-        displayName: jsonSchema.string({ minLength: 1 }),
-        detected: jsonSchema.boolean(),
-        root: jsonSchema.string({ minLength: 1 }),
-        counts: capabilityCounts,
-        warnings: stringArray,
-      }),
-    ),
     warnings: stringArray,
   },
 );
@@ -1608,20 +1605,6 @@ const diagnosticCheck = dataObject(["id", "status", "message"], {
 const doctorAgent = dataObject([...(inspectedAgent.required ?? []), "checks"], {
   ...(inspectedAgent.properties ?? {}),
   checks: jsonSchema.array(diagnosticCheck),
-});
-const scanItem = dataObject(["kind", "name", "status", "action", "source"], {
-  kind: jsonSchema.enumeration(["rules", "mcp", "skills"]),
-  name: jsonSchema.string({ minLength: 1 }),
-  status: jsonSchema.enumeration(["new", "conflict"]),
-  action: jsonSchema.enumeration(["import", "skip"]),
-  secretRefs: stringArray,
-  source: jsonSchema.string({ minLength: 1 }),
-});
-const scanPlan = dataObject(["agent", "scope", "items", "warnings"], {
-  agent: jsonSchema.string({ minLength: 1 }),
-  scope,
-  items: jsonSchema.array(scanItem),
-  warnings: stringArray,
 });
 const revertSnapshot = dataObject(["path", "status", "encrypted"], {
   path: { type: ["string", "null"] },
@@ -1883,7 +1866,6 @@ export const commandSchemaFragments = Object.freeze({
   destination,
   diagnosticCheck,
   diffOutput,
-  discoverySummaryOutput,
   distributePlan,
   distributionApplyOutput,
   distributionMutationPlan,
@@ -1924,8 +1906,6 @@ export const commandSchemaFragments = Object.freeze({
   resourceQueryProperties,
   revertFailure,
   revertPlan,
-  scanItem,
-  scanPlan,
   scope,
   scopeBindings,
   scopeInput,

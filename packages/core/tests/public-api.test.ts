@@ -22,6 +22,12 @@ describe("@cellarer/core package root", () => {
     expect(core).toHaveProperty("createMutationPlan");
     expect(core).not.toHaveProperty("mutationPlanDigest");
     expect(core).not.toHaveProperty("verifyMutationPlanDigest");
+    expect(core).not.toHaveProperty("applyScan");
+    expect(core).not.toHaveProperty("applyScanMutationPlan");
+    expect(core).not.toHaveProperty("planScanMutation");
+    expect(core).not.toHaveProperty("scanPlan");
+    expect(core).not.toHaveProperty("discoverySummary");
+    expect(core).not.toHaveProperty("discoverySummaryControlPlane");
   });
 
   it("narrows the public integrity helper so it cannot mint executable authority", () => {

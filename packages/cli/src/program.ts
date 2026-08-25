@@ -9,7 +9,6 @@ import {
   agentCommandRoot,
   collectionCommandRoot,
   configCommandRoot,
-  discoveryCommandRoot,
   operationCommandRoot,
   resourceCommandRoot,
 } from "./commands/control-plane-read.js";
@@ -53,7 +52,6 @@ const commandContainerFactories: Readonly<Record<string, () => Command>> = {
   agent: agentCommandRoot,
   collection: () => addCollectionMutationGroups(collectionCommandRoot()),
   config: configCommandRoot,
-  discovery: discoveryCommandRoot,
   operation: operationCommandRoot,
   inventory: inventoryCommandRoot,
 };

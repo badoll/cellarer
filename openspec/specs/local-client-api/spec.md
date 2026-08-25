@@ -54,18 +54,6 @@ Planning endpoints MUST return the exact immutable, authority-sealed plan receip
 - **WHEN** a client changes any executable plan field before applying it
 - **THEN** authorization fails before canonical replanning, product-state observation, or external effects
 
-#### Scenario: Client applies a scan/import plan
-- **WHEN** a client submits the unchanged scan mutation plan returned by Core planning
-- **THEN** apply executes the selected redacted rules/MCP publications and fingerprint-bound skill sources without repeating discovery, selection, conflict resolution, or secret redaction
-
-#### Scenario: A planned scan source drifts
-- **WHEN** an authorized scan mutation plan refers to a skill or agent source whose safe snapshot fingerprint changed after planning
-- **THEN** Core returns a typed target-precondition conflict without importing the changed source or rebuilding the plan
-
-#### Scenario: A scan plan crosses a process restart
-- **WHEN** a client submits a previously returned scan mutation plan to a replacement sidecar using the same current mutation authority epoch
-- **THEN** Core can validate and apply the plan from its serializable receipt without an in-memory plan registry, process-local closure, or server-side operation queue
-
 ### Requirement: Local authentication is explicit and browser-safe
 The server MUST bind only to loopback and MUST start in exactly one explicit authentication mode. Managed clients MUST use bearer material received through a protected inherited descriptor; the material MUST NOT appear in argv, URLs, ready records, logs, errors, or response bodies. The bundled Web mode MUST use a random HttpOnly, SameSite=Strict session established by a same-origin bootstrap and MUST require an allowed Origin for every mutation. Host validation and DNS-rebinding defenses MUST cover static, bootstrap, discovery, and API routes.
 
@@ -140,3 +128,18 @@ The bundled Web first-run journey SHALL load live Inventory, render aggregate st
 #### Scenario: Import completes
 - **WHEN** the Store import succeeds
 - **THEN** the client offers Library and a separate Sync journey without writing an agent target
+
+### Requirement: Superseded discovery and scan routes are removed
+After bundled-client migration, `/api/v1` capability discovery, route registration, OpenAPI, closed schemas, and browser-safe client types MUST expose unified Inventory refresh/import and MUST NOT retain discovery-summary, scan plan/apply, scan-backed overlapping import, or compatibility route shapes.
+
+#### Scenario: Removed route is requested
+- **WHEN** a caller requests a superseded discovery-summary, scan, or scan-backed import route
+- **THEN** the server returns not found without invoking Core, consuming mutation authority, or advertising an alias
+
+#### Scenario: Contract still advertises a removed route
+- **WHEN** route implementation, OpenAPI, closed schemas, or browser-safe client types differ after removal
+- **THEN** contract parity fails before the change can be closed
+
+#### Scenario: Captured legacy plan is submitted
+- **WHEN** a caller submits a previously captured scan plan to a remaining Inventory route
+- **THEN** the request is rejected without translation, replanning, source observation, or external effects

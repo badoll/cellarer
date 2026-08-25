@@ -170,7 +170,6 @@ const APPROVED_MODULE_GLOBAL_MUTABLE_IDENTITIES = new Set([
 const REVIEWED_READONLY_MODULE_GLOBAL_COLLECTIONS = new Set([
   "engine/apply.ts:CONTROLLED_ACTION_IO_CODES",
   "engine/revert.ts:CONTROLLED_ACTION_IO_CODES",
-  "engine/scan.ts:CONTROLLED_SCAN_ACTION_CODES",
   "protocol/store-mutation.ts:CONTROLLED_ACTION_IO_CODES",
   "secrets/detector.ts:EXAMPLE_VALUES",
   "secrets/detector.ts:SAFE_NON_SECRET_ENUM_FIELDS",

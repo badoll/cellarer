@@ -157,6 +157,102 @@ describe("transaction journal interruption recovery", () => {
     if (!acquired.ok) throw new Error("expected test mutation lock acquisition");
   }
 
+  it("diagnoses historical scan journal evidence as manual-only without effects", async () => {
+    const historicalTarget = t.path("home", ".claude", "CLAUDE.md");
+    const actionId = sha256("historical-scan-rules-action");
+    const secretCanary = "ghp_0123456789abcdefghijklmnopqrstuvwx";
+    const mutationPlan = createAuthorizedMutationPlan(t.env, storeRoot, {
+      schemaVersion: 1,
+      planId: "historical-scan-plan",
+      operation: "store-import",
+      baseRevision: 0,
+      normalizedInputs: { source: "historical-scan", secretCanary },
+      targetPreconditions: [{ actionId, target: historicalTarget, expected: { state: "absent" } }],
+      actions: [
+        {
+          actionId,
+          kind: "scan-rules",
+          target: historicalTarget,
+          payload: { source: historicalTarget },
+          postcondition: { state: "present", fingerprint: sha256("historical-output") },
+        },
+      ],
+      expires: { policy: "none" },
+    });
+    const timestamp = t.env.now().toISOString();
+    await publishOperationJournal(t.env, storeRoot, {
+      schemaVersion: 1,
+      operationId: "historical-scan-operation",
+      plan: createDurableMutationPlan(t.env, storeRoot, mutationPlan),
+      nextRevision: 1,
+      status: "executing",
+      startedAt: timestamp,
+      updatedAt: timestamp,
+      actions: [{ actionId, target: historicalTarget, status: "pending" }],
+    });
+    const acquired = await acquireStoreMutationLock(t.env, storeRoot, {
+      operationId: "historical-scan-operation",
+      processId: 4242,
+      hostname: t.env.hostname(),
+      acquiredAt: timestamp,
+    });
+    if (!acquired.ok) throw new Error("expected historical mutation lock acquisition");
+
+    const effects: string[] = [];
+    const recoveryEnv: Env = {
+      ...t.env,
+      probeProcessLiveness: async () => "dead",
+      fs: new Proxy(t.env.fs, {
+        get(target, property, receiver) {
+          const value = Reflect.get(target, property, receiver);
+          if (
+            typeof value !== "function" ||
+            ![
+              "copyFile",
+              "mkdir",
+              "publishFileAtomically",
+              "rename",
+              "rm",
+              "symlink",
+              "writeFile",
+            ].includes(String(property))
+          ) {
+            return value;
+          }
+          return (..._args: unknown[]) => {
+            effects.push(String(property));
+            throw new Error(`unexpected historical recovery effect: ${String(property)}`);
+          };
+        },
+      }),
+    };
+
+    await expect(diagnoseMutationRecovery(recoveryEnv, storeRoot)).resolves.toMatchObject({
+      status: "manual-recovery-required",
+      journal: {
+        operationId: "historical-scan-operation",
+        plan: { actions: [{ kind: "scan-rules" }] },
+      },
+    });
+    const recovery = await recoverInterruptedOperation(recoveryEnv, storeRoot, {
+      operationId: "historical-scan-operation",
+    });
+    expect(recovery).toMatchObject({
+      ok: false,
+      conflict: { code: "MANUAL_RECOVERY_REQUIRED" },
+    });
+    const serializedJournal = await t.env.fs.readFile(operationJournalPath(storeRoot));
+    expect(serializedJournal).not.toContain(secretCanary);
+    expect(JSON.stringify(recovery)).not.toContain(secretCanary);
+    await expect(
+      recoverInterruptedOperation(recoveryEnv, storeRoot, {
+        operationId: "historical-scan-operation",
+      }),
+    ).resolves.toEqual(recovery);
+    expect(effects).toEqual([]);
+    await expect(t.env.fs.lstat(historicalTarget)).rejects.toThrow();
+  });
+
   it("binds requested recovery diagnosis and wrong-id recovery to the requested operation", async () => {
     await expect(
       diagnoseInterruptedOperation(t.env, storeRoot, "operation-missing"),

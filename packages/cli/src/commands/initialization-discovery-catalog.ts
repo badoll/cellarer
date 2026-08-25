@@ -1,11 +1,9 @@
-import type { resolveContext } from "../context.js";
 import {
   type CommandDomain,
   defineCommandDomain,
   defineContractMetadata,
 } from "../protocol/command-contract.js";
 import { commandSchemaFragments as s } from "../protocol/command-schema-fragments.js";
-import { createDiscoverySummaryCommandContract } from "./control-plane-read.js";
 import {
   createCapabilitiesCommandContract,
   createSchemaCommandContract,
@@ -13,12 +11,10 @@ import {
 } from "./discovery.js";
 import type { InitInventoryImportConfirmer } from "./init.js";
 import { createInitCommandContract } from "./init.js";
-import { createScanCommandContract } from "./scan.js";
 
 export function createInitializationDiscoveryDomain(
   options: {
     readonly initInventoryImportConfirmer?: InitInventoryImportConfirmer;
-    readonly scanContextResolver?: typeof resolveContext;
   },
   provider: ProtocolDiscoveryProvider,
 ): CommandDomain {
@@ -102,52 +98,6 @@ export function createInitializationDiscoveryDomain(
         }),
         options.initInventoryImportConfirmer,
       ),
-      createScanCommandContract(
-        defineContractMetadata({
-          command: "scan",
-          catalogOrder: 6,
-          mutability: "write",
-          streaming: true,
-          requiredFeatures: ["mutation-authority", "protected-secret-channel"],
-          input: s.jsonSchema.object(
-            {
-              agent: s.jsonSchema.string({ minLength: 1 }),
-              dir: s.jsonSchema.string({ minLength: 1 }),
-              capabilities: s.capabilityArray,
-              intoCollection: s.jsonSchema.string({ minLength: 1 }),
-              conflict: s.jsonSchema.enumeration(["keep-theirs", "keep-mine", "copy"]),
-              select: s.jsonSchema.array(s.exactResourceSelector),
-              dryRun: s.jsonSchema.boolean(),
-              secretMode: s.secretMode,
-              vaultPassphraseFd: s.jsonSchema.integer(
-                s.PROTECTED_DESCRIPTOR_MIN,
-                s.PROTECTED_DESCRIPTOR_MAX,
-              ),
-              keychainService: s.jsonSchema.string({ minLength: 1 }),
-            },
-            ["agent"],
-          ),
-          bindings: [
-            s.option("agent"),
-            s.option("dir"),
-            ...s.capabilityBindings(),
-            s.option("intoCollection"),
-            s.option("conflict"),
-            s.option("select", undefined, s.stringifyJson),
-            s.option("dryRun"),
-            s.option("secretMode"),
-            s.option("vaultPassphraseFd", undefined, s.stringify),
-            s.option("keychainService"),
-          ],
-          output: s.dataObject(["plan", "imported"], {
-            plan: s.scanPlan,
-            imported: s.jsonSchema.array(s.scanItem),
-            operation: s.presentedOperationResult,
-          }),
-          event: s.progressEvent,
-        }),
-        options.scanContextResolver,
-      ),
       createCapabilitiesCommandContract(
         defineContractMetadata({
           command: "capabilities",
@@ -182,27 +132,6 @@ export function createInitializationDiscoveryDomain(
           ),
         }),
         provider,
-      ),
-      createDiscoverySummaryCommandContract(
-        defineContractMetadata({
-          command: "discovery.summary",
-          catalogOrder: 41,
-          mutability: "read",
-          input: s.jsonSchema.object(
-            {
-              destination: s.destination,
-              dir: s.jsonSchema.string({ minLength: 1 }),
-              agents: s.stringArray,
-            },
-            ["destination"],
-          ),
-          bindings: [
-            s.option("destination"),
-            s.option("dir"),
-            s.option("agents", "agent", s.joinList),
-          ],
-          output: s.discoverySummaryOutput,
-        }),
       ),
     ],
   });

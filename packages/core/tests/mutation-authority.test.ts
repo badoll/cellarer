@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { add } from "../src/engine/add.js";
 import { apply, applyMutationPlan, planApplyMutation } from "../src/engine/apply.js";
 import { applyRevertMutationPlan, planRevertMutation } from "../src/engine/revert.js";
-import { applyScan } from "../src/engine/scan.js";
 import type { Env, FsLike, SecretStore } from "../src/env.js";
 import { mutationPlanDigest } from "../src/protocol/canonical.js";
 import { operationJournalPath } from "../src/protocol/journal.js";
@@ -14,6 +13,65 @@ import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 import { deterministicMutationAuthority } from "./helpers/mutation-authority.js";
 
 describe("scoped executable mutation authority", () => {
+  it("rejects a captured legacy scan plan before authority use or product observation", async () => {
+    const t = makeTmpEnv();
+    try {
+      await ensureBaseDirs(t);
+      const storeRoot = t.path("home", ".cellarer");
+      await initStore(t.env, storeRoot);
+      await writeRuleArtifact(t.env, storeRoot, "captured", "captured bytes\n");
+      const prepared = await planApplyMutation(t.env, {
+        storeRoot,
+        scope: "global",
+        agents: ["claude-code"],
+        capabilities: ["rules"],
+      });
+      const secretCanary = "ghp_0123456789abcdefghijklmnopqrstuvwx";
+      const capturedLegacyPlan = {
+        ...prepared.mutationPlan,
+        operation: "store-import",
+        normalizedInputs: { mutationKind: "scan-import", secretCanary },
+      } as MutationPlan;
+      let authorityCalls = 0;
+      let filesystemCalls = 0;
+      const protectedEnv: Env = {
+        ...t.env,
+        mutationAuthority: new Proxy(t.env.mutationAuthority, {
+          get(target, property, receiver) {
+            const value = Reflect.get(target, property, receiver);
+            if (typeof value !== "function") return value;
+            return (..._args: unknown[]) => {
+              authorityCalls += 1;
+              throw new Error(`unexpected captured-plan authority use: ${String(property)}`);
+            };
+          },
+        }),
+        fs: new Proxy(t.env.fs, {
+          get(target, property, receiver) {
+            const value = Reflect.get(target, property, receiver);
+            if (typeof value !== "function") return value;
+            return (..._args: unknown[]) => {
+              filesystemCalls += 1;
+              throw new Error(`unexpected captured-plan observation: ${String(property)}`);
+            };
+          },
+        }) as FsLike,
+      };
+
+      const rejected = await applyMutationPlan(protectedEnv, capturedLegacyPlan, { storeRoot });
+
+      expect(rejected.operation).toMatchObject({
+        ok: false,
+        conflict: { code: "INVALID_PLAN" },
+      });
+      expect(JSON.stringify(rejected)).not.toContain(secretCanary);
+      expect(authorityCalls).toBe(0);
+      expect(filesystemCalls).toBe(0);
+    } finally {
+      await t.cleanup();
+    }
+  });
+
   it.each([
     [
       "apply",
@@ -29,16 +87,6 @@ describe("scoped executable mutation authority", () => {
       "add",
       (env: Env, storeRoot: string, t: ReturnType<typeof makeTmpEnv>) =>
         add(env, { storeRoot, source: t.path("unobserved-source.md") }),
-    ],
-    [
-      "scan-apply",
-      (env: Env, storeRoot: string) =>
-        applyScan(env, {
-          storeRoot,
-          agent: "claude-code",
-          scope: "global",
-          capabilities: ["mcp"],
-        }),
     ],
     [
       "recovery diagnosis",

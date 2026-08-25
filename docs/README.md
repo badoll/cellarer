@@ -314,26 +314,29 @@ A project profile always receives the current absolute workspace root at
 invocation time. Apply and uninstall still use the common ownership,
 transaction, reference, and recovery rules.
 
-### Scan existing agent configuration
+### Migrate existing agent configuration
 
-Start with a read-only preview:
-
-```bash
-cellarer --output json scan --agent codex --dry-run
-```
-
-For an import, copy the complete `kind`, `name`, and `source` selector from the
-preview and select capabilities explicitly:
+The legacy `scan` and `discovery summary` commands are removed and have no
+compatibility aliases. Refresh Inventory to obtain current candidate IDs from
+registered bounded sources:
 
 ```bash
-cellarer scan --agent codex --rules --into-collection default \
-  --select '[{"kind":"rules","name":"team","source":"/absolute/path/AGENTS.md"}]'
+cellarer --output json inventory refresh --agent codex
 ```
 
-Dry-run uses environment-reference mode and does not provision or query
-mutation authority, vault, or keychain credentials. An executable import is a
-normal mutation and rechecks captured source fingerprints instead of rescanning
-or changing the selection at apply time.
+Plan an import with the exact reviewed candidate IDs, then apply the unchanged
+authority-sealed `mutationPlan` returned by planning:
+
+```bash
+cellarer --output json inventory import plan \
+  --candidate '<candidate-id>' --into-collection default
+cellarer inventory import apply --plan '<mutationPlan JSON returned by plan>'
+```
+
+Inventory refresh is read-only. Import writes only to the Store and rechecks
+captured source evidence without reselecting candidates. Distribution remains a
+separate operation: use `apply --dry-run` and `apply`, or a reusable Sync
+profile, when those Store resources should be written to agent targets.
 
 ### Verify, recover, and revert
 
@@ -424,7 +427,7 @@ clock, secret-provider, and process-lifetime effects through `Env`. It does not
 read `process`, `os`, or `node:fs` directly from business logic. Tests can
 therefore use temporary Stores and fake or injected effects.
 
-### Distribution and scan flows
+### Distribution and Inventory import flows
 
 ```text
 Store resources
@@ -438,12 +441,11 @@ Store resources
 ```
 
 ```text
-Agent-native files
-  -> adapter paths and codecs
-  -> safe captured snapshot
-  -> normalized reference-only resources
-  -> explicit selection and conflicts
-  -> immutable import plan
+Registered bounded agent sources
+  -> safe read-only Inventory refresh
+  -> redacted provenance, findings, and candidate IDs
+  -> exact reviewed candidate selection
+  -> immutable authority-sealed import plan
   -> Store mutation and receipt
 ```
 
@@ -609,6 +611,12 @@ It disables import for incomplete Inventory, requires one exact confirmation,
 and surfaces stale-plan refresh/replan guidance without a silent retry. A
 successful import offers Library and Sync as separate next actions; neither
 Inventory review nor import writes an agent target.
+
+The superseded `GET /api/v1/discovery`, `POST /api/v1/scan/plan`,
+`POST /api/v1/scan/apply`, `POST /api/v1/import/plan`, and
+`POST /api/v1/import/apply` routes are removed and return not found. Clients
+must use the Inventory routes above; the server does not translate legacy
+requests or captured scan plans.
 
 ## Custom adapters
 

@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../src/env.js";
 import {
   diffControlPlane,
-  discoverySummaryControlPlane,
   listControlPlaneAgents,
   listControlPlaneCollections,
   listControlPlaneOperations,
@@ -56,7 +55,6 @@ describe("shared control-plane DTO contracts", () => {
       statusControlPlane,
       verifyControlPlane,
       summaryControlPlane,
-      discoverySummaryControlPlane,
       listControlPlaneOperations,
       showControlPlaneOperation,
     ]) {
@@ -157,36 +155,22 @@ describe("shared control-plane DTO contracts", () => {
   it("returns agent, collection, config, diff, status, verify, summary, and operation DTOs", async () => {
     const sharedScope = { storeRoot, scope: "global" as const, agents: [] };
 
-    const [
-      agents,
-      collections,
-      config,
-      diff,
-      status,
-      verification,
-      summary,
-      discovery,
-      operations,
-    ] = await Promise.all([
-      listControlPlaneAgents(t.env, sharedScope),
-      listControlPlaneCollections(t.env, { storeRoot }),
-      showControlPlaneConfig(t.env, { storeRoot }),
-      diffControlPlane(t.env, sharedScope),
-      statusControlPlane(t.env, { storeRoot }),
-      verifyControlPlane(t.env, sharedScope),
-      summaryControlPlane(t.env, {
-        storeRoot,
-        scope: "global",
-        agents: [],
-        includePlanCoverage: false,
-      }),
-      discoverySummaryControlPlane(t.env, {
-        storeRoot,
-        destination: "user",
-        agents: [],
-      }),
-      listControlPlaneOperations(t.env, { storeRoot }),
-    ]);
+    const [agents, collections, config, diff, status, verification, summary, operations] =
+      await Promise.all([
+        listControlPlaneAgents(t.env, sharedScope),
+        listControlPlaneCollections(t.env, { storeRoot }),
+        showControlPlaneConfig(t.env, { storeRoot }),
+        diffControlPlane(t.env, sharedScope),
+        statusControlPlane(t.env, { storeRoot }),
+        verifyControlPlane(t.env, sharedScope),
+        summaryControlPlane(t.env, {
+          storeRoot,
+          scope: "global",
+          agents: [],
+          includePlanCoverage: false,
+        }),
+        listControlPlaneOperations(t.env, { storeRoot }),
+      ]);
 
     expect(agents).toMatchObject({ scope: "global", agents: expect.any(Array) });
     expect(collections).toMatchObject({ revision: 0, collections: expect.any(Array) });
@@ -198,7 +182,6 @@ describe("shared control-plane DTO contracts", () => {
       generatedAt: expect.any(String),
       artifactCounts: { total: 0 },
     });
-    expect(discovery).toMatchObject({ generatedAt: expect.any(String), totals: { rules: 0 } });
     expect(operations).toEqual({ operations: [] });
   });
 

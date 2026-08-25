@@ -16,7 +16,6 @@ import {
   applyResourceRenamePlan,
   applyResourceUpdatePlan,
   applyRevertMutationPlan,
-  applyScanMutationPlan,
   applySyncProfileMutationPlan,
   applySyncProfilePlan,
   applySyncProfileUninstallPlan,
@@ -24,7 +23,6 @@ import {
   CLIENT_API_CONTRACT_ID,
   CLIENT_API_MAX_REQUEST_BODY_BYTES,
   CLIENT_API_VERSION,
-  type ConflictStrategy,
   ControlPlaneValidationError,
   checkResourceUpdate,
   clientErrorFromMutationConflict,
@@ -36,7 +34,6 @@ import {
   deleteSyncProfile,
   diagnoseMutationRecovery,
   diffControlPlane,
-  discoverySummaryControlPlane,
   type Env,
   getClientReadiness,
   InventoryStoreImportPlanningError,
@@ -69,14 +66,12 @@ import {
   planResourceRemove,
   planResourceRename,
   planRevertMutation,
-  planScanMutation,
   planSyncProfile,
   planSyncProfileUninstall,
   recoverInterruptedOperation,
   refreshInventory,
   resolveClientRequestId,
   resourceDependencyReport,
-  type ScanSelection,
   type Scope,
   StoreMutationConflictError,
   type SyncProfileDesiredState,
@@ -126,26 +121,6 @@ interface DistributeBody {
   replaceUnowned?: string[];
   overrideDrift?: string[];
   snapshotPassphrase?: string;
-}
-
-interface ScanBody {
-  agent: string;
-  scope?: Scope;
-  dir?: string;
-  capabilities?: Capability[];
-  conflict?: ConflictStrategy;
-  selectItems?: ScanSelection[];
-  intoCollection?: string;
-}
-
-interface ImportBody {
-  agent: string;
-  destination?: Destination;
-  dir?: string;
-  capabilities?: Capability[];
-  conflict?: ConflictStrategy;
-  selectItems?: ScanSelection[];
-  intoCollection?: string;
 }
 
 interface SyncBody {
@@ -263,10 +238,6 @@ interface SyncPlanApplyBody {
   mutationPlan: MutationPlan;
 }
 
-interface ScanPlanApplyBody {
-  mutationPlan: MutationPlan;
-}
-
 interface InventoryStoreImportPlanBody {
   candidateIds: string[];
   agentId?: string;
@@ -353,7 +324,7 @@ function parseInventoryImportCandidateIds(raw: unknown): string[] {
 }
 
 // project scope 必须带 dir,否则 core 会以 server cwd 为工程根,把文件写进进程启动目录(且无 .gitignore 守护)。
-// plan/apply/scan 三个 project 路由共用此守卫(拦在路由层)。
+// Project-scoped routes require an explicit root so writes cannot fall back to the server cwd.
 function requireDirForProject(scope: Scope | undefined, dir: string | undefined): void {
   if ((scope ?? "global") === "project" && !dir) {
     throw new ClientApiInputError('scope "project" requires "dir"', { fields: ["dir"] });
@@ -366,12 +337,6 @@ function parseDestination(raw: string | undefined): Destination | undefined {
   throw new ClientApiInputError("destination is invalid", { fields: ["destination"] });
 }
 
-function parseConflictStrategy(raw: string | undefined): ConflictStrategy | undefined {
-  if (raw === undefined || raw === "") return undefined;
-  if (raw === "keep-theirs" || raw === "keep-mine" || raw === "copy") return raw;
-  throw new ClientApiInputError("conflict is invalid", { fields: ["conflict"] });
-}
-
 function scopeForDestination(destination: string | undefined): Scope {
   const parsed = parseDestination(destination);
   return parsed === "project" ? "project" : "global";
@@ -380,38 +345,6 @@ function scopeForDestination(destination: string | undefined): Scope {
 function requireDirForDestination(destination: string | undefined, dir: string | undefined): void {
   if (parseDestination(destination) === "project" && !dir) {
     throw new ClientApiInputError('destination "project" requires "dir"', { fields: ["dir"] });
-  }
-}
-
-function validateScanRequestSelection(body: ScanBody | ImportBody): void {
-  if (Object.hasOwn(body, "select")) {
-    throw new ClientApiInputError('unexpected field "select"; use "selectItems"', {
-      fields: ["select"],
-    });
-  }
-  if (body.selectItems === undefined) return;
-  if (!Array.isArray(body.selectItems)) {
-    throw new ClientApiInputError('"selectItems" must be an array', {
-      fields: ["selectItems"],
-    });
-  }
-  for (const [index, selection] of body.selectItems.entries()) {
-    const keys =
-      typeof selection === "object" && selection !== null && !Array.isArray(selection)
-        ? Object.keys(selection).sort()
-        : [];
-    if (
-      keys.join("\0") !== ["kind", "name", "source"].sort().join("\0") ||
-      !["rules", "mcp", "skills"].includes(selection?.kind) ||
-      typeof selection?.name !== "string" ||
-      selection.name.length === 0 ||
-      typeof selection?.source !== "string" ||
-      selection.source.length === 0
-    ) {
-      throw new ClientApiInputError("selectItems selector is invalid", {
-        fields: [`selectItems[${index}]`],
-      });
-    }
   }
 }
 
@@ -430,36 +363,6 @@ function distributeOpts(deps: AppDeps, b: DistributeBody) {
     overrideDrift: b.overrideDrift,
     snapshotPassphrase: b.snapshotPassphrase,
     // 安全红线:web 永远 env 模式,绝不在 HTTP 路径解出真值。
-    secretMode: "env" as const,
-  };
-}
-
-function scanOpts(deps: AppDeps, b: ScanBody) {
-  requireDirForProject(b.scope, b.dir);
-  return {
-    storeRoot: deps.storeRoot,
-    agent: b.agent,
-    scope: (b.scope ?? "global") as Scope,
-    dir: b.dir,
-    capabilities: b.capabilities,
-    conflict: parseConflictStrategy(b.conflict),
-    selectItems: b.selectItems,
-    intoCollection: b.intoCollection,
-    secretMode: "env" as const,
-  };
-}
-
-function importOpts(deps: AppDeps, b: ImportBody) {
-  requireDirForDestination(b.destination, b.dir);
-  return {
-    storeRoot: deps.storeRoot,
-    agent: b.agent,
-    scope: scopeForDestination(b.destination),
-    dir: b.dir,
-    capabilities: b.capabilities,
-    conflict: parseConflictStrategy(b.conflict),
-    selectItems: b.selectItems,
-    intoCollection: b.intoCollection,
     secretMode: "env" as const,
   };
 }
@@ -1024,46 +927,6 @@ export function createApp(inputDeps: AppDeps) {
       const payload = clientSuccess(requestId(c), planned);
       return withCorePayload(c.json(payload), payload);
     })
-    .post("/api/v1/scan/plan", async (c) => {
-      const body = await parseJsonBody(() => c.req.json<ScanBody>());
-      validateScanRequestSelection(body);
-      const planned = await planScanMutation(deps.env, scanOpts(deps, body));
-      const payload = clientSuccess(requestId(c), planned);
-      return withCorePayload(c.json(payload), payload);
-    })
-    .post("/api/v1/scan/apply", async (c) => {
-      const body = await parseJsonBody(() => c.req.json<ScanPlanApplyBody>());
-      const applied = await applyScanMutationPlan(deps.env, body.mutationPlan, {
-        storeRoot: deps.storeRoot,
-        secretMode: "env",
-      });
-      if (!applied.operation.ok) {
-        const failure = clientMutationFailure(requestId(c), applied.operation.conflict);
-        return c.json(failure.body, failure.status);
-      }
-      const payload = clientSuccess(requestId(c), applied);
-      return withCorePayload(c.json(payload), payload);
-    })
-    .post("/api/v1/import/plan", async (c) => {
-      const body = await parseJsonBody(() => c.req.json<ImportBody>());
-      validateScanRequestSelection(body);
-      const planned = await planScanMutation(deps.env, importOpts(deps, body));
-      const payload = clientSuccess(requestId(c), planned);
-      return withCorePayload(c.json(payload), payload);
-    })
-    .post("/api/v1/import/apply", async (c) => {
-      const body = await parseJsonBody(() => c.req.json<ScanPlanApplyBody>());
-      const applied = await applyScanMutationPlan(deps.env, body.mutationPlan, {
-        storeRoot: deps.storeRoot,
-        secretMode: "env",
-      });
-      if (!applied.operation.ok) {
-        const failure = clientMutationFailure(requestId(c), applied.operation.conflict);
-        return c.json(failure.body, failure.status);
-      }
-      const payload = clientSuccess(requestId(c), applied);
-      return withCorePayload(c.json(payload), payload);
-    })
     .post("/api/v1/revert/plan", async (c) => {
       const body = await parseJsonBody(() => c.req.json<RevertBody>());
       const planned = await planRevertMutation(deps.env, revertOpts(deps, body));
@@ -1427,22 +1290,6 @@ export function createApp(inputDeps: AppDeps) {
         validateControlPlaneConfig(await parseJsonBody(() => c.req.json())),
       );
       return withCorePayload(c.json(payload), payload);
-    })
-    .get("/api/v1/discovery", async (c) => {
-      const destination = parseDestination(c.req.query("destination")) ?? "user";
-      const dir = c.req.query("dir");
-      requireDirForDestination(destination, dir);
-      return c.json(
-        clientSuccess(
-          requestId(c),
-          await discoverySummaryControlPlane(deps.env, {
-            storeRoot: deps.storeRoot,
-            agents: parseCsv(c.req.query("agents")),
-            destination,
-            dir,
-          }),
-        ),
-      );
     })
     .get("/api/v1/inventory", async (c) => {
       const projectRoot = parseInventoryDir(c.req.query("dir"));

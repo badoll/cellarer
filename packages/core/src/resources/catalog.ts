@@ -1,15 +1,16 @@
 import { listActivity } from "../activity.js";
-import { loadRegistry } from "../adapters/registry.js";
 import { inCollections } from "../engine/plan.js";
-import { type ScanItem, scanPlan } from "../engine/scan.js";
 import { status } from "../engine/status.js";
 import type { DriftStatus, StatusItem } from "../engine/types.js";
 import type { Env } from "../env.js";
+import { refreshInventory } from "../inventory/projector.js";
 import type { Capability, Scope } from "../model/index.js";
 import type {
   AssertExact,
   Destination,
   ExactContract,
+  InventoryCandidate,
+  InventorySourceProvenance,
   ResourceCatalogCounts,
   ResourceCatalogItem,
   ResourceCatalogResult,
@@ -123,7 +124,7 @@ async function resourceCatalogImplementation(env: Env, opts: ResourceCatalogOpti
   }
 
   if (shouldIncludeDiscovered(opts)) {
-    const discovered = await discoveredResources(env, opts, config);
+    const discovered = await discoveredResources(env, opts);
     resources.push(...discovered.resources);
     warnings.push(...discovered.warnings);
     addCounts(counts, discovered.counts);
@@ -156,62 +157,65 @@ function shouldIncludeDiscovered(opts: ResourceCatalogOptions): boolean {
   return !opts.collections || opts.collections.length === 0;
 }
 
-async function discoveredResources(
-  env: Env,
-  opts: ResourceCatalogOptions,
-  config: Awaited<ReturnType<typeof loadConfig>>,
-) {
+async function discoveredResources(env: Env, opts: ResourceCatalogOptions) {
   const destination = opts.destination ?? "user";
   const scope: Scope = destination === "project" ? "project" : "global";
-  const registry = await loadRegistry(env, opts.storeRoot);
-  const agentIds =
-    opts.agents && opts.agents.length > 0
-      ? opts.agents
-      : registry
-          .list()
-          .filter((agent) => config.adapterOverrides[agent.id]?.enabled !== false)
-          .map((agent) => agent.id);
+  const inventory = await refreshInventory(env, {
+    storeRoot: opts.storeRoot,
+    ...(scope === "project" ? { projectRoot: opts.dir ?? env.cwd() } : {}),
+  });
   const resources: ReturnType<typeof catalogItem>[] = [];
   const counts = emptyCounts();
-  const warnings = [...registry.warnings];
+  const warnings = inventory.findings.map((finding) => finding.code);
+  const requestedAgents = new Set(opts.agents ?? []);
 
-  for (const agent of agentIds) {
-    const plan = await scanPlan(env, {
-      storeRoot: opts.storeRoot,
-      agent,
-      scope,
-      dir: opts.dir,
-      capabilities: opts.kind ? [opts.kind] : undefined,
-      conflict: "keep-mine",
-    });
-    warnings.push(...plan.warnings);
-
-    for (const item of plan.items) {
-      if (item.status === "conflict" && item.action === "skip") continue;
-      const state: ResourceState = item.action === "skip" ? "blocked" : "discovered";
-      counts[state] += 1;
-      resources.push(discoveredResourceItem(item, agent, destination, state));
-    }
+  for (const candidate of inventory.candidates) {
+    if (candidate.state === "in-store" || (opts.kind && candidate.kind !== opts.kind)) continue;
+    const sources = candidate.sources.filter(
+      (source) =>
+        source.scope === scope &&
+        (requestedAgents.size === 0 ||
+          source.adapters.some((adapter) => requestedAgents.has(adapter.id))),
+    );
+    if (sources.length === 0) continue;
+    const state: ResourceState = candidate.state === "ready" ? "discovered" : "blocked";
+    counts[state] += 1;
+    resources.push(discoveredResourceItem(candidate, sources, destination, state));
   }
 
   return { resources, counts, warnings };
 }
 
 function discoveredResourceItem(
-  item: ScanItem,
-  agent: string,
+  candidate: InventoryCandidate,
+  sources: readonly InventorySourceProvenance[],
   destination: Destination,
   state: ResourceState,
 ) {
+  const adapters = [
+    ...new Map(
+      sources.flatMap((source) => source.adapters).map((adapter) => [adapter.id, adapter]),
+    ).values(),
+  ].sort((left, right) => left.id.localeCompare(right.id));
+  const source = sources[0];
+  const agent = adapters[0];
+  if (!source || !agent) throw new TypeError("Inventory resource projection has no provenance");
   return catalogItem({
-    id: `discovered:${agent}:${item.kind}:${item.name}:${item.source}`,
-    kind: item.kind,
-    name: item.name,
+    id: candidate.id,
+    kind: candidate.kind,
+    name: candidate.name,
     state,
     collections: [],
-    discovered: discoveredDescriptor(agent, destination, item.source),
+    discovered: discoveredDescriptor(
+      candidate,
+      agent.id,
+      destination,
+      source.location,
+      sources,
+      adapters,
+    ),
     syncTargets: [],
-    secretRefs: item.secretRefs ?? [],
+    secretRefs: [],
   });
 }
 
@@ -298,8 +302,24 @@ export type ResourceSyncTargetProducerContract = AssertExact<
   ExactContract<ReturnType<typeof resourceSyncTarget>, ResourceSyncTarget>
 >;
 
-function discoveredDescriptor(agent: string, destination: Destination, source: string) {
-  return { agent, destination, source };
+function discoveredDescriptor(
+  candidate: InventoryCandidate,
+  agent: string,
+  destination: Destination,
+  source: string,
+  sources: readonly InventorySourceProvenance[],
+  relatedAdapters: InventoryCandidate["relatedAdapters"],
+) {
+  return {
+    agent,
+    destination,
+    source,
+    candidateId: candidate.id,
+    defaultSelected: candidate.defaultSelected,
+    sources,
+    relatedAdapters,
+    findings: candidate.findings,
+  };
 }
 
 export type DiscoveredResourceProducerContract = AssertExact<

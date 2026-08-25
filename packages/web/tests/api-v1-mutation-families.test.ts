@@ -50,25 +50,7 @@ describe("versioned mutation families", () => {
 
   afterEach(() => fs.rm(root, { recursive: true, force: true }));
 
-  it("round-trips exact import and revert plans", async () => {
-    await fs.mkdir(join(root, "home", ".claude"), { recursive: true });
-    await fs.writeFile(join(root, "home", ".claude", "CLAUDE.md"), "# Imported rules\n");
-
-    const imported = await postData<{
-      readonly mutationPlan: MutationPlan;
-    }>("/api/v1/import/plan", {
-      agent: "claude-code",
-      destination: "user",
-      capabilities: ["rules"],
-    });
-    const importApplied = await postData<{
-      readonly operation: { readonly ok: boolean; readonly receipt?: { readonly planId: string } };
-    }>("/api/v1/import/apply", { mutationPlan: imported.mutationPlan });
-    expect(importApplied.operation).toMatchObject({
-      ok: true,
-      receipt: { planId: imported.mutationPlan.planId },
-    });
-
+  it("round-trips an exact revert plan", async () => {
     const distribution = await planApplyMutation(env, {
       storeRoot,
       scope: "project",

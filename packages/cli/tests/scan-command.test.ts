@@ -1,166 +1,83 @@
-import { promises as fs, mkdtempSync, realpathSync } from "node:fs";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRealEnv, type Env } from "@cellarer/core";
 import { afterEach, describe, expect, it } from "vitest";
 import { createCliCommandCatalog } from "../src/commands/command-catalog.js";
-import type { ResolvedContext } from "../src/context.js";
-import type { MutationAuthorityCompositionMode } from "../src/mutation-authority.js";
-import { commandFromCatalog } from "../src/protocol/command-contract.js";
+import { buildProgram } from "../src/program.js";
+import { runCli } from "../src/runner.js";
 
-function scanCommand(resolve: () => Promise<ResolvedContext>) {
-  const catalog = createCliCommandCatalog({
-    scanContextResolver: resolve,
-  });
-  return commandFromCatalog(catalog, "scan");
-}
+const originalStdoutWrite = process.stdout.write;
+const originalStderrWrite = process.stderr.write;
+const originalExitCode = process.exitCode;
+const originalCellarerHome = process.env.CELLARER_HOME;
+const cleanups: Array<() => Promise<void>> = [];
 
-describe("CLI scan least-privilege composition", () => {
-  const cleanups: Array<() => Promise<void>> = [];
-  afterEach(async () => {
-    while (cleanups.length > 0) await cleanups.pop()?.();
-  });
+afterEach(async () => {
+  process.stdout.write = originalStdoutWrite;
+  process.stderr.write = originalStderrWrite;
+  process.exitCode = originalExitCode;
+  if (originalCellarerHome === undefined) delete process.env.CELLARER_HOME;
+  else process.env.CELLARER_HOME = originalCellarerHome;
+  while (cleanups.length > 0) await cleanups.pop()?.();
+});
 
-  it("11.4 runs scan --dry-run without authority or credential calls", async () => {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "cellarer-scan-dry-run-")));
-    cleanups.push(() => fs.rm(root, { recursive: true, force: true }));
-    const real = createRealEnv();
-    let credentialCalls = 0;
-    const env: Env = {
-      ...real,
-      homedir: () => join(root, "home"),
-      cwd: () => join(root, "cwd"),
-      env: {},
-      mutationAuthority: undefined,
-      secretStore: {
-        async get() {
-          credentialCalls += 1;
-          return { found: false };
-        },
-        async set() {
-          credentialCalls += 1;
-        },
-        async delete() {
-          credentialCalls += 1;
-          return false;
-        },
-      },
-    };
-    const storeRoot = join(root, "store");
-    for (const kind of ["rules", "mcp", "skills"]) {
-      await env.fs.mkdir(join(storeRoot, "store", kind), { recursive: true });
+describe("removed CLI discovery and scan surfaces", () => {
+  it("does not register executable leaves, aliases, capabilities, or schemas", () => {
+    const catalog = createCliCommandCatalog();
+    const program = buildProgram();
+    const commands = catalog.definitions.map(({ command }) => command);
+    const roots = program.commands.map((command) => command.name());
+
+    expect(commands).not.toContain("scan");
+    expect(commands).not.toContain("discovery.summary");
+    expect(roots).not.toContain("scan");
+    expect(roots).not.toContain("discovery");
+    for (const schemaId of [
+      "urn:cellarer:cli:protocol:1.0:command:scan:input",
+      "urn:cellarer:cli:protocol:1.0:command:scan:output",
+      "urn:cellarer:cli:protocol:1.0:command:scan:event",
+      "urn:cellarer:cli:protocol:1.0:command:discovery.summary:input",
+      "urn:cellarer:cli:protocol:1.0:command:discovery.summary:output",
+    ]) {
+      expect(catalog.getSchemaBundle(schemaId)).toBeUndefined();
     }
-    await env.fs.writeFile(
-      join(storeRoot, "config.json"),
-      `${JSON.stringify({
-        version: 1,
-        defaults: { method: "symlink", collections: ["default"], secretMode: "keychain" },
-        collections: { default: { description: "Default" } },
-        artifacts: {},
-        adapterOverrides: {},
-        customAdapters: {},
-      })}\n`,
-      { mode: 0o600 },
-    );
-    await env.fs.mkdir(join(root, "home", ".claude"), { recursive: true });
-    await env.fs.writeFile(join(root, "home", ".claude", "CLAUDE.md"), "# dry run");
-    let mode: MutationAuthorityCompositionMode | undefined;
-    const resolve = async (
-      _opts: object,
-      requested: MutationAuthorityCompositionMode,
-    ): Promise<ResolvedContext> => {
-      mode = requested;
-      return {
-        env,
-        storeRoot,
-        scope: "global",
-        scopeFilter: undefined,
-        agents: ["claude-code"],
-      };
-    };
-    const output: string[] = [];
-    const oldWrite = process.stdout.write;
-    try {
-      process.stdout.write = ((chunk: unknown) => {
-        output.push(String(chunk));
-        return true;
-      }) as typeof process.stdout.write;
-      await scanCommand(resolve).parseAsync(
-        [
-          "node",
-          "scan",
-          "--agent",
-          "claude-code",
-          "--rules",
-          "--select",
-          JSON.stringify([
-            {
-              kind: "rules",
-              name: "claude-code",
-              source: join(root, "home", ".claude", "CLAUDE.md"),
-            },
-          ]),
-          "--dry-run",
-          "--json",
-        ],
-        { from: "node" },
-      );
-    } finally {
-      process.stdout.write = oldWrite;
-    }
-
-    expect(mode).toBe("none");
-    expect(credentialCalls).toBe(0);
-    expect(JSON.parse(output.join("")).data).toMatchObject({
-      plan: {
-        agent: "claude-code",
-        items: [expect.objectContaining({ kind: "rules", name: "claude-code" })],
-      },
-      imported: [],
-    });
   });
 
-  it("rejects legacy name-only mutation selection before scanning", async () => {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "cellarer-scan-selector-")));
-    cleanups.push(() => fs.rm(root, { recursive: true, force: true }));
-    const real = createRealEnv();
-    const env: Env = {
-      ...real,
-      homedir: () => join(root, "home"),
-      cwd: () => root,
-      env: {},
-    };
-    const storeRoot = join(root, "store");
-    let resolved = false;
-    const resolve = async (): Promise<ResolvedContext> => {
-      resolved = true;
-      return {
-        env,
-        storeRoot,
-        scope: "global",
-        scopeFilter: undefined,
-        agents: ["codex"],
-      };
-    };
-    const output: string[] = [];
-    const oldWrite = process.stdout.write;
-    try {
-      process.stdout.write = ((chunk: unknown) => {
-        output.push(String(chunk));
-        return true;
-      }) as typeof process.stdout.write;
-      await scanCommand(resolve).parseAsync(
-        ["node", "scan", "--agent", "codex", "--rules", "--select", "style", "--dry-run", "--json"],
-        { from: "node" },
-      );
-    } finally {
-      process.stdout.write = oldWrite;
-    }
+  it.each([
+    ["scan", ["scan", "--agent", "codex", "--rules", "--dry-run"]],
+    ["discovery", ["discovery", "summary", "--destination", "user"]],
+  ] as const)("rejects removed %s input before Store or authority effects", async (command, args) => {
+    const root = await mkdtemp(join(tmpdir(), "cellarer-removed-cli-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const storeRoot = join(root, "store-that-must-not-exist");
+    process.env.CELLARER_HOME = storeRoot;
 
-    expect(resolved).toBe(false);
-    expect(JSON.parse(output.join(""))).toMatchObject({
+    const captured = await invoke(["--output", "json", ...args]);
+
+    expect(captured.stderr).toBe("");
+    expect(JSON.parse(captured.stdout)).toMatchObject({
+      command,
       status: "error",
-      error: { code: "INVALID_INPUT", details: { reason: "AMBIGUOUS_SELECTOR" } },
+      error: { code: "INVALID_USAGE" },
     });
+    expect(process.exitCode).toBe(2);
+    await expect(access(storeRoot)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
+
+async function invoke(args: readonly string[]): Promise<{ stdout: string; stderr: string }> {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  process.exitCode = undefined;
+  process.stdout.write = ((chunk: unknown) => {
+    stdout.push(String(chunk));
+    return true;
+  }) as typeof process.stdout.write;
+  process.stderr.write = ((chunk: unknown) => {
+    stderr.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+
+  await runCli(["node", "cellarer", ...args]);
+  return { stdout: stdout.join(""), stderr: stderr.join("") };
+}

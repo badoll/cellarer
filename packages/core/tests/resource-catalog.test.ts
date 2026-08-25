@@ -173,18 +173,19 @@ describe("resource catalog", () => {
 
     expect(catalog.counts).toMatchObject({
       managed: 0,
-      discovered: 3,
+      discovered: 2,
+      blocked: 1,
     });
     expect(catalog.resources).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           kind: "rules",
-          name: "codex",
+          name: "AGENTS",
           state: "discovered",
           discovered: expect.objectContaining({
             agent: "codex",
             destination: "user",
-            source: t.path("home", ".codex", "AGENTS.md"),
+            source: "~/.codex/AGENTS.md",
           }),
         }),
         expect.objectContaining({
@@ -193,20 +194,77 @@ describe("resource catalog", () => {
           state: "discovered",
           discovered: expect.objectContaining({
             agent: "codex",
-            source: `${t.path("home", ".codex", "config.toml")} → ctx`,
+            source: "~/.codex/config.toml/ctx",
           }),
         }),
         expect.objectContaining({
           kind: "skills",
           name: "study",
-          state: "discovered",
+          state: "blocked",
           discovered: expect.objectContaining({
             agent: "codex",
-            source: t.path("home", ".codex", "skills", "study"),
+            source: "~/.codex/skills/study",
+            findings: [expect.objectContaining({ code: "INVALID_STRUCTURE" })],
           }),
         }),
       ]),
     );
+  });
+
+  it("projects discovered resources from the accepted Inventory identity and safety boundary", async () => {
+    const secretCanary = "ghp_1234567890abcdefghij1234567890";
+    await t.env.fs.mkdir(t.path("home", ".agents", "skills", "study"), { recursive: true });
+    await t.env.fs.mkdir(t.path("home", ".agents", "skills", "private"), {
+      recursive: true,
+    });
+    await t.env.fs.writeFile(t.path("home", ".agents", "skills", "study", "SKILL.md"), "# Study\n");
+    await t.env.fs.writeFile(
+      t.path("home", ".agents", "skills", "private", "SKILL.md"),
+      `# Private\napi_key = "${secretCanary}"\n`,
+    );
+
+    const catalog = await resourceCatalog(t.env, {
+      storeRoot,
+      agents: ["agents-md"],
+      kind: "skills",
+      destination: "user",
+    });
+    const ready = catalog.resources.find((resource) => resource.name === "study");
+    const blocked = catalog.resources.find((resource) => resource.name === "private");
+
+    expect(ready).toMatchObject({
+      id: expect.stringMatching(/^inventory-candidate:v1:skills:/),
+      state: "discovered",
+      discovered: {
+        agent: "agents-md",
+        destination: "user",
+        source: "~/.agents/skills/study",
+        candidateId: expect.stringMatching(/^inventory-candidate:v1:skills:/),
+        defaultSelected: true,
+        sources: [
+          expect.objectContaining({
+            scope: "global",
+            location: "~/.agents/skills/study",
+            adapters: [expect.objectContaining({ id: "agents-md" })],
+          }),
+        ],
+        findings: [],
+      },
+    });
+    expect(blocked).toMatchObject({
+      state: "blocked",
+      discovered: {
+        defaultSelected: false,
+        findings: [
+          expect.objectContaining({
+            code: "PROBABLE_SECRET",
+            remediation: "remove-secret-values",
+          }),
+        ],
+      },
+    });
+    expect(JSON.stringify(catalog)).not.toContain(t.root);
+    expect(JSON.stringify(catalog)).not.toContain(secretCanary);
   });
 
   it("attaches a target only to its concrete contributing rule", async () => {

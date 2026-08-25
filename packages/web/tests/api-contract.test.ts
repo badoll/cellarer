@@ -175,7 +175,9 @@ describe("local client API contract", () => {
         paths: {
           "/api/v1/version": { get: { operationId: "getVersion" } },
           "/api/v1/openapi.json": { get: { operationId: "getOpenApi" } },
-          "/api/v1/scan/plan": { post: { operationId: "planScanMutation" } },
+          "/api/v1/inventory/import/plan": {
+            post: { operationId: "planInventoryStoreImport" },
+          },
           "/api/v1/revert/apply": { post: { operationId: "applyRevertMutation" } },
           "/api/v1/resources/rename/plan": {
             post: { operationId: "planResourceRename" },
@@ -186,6 +188,136 @@ describe("local client API contract", () => {
         },
       },
     });
+  });
+
+  it("rejects removed discovery, scan, and legacy import routes before invoking Core", async () => {
+    let filesystemEffects = 0;
+    let authorityEffects = 0;
+    const protectedEnv: Env = {
+      ...env,
+      fs: new Proxy(env.fs, {
+        get(target, property, receiver) {
+          const value = Reflect.get(target, property, receiver);
+          if (typeof value !== "function") return value;
+          return (..._args: unknown[]) => {
+            filesystemEffects += 1;
+            throw new Error(`unexpected filesystem effect: ${String(property)}`);
+          };
+        },
+      }),
+      mutationAuthority: new Proxy(env.mutationAuthority, {
+        get(target, property, receiver) {
+          const value = Reflect.get(target, property, receiver);
+          if (typeof value !== "function") return value;
+          return (..._args: unknown[]) => {
+            authorityEffects += 1;
+            throw new Error(`unexpected authority effect: ${String(property)}`);
+          };
+        },
+      }),
+    };
+    const app = createApp({
+      env: protectedEnv,
+      storeRoot,
+      auth: { mode: "trusted-embedded" },
+    });
+    const capturedMutationPlan = {
+      schemaVersion: 1,
+      planId: "captured-legacy-scan-plan",
+      actions: [],
+    };
+    const removedRoutes = [
+      { method: "GET", path: "/api/v1/discovery" },
+      { method: "POST", path: "/api/v1/scan/plan", body: { agent: "codex" } },
+      {
+        method: "POST",
+        path: "/api/v1/scan/apply",
+        body: { mutationPlan: capturedMutationPlan },
+      },
+      { method: "POST", path: "/api/v1/import/plan", body: { agent: "codex" } },
+      {
+        method: "POST",
+        path: "/api/v1/import/apply",
+        body: { mutationPlan: capturedMutationPlan },
+      },
+    ] as const;
+
+    for (const route of removedRoutes) {
+      const response = await app.request(route.path, {
+        method: route.method,
+        headers: { "x-request-id": "req-removed-legacy-route" },
+        ...(route.body === undefined
+          ? {}
+          : {
+              headers: {
+                "content-type": "application/json",
+                "x-request-id": "req-removed-legacy-route",
+              },
+              body: JSON.stringify(route.body),
+            }),
+      });
+      expect(response.status, `${route.method} ${route.path}`).toBe(404);
+    }
+    expect(filesystemEffects).toBe(0);
+    expect(authorityEffects).toBe(0);
+  });
+
+  it("rejects a captured legacy plan at the Inventory planning boundary without observation", async () => {
+    const secretCanary = "ghp_0123456789abcdefghijklmnopqrstuvwx";
+    let filesystemEffects = 0;
+    let authorityEffects = 0;
+    const protectedEnv: Env = {
+      ...env,
+      fs: new Proxy(env.fs, {
+        get(target, property, receiver) {
+          const value = Reflect.get(target, property, receiver);
+          if (typeof value !== "function") return value;
+          return (..._args: unknown[]) => {
+            filesystemEffects += 1;
+            throw new Error(`unexpected captured-plan observation: ${String(property)}`);
+          };
+        },
+      }),
+      mutationAuthority: new Proxy(env.mutationAuthority, {
+        get(target, property, receiver) {
+          const value = Reflect.get(target, property, receiver);
+          if (typeof value !== "function") return value;
+          return (..._args: unknown[]) => {
+            authorityEffects += 1;
+            throw new Error(`unexpected captured-plan authority use: ${String(property)}`);
+          };
+        },
+      }),
+    };
+    const response = await createApp({
+      env: protectedEnv,
+      storeRoot,
+      auth: { mode: "trusted-embedded" },
+    }).request("/api/v1/inventory/import/plan", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-request-id": "req-captured-legacy-plan",
+      },
+      body: JSON.stringify({
+        mutationPlan: {
+          schemaVersion: 1,
+          planId: "captured-legacy-scan-plan",
+          normalizedInputs: { mutationKind: "scan-import", secretCanary },
+          actions: [],
+        },
+      }),
+    });
+    const text = await response.text();
+
+    expect(response.status).toBe(400);
+    expect(JSON.parse(text)).toMatchObject({
+      status: "error",
+      error: { code: "INVALID_INPUT", details: { fields: ["candidateIds"] } },
+    });
+    expect(text).not.toContain(secretCanary);
+    expect(filesystemEffects).toBe(0);
+    expect(authorityEffects).toBe(0);
   });
 
   it("publishes a closed post-commit Inventory union for control-plane mutation apply", () => {
@@ -319,7 +451,7 @@ describe("local client API contract", () => {
         operations: expect.arrayContaining([
           "getVersion",
           "listResources",
-          "planScanMutation",
+          "planInventoryStoreImport",
           "applyRevertMutation",
           "planResourceRename",
           "applySyncProfileUninstall",

@@ -92,43 +92,70 @@ describe("complete CLI control-plane journey", () => {
 
     const nativeRule = join(importProject, "CLAUDE.md");
     await fs.writeFile(nativeRule, "# Shared team rules\n", "utf8");
-    const scanRequestPath = join(root, "scan-request.json");
-    await fs.writeFile(
-      scanRequestPath,
-      JSON.stringify({
-        protocolVersion: "1.0",
-        command: "scan",
-        requestId: "journey:scan:1",
-        input: {
-          agent: "claude-code",
-          dir: importProject,
-          capabilities: ["rules"],
-          intoCollection: "default",
-          select: [{ kind: "rules", name: "claude-code", source: nativeRule }],
-        },
-      }),
-      "utf8",
+    const refreshed = protocolTerminal(
+      await invoke([
+        "--output",
+        "json",
+        "inventory",
+        "refresh",
+        "--agent",
+        "claude-code",
+        "--dir",
+        importProject,
+      ]),
     );
-    const scanned = protocolTerminal(
-      await invoke(["--output", "json", "--input", scanRequestPath, "scan"]),
+    const candidateId = (
+      refreshed.data as { candidates: Array<{ id: string; kind: string }> }
+    ).candidates.find(({ kind }) => kind === "rules")?.id;
+    expect(candidateId).toMatch(/^inventory-candidate:v1:rules:/);
+    const plannedImport = protocolTerminal(
+      await invoke([
+        "--output",
+        "json",
+        "inventory",
+        "import",
+        "plan",
+        "--candidate",
+        candidateId as string,
+        "--agent",
+        "claude-code",
+        "--dir",
+        importProject,
+        "--into-collection",
+        "default",
+      ]),
     );
-    expect(scanned).toMatchObject({
-      command: "scan",
+    expect(plannedImport).toMatchObject({
+      command: "inventory.import.plan",
       status: "success",
       data: {
-        imported: [
-          expect.objectContaining({
-            kind: "rules",
-            name: "claude-code",
-            source: nativeRule,
-          }),
-        ],
+        candidateIds: [candidateId],
+        mutationPlan: { operation: "store-import" },
       },
     });
 
-    const resource = await invoke(["resource", "show", "rules/claude-code"]);
+    const mutationPlan = (plannedImport.data as { mutationPlan: unknown }).mutationPlan;
+    const appliedImport = protocolTerminal(
+      await invoke([
+        "--output",
+        "json",
+        "inventory",
+        "import",
+        "apply",
+        "--plan",
+        JSON.stringify(mutationPlan),
+      ]),
+    );
+    expect(appliedImport).toMatchObject({
+      command: "inventory.import.apply",
+      status: "success",
+      data: { candidateIds: [candidateId], operation: { ok: true } },
+    });
+    const resourceId = (appliedImport.data as { resourceIds: string[] }).resourceIds[0] as string;
+
+    const resource = await invoke(["resource", "show", resourceId]);
     expect(resource).toMatchObject({ stderr: "", exitCode: undefined });
-    expect(resource.stdout).toContain("rules/claude-code");
+    expect(resource.stdout).toContain(resourceId);
 
     const collectionRequest = {
       protocolVersion: "1.0",
@@ -137,7 +164,7 @@ describe("complete CLI control-plane journey", () => {
       input: {
         collectionName: "journey",
         description: "Journey resources",
-        resourceIds: ["rules/claude-code"],
+        resourceIds: [resourceId],
       },
     };
     const createdCollection = protocolTerminal(
@@ -154,7 +181,7 @@ describe("complete CLI control-plane journey", () => {
     expect(await invoke(["collection", "show", "journey"])).toMatchObject({
       stderr: "",
       exitCode: undefined,
-      stdout: expect.stringContaining("rules/claude-code"),
+      stdout: expect.stringContaining(resourceId),
     });
 
     const applyRequest = {
@@ -336,26 +363,22 @@ describe("complete CLI control-plane journey", () => {
     );
     expect(withoutVolatile(webAgents)).toEqual(withoutVolatile(cliAgents));
 
-    const cliDiscovery = protocolTerminal(
+    const cliInventory = protocolTerminal(
       await invoke([
         "--output",
         "json",
-        "discovery",
-        "summary",
-        "--destination",
-        "project",
+        "inventory",
+        "refresh",
         "--dir",
         targetProject,
         "--agent",
         "codex",
       ]),
     ).data;
-    const webDiscovery = await apiJson(
-      app.request(
-        `/api/v1/discovery?destination=project&dir=${encodeURIComponent(targetProject)}&agents=codex`,
-      ),
+    const webInventory = await apiJson(
+      app.request(`/api/v1/inventory/codex?dir=${encodeURIComponent(targetProject)}`),
     );
-    expect(withoutVolatile(webDiscovery)).toEqual(withoutVolatile(cliDiscovery));
+    expect(withoutVolatile(webInventory)).toEqual(withoutVolatile(cliInventory));
 
     const cliVerify = protocolTerminal(
       await invoke([

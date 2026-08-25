@@ -35,8 +35,7 @@ describe("dashboard summary", () => {
         desiredCount: 0,
       }),
     );
-    expect(Object.hasOwn(summary, "latestScanSummary")).toBe(true);
-    expect(summary.latestScanSummary).toBeUndefined();
+    expect(summary).not.toHaveProperty("latestScanSummary");
   });
 
   it("requires an explicit project dir before including project coverage", async () => {

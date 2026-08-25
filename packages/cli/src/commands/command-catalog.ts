@@ -1,4 +1,3 @@
-import type { resolveContext } from "../context.js";
 import {
   type CommandCatalog,
   type CommandDomain,
@@ -38,10 +37,7 @@ import { createStoreArtifactDomain } from "./store-artifact-catalog.js";
 import { createStoreTargetMutationDomain } from "./store-target-mutation-catalog.js";
 
 export function createCliCommandCatalog(
-  options: {
-    readonly initInventoryImportConfirmer?: InitInventoryImportConfirmer;
-    readonly scanContextResolver?: typeof resolveContext;
-  } = {},
+  options: { readonly initInventoryImportConfirmer?: InitInventoryImportConfirmer } = {},
 ): CommandCatalog {
   let catalog: CommandCatalog | undefined;
   const provider: ProtocolDiscoveryProvider = {

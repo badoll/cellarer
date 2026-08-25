@@ -22,7 +22,6 @@ const READ_ONLY_COMMANDS = [
   "verify",
   "summary",
   "plan",
-  "discovery.summary",
   "operation.list",
   "operation.show",
 ] as const;
@@ -186,16 +185,6 @@ describe("control-plane read commands", () => {
       ["diff", "--scope", "project", "--dir", project, "--agent", "claude-code"],
       ["verify", "--scope", "project", "--dir", project, "--agent", "claude-code"],
       ["summary", "--scope", "project", "--dir", project, "--agent", "claude-code"],
-      [
-        "discovery",
-        "summary",
-        "--destination",
-        "project",
-        "--dir",
-        project,
-        "--agent",
-        "claude-code",
-      ],
       ["operation", "list"],
     ] as const;
 

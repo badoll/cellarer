@@ -88,15 +88,6 @@ const commandCases = {
     "--dry-run",
   ],
   "authority.rotate": () => ["authority", "rotate"],
-  scan: ({ project }) => [
-    "scan",
-    "--agent",
-    "claude-code",
-    "--dir",
-    project,
-    "--rules",
-    "--dry-run",
-  ],
   revert: ({ project }) => ["revert", "--dir", project, "--dry-run"],
   status: ({ project }) => ["status", "--dir", project],
   "secret.add": async (context) => [
@@ -245,16 +236,6 @@ const commandCases = {
     "claude-code",
   ],
   summary: () => ["summary", "--no-include-plan-coverage"],
-  "discovery.summary": ({ project }) => [
-    "discovery",
-    "summary",
-    "--destination",
-    "project",
-    "--dir",
-    project,
-    "--agent",
-    "claude-code",
-  ],
   "operation.list": () => ["operation", "list"],
   "operation.show": () => ["operation", "show", "missing-operation"],
   "operation.recover": () => ["operation", "recover", "missing-operation", "--dry-run"],
@@ -412,9 +393,9 @@ describe("CLI command registry protocol conformance", () => {
     expect(definitions.map(({ command }) => command)).toEqual(
       commandRegistry.map(({ command }) => command),
     );
-    expect(catalog.contracts.map(({ catalogOrder }) => catalogOrder)).toEqual(
-      catalog.contracts.map((_, index) => index),
-    );
+    const catalogOrders = catalog.contracts.map(({ catalogOrder }) => catalogOrder);
+    expect(catalogOrders).toEqual([...catalogOrders].sort((left, right) => left - right));
+    expect(new Set(catalogOrders).size).toBe(catalogOrders.length);
     expect(new Set(schemaIds).size).toBe(schemaIds.length);
     expect(publishedSchemaIds).toEqual(
       expect.arrayContaining([
@@ -790,7 +771,6 @@ describe("CLI command registry protocol conformance", () => {
     ["add", "vaultPassphraseFd"],
     ["apply", "vaultPassphraseFd"],
     ["apply", "snapshotPassphraseFd"],
-    ["scan", "vaultPassphraseFd"],
     ["revert", "snapshotPassphraseFd"],
     ["operation.recover", "snapshotPassphraseFd"],
     ["sync.plan", "snapshotPassphraseFd"],
