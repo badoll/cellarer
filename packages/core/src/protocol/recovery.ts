@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { Env, MutationAuthorityLease } from "../env.js";
 import { emptyDirectoryFingerprint } from "../fs/hashDir.js";
 import { assertSafeAtomicPublicationPath, isPathInside } from "../fs/safety.js";
@@ -293,6 +293,9 @@ async function isDurableRecoveryAuthorized(
       "add-rules",
       "add-skill-provenance",
       "add-skills",
+      "inventory-collection-membership",
+      "inventory-resource-content",
+      "inventory-resource-metadata",
       "publish-file",
       "scan-mcp",
       "scan-rules",
@@ -320,6 +323,17 @@ async function isDurableRecoveryAuthorized(
     return false;
   }
   if (journal.plan.operation === "store-import") {
+    if (
+      journal.plan.actions.every((action) =>
+        [
+          "inventory-collection-membership",
+          "inventory-resource-content",
+          "inventory-resource-metadata",
+        ].includes(action.kind),
+      )
+    ) {
+      return isInventoryStoreImportRecoveryAuthorized(storeRoot, journal);
+    }
     // Store imports currently have no durable provenance outside the journal that can prove the
     // originating add/scan request, selected target, or payload. A self-consistent journal is
     // integrity evidence only, so interrupted imports remain manual-only before recovery claims,
@@ -357,6 +371,104 @@ async function isDurableRecoveryAuthorized(
   // Apply/revert durable actions intentionally omit the executable payload and canonical options.
   // Their origin and helper derivation therefore cannot be independently proven after a crash.
   return false;
+}
+
+function isInventoryStoreImportRecoveryAuthorized(
+  storeRoot: string,
+  journal: OperationJournal,
+): boolean {
+  const actions = journal.plan.actions;
+  const preconditions = journal.plan.targetPreconditions;
+  if (
+    (journal.statePublications?.length ?? 0) !== 0 ||
+    actions.length < 2 ||
+    actions.length !== preconditions.length ||
+    new Set(actions.map(({ actionId }) => actionId)).size !== actions.length ||
+    new Set(actions.map(({ target }) => target)).size !== actions.length ||
+    actions.filter(({ kind }) => kind === "inventory-resource-content").length === 0
+  ) {
+    return false;
+  }
+
+  let index = 0;
+  while (index < actions.length) {
+    const content = actions[index];
+    if (content?.kind === "inventory-collection-membership") break;
+    const metadata = actions[index + 1];
+    const contentPrecondition = preconditions[index];
+    const metadataPrecondition = preconditions[index + 1];
+    const identity = content ? inventoryRecoveryResourceIdentity(storeRoot, content.target) : null;
+    if (
+      content?.kind !== "inventory-resource-content" ||
+      !metadata ||
+      metadata.kind !== "inventory-resource-metadata" ||
+      !identity ||
+      metadata.target !==
+        join(storeRoot, "store", "metadata", identity.kind, `${identity.name}.json`) ||
+      !isInventoryRecoveryActionBound(content) ||
+      !isInventoryRecoveryActionBound(metadata) ||
+      !contentPrecondition ||
+      contentPrecondition.actionId !== content.actionId ||
+      contentPrecondition.target !== content.target ||
+      contentPrecondition.expected.state !== "absent" ||
+      !metadataPrecondition ||
+      metadataPrecondition.actionId !== metadata.actionId ||
+      metadataPrecondition.target !== metadata.target ||
+      metadataPrecondition.expected.state !== "absent"
+    ) {
+      return false;
+    }
+    index += 2;
+  }
+
+  if (index === actions.length) return true;
+  if (index !== actions.length - 1) return false;
+  const collection = actions[index];
+  const collectionPrecondition = preconditions[index];
+  return Boolean(
+    collection &&
+      collection.kind === "inventory-collection-membership" &&
+      collection.target === join(storeRoot, CONFIG_FILENAME) &&
+      isInventoryRecoveryActionBound(collection) &&
+      collectionPrecondition &&
+      collectionPrecondition.actionId === collection.actionId &&
+      collectionPrecondition.target === collection.target &&
+      collectionPrecondition.expected.state === "present",
+  );
+}
+
+function inventoryRecoveryResourceIdentity(
+  storeRoot: string,
+  target: string,
+): { readonly kind: "rules" | "mcp" | "skills"; readonly name: string } | null {
+  for (const kind of ["rules", "mcp", "skills"] as const) {
+    const root = join(storeRoot, "store", kind);
+    if (!isPathInside(target, root) || dirname(target) !== root) continue;
+    const file = basename(target);
+    const suffix = kind === "rules" ? ".md" : kind === "mcp" ? ".json" : "";
+    if (suffix && !file.endsWith(suffix)) return null;
+    const name = suffix ? file.slice(0, -suffix.length) : file;
+    if (name.length === 0 || name === "." || name === "..") return null;
+    return { kind, name };
+  }
+  return null;
+}
+
+function isInventoryRecoveryActionBound(
+  action: OperationJournal["plan"]["actions"][number],
+): boolean {
+  return Boolean(
+    action.postcondition &&
+      action.postcondition.state === "present" &&
+      action.actionId ===
+        sha256(
+          canonicalJson({
+            kind: action.kind,
+            target: action.target,
+            payloadDigest: action.payloadDigest,
+          }),
+        ),
+  );
 }
 
 function isSettingsRecoveryAuthorized(storeRoot: string, journal: OperationJournal): boolean {

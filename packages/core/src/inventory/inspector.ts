@@ -15,6 +15,9 @@ import {
 import { sha256 } from "../store/checksum.js";
 import type { InventorySource } from "./enumerator.js";
 import type {
+  CapturedInventoryCandidateObservation,
+  CapturedInventoryPublication,
+  CapturedInventorySourceInspection,
   InventoryCandidateObservation,
   InventorySourceFinding,
   InventorySourceInspection,
@@ -25,6 +28,15 @@ export async function inspectInventorySource(
   source: InventorySource,
   adapter: AgentAdapter,
 ): Promise<InventorySourceInspection> {
+  const captured = await inspectInventorySourceCaptured(env, source, adapter);
+  return frozenInspection(captured.candidates.map(stripCapturedPublication), captured.findings);
+}
+
+export async function inspectInventorySourceCaptured(
+  env: Env,
+  source: InventorySource,
+  adapter: AgentAdapter,
+): Promise<CapturedInventorySourceInspection> {
   if ((await lstatOrNull(env, source.path)) === null) return frozenInspection([], []);
 
   let snapshot: SafeRecursiveSnapshot;
@@ -42,17 +54,30 @@ export async function inspectInventorySource(
 function inspectRules(
   source: InventorySource,
   snapshot: SafeRecursiveSnapshot,
-): InventorySourceInspection {
+): CapturedInventorySourceInspection {
   const name = removeKnownExtension(basename(source.path));
   if (snapshot.kind !== "file" || snapshot.files.length !== 1) {
-    return frozenInspection([observation(source, snapshot, name, ["INVALID_STRUCTURE"])], []);
+    return frozenInspection(
+      [observation(source, snapshot, name, ["INVALID_STRUCTURE"], rawPublication(snapshot))],
+      [],
+    );
   }
   const content = normalizeRuleContent(snapshot.files[0]?.content ?? "");
   if (content.trim().length === 0) return frozenInspection([], []);
   const findings: InventoryFindingCode[] =
     scanTextForSecrets(content).length > 0 ? ["PROBABLE_SECRET"] : [];
   return frozenInspection(
-    [observation(source, snapshot, name, findings, undefined, sha256(content))],
+    [
+      observation(
+        source,
+        snapshot,
+        name,
+        findings,
+        filePublication(snapshot, content),
+        undefined,
+        sha256(content),
+      ),
+    ],
     [],
   );
 }
@@ -61,11 +86,19 @@ function inspectMcp(
   source: InventorySource,
   snapshot: SafeRecursiveSnapshot,
   adapter: AgentAdapter,
-): InventorySourceInspection {
+): CapturedInventorySourceInspection {
   const fallbackName = removeKnownExtension(basename(source.path));
   if (snapshot.kind !== "file" || snapshot.files.length !== 1 || !adapter.mcp) {
     return frozenInspection(
-      [observation(source, snapshot, fallbackName, ["INVALID_STRUCTURE"])],
+      [
+        observation(
+          source,
+          snapshot,
+          fallbackName,
+          ["INVALID_STRUCTURE"],
+          rawPublication(snapshot),
+        ),
+      ],
       [],
     );
   }
@@ -81,28 +114,41 @@ function inspectMcp(
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([name, server]) => {
         const canonical = canonicalJson(serverToRaw(server));
+        const serialized = `${JSON.stringify(serverToRaw(server), null, 2)}\n`;
         return observation(
           source,
           snapshot,
           name,
           hasSecret ? ["PROBABLE_SECRET"] : [],
+          filePublication(snapshot, serialized),
           name,
           sha256(canonical),
         );
       });
     return frozenInspection(candidates, []);
   } catch {
-    return frozenInspection([observation(source, snapshot, fallbackName, ["PARSE_FAILED"])], []);
+    return frozenInspection(
+      [observation(source, snapshot, fallbackName, ["PARSE_FAILED"], rawPublication(snapshot))],
+      [],
+    );
   }
 }
 
 function inspectSkills(
   source: InventorySource,
   snapshot: SafeRecursiveSnapshot,
-): InventorySourceInspection {
+): CapturedInventorySourceInspection {
   if (snapshot.kind !== "directory") {
     return frozenInspection(
-      [observation(source, snapshot, basename(source.path), ["INVALID_STRUCTURE"])],
+      [
+        observation(
+          source,
+          snapshot,
+          basename(source.path),
+          ["INVALID_STRUCTURE"],
+          rawPublication(snapshot),
+        ),
+      ],
       [],
     );
   }
@@ -124,7 +170,7 @@ function inspectSkills(
       ...(!hasManifest ? (["INVALID_STRUCTURE"] as const) : []),
       ...(hasSecret ? (["PROBABLE_SECRET"] as const) : []),
     ];
-    return observation(source, child, name, findings, name);
+    return observation(source, child, name, findings, directoryPublication(child), name);
   });
   return frozenInspection(candidates, []);
 }
@@ -134,9 +180,10 @@ function observation(
   snapshot: SafeRecursiveSnapshot,
   name: string,
   findings: readonly InventoryFindingCode[],
+  publication: CapturedInventoryPublication,
   relativePath?: string,
   contentFingerprint = snapshot.fingerprint,
-): InventoryCandidateObservation {
+): CapturedInventoryCandidateObservation {
   return Object.freeze({
     kind: source.kind,
     name,
@@ -144,19 +191,71 @@ function observation(
     contentFingerprint,
     physicalIdentity: snapshot.identity,
     source,
+    snapshot,
+    publication,
     ...(relativePath ? { relativePath } : {}),
     findings: Object.freeze([...new Set(findings)].sort()),
   });
 }
 
-function frozenInspection(
-  candidates: readonly InventoryCandidateObservation[],
+function frozenInspection<Candidate extends InventoryCandidateObservation>(
+  candidates: readonly Candidate[],
   findings: readonly InventorySourceFinding[],
-): InventorySourceInspection {
+): {
+  readonly candidates: readonly Candidate[];
+  readonly findings: readonly InventorySourceFinding[];
+} {
   return Object.freeze({
     candidates: Object.freeze([...candidates]),
     findings: Object.freeze([...findings]),
   });
+}
+
+function stripCapturedPublication(
+  candidate: CapturedInventoryCandidateObservation,
+): InventoryCandidateObservation {
+  const { snapshot: _snapshot, publication: _publication, ...observation } = candidate;
+  return Object.freeze(observation);
+}
+
+function filePublication(
+  snapshot: SafeRecursiveSnapshot,
+  data: string,
+): CapturedInventoryPublication {
+  const file = snapshot.files[0];
+  if (!file) throw new UnsafeRecursiveSourceError(snapshot.rootPath, "non-regular");
+  return Object.freeze({
+    kind: "file",
+    data,
+    mode: file.mode,
+    fingerprint: sha256(data),
+  });
+}
+
+function directoryPublication(snapshot: SafeRecursiveSnapshot): CapturedInventoryPublication {
+  return Object.freeze({
+    kind: "directory",
+    nodes: Object.freeze(
+      snapshot.tree.nodes.map((node) =>
+        node.kind === "directory"
+          ? Object.freeze({ path: node.relativePath, kind: "directory" as const, mode: node.mode })
+          : Object.freeze({
+              path: node.relativePath,
+              kind: "file" as const,
+              mode: node.mode,
+              data: new TextDecoder("utf-8", { fatal: true }).decode(node.data ?? new Uint8Array()),
+              digest: sha256(node.data ?? new Uint8Array()),
+            }),
+      ),
+    ),
+    fingerprint: snapshot.fingerprint,
+  });
+}
+
+function rawPublication(snapshot: SafeRecursiveSnapshot): CapturedInventoryPublication {
+  return snapshot.kind === "file"
+    ? filePublication(snapshot, snapshot.files[0]?.content ?? "")
+    : directoryPublication(snapshot);
 }
 
 function snapshotFindingCode(error: unknown): InventoryFindingCode {

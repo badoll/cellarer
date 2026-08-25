@@ -28,3 +28,9 @@ A truthful Inventory is useful only if selected safe candidates can enter the ma
 - Inventory candidate lookup, Store publication planning, mutation authority, journal/recovery, provenance, CLI, local API, and Web client contract.
 - Depends on `add-unified-resource-inventory` and `establish-store-snapshot-boundary`.
 - No Store-format migration, target distribution, or secret-provider access.
+
+## Execution Contract
+
+- Risk: high
+- Depends on: add-unified-resource-inventory, establish-store-snapshot-boundary
+- Allowed paths: openspec/changes/add-inventory-store-import/**, openspec/changes/archive/*-add-inventory-store-import/**, openspec/specs/inventory-store-import/**, openspec/specs/agent-cli-protocol/**, openspec/specs/cli-control-plane/**, openspec/specs/local-client-api/**, packages/core/src/inventory/**, packages/core/src/store/**, packages/core/src/protocol/**, packages/core/src/runtime/**, packages/core/src/control-plane-mutations.ts, packages/core/src/activity.ts, packages/core/src/index.ts, packages/core/tests/**, packages/cli/src/commands/inventory.ts, packages/cli/src/commands/command-catalog.ts, packages/cli/src/protocol/**, packages/cli/src/index.ts, packages/cli/tests/**, packages/web/src/**, packages/web/client/api.ts, packages/web/tests/**, README.md, README.zh-CN.md, docs/README.md, docs/README.zh-CN.md

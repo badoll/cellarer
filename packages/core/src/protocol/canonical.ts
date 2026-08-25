@@ -85,6 +85,9 @@ export const MUTATION_ACTION_KINDS = [
   "scan-rules",
   "scan-mcp",
   "scan-skills",
+  "inventory-resource-content",
+  "inventory-resource-metadata",
+  "inventory-collection-membership",
 ] as const;
 
 export function assertStrictMutationPlanRuntime(

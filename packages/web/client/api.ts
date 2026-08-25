@@ -2,6 +2,7 @@ import {
   CLIENT_API_CONTRACT_ID,
   CLIENT_API_VERSION,
   type InventoryRefreshResult,
+  type MutationPlan,
 } from "@cellarer/core/client-api";
 import { readApiJson } from "./api-state.js";
 
@@ -114,6 +115,58 @@ export async function fetchInventory(
   const suffix = query.size > 0 ? `?${query.toString()}` : "";
   const requestPath = `${path}${suffix}` as VersionedClientApiPath;
   return readApiJson<InventoryRefreshResult>(await apiFetch(requestPath));
+}
+
+export interface InventoryStoreImportPlanInput {
+  readonly candidateIds: readonly string[];
+  readonly agentId?: string;
+  readonly dir?: string;
+  readonly intoCollection?: string;
+}
+
+export interface InventoryStoreImportPlanResult {
+  readonly inventory: InventoryRefreshResult;
+  readonly candidateIds: readonly string[];
+  readonly mutationPlan: MutationPlan;
+}
+
+export interface InventoryStoreImportApplyResult {
+  readonly mutationPlan: MutationPlan;
+  readonly candidateIds: readonly string[];
+  readonly resourceIds: readonly string[];
+  readonly operation: { readonly ok: boolean };
+  readonly warnings: readonly string[];
+}
+
+export async function planInventoryStoreImport(
+  input: InventoryStoreImportPlanInput,
+): Promise<InventoryStoreImportPlanResult> {
+  return readApiJson<InventoryStoreImportPlanResult>(
+    await apiFetch("/api/v1/inventory/import/plan", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  );
+}
+
+export async function applyInventoryStoreImport(
+  mutationPlan: MutationPlan,
+): Promise<InventoryStoreImportApplyResult> {
+  return readApiJson<InventoryStoreImportApplyResult>(
+    await apiFetch("/api/v1/inventory/import/apply", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mutationPlan }),
+    }),
+  );
+}
+
+export async function applyPlannedInventoryStoreImport(
+  input: InventoryStoreImportPlanInput,
+): Promise<InventoryStoreImportApplyResult> {
+  const planned = await planInventoryStoreImport(input);
+  return applyInventoryStoreImport(planned.mutationPlan);
 }
 
 async function ensureBrowserSession(): Promise<void> {

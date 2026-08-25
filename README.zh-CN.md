@@ -59,6 +59,16 @@ node packages/cli/dist/bin.js inventory refresh --agent codex
 Inventory 返回安全候选、provenance、findings、Store 匹配、计数与完整度，不会导入资源或
 写入 agent target。
 
+要将已审查的候选导入 Store，请使用精确 ID 生成 plan，再原样提交该命令返回的
+`mutationPlan`。导入不会将资源下发到 agent target：
+
+```bash
+node packages/cli/dist/bin.js --output json inventory import plan \
+  --candidate '<candidate-id>' --agent codex
+node packages/cli/dist/bin.js inventory import apply \
+  --plan '<plan 返回的 mutationPlan JSON>'
+```
+
 使用仓库自己的 README 作为真实 Rule 输入，并用隔离目录作为 project target：
 
 ```bash

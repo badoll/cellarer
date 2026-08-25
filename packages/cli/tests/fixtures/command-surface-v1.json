@@ -155,7 +155,9 @@
     "sync.apply",
     "sync.verify",
     "sync.uninstall",
-    "inventory.refresh"
+    "inventory.refresh",
+    "inventory.import.plan",
+    "inventory.import.apply"
   ],
   "commands": [
     {
@@ -2431,6 +2433,147 @@
           {
             "field": "dryRun",
             "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "inventory.import.apply",
+      "aliases": [],
+      "description": "应用调用方提供的、未改动的 Inventory Store import receipt",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "--plan <json>",
+          "attributeName": "plan",
+          "description": "inventory import plan 返回的完整 mutationPlan JSON",
+          "short": null,
+          "long": "--plan",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["inventory-store-import", "mutation-authority", "plan-apply"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:inventory.import.apply:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:inventory.import.apply:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "mutationPlan",
+            "option": "plan",
+            "positional": null,
+            "encoded": true
+          }
+        ]
+      }
+    },
+    {
+      "path": "inventory.import.plan",
+      "aliases": [],
+      "description": "按精确 candidate ID 生成可跨进程应用的 Store import receipt",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "-c, --candidate <ids...>",
+          "attributeName": "candidate",
+          "description": "一个或多个精确 Inventory candidate ID",
+          "short": "-c",
+          "long": "--candidate",
+          "required": true,
+          "optional": false,
+          "variadic": true,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "-a, --agent <id>",
+          "attributeName": "agent",
+          "description": "精确的已注册 agent id",
+          "short": "-a",
+          "long": "--agent",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dir <path>",
+          "attributeName": "dir",
+          "description": "当前 project 根目录",
+          "short": null,
+          "long": "--dir",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--into-collection <id>",
+          "attributeName": "intoCollection",
+          "description": "将导入资源加入现有 collection",
+          "short": null,
+          "long": "--into-collection",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": [
+          "unified-resource-inventory",
+          "inventory-store-import",
+          "mutation-authority",
+          "plan-apply"
+        ],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:inventory.import.plan:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:inventory.import.plan:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "candidateIds",
+            "option": "candidate",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "agentId",
+            "option": "agent",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "dir",
+            "option": "dir",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "intoCollection",
+            "option": "intoCollection",
             "positional": null,
             "encoded": false
           }

@@ -64,6 +64,17 @@ node packages/cli/dist/bin.js inventory refresh --agent codex
 Inventory reports safe candidates, provenance, findings, Store matches, counts,
 and completeness; it does not import or write agent targets.
 
+To import reviewed candidates into the Store, plan with their exact IDs and then
+apply the unchanged `mutationPlan` returned by that command. Import never
+distributes resources to agent targets:
+
+```bash
+node packages/cli/dist/bin.js --output json inventory import plan \
+  --candidate '<candidate-id>' --agent codex
+node packages/cli/dist/bin.js inventory import apply \
+  --plan '<mutationPlan JSON returned by plan>'
+```
+
 Use this repository's README as a real Rule input and an isolated project
 directory as the target:
 

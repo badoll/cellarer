@@ -55,7 +55,7 @@ function projectCandidate(
 ): InventoryCandidate {
   const first = observations[0];
   if (!first) throw new TypeError("Inventory candidate group cannot be empty");
-  const id = candidateId(first.kind, first.normalizedName, first.contentFingerprint);
+  const id = inventoryCandidateId(first.kind, first.normalizedName, first.contentFingerprint);
   const conflictGroupId = conflict
     ? `inventory-conflict:v1:${digest(`${first.kind}\0${first.normalizedName}`)}`
     : undefined;
@@ -156,7 +156,11 @@ function candidateKey(observation: InventoryCandidateObservation): string {
   return `${observation.kind}\0${observation.normalizedName}\0${observation.contentFingerprint}`;
 }
 
-function candidateId(kind: string, normalizedName: string, fingerprint: string): string {
+export function inventoryCandidateId(
+  kind: string,
+  normalizedName: string,
+  fingerprint: string,
+): string {
   return `inventory-candidate:v1:${kind}:${digest(`${kind}\0${normalizedName}\0${fingerprint}`)}`;
 }
 

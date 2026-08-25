@@ -242,6 +242,17 @@ export type {
   SymlinkType,
 } from "./env.js";
 export {
+  type AppliedInventoryStoreImport,
+  type ApplyInventoryStoreImportPlanOptions,
+  applyInventoryStoreImportPlan,
+  InventoryStoreImportPlanningError,
+  type InventoryStoreImportPlanningReason,
+  type InventoryStoreImportRefreshScope,
+  type PlanInventoryStoreImportOptions,
+  type PlannedInventoryStoreImport,
+  planInventoryStoreImport,
+} from "./inventory/import.js";
+export {
   type InventoryRefreshOptions,
   refreshInventory,
 } from "./inventory/projector.js";

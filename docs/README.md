@@ -218,6 +218,9 @@ cellarer add vercel-labs/skills --skill nextjs --collection public
 cellarer ls --collection default
 cellarer inventory refresh
 cellarer inventory refresh --agent codex --dir "$PWD"
+cellarer --output json inventory import plan \
+  --candidate '<candidate-id>' --agent codex --dir "$PWD"
+cellarer inventory import apply --plan '<mutationPlan JSON returned by plan>'
 cellarer resource list --kind skills
 cellarer resource show skills/nextjs
 ```
@@ -225,6 +228,14 @@ cellarer resource show skills/nextjs
 Local `.md` files are rules, `.json` files are MCP resources, and eligible
 directories are skills. GitHub owner/repository sources and repository tree URLs
 are supported for remote skills. Imported remote skills retain provenance.
+
+`inventory import plan` requires at least one exact candidate ID; it never
+infers selection or prompts in non-interactive mode. The result binds the
+current source evidence and Store revision in an authority-sealed,
+cross-process `mutationPlan`. `inventory import apply` accepts only that plan,
+revalidates its bindings, and publishes one Store revision. Neither command
+writes agent targets. Use `--into-collection <id>` on planning to add every
+imported resource to one existing collection in the same Store operation.
 
 Use the resource lifecycle only when needed:
 
@@ -560,6 +571,8 @@ GET /api/v1/readiness
 GET /api/v1/openapi.json
 GET /api/v1/inventory?dir=/absolute/project
 GET /api/v1/inventory/{agentId}?dir=/absolute/project
+POST /api/v1/inventory/import/plan
+POST /api/v1/inventory/import/apply
 ```
 
 All JSON operations return a versioned envelope with request ID, status,
@@ -576,6 +589,11 @@ Both Inventory routes return the browser-safe Core Inventory DTO. The full route
 refreshes every registered bounded source; the targeted route accepts one exact
 registered adapter ID. A source failure remains a typed partial or failed result
 inside the successful transport envelope rather than becoming a raw exception.
+
+The Inventory import plan route accepts `candidateIds` plus optional `agentId`,
+`dir`, and `intoCollection`. The apply route accepts only the unchanged
+`mutationPlan` returned by planning. The bundled client passes that exact plan
+between the two routes; it does not refresh, reselect, or reconstruct actions.
 
 ## Custom adapters
 

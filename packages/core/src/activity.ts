@@ -20,7 +20,7 @@ import {
 
 export type { ActivityAction, ActivityActor, ActivityEvent } from "./protocol/client-types.js";
 
-const actionSchema = z.enum(["apply", "scan-import", "revert"]);
+const actionSchema = z.enum(["apply", "inventory-import", "scan-import", "revert"]);
 const actorSchema = z.enum(["you", "system"]);
 const capabilitySchema = z.enum(["rules", "mcp", "skills"]);
 const scopeSchema = z.enum(["global", "project"]);

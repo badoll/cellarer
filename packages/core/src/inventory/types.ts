@@ -1,5 +1,28 @@
 import type { InventoryFindingCode } from "../protocol/client-types.js";
+import type { SafeRecursiveSnapshot } from "../secrets/safe-tree.js";
 import type { InventorySource } from "./enumerator.js";
+
+export type CapturedInventoryPublication =
+  | {
+      readonly kind: "file";
+      readonly data: string;
+      readonly mode: number;
+      readonly fingerprint: string;
+    }
+  | {
+      readonly kind: "directory";
+      readonly nodes: readonly (
+        | { readonly path: string; readonly kind: "directory"; readonly mode: number }
+        | {
+            readonly path: string;
+            readonly kind: "file";
+            readonly mode: number;
+            readonly data: string;
+            readonly digest: string;
+          }
+      )[];
+      readonly fingerprint: string;
+    };
 
 export interface InventoryCandidateObservation {
   readonly kind: InventorySource["kind"];
@@ -12,6 +35,11 @@ export interface InventoryCandidateObservation {
   readonly findings: readonly InventoryFindingCode[];
 }
 
+export interface CapturedInventoryCandidateObservation extends InventoryCandidateObservation {
+  readonly snapshot: SafeRecursiveSnapshot;
+  readonly publication: CapturedInventoryPublication;
+}
+
 export interface InventorySourceFinding {
   readonly code: InventoryFindingCode;
   readonly source: InventorySource;
@@ -19,6 +47,11 @@ export interface InventorySourceFinding {
 
 export interface InventorySourceInspection {
   readonly candidates: readonly InventoryCandidateObservation[];
+  readonly findings: readonly InventorySourceFinding[];
+}
+
+export interface CapturedInventorySourceInspection {
+  readonly candidates: readonly CapturedInventoryCandidateObservation[];
   readonly findings: readonly InventorySourceFinding[];
 }
 

@@ -68,8 +68,8 @@ describe("OpenAPI canonical DTO type contracts", () => {
       "an ActivityEvent action discriminant is added only to OpenAPI",
       (source: string) =>
         source.replace(
-          'action: enumSchema(["apply", "scan-import", "revert"]),',
-          'action: enumSchema(["apply", "scan-import", "revert", "schema-drift"]),',
+          'action: enumSchema(["apply", "inventory-import", "scan-import", "revert"]),',
+          'action: enumSchema(["apply", "inventory-import", "scan-import", "revert", "schema-drift"]),',
         ),
       /ExactSchemaContract<typeof activityEventDefinitionSchema, ActivityEvent>/u,
     ],

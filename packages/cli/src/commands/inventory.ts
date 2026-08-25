@@ -1,4 +1,13 @@
-import { type InventoryRefreshResult, refreshInventory } from "@cellarer/core";
+import {
+  type AppliedInventoryStoreImport,
+  applyInventoryStoreImportPlan,
+  type InventoryRefreshResult,
+  InventoryStoreImportPlanningError,
+  type MutationPlan,
+  type PlannedInventoryStoreImport,
+  planInventoryStoreImport,
+  refreshInventory,
+} from "@cellarer/core";
 import { Command } from "commander";
 import { resolveContext } from "../context.js";
 import { createSafeConsole } from "../output.js";
@@ -6,11 +15,21 @@ import {
   type CommandContractMetadata,
   defineCommandContract,
 } from "../protocol/command-contract.js";
-import { commandSuccess } from "../protocol/execution.js";
+import { cliErrorFromOperation, commandFailure, commandSuccess } from "../protocol/execution.js";
+import { CliInputError, type CliInvocation, getCliInvocation } from "../protocol/input.js";
 
 interface InventoryRefreshInput {
   readonly agentId?: string;
   readonly dir?: string;
+}
+
+interface InventoryImportPlanInput extends InventoryRefreshInput {
+  readonly candidateIds?: readonly string[];
+  readonly intoCollection?: string;
+}
+
+interface InventoryImportApplyInput {
+  readonly mutationPlan?: unknown;
 }
 
 export function inventoryCommandRoot(): Command {
@@ -90,4 +109,144 @@ export function createInventoryRefreshCommandContract(
       mapError: () => undefined,
     },
   );
+}
+
+export function createInventoryImportPlanCommandContract(
+  definition: CommandContractMetadata<"inventory.import.plan">,
+) {
+  return defineCommandContract<
+    "inventory.import.plan",
+    InventoryImportPlanInput,
+    PlannedInventoryStoreImport
+  >(definition, {
+    createCommand: () =>
+      new Command("plan")
+        .description("按精确 candidate ID 生成可跨进程应用的 Store import receipt")
+        .option("-c, --candidate <ids...>", "一个或多个精确 Inventory candidate ID")
+        .option("-a, --agent <id>", "精确的已注册 agent id")
+        .option("--dir <path>", "当前 project 根目录")
+        .option("--into-collection <id>", "将导入资源加入现有 collection"),
+    normalize: ({ command }) => {
+      const opts = command.opts<{
+        readonly candidate?: readonly string[];
+        readonly agent?: string;
+        readonly dir?: string;
+        readonly intoCollection?: string;
+      }>();
+      return {
+        ...(opts.candidate ? { candidateIds: opts.candidate } : {}),
+        ...(opts.agent ? { agentId: opts.agent } : {}),
+        ...(opts.dir ? { dir: opts.dir } : {}),
+        ...(opts.intoCollection ? { intoCollection: opts.intoCollection } : {}),
+      };
+    },
+    execute: async (input) => {
+      const ctx = await resolveContext(
+        {
+          ...(input.agentId ? { agent: input.agentId } : {}),
+          ...(input.dir ? { dir: input.dir } : {}),
+        },
+        "required",
+      );
+      return commandSuccess(
+        await planInventoryStoreImport(ctx.env, {
+          storeRoot: ctx.storeRoot,
+          candidateIds: input.candidateIds ?? [],
+          refresh: {
+            ...(input.agentId ? { agentId: input.agentId } : {}),
+            ...(ctx.dir ? { projectRoot: ctx.dir } : {}),
+          },
+          ...(input.intoCollection ? { intoCollection: input.intoCollection } : {}),
+        }),
+      );
+    },
+    presentText: (outcome) => {
+      const output = createSafeConsole(outcome);
+      if (!outcome.ok) {
+        output.error(outcome.error.message);
+        return;
+      }
+      output.log(
+        `inventory import plan ${outcome.data.mutationPlan.planId}: ${outcome.data.candidateIds.length} exact candidates at Store revision ${outcome.data.mutationPlan.baseRevision}`,
+      );
+      for (const candidateId of outcome.data.candidateIds) output.log(`  candidate=${candidateId}`);
+    },
+    mapError: (error) =>
+      error instanceof InventoryStoreImportPlanningError
+        ? {
+            code: error.code,
+            message: error.message,
+            details: { reason: error.reason },
+          }
+        : undefined,
+  });
+}
+
+export function createInventoryImportApplyCommandContract(
+  definition: CommandContractMetadata<"inventory.import.apply">,
+) {
+  return defineCommandContract<
+    "inventory.import.apply",
+    InventoryImportApplyInput,
+    AppliedInventoryStoreImport
+  >(definition, {
+    createCommand: () =>
+      new Command("apply")
+        .description("应用调用方提供的、未改动的 Inventory Store import receipt")
+        .option("--plan <json>", "inventory import plan 返回的完整 mutationPlan JSON"),
+    normalize: ({ command }) => ({
+      mutationPlan: parseMutationPlan(
+        command.opts<{ readonly plan?: unknown }>().plan,
+        getCliInvocation(command),
+      ),
+    }),
+    execute: async (input) => {
+      const ctx = await resolveContext({}, "required");
+      const result = await applyInventoryStoreImportPlan(
+        ctx.env,
+        input.mutationPlan as MutationPlan,
+        {
+          storeRoot: ctx.storeRoot,
+        },
+      );
+      const error = cliErrorFromOperation(result.operation);
+      return error ? commandFailure<AppliedInventoryStoreImport>(error) : commandSuccess(result);
+    },
+    presentText: (outcome) => {
+      const output = createSafeConsole(outcome);
+      if (!outcome.ok) {
+        output.error(outcome.error.message);
+        return;
+      }
+      const receipt = outcome.data.operation.ok ? outcome.data.operation.receipt : undefined;
+      output.log(
+        receipt
+          ? `inventory import ${receipt.outcome}: revision ${receipt.baseRevision} -> ${receipt.resultingRevision}`
+          : "inventory import was not applied",
+      );
+    },
+    mapError: () => undefined,
+  });
+}
+
+function parseMutationPlan(value: unknown, invocation: CliInvocation): MutationPlan {
+  if (value === undefined) {
+    throw new CliInputError(
+      "INPUT_REQUIRED",
+      "plan is required",
+      { fields: ["mutationPlan"] },
+      invocation,
+    );
+  }
+  if (typeof value !== "string") return value as MutationPlan;
+  try {
+    return JSON.parse(value) as MutationPlan;
+  } catch {
+    throw new CliInputError(
+      "INVALID_INPUT",
+      "plan must be valid JSON",
+      { fields: ["mutationPlan"] },
+      invocation,
+    );
+  }
 }

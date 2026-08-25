@@ -8,6 +8,7 @@ import {
   type ActivityAction,
   AGENT_ID_PATTERN,
   applyControlPlaneMutationPlan,
+  applyInventoryStoreImportPlan,
   applyMutationPlan,
   applyResourceBundleImportPlan,
   applyResourceExportPlan,
@@ -38,6 +39,7 @@ import {
   discoverySummaryControlPlane,
   type Env,
   getClientReadiness,
+  InventoryStoreImportPlanningError,
   listActivity,
   listControlPlaneAgents,
   listControlPlaneCollections,
@@ -61,6 +63,7 @@ import {
   parseControlPlaneSettingsMutationBody,
   planApplyMutation,
   planAvailableResourceUpdate,
+  planInventoryStoreImport,
   planResourceBundleImport,
   planResourceExport,
   planResourceRemove,
@@ -264,6 +267,17 @@ interface ScanPlanApplyBody {
   mutationPlan: MutationPlan;
 }
 
+interface InventoryStoreImportPlanBody {
+  candidateIds: string[];
+  agentId?: string;
+  dir?: string;
+  intoCollection?: string;
+}
+
+interface InventoryStoreImportApplyBody {
+  mutationPlan: MutationPlan;
+}
+
 type AgentPlanBody =
   | { action: "set-enabled"; agentId: string; enabled: boolean }
   | { action: "upsert-adapter"; agentId: string; kind: "builtin" | "custom"; adapter: unknown }
@@ -323,6 +337,19 @@ function parseInventoryAgentId(raw: string): string {
     throw new ClientApiInputError("Inventory agent ID is invalid", { fields: ["agentId"] });
   }
   return raw;
+}
+
+function parseInventoryImportCandidateIds(raw: unknown): string[] {
+  if (
+    !Array.isArray(raw) ||
+    raw.length === 0 ||
+    raw.some((candidateId) => typeof candidateId !== "string" || candidateId.length === 0)
+  ) {
+    throw new ClientApiInputError("Inventory candidate IDs are invalid", {
+      fields: ["candidateIds"],
+    });
+  }
+  return raw as string[];
 }
 
 // project scope 必须带 dir,否则 core 会以 server cwd 为工程根,把文件写进进程启动目录(且无 .gitignore 守护)。
@@ -620,6 +647,16 @@ export function createApp(inputDeps: AppDeps) {
             code: "DOMAIN_VALIDATION_FAILED",
             message: "Request did not satisfy the operation contract",
             details: err.details,
+          }),
+          400,
+        );
+      }
+      if (err instanceof InventoryStoreImportPlanningError) {
+        return c.json(
+          clientFailure(id, {
+            code: err.code,
+            message: err.message,
+            details: { reason: err.reason },
           }),
           400,
         );
@@ -1431,6 +1468,35 @@ export function createApp(inputDeps: AppDeps) {
           }),
         ),
       );
+    })
+    .post("/api/v1/inventory/import/plan", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<InventoryStoreImportPlanBody>());
+      const candidateIds = parseInventoryImportCandidateIds(body.candidateIds);
+      const agentId = body.agentId === undefined ? undefined : parseInventoryAgentId(body.agentId);
+      const projectRoot = parseInventoryDir(body.dir);
+      const planned = await planInventoryStoreImport(deps.env, {
+        storeRoot: deps.storeRoot,
+        candidateIds,
+        refresh: {
+          ...(agentId ? { agentId } : {}),
+          ...(projectRoot ? { projectRoot } : {}),
+        },
+        ...(body.intoCollection ? { intoCollection: body.intoCollection } : {}),
+      });
+      const payload = clientSuccess(requestId(c), planned);
+      return withCorePayload(c.json(payload), payload);
+    })
+    .post("/api/v1/inventory/import/apply", async (c) => {
+      const body = await parseJsonBody(() => c.req.json<InventoryStoreImportApplyBody>());
+      const applied = await applyInventoryStoreImportPlan(deps.env, body.mutationPlan, {
+        storeRoot: deps.storeRoot,
+      });
+      if (!applied.operation.ok) {
+        const failure = clientMutationFailure(requestId(c), applied.operation.conflict);
+        return c.json(failure.body, failure.status);
+      }
+      const payload = clientSuccess(requestId(c), applied);
+      return withCorePayload(c.json(payload), payload);
     })
     .post("/api/v1/diff", async (c) => {
       const body = await parseJsonBody(() => c.req.json<DistributeBody>());

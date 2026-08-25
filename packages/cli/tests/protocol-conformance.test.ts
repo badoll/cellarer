@@ -316,6 +316,16 @@ const commandCases = {
     "--dry-run",
   ],
   "inventory.refresh": ({ project }) => ["inventory", "refresh", "--dir", project],
+  "inventory.import.plan": () => [
+    "inventory",
+    "import",
+    "plan",
+    "--candidate",
+    "inventory-candidate:v1:rules:missing",
+    "--agent",
+    "codex",
+  ],
+  "inventory.import.apply": () => ["inventory", "import", "apply", "--plan", "{}"],
 } satisfies Record<RegisteredCommand, CommandCase>;
 
 function profileDesired(): string {

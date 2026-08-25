@@ -625,7 +625,7 @@ export interface StatusItem {
   status: DriftStatus;
 }
 
-export type ActivityAction = "apply" | "scan-import" | "revert";
+export type ActivityAction = "apply" | "inventory-import" | "scan-import" | "revert";
 export type ActivityActor = "you" | "system";
 
 export interface ActivityEvent {

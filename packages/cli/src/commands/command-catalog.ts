@@ -27,7 +27,11 @@ import { createDiagnosticsServiceDomain } from "./diagnostics-service-catalog.js
 import type { ProtocolDiscoveryProvider } from "./discovery.js";
 import type { InitAgentSelector } from "./init.js";
 import { createInitializationDiscoveryDomain } from "./initialization-discovery-catalog.js";
-import { createInventoryRefreshCommandContract } from "./inventory.js";
+import {
+  createInventoryImportApplyCommandContract,
+  createInventoryImportPlanCommandContract,
+  createInventoryRefreshCommandContract,
+} from "./inventory.js";
 import { createResourceLifecycleSyncDomain } from "./resource-lifecycle-sync-catalog.js";
 import { createSecretAuthorityRecoveryDomain } from "./secret-authority-recovery-catalog.js";
 import { createStoreArtifactDomain } from "./store-artifact-catalog.js";
@@ -46,6 +50,7 @@ export function createCliCommandCatalog(
   };
   catalog = createCommandCatalog([
     createInitializationDiscoveryDomain(options, provider),
+    createInventoryDomain(),
     createStoreArtifactDomain(),
     createControlPlaneReadDomain(),
     createStoreTargetMutationDomain(),
@@ -56,16 +61,9 @@ export function createCliCommandCatalog(
   return catalog;
 }
 
-let defaultCliCommandCatalog: CommandCatalog | undefined;
-
-export function getDefaultCliCommandCatalog(): CommandCatalog {
-  defaultCliCommandCatalog ??= createCliCommandCatalog();
-  return defaultCliCommandCatalog;
-}
-
-function createControlPlaneReadDomain(): CommandDomain {
+function createInventoryDomain(): CommandDomain {
   return defineCommandDomain({
-    id: "control-plane-read",
+    id: "inventory",
     contracts: [
       createInventoryRefreshCommandContract(
         defineContractMetadata({
@@ -81,6 +79,63 @@ function createControlPlaneReadDomain(): CommandDomain {
           output: s.inventoryRefreshOutput,
         }),
       ),
+      createInventoryImportPlanCommandContract(
+        defineContractMetadata({
+          command: "inventory.import.plan",
+          catalogOrder: 63,
+          mutability: "write",
+          requiredFeatures: [
+            "unified-resource-inventory",
+            "inventory-store-import",
+            "mutation-authority",
+            "plan-apply",
+          ],
+          input: s.jsonSchema.object(
+            {
+              candidateIds: s.jsonSchema.array(s.jsonSchema.string({ minLength: 1 })),
+              agentId: s.agentId,
+              dir: s.jsonSchema.string({ minLength: 1 }),
+              intoCollection: s.jsonSchema.string({ minLength: 1 }),
+            },
+            ["candidateIds"],
+          ),
+          bindings: [
+            s.option("candidateIds", "candidate", s.joinList),
+            s.option("agentId", "agent"),
+            s.option("dir"),
+            s.option("intoCollection"),
+          ],
+          output: s.inventoryImportPlanOutput,
+        }),
+      ),
+      createInventoryImportApplyCommandContract(
+        defineContractMetadata({
+          command: "inventory.import.apply",
+          catalogOrder: 64,
+          mutability: "write",
+          requiredFeatures: ["inventory-store-import", "mutation-authority", "plan-apply"],
+          input: s.jsonSchema.object({ mutationPlan: s.inventoryImportMutationPlan }, [
+            "mutationPlan",
+          ]),
+          bindings: [s.option("mutationPlan", "plan", s.stringifyJson)],
+          output: s.inventoryImportApplyOutput,
+        }),
+      ),
+    ],
+  });
+}
+
+let defaultCliCommandCatalog: CommandCatalog | undefined;
+
+export function getDefaultCliCommandCatalog(): CommandCatalog {
+  defaultCliCommandCatalog ??= createCliCommandCatalog();
+  return defaultCliCommandCatalog;
+}
+
+function createControlPlaneReadDomain(): CommandDomain {
+  return defineCommandDomain({
+    id: "control-plane-read",
+    contracts: [
       createResourceListCommandContract(
         defineContractMetadata({
           command: "resource.list",

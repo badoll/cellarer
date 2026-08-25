@@ -389,6 +389,20 @@ const CLIENT_API_ROUTE_BASES = [
     summary: "Refresh one registered adapter's bounded Inventory sources",
   },
   {
+    operationId: "planInventoryStoreImport",
+    method: "post",
+    path: "/api/v1/inventory/import/plan",
+    authentication: "mutation",
+    summary: "Plan an exact Inventory candidate batch for Store import",
+  },
+  {
+    operationId: "applyInventoryStoreImport",
+    method: "post",
+    path: "/api/v1/inventory/import/apply",
+    authentication: "mutation",
+    summary: "Apply an unchanged Inventory Store import receipt",
+  },
+  {
     operationId: "getDiff",
     method: "post",
     path: "/api/v1/diff",
@@ -1208,12 +1222,23 @@ function bodySchemaFor(operationId: string): ClientJsonSchema {
         ],
       };
     case "applyControlPlaneMutation":
+    case "applyInventoryStoreImport":
     case "applySync":
     case "applyProfileMutation":
     case "applyScanMutation":
     case "applyImportMutation":
     case "applyResourceUpdate":
       return mutationPlanBodySchema;
+    case "planInventoryStoreImport":
+      return objectSchema(
+        {
+          candidateIds: stringArraySchema,
+          agentId: agentIdSchema,
+          dir: nonEmptyStringSchema,
+          intoCollection: nonEmptyStringSchema,
+        },
+        ["candidateIds"],
+      );
     case "planSync":
       return syncBodySchema;
     case "planProfileMutation":
@@ -1955,7 +1980,7 @@ const activityEventDefinitionSchema = objectSchema(
     id: nonEmptyStringSchema,
     time: nonEmptyStringSchema,
     actor: enumSchema(["you", "system"]),
-    action: enumSchema(["apply", "scan-import", "revert"]),
+    action: enumSchema(["apply", "inventory-import", "scan-import", "revert"]),
     scope: scopeSchema,
     projectDir: nonEmptyStringSchema,
     agents: stringArraySchema,
@@ -3028,6 +3053,24 @@ const inventoryRefreshDataSchema = objectSchema(
   },
   ["generatedAt", "candidates", "findings", "counts", "completeness"],
 );
+const inventoryStoreImportPlanDataSchema = objectSchema(
+  {
+    inventory: inventoryRefreshDataSchema,
+    candidateIds: stringArraySchema,
+    mutationPlan: mutationPlanSchema,
+  },
+  ["inventory", "candidateIds", "mutationPlan"],
+);
+const inventoryStoreImportApplyDataSchema = objectSchema(
+  {
+    mutationPlan: mutationPlanSchema,
+    candidateIds: stringArraySchema,
+    resourceIds: stringArraySchema,
+    operation: operationResultDataSchema,
+    warnings: stringArraySchema,
+  },
+  ["mutationPlan", "candidateIds", "resourceIds", "operation", "warnings"],
+);
 export type InventoryRefreshSchemaContract = AssertSchemaContract<
   ExactSchemaContract<typeof inventoryRefreshDataSchema, InventoryRefreshResult>
 >;
@@ -3213,6 +3256,10 @@ function successDataSchemaFor(operationId: string): ClientJsonSchema {
     case "refreshInventory":
     case "refreshInventoryByAgent":
       return inventoryRefreshDataSchema;
+    case "planInventoryStoreImport":
+      return inventoryStoreImportPlanDataSchema;
+    case "applyInventoryStoreImport":
+      return inventoryStoreImportApplyDataSchema;
     case "getDiff":
       return objectSchema(
         {

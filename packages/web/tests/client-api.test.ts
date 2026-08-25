@@ -145,6 +145,34 @@ describe("bundled versioned API client", () => {
     const applyInit = fetchMock.mock.calls[4]?.[1];
     expect(JSON.parse(String(applyInit?.body))).toEqual({ mutationPlan });
   });
+
+  it("passes the exact Inventory import receipt from plan to apply", async () => {
+    const mutationPlan = { schemaVersion: 1, planId: "inventory-import-plan" };
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(successResponse("req-bootstrap", { authenticated: true }))
+      .mockResolvedValueOnce(
+        successResponse("req-version", {
+          apiVersion: "1.0",
+          contractId: "cellarer-local-client-api-v1",
+        }),
+      )
+      .mockResolvedValueOnce(
+        successResponse("req-capabilities", {
+          apiVersion: "1.0",
+          contractId: "cellarer-local-client-api-v1",
+          operations: ["planInventoryStoreImport", "applyInventoryStoreImport"],
+        }),
+      )
+      .mockResolvedValueOnce(successResponse("req-plan", { mutationPlan }))
+      .mockResolvedValueOnce(successResponse("req-apply", { operation: { ok: true } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { applyPlannedInventoryStoreImport } = await import("../client/api.js");
+
+    await applyPlannedInventoryStoreImport({ candidateIds: ["candidate-exact"] });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[4]?.[1]?.body))).toEqual({ mutationPlan });
+  });
 });
 
 function successResponse(requestId: string, data: unknown): Response {

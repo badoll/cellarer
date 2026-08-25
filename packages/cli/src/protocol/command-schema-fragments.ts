@@ -877,7 +877,7 @@ const settingsNormalizedInputs = dataObject(
   },
 );
 function sealedMutationPlan(
-  operation: "apply" | "settings",
+  operation: "apply" | "settings" | "store-import",
   normalizedInputs: JsonSchema,
   actions: JsonSchema,
 ): JsonSchema {
@@ -918,6 +918,119 @@ const settingsMutationPlan = sealedMutationPlan(
   settingsNormalizedInputs,
   jsonSchema.array(typedMutationPlanAction("publish-file", publicationActionPayload, true)),
 );
+const inventoryImportDirectoryNode: JsonSchema = {
+  oneOf: [
+    dataObject(["path", "kind", "mode"], {
+      path: jsonSchema.string(),
+      kind: { const: "directory" },
+      mode: jsonSchema.integer(),
+    }),
+    dataObject(["path", "kind", "mode", "data", "digest"], {
+      path: jsonSchema.string(),
+      kind: { const: "file" },
+      mode: jsonSchema.integer(),
+      data: jsonSchema.string(),
+      digest: contentFingerprint,
+    }),
+  ],
+};
+const inventoryImportPublication: JsonSchema = {
+  oneOf: [
+    dataObject(["kind", "data", "mode", "fingerprint"], {
+      kind: { const: "file" },
+      data: jsonSchema.string(),
+      mode: jsonSchema.integer(),
+      fingerprint: contentFingerprint,
+    }),
+    dataObject(["kind", "nodes", "fingerprint"], {
+      kind: { const: "directory" },
+      nodes: jsonSchema.array(inventoryImportDirectoryNode),
+      fingerprint: contentFingerprint,
+    }),
+  ],
+};
+const inventoryImportSourceBinding = dataObject(["path", "fingerprint", "physicalIdentity"], {
+  path: jsonSchema.string({ minLength: 1 }),
+  fingerprint: contentFingerprint,
+  physicalIdentity: jsonSchema.string({ minLength: 1 }),
+});
+const inventoryImportContentPayload = dataObject(
+  ["candidateId", "resourceId", "publication", "provenance", "source"],
+  {
+    candidateId: jsonSchema.string({ minLength: 1 }),
+    resourceId: jsonSchema.string({ minLength: 1 }),
+    publication: inventoryImportPublication,
+    provenance: jsonSchema.array(inventorySource),
+    source: inventoryImportSourceBinding,
+  },
+);
+const inventoryImportMetadataPayload = dataObject(
+  ["candidateId", "resourceId", "sourceFingerprint", "data", "digest", "mode"],
+  {
+    candidateId: jsonSchema.string({ minLength: 1 }),
+    resourceId: jsonSchema.string({ minLength: 1 }),
+    sourceFingerprint: contentFingerprint,
+    data: jsonSchema.string(),
+    digest: contentFingerprint,
+    mode: { const: 0o600 },
+  },
+);
+const inventoryImportPreviousConfiguration: JsonSchema = {
+  oneOf: [
+    dataObject(["state"], { state: { const: "absent" } }),
+    dataObject(["state", "data", "digest", "mode"], {
+      state: { const: "present" },
+      data: jsonSchema.string(),
+      digest: contentFingerprint,
+      mode: jsonSchema.integer(),
+    }),
+  ],
+};
+const inventoryImportCollectionPayload = dataObject(
+  ["collectionId", "resourceIds", "data", "digest", "mode", "previous"],
+  {
+    collectionId: jsonSchema.string({ minLength: 1 }),
+    resourceIds: stringArray,
+    data: jsonSchema.string(),
+    digest: contentFingerprint,
+    mode: { const: 0o600 },
+    previous: inventoryImportPreviousConfiguration,
+  },
+);
+const inventoryImportAction: JsonSchema = {
+  oneOf: [
+    typedMutationPlanAction("inventory-resource-content", inventoryImportContentPayload, true),
+    typedMutationPlanAction("inventory-resource-metadata", inventoryImportMetadataPayload, true),
+    typedMutationPlanAction(
+      "inventory-collection-membership",
+      inventoryImportCollectionPayload,
+      true,
+    ),
+  ],
+};
+const nullableNonEmptyString: JsonSchema = { type: ["string", "null"], minLength: 1 };
+const inventoryImportNormalizedInputs = dataObject(
+  ["mutationKind", "candidateIds", "intoCollection", "refreshScope"],
+  {
+    mutationKind: { const: "inventory-store-import" },
+    candidateIds: stringArray,
+    intoCollection: nullableNonEmptyString,
+    refreshScope: dataObject(["agentId", "projectRoot"], {
+      agentId: nullableNonEmptyString,
+      projectRoot: nullableNonEmptyString,
+    }),
+  },
+);
+const inventoryImportMutationPlan = sealedMutationPlan(
+  "store-import",
+  inventoryImportNormalizedInputs,
+  jsonSchema.array(inventoryImportAction),
+);
+const inventoryImportPlanOutput = dataObject(["inventory", "candidateIds", "mutationPlan"], {
+  inventory: inventoryRefreshOutput,
+  candidateIds: stringArray,
+  mutationPlan: inventoryImportMutationPlan,
+});
 const applyMutationPlan: JsonSchema = { oneOf: [distributionMutationPlan, settingsMutationPlan] };
 const lockOwnerEvidence = dataObject(["operationId", "processId", "hostname", "acquiredAt"], {
   operationId: jsonSchema.string({ minLength: 1 }),
@@ -1010,6 +1123,16 @@ const presentedOperationResult = dataObject(["ok"], {
   receipt: operationReceipt,
   conflict: mutationConflict,
 });
+const inventoryImportApplyOutput = dataObject(
+  ["mutationPlan", "candidateIds", "resourceIds", "operation", "warnings"],
+  {
+    mutationPlan: inventoryImportMutationPlan,
+    candidateIds: stringArray,
+    resourceIds: stringArray,
+    operation: presentedOperationResult,
+    warnings: stringArray,
+  },
+);
 const mutationPresentation = dataObject(["planId", "planDigest", "operation", "baseRevision"], {
   planId: jsonSchema.string({ minLength: 1 }),
   planDigest: jsonSchema.string({ minLength: 1 }),
@@ -1728,6 +1851,9 @@ export const commandSchemaFragments = Object.freeze({
   exactResourceSelector,
   importedArtifact,
   inventoryRefreshOutput,
+  inventoryImportApplyOutput,
+  inventoryImportMutationPlan,
+  inventoryImportPlanOutput,
   inspectedAgent,
   joinList,
   jsonSchema,

@@ -188,6 +188,12 @@ export async function executeMutationPlan(
         }
         return;
       }
+      if (receipt.outcome === "compensated") {
+        const actual = await targetState(env, receipt.target);
+        if (!sameTargetState(receipt.before, actual) || !sameTargetState(receipt.after, actual)) {
+          throw new Error(`compensated action ${receipt.actionId} was not restored`);
+        }
+      }
       const nextAction: OperationJournalAction = {
         actionId: receipt.actionId,
         target: receipt.target,
@@ -249,6 +255,14 @@ export async function executeMutationPlan(
           .map((action) => action.actionId),
       ]),
     ];
+    if (
+      failedActionIds.length === 0 &&
+      journal.actions.some(
+        (action) => action.status === "succeeded" && action.receipt.outcome === "compensated",
+      )
+    ) {
+      throw new TypeError("compensated action receipts require a failed operation action");
+    }
     if (failedActionIds.length > 0) {
       const conflict = {
         code: "PARTIAL_FAILURE" as const,

@@ -12,6 +12,7 @@ import { observeAtStableStoreRevision } from "../protocol/store-revision.js";
 import { loadResourceRecord } from "../resources/model.js";
 import { captureSafeRecursiveSource } from "../secrets/safe-tree.js";
 import { sha256 } from "../store/checksum.js";
+import type { CellarerConfig } from "../store/config.js";
 import { observeStoreConfigSnapshot } from "../store/snapshot.js";
 import { listMcpArtifacts, listRuleArtifacts, listSkillArtifacts } from "../store/store.js";
 import {
@@ -22,11 +23,12 @@ import {
 } from "./enumerator.js";
 import { groupInventoryCandidates, inventoryFinding } from "./grouper.js";
 import {
-  inspectInventorySource,
+  inspectInventorySourceCaptured,
   normalizeInventoryName,
   normalizeRuleContent,
 } from "./inspector.js";
 import type {
+  CapturedInventoryCandidateObservation,
   InventoryCandidateObservation,
   InventorySourceFinding,
   ManagedInventoryRevision,
@@ -42,19 +44,35 @@ export interface InventoryRefreshOptions {
   readonly concurrency?: number;
 }
 
+export interface InventoryRefreshCapture {
+  readonly result: InventoryRefreshResult;
+  readonly candidates: readonly CapturedInventoryCandidateObservation[];
+  readonly canonicalStoreRoot?: string;
+  readonly storeRevision?: number;
+  readonly projectRoot?: string;
+  readonly configuration?: CellarerConfig;
+}
+
 export async function refreshInventory(
   env: Env,
   options: InventoryRefreshOptions,
 ): Promise<InventoryRefreshResult> {
+  return (await captureInventoryRefresh(env, options)).result;
+}
+
+export async function captureInventoryRefresh(
+  env: Env,
+  options: InventoryRefreshOptions,
+): Promise<InventoryRefreshCapture> {
   for (let attempt = 0; attempt < MAX_REFRESH_ATTEMPTS; attempt += 1) {
     let snapshotObservation: Awaited<ReturnType<typeof observeStoreConfigSnapshot>>;
     try {
       snapshotObservation = await observeStoreConfigSnapshot(env, options.storeRoot);
     } catch {
-      return failedResult(env, "STORE_PROJECTION_FAILED");
+      return failedCapture(env, "STORE_PROJECTION_FAILED");
     }
     if (!snapshotObservation.ok) {
-      return failedResult(
+      return failedCapture(
         env,
         snapshotObservation.error.code === "STALE_STORE_SNAPSHOT"
           ? "STORE_SNAPSHOT_STALE"
@@ -97,18 +115,26 @@ export async function refreshInventory(
         findings.push(inventoryFinding("STORE_PROJECTION_FAILED", "refresh"));
       }
 
-      return projectRefreshResult(
+      const result = projectRefreshResult(
         env,
         inspected.candidates,
         managed,
         findings,
         enumeration.sources.length,
       );
+      return Object.freeze({
+        result,
+        candidates: inspected.candidates,
+        canonicalStoreRoot: snapshot.canonicalStoreRoot,
+        storeRevision: snapshot.revision,
+        configuration: snapshot.configuration,
+        ...(enumeration.projectRoot ? { projectRoot: enumeration.projectRoot } : {}),
+      });
     } catch {
-      return failedResult(env, "STORE_PROJECTION_FAILED");
+      return failedCapture(env, "STORE_PROJECTION_FAILED");
     }
   }
-  return failedResult(env, "STORE_SNAPSHOT_STALE");
+  return failedCapture(env, "STORE_SNAPSHOT_STALE");
 }
 
 function projectRefreshResult(
@@ -145,7 +171,7 @@ async function inspectSources(
   getAdapter: (id: string) => AgentAdapter | undefined,
   concurrency: number,
 ): Promise<{
-  readonly candidates: readonly InventoryCandidateObservation[];
+  readonly candidates: readonly CapturedInventoryCandidateObservation[];
   readonly findings: readonly InventorySourceFinding[];
 }> {
   const work = new Map<string, InventorySource[]>();
@@ -164,10 +190,10 @@ async function inspectSources(
     async (source) => {
       const adapter = getAdapter(source.adapterId);
       if (!adapter) throw new Error("registered Inventory adapter disappeared");
-      return inspectInventorySource(env, source, adapter);
+      return inspectInventorySourceCaptured(env, source, adapter);
     },
   );
-  const candidates: InventoryCandidateObservation[] = [];
+  const candidates: CapturedInventoryCandidateObservation[] = [];
   const findings: InventorySourceFinding[] = [];
   for (const result of inspected) {
     const key = `${result.source.kind}\0${result.source.path}${
@@ -254,5 +280,12 @@ function failedResult(env: Env, code: InventoryFindingCode): InventoryRefreshRes
       failedSources: 0,
     }),
     completeness: "failed",
+  });
+}
+
+function failedCapture(env: Env, code: InventoryFindingCode): InventoryRefreshCapture {
+  return Object.freeze({
+    result: failedResult(env, code),
+    candidates: Object.freeze([]),
   });
 }

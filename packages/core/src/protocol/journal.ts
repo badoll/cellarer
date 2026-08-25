@@ -384,8 +384,9 @@ function assertOperationJournal(
         planned.postcondition !== undefined &&
         !sameTargetState(planned.postcondition, action.receipt.after) &&
         !(
-          journal.status === "completed" &&
-          journal.completedReceipt?.outcome === "compensated" &&
+          (journal.status === "executing" ||
+            (journal.status === "completed" &&
+              journal.completedReceipt?.outcome === "compensated")) &&
           action.receipt.outcome === "compensated" &&
           sameTargetState(action.receipt.before, action.receipt.after)
         )

@@ -1453,8 +1453,8 @@ describe("portable DTO runtime exactness mutations", () => {
       "src/protocol/client-types.ts",
       (source: string) =>
         source.replace(
-          'export type ActivityAction = "apply" | "scan-import" | "revert";',
-          'export type ActivityAction = "apply" | "scan-import" | "revert" | "sync";',
+          'export type ActivityAction = "apply" | "inventory-import" | "scan-import" | "revert";',
+          'export type ActivityAction = "apply" | "inventory-import" | "scan-import" | "revert" | "sync";',
         ),
       /ExactContract<z\.output<typeof activityEventSchema>, ActivityEvent>/u,
     ],
@@ -1463,7 +1463,7 @@ describe("portable DTO runtime exactness mutations", () => {
       "src/protocol/client-types.ts",
       (source: string) =>
         source.replace(
-          'export type ActivityAction = "apply" | "scan-import" | "revert";',
+          'export type ActivityAction = "apply" | "inventory-import" | "scan-import" | "revert";',
           'export type ActivityAction = "apply" | "scan-import";',
         ),
       /ExactContract<z\.output<typeof activityEventSchema>, ActivityEvent>/u,

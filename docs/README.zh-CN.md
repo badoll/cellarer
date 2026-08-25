@@ -184,12 +184,22 @@ cellarer add vercel-labs/skills --skill nextjs --collection public
 cellarer ls --collection default
 cellarer inventory refresh
 cellarer inventory refresh --agent codex --dir "$PWD"
+cellarer --output json inventory import plan \
+  --candidate '<candidate-id>' --agent codex --dir "$PWD"
+cellarer inventory import apply --plan '<plan 返回的 mutationPlan JSON>'
 cellarer resource list --kind skills
 cellarer resource show skills/nextjs
 ```
 
 本地 `.md` 文件作为 rules，`.json` 文件作为 MCP resources，符合要求的目录作为 skills。
 远程 skill 支持 GitHub owner/repository 来源与 repository tree URL，并保留 provenance。
+
+`inventory import plan` 至少需要一个精确 candidate ID；它不会推断选择，也不会在
+non-interactive mode 下提示。结果把当前 source evidence 与 Store revision 绑定进
+authority-sealed、可跨进程使用的 `mutationPlan`。`inventory import apply` 只接收该 plan，
+重新验证绑定，并发布一个 Store revision。两个命令都不会写入 agent target。规划时可用
+`--into-collection <id>`，在同一个 Store operation 中把全部导入资源加入一个现有
+collection。
 
 只在需要时使用 resource lifecycle：
 
@@ -492,6 +502,8 @@ GET /api/v1/readiness
 GET /api/v1/openapi.json
 GET /api/v1/inventory?dir=/absolute/project
 GET /api/v1/inventory/{agentId}?dir=/absolute/project
+POST /api/v1/inventory/import/plan
+POST /api/v1/inventory/import/apply
 ```
 
 所有 JSON operation 返回包含 request ID、status、warnings，以及 data 或 typed error 的
@@ -505,6 +517,10 @@ query token 或 unauthenticated fallback。随包 React client 使用同一个 t
 两个 Inventory route 都返回 browser-safe Core Inventory DTO。完整 route 刷新所有已注册的
 有界来源，targeted route 接收一个精确的已注册 adapter ID。来源失败会作为成功 transport
 envelope 内的 typed partial 或 failed 结果保留，而不会转换为原始 exception。
+
+Inventory import plan route 接收 `candidateIds`，以及可选的 `agentId`、`dir` 和
+`intoCollection`。Apply route 只接收规划返回且未经修改的 `mutationPlan`。随包 client 在
+两个 route 之间传递该精确 plan，不会重新 refresh、重新选择或重建 action。
 
 ## 自定义 Adapter
 
