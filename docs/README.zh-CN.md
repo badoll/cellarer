@@ -550,6 +550,15 @@ cellarer agent update my-agent \
 cellarer agent remove my-agent
 ```
 
+Custom Agent add 或 update（包括随包 UI 的 upsert）一旦提交，即使随后唯一一次 targeted
+Inventory refresh 为 partial 或 failed，Store mutation 仍然成功。CLI、本地 API 与 Agents
+UI 会把 refresh 作为独立结果展示，不会 rollback、自动 retry 或 import。修复所报告的
+source 问题后，显式重试：
+
+```bash
+cellarer inventory refresh --agent <id>
+```
+
 内置 patch 位于 `adapterOverrides`，新 agent 位于 `customAdapters`。Custom adapter 至少
 声明 rules、MCP、skills 中一项，也可以显式声明 detect path。省略时，project scope 直接
 使用 project root；global scope 使用第一个已声明 rules、MCP 或 skills path 的父目录。

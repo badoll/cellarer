@@ -1,4 +1,8 @@
-import type { ControlPlaneAgentDto, ControlPlaneAgentListDto } from "@cellarer/core/client-api";
+import type {
+  ControlPlaneAgentDto,
+  ControlPlaneAgentListDto,
+  PostCommitInventoryRefresh,
+} from "@cellarer/core/client-api";
 import { useEffect, useState } from "react";
 import { apiFetch, applyPlannedControlPlaneMutation } from "./api.js";
 import { readApiJson } from "./api-state.js";
@@ -48,6 +52,8 @@ export function AgentsPage() {
   const [pendingAgentId, setPendingAgentId] = useState<string | null>(null);
   const [adapterForm, setAdapterForm] = useState<AdapterFormState>(EMPTY_ADAPTER_FORM);
   const [adapterPending, setAdapterPending] = useState(false);
+  const [postCommitInventoryRefresh, setPostCommitInventoryRefresh] =
+    useState<PostCommitInventoryRefresh | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function load() {
@@ -71,6 +77,7 @@ export function AgentsPage() {
   async function setEnabled(agentId: string, enabled: boolean) {
     setPendingAgentId(agentId);
     setError(null);
+    setPostCommitInventoryRefresh(null);
     try {
       await applyPlannedControlPlaneMutation("/api/v1/agents/plan", {
         action: "set-enabled",
@@ -92,13 +99,15 @@ export function AgentsPage() {
     if (!adapterId) return;
     setAdapterPending(true);
     setError(null);
+    setPostCommitInventoryRefresh(null);
     try {
-      await applyPlannedControlPlaneMutation("/api/v1/agents/plan", {
+      const applied = await applyPlannedControlPlaneMutation("/api/v1/agents/plan", {
         action: "upsert-adapter",
         agentId: adapterId,
         kind: adapterForm.adapterKind,
         adapter: adapterPatch(adapterForm, adapterForm.adapterKind === "builtin"),
       });
+      setPostCommitInventoryRefresh(applied.postCommitInventoryRefresh ?? null);
       setAdapterForm(EMPTY_ADAPTER_FORM);
       await load();
     } catch (err) {
@@ -113,6 +122,7 @@ export function AgentsPage() {
     if (!adapterId) return;
     setAdapterPending(true);
     setError(null);
+    setPostCommitInventoryRefresh(null);
     try {
       await applyPlannedControlPlaneMutation("/api/v1/agents/plan", {
         action: "remove-adapter",
@@ -278,6 +288,9 @@ export function AgentsPage() {
             Delete custom adapter
           </button>
         </div>
+        {postCommitInventoryRefresh && (
+          <PostCommitInventoryNotice refresh={postCommitInventoryRefresh} />
+        )}
       </section>
 
       {warnings.length > 0 && (
@@ -298,6 +311,26 @@ export function AgentsPage() {
   ) {
     setAdapterForm((current) => ({ ...current, [field]: value }));
   }
+}
+
+export function PostCommitInventoryNotice({
+  refresh,
+}: {
+  readonly refresh: PostCommitInventoryRefresh;
+}) {
+  return (
+    <section className={`inventory-refresh-notice ${refresh.status}`}>
+      <strong>Adapter mutation committed</strong>
+      <p>
+        Inventory refresh {refresh.status} for <code>{refresh.agentId}</code>.
+      </p>
+      {refresh.status !== "complete" && (
+        <p>
+          Retry manually: <code>{refresh.retryCommand}</code>
+        </p>
+      )}
+    </section>
+  );
 }
 
 function capabilityTags(agent: AgentInfo) {

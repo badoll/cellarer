@@ -368,6 +368,19 @@ function presentMutation(outcome: CliCommandOutcome<PlannedControlPlaneMutationD
   } else {
     output.log("dry-run: no changes applied");
   }
+  if (outcome.data.postCommitInventoryRefresh) {
+    presentPostCommitInventoryRefresh(outcome.data.postCommitInventoryRefresh, output);
+  }
+}
+
+export function presentPostCommitInventoryRefresh(
+  refresh: NonNullable<PlannedControlPlaneMutationDto["postCommitInventoryRefresh"]>,
+  output: Pick<Console, "log"> = createSafeConsole(refresh),
+): void {
+  output.log(
+    `inventory refresh ${refresh.status} for ${refresh.agentId}: ${refresh.inventory.counts.total} candidates, ${refresh.inventory.findings.length} findings`,
+  );
+  if (refresh.status !== "complete") output.log(`Retry: ${refresh.retryCommand}`);
 }
 
 function parseAdapterPatch(

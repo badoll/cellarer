@@ -29,6 +29,7 @@ export type {
   InventoryRelatedAdapter,
   InventorySourceProvenance,
   MutationPlan,
+  PostCommitInventoryRefresh,
   ResourceCatalogItem,
   ResourceCatalogResult,
   ResourceState,

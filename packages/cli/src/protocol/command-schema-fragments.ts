@@ -169,6 +169,40 @@ const inventoryRefreshOutput = dataObject(
     completeness: jsonSchema.enumeration(["complete", "partial", "failed"]),
   },
 );
+const inventoryRefreshWithCompleteness = (
+  completeness: "complete" | "partial" | "failed",
+): JsonSchema => ({
+  ...inventoryRefreshOutput,
+  properties: {
+    ...(inventoryRefreshOutput.properties ?? {}),
+    completeness: { const: completeness },
+  },
+});
+const postCommitInventoryRetryCommand = jsonSchema.string({
+  minLength: 1,
+  pattern: `^cellarer inventory refresh --agent ${AGENT_ID_PATTERN.slice(1, -1)}$`,
+});
+const postCommitInventoryRefresh: JsonSchema = {
+  oneOf: [
+    dataObject(["agentId", "status", "inventory"], {
+      agentId,
+      status: { const: "complete" },
+      inventory: inventoryRefreshWithCompleteness("complete"),
+    }),
+    dataObject(["agentId", "status", "inventory", "retryCommand"], {
+      agentId,
+      status: { const: "partial" },
+      inventory: inventoryRefreshWithCompleteness("partial"),
+      retryCommand: postCommitInventoryRetryCommand,
+    }),
+    dataObject(["agentId", "status", "inventory", "retryCommand"], {
+      agentId,
+      status: { const: "failed" },
+      inventory: inventoryRefreshWithCompleteness("failed"),
+      retryCommand: postCommitInventoryRetryCommand,
+    }),
+  ],
+};
 const adapterRules = dataObject([], {
   global: jsonSchema.string({ minLength: 1 }),
   project: jsonSchema.string({ minLength: 1 }),
@@ -1228,6 +1262,7 @@ const settingsApplyOutput = dataObject(["plan", "changedFields", "mutation"], {
   changedFields: stringArray,
   mutation: mutationPresentation,
   receipt: controlPlaneOperationReceipt,
+  postCommitInventoryRefresh,
 });
 const mutationRecoveryDiagnosis = dataObject(["status"], {
   status: jsonSchema.enumeration([
@@ -1479,6 +1514,10 @@ const plannedMutationOutput = dataObject(["plan", "changedFields"], {
   plan: settingsMutationPlan,
   changedFields: stringArray,
   receipt: controlPlaneOperationReceipt,
+});
+const customAdapterMutationOutput = dataObject(["plan", "changedFields"], {
+  ...(plannedMutationOutput.properties ?? {}),
+  postCommitInventoryRefresh,
 });
 const importedArtifact = dataObject(["kind", "name", "path"], {
   kind: jsonSchema.enumeration(["rules", "mcp", "skills"]),
@@ -1839,6 +1878,7 @@ export const commandSchemaFragments = Object.freeze({
   controlPlaneScopeBindings,
   controlPlaneScopeInput,
   controlPlaneScopeProperties,
+  customAdapterMutationOutput,
   dataObject,
   destination,
   diagnosticCheck,

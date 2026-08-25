@@ -79,6 +79,12 @@ node packages/cli/dist/bin.js inventory refresh --agent codex
 Inventory reports safe candidates, provenance, findings, Store matches, counts,
 and completeness; it does not import or write agent targets.
 
+After a Custom Agent definition is committed by add or update, cellarer makes
+one targeted Inventory refresh attempt. A partial or failed refresh is reported
+separately and does not undo the committed mutation. Retry it explicitly with
+`cellarer inventory refresh --agent <id>`; clients do not retry or import
+automatically.
+
 To import reviewed candidates into the Store, plan with their exact IDs and then
 apply the unchanged `mutationPlan` returned by that command. Import never
 distributes resources to agent targets:

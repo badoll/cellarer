@@ -6,7 +6,7 @@ import { validateControlPlaneConfig } from "@cellarer/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RegisteredCommand } from "../src/protocol/command-registry.js";
 import { validateJsonSchema } from "../src/protocol/input.js";
-import type { JsonSchema } from "../src/protocol/schemas.js";
+import { assertClosedJsonSchema, type JsonSchema } from "../src/protocol/schemas.js";
 
 const authorityCredentials = vi.hoisted(() => new Map<string, string>());
 const startServer = vi.hoisted(() =>
@@ -448,6 +448,59 @@ describe("CLI command registry protocol conformance", () => {
         );
       }
     }
+  });
+
+  it("publishes a closed post-commit Inventory union only on relevant mutation results", () => {
+    const definitions = Object.fromEntries(
+      ["agent.add", "agent.update", "agent.remove", "agent.enable", "apply"].map((command) => [
+        command,
+        commandRegistry.find((candidate) => candidate.command === command),
+      ]),
+    );
+    for (const definition of Object.values(definitions)) {
+      if (!definition) throw new Error("expected mutation command definition");
+      expect(() => assertClosedJsonSchema(definition.outputSchema)).not.toThrow();
+    }
+
+    const addRefresh =
+      definitions["agent.add"]?.outputSchema.properties?.data?.properties
+        ?.postCommitInventoryRefresh;
+    const updateRefresh =
+      definitions["agent.update"]?.outputSchema.properties?.data?.properties
+        ?.postCommitInventoryRefresh;
+    expect(addRefresh).toEqual(updateRefresh);
+    expect(addRefresh?.oneOf).toHaveLength(3);
+    expect(addRefresh?.oneOf?.map((variant) => variant.additionalProperties)).toEqual([
+      false,
+      false,
+      false,
+    ]);
+    expect(addRefresh?.oneOf?.map((variant) => variant.properties?.status?.const)).toEqual([
+      "complete",
+      "partial",
+      "failed",
+    ]);
+    expect(addRefresh?.oneOf?.slice(1).map((variant) => variant.required)).toEqual([
+      ["agentId", "status", "inventory", "retryCommand"],
+      ["agentId", "status", "inventory", "retryCommand"],
+    ]);
+    expect(addRefresh?.oneOf?.[1]?.properties?.retryCommand).toMatchObject({
+      type: "string",
+      pattern: expect.stringMatching(/^\^cellarer inventory refresh --agent /),
+    });
+
+    expect(
+      definitions["agent.remove"]?.outputSchema.properties?.data?.properties,
+    ).not.toHaveProperty("postCommitInventoryRefresh");
+    expect(
+      definitions["agent.enable"]?.outputSchema.properties?.data?.properties,
+    ).not.toHaveProperty("postCommitInventoryRefresh");
+    const applyBranches = definitions.apply?.outputSchema.properties?.data?.oneOf ?? [];
+    expect(
+      applyBranches.some((branch) =>
+        Object.hasOwn(branch.properties ?? {}, "postCommitInventoryRefresh"),
+      ),
+    ).toBe(true);
   });
 
   it.each([

@@ -109,6 +109,81 @@ describe("versioned HTTP mutation journeys", () => {
     });
   });
 
+  it("returns complete, partial, and failed post-commit Inventory without changing mutation success", async () => {
+    const canary = "ghp_web_post_commit_secret_1234567890";
+    env.env = { WEB_POST_COMMIT_TOKEN: canary };
+    app = createApp({ env, storeRoot, auth: { mode: "trusted-embedded" } });
+
+    await env.fs.mkdir(join(root, "home", ".complete-web"), { recursive: true });
+    await env.fs.writeFile(
+      join(root, "home", ".complete-web", "RULES.md"),
+      `Use $${"{WEB_POST_COMMIT_TOKEN}"} by reference only.\n`,
+    );
+    const complete = await upsertCustomAdapter("complete-web", {
+      rules: { global: "~/.complete-web/RULES.md" },
+    });
+    expect(complete).toMatchObject({
+      status: "success",
+      data: {
+        operation: { ok: true, receipt: { outcome: "committed" } },
+        postCommitInventoryRefresh: {
+          agentId: "complete-web",
+          status: "complete",
+          inventory: { completeness: "complete" },
+        },
+      },
+    });
+
+    const externalSkill = join(root, "external-web-skill");
+    await env.fs.mkdir(join(root, "home", ".partial-web", "skills"), { recursive: true });
+    await env.fs.mkdir(externalSkill, { recursive: true });
+    await env.fs.writeFile(join(root, "home", ".partial-web", "RULES.md"), "# Safe\n");
+    await env.fs.writeFile(join(externalSkill, "SKILL.md"), "# External\n");
+    await env.fs.symlink(
+      externalSkill,
+      join(root, "home", ".partial-web", "skills", "linked"),
+      "dir",
+    );
+    const partial = await upsertCustomAdapter("partial-web", {
+      rules: { global: "~/.partial-web/RULES.md" },
+      skills: { global: "~/.partial-web/skills" },
+    });
+    expect(partial).toMatchObject({
+      status: "success",
+      data: {
+        operation: { ok: true, receipt: { outcome: "committed" } },
+        postCommitInventoryRefresh: {
+          agentId: "partial-web",
+          status: "partial",
+          retryCommand: "cellarer inventory refresh --agent partial-web",
+          inventory: { completeness: "partial", findings: [{ code: "UNSAFE_LINK" }] },
+        },
+      },
+    });
+
+    const externalRules = join(root, "external-web-rules.md");
+    await env.fs.mkdir(join(root, "home", ".failed-web"), { recursive: true });
+    await env.fs.writeFile(externalRules, "# External\n");
+    await env.fs.symlink(externalRules, join(root, "home", ".failed-web", "RULES.md"), "file");
+    const failed = await upsertCustomAdapter("failed-web", {
+      rules: { global: "~/.failed-web/RULES.md" },
+    });
+    expect(failed).toMatchObject({
+      status: "success",
+      data: {
+        operation: { ok: true, receipt: { outcome: "committed" } },
+        postCommitInventoryRefresh: {
+          agentId: "failed-web",
+          status: "failed",
+          retryCommand: "cellarer inventory refresh --agent failed-web",
+          inventory: { completeness: "failed", candidates: [] },
+        },
+      },
+    });
+
+    expect(JSON.stringify([complete, partial, failed])).not.toContain(canary);
+  }, 30_000);
+
   it("rejects a changed seal-bound field as a typed invalid plan", async () => {
     const planned = await planCollection("altered");
     const changed = JSON.parse(JSON.stringify(planned.plan)) as MutationPlan & {
@@ -487,6 +562,23 @@ describe("versioned HTTP mutation journeys", () => {
     const body = (await response.json()) as SuccessEnvelope<{ readonly plan: MutationPlan }>;
     expect(response.status, JSON.stringify(body)).toBe(200);
     return body.data;
+  }
+
+  async function upsertCustomAdapter(
+    agentId: string,
+    adapter: Readonly<Record<string, unknown>>,
+  ): Promise<Record<string, unknown>> {
+    const planned = await post("/api/v1/agents/plan", {
+      action: "upsert-adapter",
+      agentId,
+      kind: "custom",
+      adapter,
+    });
+    expect(planned.status, await planned.clone().text()).toBe(200);
+    const body = (await planned.json()) as SuccessEnvelope<{ readonly plan: MutationPlan }>;
+    const applied = await post("/api/v1/mutations/apply", { mutationPlan: body.data.plan });
+    expect(applied.status, await applied.clone().text()).toBe(200);
+    return (await applied.json()) as Record<string, unknown>;
   }
 
   async function post(path: string, body: unknown): Promise<Response> {

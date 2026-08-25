@@ -1727,17 +1727,6 @@ const plannedControlPlaneMutationDataSchema = objectSchema(
   ["plan", "changedFields"],
 );
 
-const appliedControlPlaneMutationDataSchema = objectSchema(
-  {
-    plan: mutationPlanSchema,
-    changedFields: stringArraySchema,
-    operation: operationResultDataSchema,
-    mutation: mutationPresentationDataSchema,
-    receipt: operationReceiptDataSchema,
-  },
-  ["plan", "changedFields", "operation", "mutation"],
-);
-
 const applyMutationDataSchema = objectSchema(
   {
     plan: distributePlanDataSchema,
@@ -3053,6 +3042,63 @@ const inventoryRefreshDataSchema = objectSchema(
     completeness: enumSchema(["complete", "partial", "failed"]),
   },
   ["generatedAt", "candidates", "findings", "counts", "completeness"],
+);
+const inventoryRefreshWithCompletenessSchema = <
+  const Completeness extends "complete" | "partial" | "failed",
+>(
+  completeness: Completeness,
+) =>
+  objectSchema(
+    {
+      ...(inventoryRefreshDataSchema.properties ?? {}),
+      completeness: { const: completeness },
+    },
+    ["generatedAt", "candidates", "findings", "counts", "completeness"],
+  );
+const postCommitInventoryRetryCommandSchema = stringSchema({
+  minLength: 1,
+  pattern: `^cellarer inventory refresh --agent ${AGENT_ID_PATTERN.slice(1, -1)}$`,
+});
+const postCommitInventoryRefreshDataSchema = {
+  oneOf: [
+    objectSchema(
+      {
+        agentId: agentIdSchema,
+        status: { const: "complete" },
+        inventory: inventoryRefreshWithCompletenessSchema("complete"),
+      },
+      ["agentId", "status", "inventory"],
+    ),
+    objectSchema(
+      {
+        agentId: agentIdSchema,
+        status: { const: "partial" },
+        inventory: inventoryRefreshWithCompletenessSchema("partial"),
+        retryCommand: postCommitInventoryRetryCommandSchema,
+      },
+      ["agentId", "status", "inventory", "retryCommand"],
+    ),
+    objectSchema(
+      {
+        agentId: agentIdSchema,
+        status: { const: "failed" },
+        inventory: inventoryRefreshWithCompletenessSchema("failed"),
+        retryCommand: postCommitInventoryRetryCommandSchema,
+      },
+      ["agentId", "status", "inventory", "retryCommand"],
+    ),
+  ],
+} as const satisfies ClientJsonSchema;
+const appliedControlPlaneMutationDataSchema = objectSchema(
+  {
+    plan: mutationPlanSchema,
+    changedFields: stringArraySchema,
+    operation: operationResultDataSchema,
+    mutation: mutationPresentationDataSchema,
+    receipt: operationReceiptDataSchema,
+    postCommitInventoryRefresh: postCommitInventoryRefreshDataSchema,
+  },
+  ["plan", "changedFields", "operation", "mutation"],
 );
 const inventoryStoreImportPlanDataSchema = objectSchema(
   {

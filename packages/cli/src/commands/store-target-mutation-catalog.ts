@@ -153,6 +153,8 @@ export function createStoreTargetMutationDomain(): CommandDomain {
           { agentId: s.agentId, adapter: s.adapterBody },
           ["agentId", "adapter"],
           [s.positional("agentId", 0), s.option("adapter")],
+          [],
+          s.customAdapterMutationOutput,
         ),
         "add",
       ),
@@ -163,6 +165,8 @@ export function createStoreTargetMutationDomain(): CommandDomain {
           { agentId: s.agentId, adapter: s.adapterBody },
           ["agentId", "adapter"],
           [s.positional("agentId", 0), s.option("adapter")],
+          [],
+          s.customAdapterMutationOutput,
         ),
         "update",
       ),
@@ -273,6 +277,7 @@ function mutationMetadata<TCommand extends string>(
   required: readonly string[],
   bindings: readonly CommandInputBinding[],
   requiredFeatures: readonly string[] = [],
+  output: JsonSchema = s.plannedMutationOutput,
 ) {
   return defineContractMetadata({
     command,
@@ -281,6 +286,6 @@ function mutationMetadata<TCommand extends string>(
     requiredFeatures: ["mutation-authority", "plan-apply", ...new Set(requiredFeatures)],
     input: s.jsonSchema.object({ ...properties, dryRun: s.jsonSchema.boolean() }, required),
     bindings: [...bindings, s.option("dryRun")],
-    output: s.plannedMutationOutput,
+    output,
   });
 }

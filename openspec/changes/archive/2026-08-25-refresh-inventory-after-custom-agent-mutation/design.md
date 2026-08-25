@@ -32,6 +32,8 @@ The targeted adapter ID is taken from the committed mutation result rather than 
 
 The refresh projection distinguishes complete, partial, and failed outcomes. Partial preserves safe candidates, findings, and completeness. Failed preserves a typed redacted reason and the exact retry command. Expected refresh outcomes do not replace the committed mutation result with an exception or mutation failure.
 
+The existing planned/applied control-plane mutation DTOs gain an optional `postCommitInventoryRefresh` field emitted only after a committed Custom Agent add, update, or equivalent custom upsert. The field is a closed union with the committed `agentId`, a `status` equal to the shared Inventory result completeness, and the unchanged browser-safe `inventory` DTO. `partial` and `failed` variants additionally require `retryCommand`; the `complete` variant does not expose retry guidance. Dry-run plans, Custom Agent removal, and built-in mutations retain their existing shapes without this field.
+
 Unexpected defects still cross the normal redacted internal-error boundary; clients MUST NOT convert them into a fabricated successful refresh.
 
 ### No automatic retry or import
@@ -57,7 +59,7 @@ The composition performs one targeted refresh attempt. Recovery is an explicit `
 
 ## Migration Plan
 
-1. Wait for the command catalog, unified Inventory, and Inventory-first onboarding dependencies to close; refresh this contract against their accepted types and paths.
+1. Wait for the command catalog, unified Inventory, and Inventory-first onboarding dependencies to close; refresh this contract against `control-plane-mutations.ts`, the browser-safe client DTO barrel, the aggregate CLI mutation catalog/schema, generic sealed-plan apply, and the `/api/v1/mutations/apply` result.
 2. Add Core RED tests for committed add/update with complete, partial, and failed targeted refresh outcomes.
 3. Implement the shared Core composition and public result type without changing the mutation plan or receipt.
 4. Project the result through CLI and `/api/v1`, then update the bundled Agents UI and public guidance.

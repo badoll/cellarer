@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRealEnv, type Env, initializeStore } from "@cellarer/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { CLIENT_API_ROUTES } from "../src/api-contract.js";
 import { createApp } from "../src/app.js";
 import { deterministicMutationAuthority } from "./helpers/mutation-authority.js";
 
@@ -185,6 +186,39 @@ describe("local client API contract", () => {
         },
       },
     });
+  });
+
+  it("publishes a closed post-commit Inventory union for control-plane mutation apply", () => {
+    const applyRoute = CLIENT_API_ROUTES.find(
+      ({ operationId }) => operationId === "applyControlPlaneMutation",
+    );
+    const refresh =
+      applyRoute?.outputSchema.oneOf?.[0]?.properties?.data?.properties?.postCommitInventoryRefresh;
+
+    expect(refresh?.oneOf).toHaveLength(3);
+    expect(refresh?.oneOf?.map((variant) => variant.additionalProperties)).toEqual([
+      false,
+      false,
+      false,
+    ]);
+    expect(refresh?.oneOf?.map((variant) => variant.properties?.status?.const)).toEqual([
+      "complete",
+      "partial",
+      "failed",
+    ]);
+    expect(
+      refresh?.oneOf?.map((variant) => variant.properties?.inventory?.properties?.completeness),
+    ).toEqual([{ const: "complete" }, { const: "partial" }, { const: "failed" }]);
+    expect(refresh?.oneOf?.slice(1).map((variant) => variant.properties?.retryCommand)).toEqual([
+      expect.objectContaining({
+        type: "string",
+        pattern: expect.stringMatching(/^\^cellarer inventory refresh --agent /),
+      }),
+      expect.objectContaining({
+        type: "string",
+        pattern: expect.stringMatching(/^\^cellarer inventory refresh --agent /),
+      }),
+    ]);
   });
 
   it("returns a fixed internal error instead of the thrown diagnostic", async () => {

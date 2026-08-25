@@ -19,6 +19,7 @@ import { sha256 } from "../src/store/checksum.js";
 import { saveLedger } from "../src/store/ledger.js";
 import { initStore, writeRuleArtifact } from "../src/store/store.js";
 import { ensureBaseDirs, FIXED_NOW, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
+import { deterministicMutationAuthority } from "./helpers/mutation-authority.js";
 
 describe("planned control-plane mutations", () => {
   let t: TmpEnv;
@@ -163,6 +164,221 @@ describe("planned control-plane mutations", () => {
       collections: { roundtrip: {} },
       artifacts: { "rules/roundtrip": { collections: ["roundtrip"] } },
     });
+  });
+
+  it("returns complete targeted Inventory for the exact committed Custom Agent definition", async () => {
+    const oldRules = t.path("home", ".targeted-old", "RULES.md");
+    const newRules = t.path("home", ".targeted-new", "RULES.md");
+    await t.env.fs.mkdir(t.path("home", ".targeted-old"), { recursive: true });
+    await t.env.fs.mkdir(t.path("home", ".targeted-new"), { recursive: true });
+    await t.env.fs.writeFile(oldRules, "# Old targeted rules\n");
+    await t.env.fs.writeFile(newRules, "# New targeted rules\n");
+
+    const added = await mutateCustomAdapter(t.env, {
+      storeRoot,
+      action: "add",
+      agentId: "targeted-agent",
+      adapter: { rules: { global: "~/.targeted-old/RULES.md" } },
+    });
+
+    expect(added).toMatchObject({
+      receipt: { outcome: "committed", resultingRevision: 1 },
+      postCommitInventoryRefresh: {
+        agentId: "targeted-agent",
+        status: "complete",
+        inventory: {
+          completeness: "complete",
+          candidates: [
+            {
+              name: "RULES",
+              relatedAdapters: [{ id: "targeted-agent" }],
+              sources: [{ location: "~/.targeted-old/RULES.md" }],
+            },
+          ],
+        },
+      },
+    });
+    expect(added.postCommitInventoryRefresh?.retryCommand).toBeUndefined();
+
+    const planned = await mutateCustomAdapter(t.env, {
+      storeRoot,
+      action: "update",
+      agentId: "targeted-agent",
+      adapter: { rules: { global: "~/.targeted-new/RULES.md" } },
+      dryRun: true,
+    });
+    expect(planned.postCommitInventoryRefresh).toBeUndefined();
+
+    const updated = await applyControlPlaneMutationPlan(t.env, planned.plan, { storeRoot });
+    expect(updated).toMatchObject({
+      operation: { ok: true, receipt: { outcome: "committed", resultingRevision: 2 } },
+      postCommitInventoryRefresh: {
+        agentId: "targeted-agent",
+        status: "complete",
+        inventory: {
+          completeness: "complete",
+          candidates: [{ sources: [{ location: "~/.targeted-new/RULES.md" }] }],
+        },
+      },
+    });
+    expect(
+      updated.postCommitInventoryRefresh?.inventory.candidates.some((candidate) =>
+        candidate.sources.some((source) => source.location.includes("targeted-old")),
+      ),
+    ).toBe(false);
+  });
+
+  it("preserves committed mutation truth for partial and failed post-commit Inventory", async () => {
+    const safeRules = t.path("home", ".partial-agent", "RULES.md");
+    const unsafeSkills = t.path("home", ".partial-agent", "skills");
+    const externalSkill = t.path("external", "linked-skill");
+    await t.env.fs.mkdir(t.path("home", ".partial-agent"), { recursive: true });
+    await t.env.fs.mkdir(unsafeSkills, { recursive: true });
+    await t.env.fs.mkdir(externalSkill, { recursive: true });
+    await t.env.fs.writeFile(safeRules, "# Safe partial rules\n");
+    await t.env.fs.writeFile(t.path("external", "linked-skill", "SKILL.md"), "# External\n");
+    await t.env.fs.symlink(
+      externalSkill,
+      t.path("home", ".partial-agent", "skills", "linked"),
+      "dir",
+    );
+
+    const partial = await mutateCustomAdapter(t.env, {
+      storeRoot,
+      action: "add",
+      agentId: "partial-agent",
+      adapter: {
+        rules: { global: "~/.partial-agent/RULES.md" },
+        skills: { global: "~/.partial-agent/skills" },
+      },
+    });
+    expect(partial).toMatchObject({
+      receipt: { outcome: "committed", resultingRevision: 1 },
+      postCommitInventoryRefresh: {
+        agentId: "partial-agent",
+        status: "partial",
+        retryCommand: "cellarer inventory refresh --agent partial-agent",
+        inventory: {
+          completeness: "partial",
+          candidates: [{ name: "RULES" }],
+          findings: [{ code: "UNSAFE_LINK" }],
+        },
+      },
+    });
+
+    const externalRules = t.path("external", "failed-rules.md");
+    await t.env.fs.writeFile(externalRules, "# External failed rules\n");
+    await t.env.fs.mkdir(t.path("home", ".failed-agent"), { recursive: true });
+    await t.env.fs.symlink(externalRules, t.path("home", ".failed-agent", "RULES.md"), "file");
+    const failed = await mutateCustomAdapter(t.env, {
+      storeRoot,
+      action: "add",
+      agentId: "failed-agent",
+      adapter: { rules: { global: "~/.failed-agent/RULES.md" } },
+    });
+    expect(failed).toMatchObject({
+      receipt: { outcome: "committed", resultingRevision: 2 },
+      postCommitInventoryRefresh: {
+        agentId: "failed-agent",
+        status: "failed",
+        retryCommand: "cellarer inventory refresh --agent failed-agent",
+        inventory: {
+          completeness: "failed",
+          candidates: [],
+          findings: [{ code: "UNSAFE_LINK" }],
+        },
+      },
+    });
+    await expect(loadConfig(t.env, storeRoot)).resolves.toMatchObject({
+      customAdapters: {
+        "partial-agent": expect.any(Object),
+        "failed-agent": expect.any(Object),
+      },
+    });
+  });
+
+  it("runs targeted Inventory without later mutation or secret-provider authority", async () => {
+    const rulesPath = t.path("home", ".providerless-agent", "RULES.md");
+    await t.env.fs.mkdir(t.path("home", ".providerless-agent"), { recursive: true });
+    await t.env.fs.writeFile(rulesPath, `Use the reference \${OPENAI_TOKEN}, never its value.\n`);
+    let current = true;
+    let releasedLeases = 0;
+    let providerCalls = 0;
+    const guardedEnv = {
+      ...t.env,
+      mutationAuthority: deterministicMutationAuthority({
+        isCurrent: async () => current,
+        onReleaseLease: () => {
+          releasedLeases += 1;
+          if (releasedLeases >= 2) current = false;
+        },
+      }),
+      secretStore: {
+        get: async () => {
+          providerCalls += 1;
+          throw new Error("secret provider must not be used by targeted Inventory");
+        },
+        set: async () => {
+          providerCalls += 1;
+          throw new Error("secret provider must not be used by targeted Inventory");
+        },
+        delete: async () => {
+          providerCalls += 1;
+          throw new Error("secret provider must not be used by targeted Inventory");
+        },
+      },
+    };
+
+    const result = await mutateCustomAdapter(guardedEnv, {
+      storeRoot,
+      action: "add",
+      agentId: "providerless-agent",
+      adapter: { rules: { global: "~/.providerless-agent/RULES.md" } },
+    });
+
+    expect(current).toBe(false);
+    expect(providerCalls).toBe(0);
+    expect(result.postCommitInventoryRefresh).toMatchObject({
+      agentId: "providerless-agent",
+      status: "complete",
+      inventory: {
+        completeness: "complete",
+        candidates: [{ findings: [] }],
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("OPENAI_TOKEN");
+    expect(JSON.stringify(result)).not.toContain("secret provider must not be used");
+  });
+
+  it("does not run post-commit Inventory after removal, built-in mutation, or dry-run", async () => {
+    const dryRun = await mutateCustomAdapter(t.env, {
+      storeRoot,
+      action: "add",
+      agentId: "skip-agent",
+      adapter: { rules: { global: "~/.skip-agent/RULES.md" } },
+      dryRun: true,
+    });
+    expect(dryRun.postCommitInventoryRefresh).toBeUndefined();
+
+    await mutateCustomAdapter(t.env, {
+      storeRoot,
+      action: "add",
+      agentId: "skip-agent",
+      adapter: { rules: { global: "~/.skip-agent/RULES.md" } },
+    });
+    const disabled = await mutateBuiltinAgent(t.env, {
+      storeRoot,
+      action: "disable",
+      agentId: "skip-agent",
+    });
+    expect(disabled.postCommitInventoryRefresh).toBeUndefined();
+
+    const removed = await mutateCustomAdapter(t.env, {
+      storeRoot,
+      action: "remove",
+      agentId: "skip-agent",
+    });
+    expect(removed.postCommitInventoryRefresh).toBeUndefined();
   });
 
   it.each([

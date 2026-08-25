@@ -42,6 +42,7 @@ describe("control-plane agent and config mutation commands", () => {
   let root: string;
   let storeRoot: string;
   let previousHome: string | undefined;
+  let previousUserHome: string | undefined;
   let previousAuthority: string | undefined;
   let previousExitCode: number | undefined;
 
@@ -49,9 +50,11 @@ describe("control-plane agent and config mutation commands", () => {
     root = realpathSync(mkdtempSync(join(tmpdir(), "cellarer-control-plane-write-")));
     storeRoot = join(root, "home");
     previousHome = process.env.CELLARER_HOME;
+    previousUserHome = process.env.HOME;
     previousAuthority = process.env[HEADLESS_MUTATION_AUTHORITY_ENV];
     previousExitCode = process.exitCode;
     process.env.CELLARER_HOME = storeRoot;
+    process.env.HOME = storeRoot;
     process.env[HEADLESS_MUTATION_AUTHORITY_ENV] =
       `v1:1:${Buffer.alloc(32, 0x6d).toString("base64url")}`;
     process.exitCode = undefined;
@@ -61,6 +64,8 @@ describe("control-plane agent and config mutation commands", () => {
   afterEach(async () => {
     if (previousHome === undefined) delete process.env.CELLARER_HOME;
     else process.env.CELLARER_HOME = previousHome;
+    if (previousUserHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousUserHome;
     if (previousAuthority === undefined) delete process.env[HEADLESS_MUTATION_AUTHORITY_ENV];
     else process.env[HEADLESS_MUTATION_AUTHORITY_ENV] = previousAuthority;
     process.exitCode = previousExitCode;
@@ -231,6 +236,125 @@ describe("control-plane agent and config mutation commands", () => {
       },
     });
   });
+
+  it("projects complete, partial, and failed post-commit Inventory through text, JSON, and JSONL", async () => {
+    const canary = "ghp_cli_post_commit_secret_1234567890";
+    const previousCanary = process.env.CLI_POST_COMMIT_TOKEN;
+    process.env.CLI_POST_COMMIT_TOKEN = canary;
+    try {
+      await fs.mkdir(join(storeRoot, ".complete-cli"), { recursive: true });
+      await fs.writeFile(
+        join(storeRoot, ".complete-cli", "RULES.md"),
+        `Use $${"{CLI_POST_COMMIT_TOKEN}"} by reference only.\n`,
+      );
+      const complete = await invokeCaptured(
+        [
+          "agent",
+          "add",
+          "complete-cli",
+          "--adapter",
+          '{"rules":{"global":"~/.complete-cli/RULES.md"}}',
+        ],
+        "text",
+      );
+      expect(complete.stderr).toBe("");
+      expect(complete.stdout).toContain("inventory refresh complete for complete-cli");
+      expect(complete.stdout).not.toContain("Retry:");
+
+      const partialSkills = join(storeRoot, ".partial-cli", "skills");
+      const externalSkill = join(root, "external-skill");
+      await fs.mkdir(partialSkills, { recursive: true });
+      await fs.mkdir(externalSkill, { recursive: true });
+      await fs.writeFile(join(storeRoot, ".partial-cli", "RULES.md"), `Never print ${canary}.\n`);
+      await fs.writeFile(join(externalSkill, "SKILL.md"), "# External\n");
+      await fs.symlink(externalSkill, join(partialSkills, "linked"), "dir");
+      const partial = await invokeCaptured(
+        [
+          "agent",
+          "add",
+          "partial-cli",
+          "--adapter",
+          '{"rules":{"global":"~/.partial-cli/RULES.md"},"skills":{"global":"~/.partial-cli/skills"}}',
+        ],
+        "json",
+      );
+      expect(partial.stderr).toBe("");
+      expect(JSON.parse(partial.stdout)).toMatchObject({
+        status: "success",
+        data: {
+          receipt: { outcome: "committed" },
+          postCommitInventoryRefresh: {
+            agentId: "partial-cli",
+            status: "partial",
+            retryCommand: "cellarer inventory refresh --agent partial-cli",
+            inventory: { completeness: "partial", findings: [{ code: "UNSAFE_LINK" }] },
+          },
+        },
+      });
+
+      const externalRules = join(root, "external-failed-rules.md");
+      await fs.mkdir(join(storeRoot, ".failed-cli"), { recursive: true });
+      await fs.writeFile(externalRules, "# External failed rules\n");
+      await fs.symlink(externalRules, join(storeRoot, ".failed-cli", "RULES.md"), "file");
+      const failed = await invokeCaptured(
+        [
+          "agent",
+          "add",
+          "failed-cli",
+          "--adapter",
+          '{"rules":{"global":"~/.failed-cli/RULES.md"}}',
+        ],
+        "jsonl",
+      );
+      expect(failed.stderr).toBe("");
+      const failedRecords = failed.stdout.trimEnd().split("\n");
+      expect(failedRecords).toHaveLength(1);
+      expect(JSON.parse(failedRecords[0] as string)).toMatchObject({
+        status: "success",
+        data: {
+          receipt: { outcome: "committed" },
+          postCommitInventoryRefresh: {
+            agentId: "failed-cli",
+            status: "failed",
+            retryCommand: "cellarer inventory refresh --agent failed-cli",
+            inventory: { completeness: "failed", candidates: [] },
+          },
+        },
+      });
+
+      await fs.mkdir(join(storeRoot, ".sealed-cli"), { recursive: true });
+      await fs.writeFile(join(storeRoot, ".sealed-cli", "RULES.md"), "# Sealed apply\n");
+      const planned = await invoke([
+        "agent",
+        "add",
+        "sealed-cli",
+        "--adapter",
+        '{"rules":{"global":"~/.sealed-cli/RULES.md"}}',
+        "--dry-run",
+      ]);
+      const sealedPlan = (planned.data as { readonly plan: unknown }).plan;
+      expect(
+        await invoke(["apply", "--plan", JSON.stringify(JSON.parse(JSON.stringify(sealedPlan)))]),
+      ).toMatchObject({
+        status: "success",
+        data: {
+          receipt: { outcome: "committed" },
+          postCommitInventoryRefresh: {
+            agentId: "sealed-cli",
+            status: "complete",
+            inventory: { completeness: "complete" },
+          },
+        },
+      });
+
+      for (const observable of [complete, partial, failed]) {
+        expect(`${observable.stdout}${observable.stderr}`).not.toContain(canary);
+      }
+    } finally {
+      if (previousCanary === undefined) delete process.env.CLI_POST_COMMIT_TOKEN;
+      else process.env.CLI_POST_COMMIT_TOKEN = previousCanary;
+    }
+  }, 30_000);
 
   it("updates/resets typed settings and rejects secret-shaped ordinary fields", async () => {
     expect(
@@ -466,10 +590,23 @@ describe("control-plane agent and config mutation commands", () => {
 });
 
 async function invoke(args: readonly string[]): Promise<Record<string, unknown>> {
+  const captured = await invokeCaptured(args, "json");
+  expect(captured.stderr).toBe("");
+  expect(captured.stdout.trimEnd().split("\n")).toHaveLength(1);
+  return JSON.parse(captured.stdout) as Record<string, unknown>;
+}
+
+async function invokeCaptured(
+  args: readonly string[],
+  output: "text" | "json" | "jsonl",
+): Promise<{ readonly stdout: string; readonly stderr: string }> {
   const stdout: string[] = [];
   const stderr: string[] = [];
   const oldStdoutWrite = process.stdout.write;
   const oldStderrWrite = process.stderr.write;
+  const oldConsoleLog = console.log;
+  const oldConsoleWarn = console.warn;
+  const oldConsoleError = console.error;
   process.exitCode = undefined;
   process.stdout.write = ((chunk: unknown) => {
     stdout.push(String(chunk));
@@ -479,17 +616,21 @@ async function invoke(args: readonly string[]): Promise<Record<string, unknown>>
     stderr.push(String(chunk));
     return true;
   }) as typeof process.stderr.write;
+  console.log = (...data: unknown[]) => stdout.push(`${data.map(String).join(" ")}\n`);
+  console.warn = (...data: unknown[]) => stderr.push(`${data.map(String).join(" ")}\n`);
+  console.error = (...data: unknown[]) => stderr.push(`${data.map(String).join(" ")}\n`);
   try {
-    await buildProgram().parseAsync(["node", "cellarer", "--output", "json", ...args], {
+    await buildProgram().parseAsync(["node", "cellarer", "--output", output, ...args], {
       from: "node",
     });
   } finally {
     process.stdout.write = oldStdoutWrite;
     process.stderr.write = oldStderrWrite;
+    console.log = oldConsoleLog;
+    console.warn = oldConsoleWarn;
+    console.error = oldConsoleError;
   }
-  expect(stderr).toEqual([]);
-  expect(stdout).toHaveLength(1);
-  return JSON.parse(stdout[0] as string) as Record<string, unknown>;
+  return { stdout: stdout.join(""), stderr: stderr.join("") };
 }
 
 function protocolProjection(

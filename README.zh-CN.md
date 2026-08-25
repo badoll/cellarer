@@ -72,6 +72,10 @@ node packages/cli/dist/bin.js inventory refresh --agent codex
 Inventory 返回安全候选、provenance、findings、Store 匹配、计数与完整度，不会导入资源或
 写入 agent target。
 
+Custom Agent 定义通过 add 或 update 提交后，cellarer 会尝试一次 targeted Inventory
+refresh。partial 或 failed 会单独报告，不会撤销已提交的 mutation。使用
+`cellarer inventory refresh --agent <id>` 显式重试；client 不会自动重试或导入。
+
 要将已审查的候选导入 Store，请使用精确 ID 生成 plan，再原样提交该命令返回的
 `mutationPlan`。导入不会将资源下发到 agent target：
 

@@ -31,6 +31,7 @@ import {
   CliInputError,
   type CliInvocation,
 } from "../protocol/input.js";
+import { presentPostCommitInventoryRefresh } from "./control-plane-mutations.js";
 import { readProtectedPassphraseInput } from "./secret.js";
 
 interface ApplyOpts {
@@ -63,6 +64,9 @@ type SettingsApplyCommandData = {
   readonly mutation: Awaited<ReturnType<typeof applyControlPlaneMutationPlan>>["mutation"];
   readonly receipt?: NonNullable<
     Awaited<ReturnType<typeof applyControlPlaneMutationPlan>>["receipt"]
+  >;
+  readonly postCommitInventoryRefresh?: NonNullable<
+    Awaited<ReturnType<typeof applyControlPlaneMutationPlan>>["postCommitInventoryRefresh"]
   >;
 };
 type ApplyCommandData = DistributionApplyCommandData | SettingsApplyCommandData;
@@ -146,6 +150,9 @@ async function executeApply(
         changedFields: applied.changedFields,
         mutation: applied.mutation,
         ...(applied.receipt ? { receipt: applied.receipt } : {}),
+        ...(applied.postCommitInventoryRefresh
+          ? { postCommitInventoryRefresh: applied.postCommitInventoryRefresh }
+          : {}),
       };
       if (applied.operation.ok) return commandSuccess(data);
       const conflict = applied.operation.conflict;
@@ -260,6 +267,9 @@ function presentApplyText(outcome: CliCommandOutcome<ApplyCommandData>, opts: Ap
   const resultConsole = createSafeConsole(result);
   if ("changedFields" in result) {
     printMutation(result.mutation, resultConsole);
+    if (result.postCommitInventoryRefresh) {
+      presentPostCommitInventoryRefresh(result.postCommitInventoryRefresh, resultConsole);
+    }
     return;
   }
   printApplyText(result, opts, resultConsole);

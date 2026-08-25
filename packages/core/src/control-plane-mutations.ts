@@ -3,7 +3,13 @@ import { z } from "zod";
 import { planConfigMutation, validateConfigPublication } from "./config-mutation.js";
 import { ControlPlaneValidationError } from "./control-plane-validation.js";
 import type { Env } from "./env.js";
+import { refreshInventory } from "./inventory/projector.js";
 import { canonicalJson } from "./protocol/canonical.js";
+import type {
+  InventoryCompleteness,
+  InventoryRefreshResult,
+  PostCommitInventoryRefresh,
+} from "./protocol/client-types.js";
 import { invalidPlanResult } from "./protocol/execute.js";
 import type {
   CanonicalJsonObject,
@@ -41,6 +47,7 @@ export interface PlannedControlPlaneMutationDto {
   readonly plan: MutationPlan;
   readonly changedFields: readonly string[];
   readonly receipt?: OperationReceipt & { readonly changedFields: readonly string[] };
+  readonly postCommitInventoryRefresh?: PostCommitInventoryRefresh;
 }
 
 export interface AppliedControlPlaneMutationPlanDto {
@@ -49,6 +56,7 @@ export interface AppliedControlPlaneMutationPlanDto {
   readonly operation: Awaited<ReturnType<typeof applyStorePublicationPlan>>["operation"];
   readonly mutation: MutationPresentation;
   readonly receipt?: OperationReceipt & { readonly changedFields: readonly string[] };
+  readonly postCommitInventoryRefresh?: PostCommitInventoryRefresh;
 }
 
 export interface ApplyControlPlaneMutationPlanOptions {
@@ -764,12 +772,16 @@ export async function applyControlPlaneMutationPlan(
         businessInput,
       ),
   });
+  const postCommitInventoryRefresh = applied.operation.ok
+    ? await refreshCommittedCustomAdapter(env, input.storeRoot, businessInput)
+    : undefined;
   return {
     ...applied,
     mutation: mutationPresentation(normalizedPlan, applied.operation),
     ...(applied.operation.ok
       ? { receipt: { ...applied.operation.receipt, changedFields: applied.changedFields } }
       : {}),
+    ...(postCommitInventoryRefresh ? { postCommitInventoryRefresh } : {}),
   };
 }
 
@@ -804,7 +816,50 @@ async function mutateConfig(
     plan: planned.plan,
     changedFields,
     receipt: { ...applied.operation.receipt, changedFields },
+    ...(applied.postCommitInventoryRefresh
+      ? { postCommitInventoryRefresh: applied.postCommitInventoryRefresh }
+      : {}),
   };
+}
+
+async function refreshCommittedCustomAdapter(
+  env: Env,
+  storeRoot: string,
+  input: ControlPlaneBusinessInput,
+): Promise<PostCommitInventoryRefresh | undefined> {
+  if (input.kind !== "custom" || input.action === "remove") return undefined;
+  const inventory = await refreshInventory(env, { storeRoot, agentId: input.agentId });
+  if (inventory.completeness === "complete") {
+    return Object.freeze({
+      agentId: input.agentId,
+      status: "complete",
+      inventory: inventoryWithCompleteness(inventory, "complete"),
+    });
+  }
+  const retryCommand = `cellarer inventory refresh --agent ${input.agentId}` as const;
+  return inventory.completeness === "partial"
+    ? Object.freeze({
+        agentId: input.agentId,
+        status: "partial",
+        inventory: inventoryWithCompleteness(inventory, "partial"),
+        retryCommand,
+      })
+    : Object.freeze({
+        agentId: input.agentId,
+        status: "failed",
+        inventory: inventoryWithCompleteness(inventory, "failed"),
+        retryCommand,
+      });
+}
+
+function inventoryWithCompleteness<TCompleteness extends InventoryCompleteness>(
+  inventory: InventoryRefreshResult,
+  completeness: TCompleteness,
+): InventoryRefreshResult & { readonly completeness: TCompleteness } {
+  if (inventory.completeness !== completeness) {
+    throw new TypeError("Inventory completeness changed while composing the post-commit result");
+  }
+  return inventory as InventoryRefreshResult & { readonly completeness: TCompleteness };
 }
 
 function invalidAppliedControlPlanePlan(plan: MutationPlan): AppliedControlPlaneMutationPlanDto {

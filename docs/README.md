@@ -626,6 +626,16 @@ cellarer agent update my-agent \
 cellarer agent remove my-agent
 ```
 
+A committed Custom Agent add or update (including the bundled UI's upsert)
+remains a successful Store mutation even when its one post-commit targeted
+Inventory refresh is partial or failed. CLI, local API, and the Agents UI expose
+that refresh as a separate result; they do not roll back, retry, or import.
+After fixing the reported source issue, retry explicitly:
+
+```bash
+cellarer inventory refresh --agent <id>
+```
+
 Built-in patches live in `adapterOverrides`; new agents live in
 `customAdapters`. A custom adapter declares at least one of rules, MCP, or
 skills. It may define explicit detection paths. Without them, project detection

@@ -544,6 +544,25 @@ export interface InventoryRefreshResult {
   readonly completeness: InventoryCompleteness;
 }
 
+export type PostCommitInventoryRefresh =
+  | {
+      readonly agentId: string;
+      readonly status: "complete";
+      readonly inventory: InventoryRefreshResult & { readonly completeness: "complete" };
+    }
+  | {
+      readonly agentId: string;
+      readonly status: "partial";
+      readonly inventory: InventoryRefreshResult & { readonly completeness: "partial" };
+      readonly retryCommand: `cellarer inventory refresh --agent ${string}`;
+    }
+  | {
+      readonly agentId: string;
+      readonly status: "failed";
+      readonly inventory: InventoryRefreshResult & { readonly completeness: "failed" };
+      readonly retryCommand: `cellarer inventory refresh --agent ${string}`;
+    };
+
 export interface ControlPlaneValidationIssue {
   readonly path: string;
   readonly message: string;

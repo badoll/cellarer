@@ -3,6 +3,7 @@ import {
   CLIENT_API_VERSION,
   type InventoryRefreshResult,
   type MutationPlan,
+  type PostCommitInventoryRefresh,
 } from "@cellarer/core/client-api";
 import { readApiJson } from "./api-state.js";
 
@@ -84,7 +85,11 @@ export async function negotiateClientApi(): Promise<ClientApiDiscovery> {
   return discoveryNegotiation;
 }
 
-export async function applyPlannedControlPlaneMutation<T>(
+export interface AppliedControlPlaneMutationResult {
+  readonly postCommitInventoryRefresh?: PostCommitInventoryRefresh;
+}
+
+export async function applyPlannedControlPlaneMutation<T = AppliedControlPlaneMutationResult>(
   planPath: "/api/v1/agents/plan" | "/api/v1/collections/plan" | "/api/v1/settings/plan",
   input: unknown,
 ): Promise<T> {
