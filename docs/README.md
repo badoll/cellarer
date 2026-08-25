@@ -94,6 +94,14 @@ agent content. Lifecycle commands can check for updates, stage a pinned update,
 rename, remove, export, or import a reference-only bundle. Updating the Store
 never silently distributes the result to agents.
 
+Inventory is the live, read-only view before import. `inventory refresh`
+inspects every registered adapter's declared bounded user sources, independently
+of enabled or detected state; `--dir` adds one explicit current project and
+`--agent <id>` narrows the same DTO to one registered adapter. It deduplicates
+equivalent candidates, preserves redacted provenance and typed findings, marks
+Store matches, and declares complete, partial, or failed completeness. Refresh
+does not import, write targets, or access mutation authority or secret providers.
+
 ### Collection
 
 A collection groups resource IDs for selection. `default` is created during
@@ -208,6 +216,8 @@ cellarer add vercel-labs/skills --list
 cellarer add vercel-labs/skills --skill nextjs --collection public
 
 cellarer ls --collection default
+cellarer inventory refresh
+cellarer inventory refresh --agent codex --dir "$PWD"
 cellarer resource list --kind skills
 cellarer resource show skills/nextjs
 ```
@@ -548,6 +558,8 @@ GET /api/v1/version
 GET /api/v1/capabilities
 GET /api/v1/readiness
 GET /api/v1/openapi.json
+GET /api/v1/inventory?dir=/absolute/project
+GET /api/v1/inventory/{agentId}?dir=/absolute/project
 ```
 
 All JSON operations return a versioned envelope with request ID, status,
@@ -559,6 +571,11 @@ Only health is unauthenticated liveness. Browser and managed authentication are
 explicit startup modes; there is no query token or unauthenticated fallback.
 The bundled React client uses the same typed `/api/v1` boundary and does not
 reconstruct Core decisions.
+
+Both Inventory routes return the browser-safe Core Inventory DTO. The full route
+refreshes every registered bounded source; the targeted route accepts one exact
+registered adapter ID. A source failure remains a typed partial or failed result
+inside the successful transport envelope rather than becoming a raw exception.
 
 ## Custom adapters
 

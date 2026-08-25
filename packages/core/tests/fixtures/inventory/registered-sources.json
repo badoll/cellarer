@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "adapterOverrides": {
+    "agents-md": {
+      "enabled": false
+    }
+  },
+  "customAdapters": {
+    "fixture-agent": {
+      "displayName": "Fixture Agent",
+      "rules": {
+        "global": "~/.fixture-agent/RULES.md",
+        "project": "{dir}/.fixture-agent/RULES.md"
+      },
+      "skills": {
+        "global": "~/.fixture-agent/skills",
+        "project": "{dir}/.fixture-agent/skills",
+        "format": "dir"
+      }
+    }
+  }
+}

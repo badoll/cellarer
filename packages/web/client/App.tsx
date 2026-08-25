@@ -14,6 +14,7 @@ import { apiFetch } from "./api.js";
 import { readApiJson } from "./api-state.js";
 import { DashboardIcon, type DashboardIconName } from "./dashboard-icons.js";
 import { ImportDialog } from "./import-dialog.js";
+import { InventoryPage } from "./inventory-page.js";
 import {
   destinationLabel,
   type Page,
@@ -39,6 +40,7 @@ interface ApiState<T> {
 
 const NAV_ITEMS: NavItem[] = [
   { page: "dashboard", label: "Dashboard", detail: "Overview", icon: "dashboard" },
+  { page: "inventory", label: "Inventory", detail: "Live sources", icon: "scan" },
   { page: "skills", label: "Skills", detail: "Library", icon: "artifacts" },
   { page: "mcp", label: "MCP", detail: "Servers", icon: "database" },
   { page: "rules", label: "Rules", detail: "Instructions", icon: "rules" },
@@ -50,6 +52,10 @@ const PAGE_META: Record<Page, { title: string; subtitle: string }> = {
   dashboard: {
     title: "Dashboard",
     subtitle: "Local-first overview of resources, collections, and agent targets.",
+  },
+  inventory: {
+    title: "Inventory",
+    subtitle: "Read-only candidates across bounded registered user and project sources.",
   },
   skills: {
     title: "Skills",
@@ -132,6 +138,7 @@ export function App() {
         <AppHeader page={page} onNavigate={setPage} />
         <div className="content">
           {page === "dashboard" && <DashboardPage onNavigate={setPage} />}
+          {page === "inventory" && <InventoryPage />}
           {page === "skills" && <ResourcePage kind="skills" />}
           {page === "mcp" && <ResourcePage kind="mcp" />}
           {page === "rules" && <ResourcePage kind="rules" />}

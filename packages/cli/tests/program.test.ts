@@ -198,6 +198,7 @@ describe("cli program wiring", () => {
         "discovery",
         "doctor",
         "init",
+        "inventory",
         "ls",
         "operation",
         "plan",

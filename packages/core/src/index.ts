@@ -241,6 +241,10 @@ export type {
   ResourceUrlValidators,
   SymlinkType,
 } from "./env.js";
+export {
+  type InventoryRefreshOptions,
+  refreshInventory,
+} from "./inventory/projector.js";
 // markers
 export { GENERATED_HEADER, isGenerated, renderRules, sourceMarker } from "./markers.js";
 // mcp
@@ -315,6 +319,19 @@ export {
   clientSuccess,
   resolveClientRequestId,
 } from "./protocol/client.js";
+export type {
+  InventoryCandidate,
+  InventoryCandidateState,
+  InventoryCompleteness,
+  InventoryCounts,
+  InventoryFinding,
+  InventoryFindingCode,
+  InventoryFindingRemediation,
+  InventoryManagedMatch,
+  InventoryRefreshResult,
+  InventoryRelatedAdapter,
+  InventorySourceProvenance,
+} from "./protocol/client-types.js";
 export { targetState } from "./protocol/execute.js";
 export {
   DEFAULT_OPERATION_RECEIPT_RETENTION,

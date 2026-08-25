@@ -6,6 +6,7 @@
 //   - core-first(不变量 1):路由只解析参数 + 调 core,不写业务逻辑。
 import {
   type ActivityAction,
+  AGENT_ID_PATTERN,
   applyControlPlaneMutationPlan,
   applyMutationPlan,
   applyResourceBundleImportPlan,
@@ -69,6 +70,7 @@ import {
   planSyncProfile,
   planSyncProfileUninstall,
   recoverInterruptedOperation,
+  refreshInventory,
   resolveClientRequestId,
   resourceDependencyReport,
   type ScanSelection,
@@ -106,6 +108,8 @@ export type AppAuthentication =
   | { readonly mode: "trusted-embedded" }
   | { readonly mode: "bearer"; readonly token: string }
   | { readonly mode: "browser-session"; readonly sessionId: string };
+
+const AGENT_ID_RE = new RegExp(AGENT_ID_PATTERN);
 
 // 解析下发请求体(web → core DistributeOptions 子集)。
 interface DistributeBody {
@@ -304,6 +308,21 @@ async function parseJsonBody<T>(parse: () => Promise<T>): Promise<T> {
     }
     throw error;
   }
+}
+
+function parseInventoryDir(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  if (raw.length === 0) {
+    throw new ClientApiInputError("Inventory project root is invalid", { fields: ["dir"] });
+  }
+  return raw;
+}
+
+function parseInventoryAgentId(raw: string): string {
+  if (!AGENT_ID_RE.test(raw)) {
+    throw new ClientApiInputError("Inventory agent ID is invalid", { fields: ["agentId"] });
+  }
+  return raw;
 }
 
 // project scope 必须带 dir,否则 core 会以 server cwd 为工程根,把文件写进进程启动目录(且无 .gitignore 守护)。
@@ -1384,6 +1403,31 @@ export function createApp(inputDeps: AppDeps) {
             agents: parseCsv(c.req.query("agents")),
             destination,
             dir,
+          }),
+        ),
+      );
+    })
+    .get("/api/v1/inventory", async (c) => {
+      const projectRoot = parseInventoryDir(c.req.query("dir"));
+      return c.json(
+        clientSuccess(
+          requestId(c),
+          await refreshInventory(deps.env, {
+            storeRoot: deps.storeRoot,
+            ...(projectRoot ? { projectRoot } : {}),
+          }),
+        ),
+      );
+    })
+    .get("/api/v1/inventory/:agentId", async (c) => {
+      const projectRoot = parseInventoryDir(c.req.query("dir"));
+      return c.json(
+        clientSuccess(
+          requestId(c),
+          await refreshInventory(deps.env, {
+            storeRoot: deps.storeRoot,
+            agentId: parseInventoryAgentId(c.req.param("agentId")),
+            ...(projectRoot ? { projectRoot } : {}),
           }),
         ),
       );

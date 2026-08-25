@@ -495,13 +495,31 @@ export interface AdapterSpecsResult {
   warnings: string[];
 }
 
-export async function loadAdapterSpecs(env: Env, storeRoot: string): Promise<AdapterSpecsResult> {
+export async function loadAdapterSpecsFromConfig(
+  env: Env,
+  configuration: CellarerConfig,
+): Promise<AdapterSpecsResult> {
   const warnings: string[] = [];
+  const packaged = parsePackagedConfig(await packagedConfigText(env));
+  const userConfig = parseConfigValue(configuration);
+
+  return composeAdapterSpecs(packaged, userConfig, warnings);
+}
+
+export async function loadAdapterSpecs(env: Env, storeRoot: string): Promise<AdapterSpecsResult> {
   const packaged = parsePackagedConfig(await packagedConfigText(env));
   const configPath = join(storeRoot, CONFIG_FILENAME);
   const userText = await readFileOrNull(env, configPath);
   const userConfig = userText === null ? parseConfig("") : parseConfig(userText);
 
+  return composeAdapterSpecs(packaged, userConfig, []);
+}
+
+function composeAdapterSpecs(
+  packaged: PackagedConfig,
+  userConfig: CellarerConfig,
+  warnings: string[],
+): AdapterSpecsResult {
   const effectiveBuiltins = new Map(Object.entries(packaged.builtinAdapters));
   const customById = new Map(Object.entries(userConfig.customAdapters));
 

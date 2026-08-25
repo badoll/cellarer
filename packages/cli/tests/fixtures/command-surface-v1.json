@@ -30,7 +30,8 @@
       "operation",
       "plan",
       "profile",
-      "sync"
+      "sync",
+      "inventory"
     ],
     "options": [
       {
@@ -153,7 +154,8 @@
     "sync.plan",
     "sync.apply",
     "sync.verify",
-    "sync.uninstall"
+    "sync.uninstall",
+    "inventory.refresh"
   ],
   "commands": [
     {
@@ -2429,6 +2431,64 @@
           {
             "field": "dryRun",
             "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "inventory.refresh",
+      "aliases": [],
+      "description": "只读刷新所有已注册或指定 agent 的资源清单",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "-a, --agent <id>",
+          "attributeName": "agent",
+          "description": "精确的已注册 agent id",
+          "short": "-a",
+          "long": "--agent",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dir <path>",
+          "attributeName": "dir",
+          "description": "当前 project 根目录",
+          "short": null,
+          "long": "--dir",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "read",
+        "streaming": false,
+        "requiredFeatures": ["unified-resource-inventory"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:inventory.refresh:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:inventory.refresh:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "agentId",
+            "option": "agent",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "dir",
+            "option": "dir",
             "positional": null,
             "encoded": false
           }

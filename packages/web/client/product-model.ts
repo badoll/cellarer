@@ -2,7 +2,7 @@ import type { Capability, Destination, ResourceState } from "@cellarer/core/clie
 
 export type { Destination, ResourceState } from "@cellarer/core/client-api";
 
-export type Page = "dashboard" | "skills" | "mcp" | "rules" | "agents" | "settings";
+export type Page = "dashboard" | "inventory" | "skills" | "mcp" | "rules" | "agents" | "settings";
 
 export interface ResourceCountLike {
   state: ResourceState;

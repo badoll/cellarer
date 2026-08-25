@@ -73,6 +73,102 @@ const resourceState = jsonSchema.enumeration([
   "missing",
   "blocked",
 ]);
+const contentFingerprint = jsonSchema.string({ pattern: "^sha256:[0-9a-f]{64}$" });
+const inventoryFinding = dataObject(["code", "severity", "scope", "remediation"], {
+  code: jsonSchema.enumeration([
+    "ADAPTER_DETECTION_FAILED",
+    "ADAPTER_PATHS_FAILED",
+    "SOURCE_OUTSIDE_BOUNDARY",
+    "SOURCE_UNREADABLE",
+    "UNSAFE_LINK",
+    "UNSUPPORTED_SNAPSHOT",
+    "SNAPSHOT_STALE",
+    "INVALID_STRUCTURE",
+    "PARSE_FAILED",
+    "PROBABLE_SECRET",
+    "CONFLICT",
+    "STORE_SNAPSHOT_STALE",
+    "STORE_SNAPSHOT_UNSAFE",
+    "STORE_PROJECTION_FAILED",
+  ]),
+  severity: jsonSchema.enumeration(["warning", "blocked"]),
+  scope: jsonSchema.enumeration(["refresh", "source", "candidate"]),
+  remediation: jsonSchema.enumeration([
+    "review-adapter",
+    "check-source-access",
+    "remove-unsafe-link",
+    "retry-refresh",
+    "fix-structure",
+    "remove-secret-values",
+    "resolve-conflict",
+    "repair-store",
+  ]),
+  sourceId: jsonSchema.string({ minLength: 1 }),
+});
+const inventoryRelatedAdapter = dataObject(["id", "displayName", "enabled", "detected"], {
+  id: agentId,
+  displayName: jsonSchema.string({ minLength: 1 }),
+  enabled: jsonSchema.boolean(),
+  detected: jsonSchema.boolean(),
+});
+const inventorySource = dataObject(["id", "kind", "scope", "location", "adapters"], {
+  id: jsonSchema.string({ minLength: 1 }),
+  kind: jsonSchema.enumeration(["rules", "mcp", "skills"]),
+  scope,
+  location: jsonSchema.string({ minLength: 1 }),
+  adapters: jsonSchema.array(inventoryRelatedAdapter),
+});
+const inventoryManagedMatch = dataObject(["resourceId", "revisionId"], {
+  resourceId: jsonSchema.string({ minLength: 1 }),
+  revisionId: jsonSchema.string({ minLength: 1 }),
+});
+const inventoryCandidate = dataObject(
+  [
+    "id",
+    "kind",
+    "name",
+    "contentFingerprint",
+    "state",
+    "defaultSelected",
+    "sources",
+    "relatedAdapters",
+    "findings",
+  ],
+  {
+    id: jsonSchema.string({ minLength: 1 }),
+    kind: jsonSchema.enumeration(["rules", "mcp", "skills"]),
+    name: jsonSchema.string({ minLength: 1 }),
+    contentFingerprint,
+    state: jsonSchema.enumeration(["ready", "needs-attention", "in-store"]),
+    defaultSelected: jsonSchema.boolean(),
+    sources: jsonSchema.array(inventorySource),
+    relatedAdapters: jsonSchema.array(inventoryRelatedAdapter),
+    findings: jsonSchema.array(inventoryFinding),
+    managedMatch: inventoryManagedMatch,
+    conflictGroupId: jsonSchema.string({ minLength: 1 }),
+  },
+);
+const inventoryCounts = dataObject(
+  ["total", "ready", "needsAttention", "inStore", "observedSources", "failedSources"],
+  {
+    total: jsonSchema.integer(),
+    ready: jsonSchema.integer(),
+    needsAttention: jsonSchema.integer(),
+    inStore: jsonSchema.integer(),
+    observedSources: jsonSchema.integer(),
+    failedSources: jsonSchema.integer(),
+  },
+);
+const inventoryRefreshOutput = dataObject(
+  ["generatedAt", "candidates", "findings", "counts", "completeness"],
+  {
+    generatedAt: jsonSchema.string({ minLength: 1 }),
+    candidates: jsonSchema.array(inventoryCandidate),
+    findings: jsonSchema.array(inventoryFinding),
+    counts: inventoryCounts,
+    completeness: jsonSchema.enumeration(["complete", "partial", "failed"]),
+  },
+);
 const adapterRules = dataObject([], {
   global: jsonSchema.string({ minLength: 1 }),
   project: jsonSchema.string({ minLength: 1 }),
@@ -218,7 +314,6 @@ const resourceSyncTarget = dataObject(["agent", "destination", "scope", "target"
   state: jsonSchema.enumeration(["synced", "drifted", "missing", "blocked"]),
   reason: jsonSchema.string(),
 });
-const contentFingerprint = jsonSchema.string({ pattern: "^sha256:[0-9a-f]{64}$" });
 const resourceSourceDescriptor: JsonSchema = {
   oneOf: [
     dataObject(["type"], {
@@ -1632,6 +1727,7 @@ export const commandSchemaFragments = Object.freeze({
   doctorAgent,
   exactResourceSelector,
   importedArtifact,
+  inventoryRefreshOutput,
   inspectedAgent,
   joinList,
   jsonSchema,

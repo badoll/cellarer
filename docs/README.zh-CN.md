@@ -81,6 +81,12 @@ mutation 使用不可变 ID，使依赖检查保持无歧义。
 Lifecycle 命令可以检查更新、暂存固定 revision、重命名、删除、导出或导入仅含引用的
 bundle。更新 Store 不会静默下发到 agent。
 
+Inventory 是导入前的实时只读视图。`inventory refresh` 检查每个已注册 adapter 声明的
+有界用户来源，不受 enabled 或 detected 状态过滤；`--dir` 添加一个明确的当前 project，
+`--agent <id>` 则把同一 DTO 精确收窄到一个已注册 adapter。它合并等价候选，保留脱敏的
+provenance 与 typed findings，标记 Store 匹配，并声明 complete、partial 或 failed 完整度。
+刷新不会导入、写入 target，也不会访问 mutation authority 或 secret provider。
+
 ### Collection
 
 Collection 按资源 ID 组织选择。初始化时创建 `default`；也可以建立 `work`、`personal`、
@@ -176,6 +182,8 @@ cellarer add vercel-labs/skills --list
 cellarer add vercel-labs/skills --skill nextjs --collection public
 
 cellarer ls --collection default
+cellarer inventory refresh
+cellarer inventory refresh --agent codex --dir "$PWD"
 cellarer resource list --kind skills
 cellarer resource show skills/nextjs
 ```
@@ -482,6 +490,8 @@ GET /api/v1/version
 GET /api/v1/capabilities
 GET /api/v1/readiness
 GET /api/v1/openapi.json
+GET /api/v1/inventory?dir=/absolute/project
+GET /api/v1/inventory/{agentId}?dir=/absolute/project
 ```
 
 所有 JSON operation 返回包含 request ID、status、warnings，以及 data 或 typed error 的
@@ -491,6 +501,10 @@ GET /api/v1/openapi.json
 只有 health 是未认证 liveness。Browser 与 managed authentication 是显式启动 mode；没有
 query token 或 unauthenticated fallback。随包 React client 使用同一个 typed `/api/v1`
 边界，不重建 Core 决策。
+
+两个 Inventory route 都返回 browser-safe Core Inventory DTO。完整 route 刷新所有已注册的
+有界来源，targeted route 接收一个精确的已注册 adapter ID。来源失败会作为成功 transport
+envelope 内的 typed partial 或 failed 结果保留，而不会转换为原始 exception。
 
 ## 自定义 Adapter
 

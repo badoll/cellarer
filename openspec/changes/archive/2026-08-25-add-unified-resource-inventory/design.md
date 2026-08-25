@@ -24,6 +24,8 @@ Current discovery is fragmented: summary counts, the resource catalog, and `scan
 
 Default refresh includes every registered built-in and configured custom adapter. Enabled and detection states remain source metadata. An explicit adapter filter narrows a targeted refresh. This follows the distinction between “can observe” and “may distribute”.
 
+Registry composition for refresh derives from the configuration already captured by the coherent Store snapshot. It may read the immutable packaged adapter catalog, but it does not reread mutable user configuration. Reusing the ordinary independently loading registry was rejected because custom adapter definitions and enabled metadata could otherwise come from different revisions.
+
 ### Candidate identity excludes provenance multiplicity
 
 A versioned candidate ID derives from kind, normalized logical name, and canonical content fingerprint. Equivalent sources merge while retaining every redacted provenance entry; adding a source does not change identity. Same kind/name with different fingerprints forms a conflict group. Path-based IDs were rejected because aliases and shared pools make paths unstable product identity.
@@ -41,6 +43,16 @@ Core owns closed DTOs and finding codes in the browser-safe contract closure. CL
 - **[Risk] Live Skill scans are slow.** → Bound concurrency, collapse physical sources before repeated inspection when safe, measure latency, and defer caching until justified.
 - **[Risk] Normalization merges intentional variants.** → Include kind and logical name in identity and preserve conflict/source details.
 - **[Risk] One adapter throws outside candidate isolation.** → Catch at registry, adapter, capability, source, and candidate boundaries with adversarial partial-result tests.
+
+## Proof Obligations
+
+1. **Bounded enumeration:** The canonical roots inspected by refresh are exactly the registered adapter declarations plus the optional explicit project root. Containment tests reject traversal, links, and aliases that escape those roots.
+2. **Read-only execution:** Capability spies prove refresh invokes no Store, source, target, provider, authority, activity, or other mutation operation, including on partial and failed refreshes.
+3. **Secret non-observability:** Observable-secret canaries prove DTOs, findings, transport envelopes, renderer output, errors, and logs contain neither plaintext secret values nor reversible derivatives.
+4. **Failure isolation:** Injected failures at registry, adapter, capability, source, candidate, and Store-snapshot projection boundaries preserve safe candidates and yield deterministic `partial` or `failed` completeness.
+5. **Stable identity and provenance:** Fixture permutations prove canonical content produces the same versioned candidate ID regardless of traversal order or equivalent provenance multiplicity, while content changes produce a distinct ID and conflicts remain explicit.
+6. **Transport parity:** CLI schemas, `/api/v1` registry/OpenAPI schemas, client types, and the browser bundle consume the same closed Core DTO and finding-code set without transport-local regrouping.
+7. **Bounded concurrency:** A deterministic latency fixture records peak inspection concurrency at or below the configured limit and proves result ordering is independent of completion order.
 
 ## Migration Plan
 

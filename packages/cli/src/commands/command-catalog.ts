@@ -27,6 +27,7 @@ import { createDiagnosticsServiceDomain } from "./diagnostics-service-catalog.js
 import type { ProtocolDiscoveryProvider } from "./discovery.js";
 import type { InitAgentSelector } from "./init.js";
 import { createInitializationDiscoveryDomain } from "./initialization-discovery-catalog.js";
+import { createInventoryRefreshCommandContract } from "./inventory.js";
 import { createResourceLifecycleSyncDomain } from "./resource-lifecycle-sync-catalog.js";
 import { createSecretAuthorityRecoveryDomain } from "./secret-authority-recovery-catalog.js";
 import { createStoreArtifactDomain } from "./store-artifact-catalog.js";
@@ -66,6 +67,20 @@ function createControlPlaneReadDomain(): CommandDomain {
   return defineCommandDomain({
     id: "control-plane-read",
     contracts: [
+      createInventoryRefreshCommandContract(
+        defineContractMetadata({
+          command: "inventory.refresh",
+          catalogOrder: 62,
+          mutability: "read",
+          requiredFeatures: ["unified-resource-inventory"],
+          input: s.jsonSchema.object({
+            agentId: s.agentId,
+            dir: s.jsonSchema.string({ minLength: 1 }),
+          }),
+          bindings: [s.option("agentId", "agent"), s.option("dir")],
+          output: s.inventoryRefreshOutput,
+        }),
+      ),
       createResourceListCommandContract(
         defineContractMetadata({
           command: "resource.list",

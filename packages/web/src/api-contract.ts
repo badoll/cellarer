@@ -18,6 +18,7 @@ import type {
   DashboardSummaryResult,
   DiscoverySummaryResult,
   DistributePlan,
+  InventoryRefreshResult,
   MutationPlan,
   ScanItem,
   ScanPlan,
@@ -372,6 +373,20 @@ const CLIENT_API_ROUTE_BASES = [
     path: "/api/v1/discovery",
     authentication: "authenticated",
     summary: "Summarize agent-native discovery",
+  },
+  {
+    operationId: "refreshInventory",
+    method: "get",
+    path: "/api/v1/inventory",
+    authentication: "authenticated",
+    summary: "Refresh all bounded registered Inventory sources",
+  },
+  {
+    operationId: "refreshInventoryByAgent",
+    method: "get",
+    path: "/api/v1/inventory/{agentId}",
+    authentication: "authenticated",
+    summary: "Refresh one registered adapter's bounded Inventory sources",
   },
   {
     operationId: "getDiff",
@@ -1055,7 +1070,12 @@ function inputSchemaFor(route: ClientApiRouteBaseDefinition): ClientJsonSchema {
 
 function pathParametersSchema(path: string): ClientJsonSchema {
   const names = [...path.matchAll(/\{([A-Za-z0-9_]+)\}/g)].map((match) => match[1] as string);
-  return objectSchema(Object.fromEntries(names.map((name) => [name, nonEmptyStringSchema])), names);
+  return objectSchema(
+    Object.fromEntries(
+      names.map((name) => [name, name === "agentId" ? agentIdSchema : nonEmptyStringSchema]),
+    ),
+    names,
+  );
 }
 
 function querySchemaFor(operationId: string): ClientJsonSchema {
@@ -1083,6 +1103,9 @@ function querySchemaFor(operationId: string): ClientJsonSchema {
         destination: destinationSchema,
         dir: nonEmptyStringSchema,
       });
+    case "refreshInventory":
+    case "refreshInventoryByAgent":
+      return objectSchema({ dir: nonEmptyStringSchema });
     case "getStatus":
       return objectSchema({ scope: scopeSchema, dir: nonEmptyStringSchema });
     case "getSummary":
@@ -2902,6 +2925,113 @@ export type DiscoverySummarySchemaContract = AssertSchemaContract<
   ExactSchemaContract<typeof discoverySummaryDataSchema, DiscoverySummaryResult>
 >;
 
+const inventoryFindingSchema = objectSchema(
+  {
+    code: enumSchema([
+      "ADAPTER_DETECTION_FAILED",
+      "ADAPTER_PATHS_FAILED",
+      "SOURCE_OUTSIDE_BOUNDARY",
+      "SOURCE_UNREADABLE",
+      "UNSAFE_LINK",
+      "UNSUPPORTED_SNAPSHOT",
+      "SNAPSHOT_STALE",
+      "INVALID_STRUCTURE",
+      "PARSE_FAILED",
+      "PROBABLE_SECRET",
+      "CONFLICT",
+      "STORE_SNAPSHOT_STALE",
+      "STORE_SNAPSHOT_UNSAFE",
+      "STORE_PROJECTION_FAILED",
+    ]),
+    severity: enumSchema(["warning", "blocked"]),
+    scope: enumSchema(["refresh", "source", "candidate"]),
+    remediation: enumSchema([
+      "review-adapter",
+      "check-source-access",
+      "remove-unsafe-link",
+      "retry-refresh",
+      "fix-structure",
+      "remove-secret-values",
+      "resolve-conflict",
+      "repair-store",
+    ]),
+    sourceId: nonEmptyStringSchema,
+  },
+  ["code", "severity", "scope", "remediation"],
+);
+const inventoryRelatedAdapterSchema = objectSchema(
+  {
+    id: agentIdSchema,
+    displayName: nonEmptyStringSchema,
+    enabled: booleanSchema,
+    detected: booleanSchema,
+  },
+  ["id", "displayName", "enabled", "detected"],
+);
+const inventorySourceSchema = objectSchema(
+  {
+    id: nonEmptyStringSchema,
+    kind: capabilitySchema,
+    scope: scopeSchema,
+    location: nonEmptyStringSchema,
+    adapters: arraySchema(inventoryRelatedAdapterSchema),
+  },
+  ["id", "kind", "scope", "location", "adapters"],
+);
+const inventoryManagedMatchSchema = objectSchema(
+  { resourceId: nonEmptyStringSchema, revisionId: nonEmptyStringSchema },
+  ["resourceId", "revisionId"],
+);
+const inventoryCandidateSchema = objectSchema(
+  {
+    id: nonEmptyStringSchema,
+    kind: capabilitySchema,
+    name: nonEmptyStringSchema,
+    contentFingerprint: stringSchema({ pattern: "^sha256:[0-9a-f]{64}$" }),
+    state: enumSchema(["ready", "needs-attention", "in-store"]),
+    defaultSelected: booleanSchema,
+    sources: arraySchema(inventorySourceSchema),
+    relatedAdapters: arraySchema(inventoryRelatedAdapterSchema),
+    findings: arraySchema(inventoryFindingSchema),
+    managedMatch: inventoryManagedMatchSchema,
+    conflictGroupId: nonEmptyStringSchema,
+  },
+  [
+    "id",
+    "kind",
+    "name",
+    "contentFingerprint",
+    "state",
+    "defaultSelected",
+    "sources",
+    "relatedAdapters",
+    "findings",
+  ],
+);
+const inventoryRefreshDataSchema = objectSchema(
+  {
+    generatedAt: nonEmptyStringSchema,
+    candidates: arraySchema(inventoryCandidateSchema),
+    findings: arraySchema(inventoryFindingSchema),
+    counts: objectSchema(
+      {
+        total: integerSchema(),
+        ready: integerSchema(),
+        needsAttention: integerSchema(),
+        inStore: integerSchema(),
+        observedSources: integerSchema(),
+        failedSources: integerSchema(),
+      },
+      ["total", "ready", "needsAttention", "inStore", "observedSources", "failedSources"],
+    ),
+    completeness: enumSchema(["complete", "partial", "failed"]),
+  },
+  ["generatedAt", "candidates", "findings", "counts", "completeness"],
+);
+export type InventoryRefreshSchemaContract = AssertSchemaContract<
+  ExactSchemaContract<typeof inventoryRefreshDataSchema, InventoryRefreshResult>
+>;
+
 const mutationRecoveryDiagnosisDataSchema = objectSchema(
   {
     status: enumSchema([
@@ -3080,6 +3210,9 @@ function successDataSchemaFor(operationId: string): ClientJsonSchema {
       );
     case "getDiscoverySummary":
       return discoverySummaryDataSchema;
+    case "refreshInventory":
+    case "refreshInventoryByAgent":
+      return inventoryRefreshDataSchema;
     case "getDiff":
       return objectSchema(
         {

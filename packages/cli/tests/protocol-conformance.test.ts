@@ -315,6 +315,7 @@ const commandCases = {
     project,
     "--dry-run",
   ],
+  "inventory.refresh": ({ project }) => ["inventory", "refresh", "--dir", project],
 } satisfies Record<RegisteredCommand, CommandCase>;
 
 function profileDesired(): string {

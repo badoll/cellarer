@@ -14,6 +14,7 @@ import {
   resourceCommandRoot,
 } from "./commands/control-plane-read.js";
 import type { InitAgentSelector } from "./commands/init.js";
+import { inventoryCommandRoot } from "./commands/inventory.js";
 import { profileCommandRoot, syncProfileCommandRoot } from "./commands/resource-lifecycle.js";
 import { secretCommandRoot } from "./commands/secret.js";
 import { type CommandCatalog, executeCommandContract } from "./protocol/command-contract.js";
@@ -54,6 +55,7 @@ const commandContainerFactories: Readonly<Record<string, () => Command>> = {
   config: configCommandRoot,
   discovery: discoveryCommandRoot,
   operation: operationCommandRoot,
+  inventory: inventoryCommandRoot,
 };
 
 function registerCommandTree(program: Command, catalog: CommandCatalog): void {

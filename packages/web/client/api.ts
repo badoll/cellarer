@@ -1,4 +1,8 @@
-import { CLIENT_API_CONTRACT_ID, CLIENT_API_VERSION } from "@cellarer/core/client-api";
+import {
+  CLIENT_API_CONTRACT_ID,
+  CLIENT_API_VERSION,
+  type InventoryRefreshResult,
+} from "@cellarer/core/client-api";
 import { readApiJson } from "./api-state.js";
 
 const SESSION_PATH = "/api/v1/auth/session";
@@ -97,6 +101,19 @@ export async function applyPlannedControlPlaneMutation<T>(
       body: JSON.stringify({ mutationPlan: planned.plan }),
     }),
   );
+}
+
+export async function fetchInventory(
+  options: { readonly agentId?: string; readonly dir?: string } = {},
+): Promise<InventoryRefreshResult> {
+  const path = options.agentId
+    ? `/api/v1/inventory/${encodeURIComponent(options.agentId)}`
+    : "/api/v1/inventory";
+  const query = new URLSearchParams();
+  if (options.dir) query.set("dir", options.dir);
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
+  const requestPath = `${path}${suffix}` as VersionedClientApiPath;
+  return readApiJson<InventoryRefreshResult>(await apiFetch(requestPath));
 }
 
 async function ensureBrowserSession(): Promise<void> {

@@ -48,6 +48,17 @@ package 发布后，同一命令面将通过 `cellarer` 可执行文件提供。
 node packages/cli/dist/bin.js init --agent codex
 ```
 
+只读刷新所有已注册的有界用户来源，或精确指定一个 adapter；添加 `--dir <project>`
+可同时包含当前 project：
+
+```bash
+node packages/cli/dist/bin.js inventory refresh
+node packages/cli/dist/bin.js inventory refresh --agent codex
+```
+
+Inventory 返回安全候选、provenance、findings、Store 匹配、计数与完整度，不会导入资源或
+写入 agent target。
+
 使用仓库自己的 README 作为真实 Rule 输入，并用隔离目录作为 project target：
 
 ```bash
@@ -87,7 +98,7 @@ node packages/cli/dist/bin.js ui
 
 | 领域 | 主要操作 |
 | --- | --- |
-| Library | 导入、检查、更新、重命名、删除、导出与 bundle 导入资源。 |
+| Library | 刷新 Inventory；导入、检查、更新、重命名、删除、导出与 bundle 导入资源。 |
 | Agents | 探测 agent、配置 adapter，并检查受支持的目标。 |
 | 下发 | 按 agent、scope、collection 或 profile 预览和同步 rules、MCP servers 与 skills。 |
 | 安全 | 验证漂移、保护目标所有权、恢复中断 operation，并按 receipt 回滚。 |

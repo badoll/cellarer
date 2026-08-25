@@ -458,6 +458,92 @@ export interface DiscoverySummaryResult {
   warnings: string[];
 }
 
+export type InventoryCompleteness = "complete" | "partial" | "failed";
+export type InventoryCandidateState = "ready" | "needs-attention" | "in-store";
+export type InventoryFindingCode =
+  | "ADAPTER_DETECTION_FAILED"
+  | "ADAPTER_PATHS_FAILED"
+  | "SOURCE_OUTSIDE_BOUNDARY"
+  | "SOURCE_UNREADABLE"
+  | "UNSAFE_LINK"
+  | "UNSUPPORTED_SNAPSHOT"
+  | "SNAPSHOT_STALE"
+  | "INVALID_STRUCTURE"
+  | "PARSE_FAILED"
+  | "PROBABLE_SECRET"
+  | "CONFLICT"
+  | "STORE_SNAPSHOT_STALE"
+  | "STORE_SNAPSHOT_UNSAFE"
+  | "STORE_PROJECTION_FAILED";
+export type InventoryFindingRemediation =
+  | "review-adapter"
+  | "check-source-access"
+  | "remove-unsafe-link"
+  | "retry-refresh"
+  | "fix-structure"
+  | "remove-secret-values"
+  | "resolve-conflict"
+  | "repair-store";
+
+export interface InventoryFinding {
+  readonly code: InventoryFindingCode;
+  readonly severity: "warning" | "blocked";
+  readonly scope: "refresh" | "source" | "candidate";
+  readonly remediation: InventoryFindingRemediation;
+  readonly sourceId?: string;
+}
+
+export interface InventoryRelatedAdapter {
+  readonly id: string;
+  readonly displayName: string;
+  readonly enabled: boolean;
+  readonly detected: boolean;
+}
+
+export interface InventorySourceProvenance {
+  readonly id: string;
+  readonly kind: Capability;
+  readonly scope: Scope;
+  readonly location: string;
+  readonly adapters: readonly InventoryRelatedAdapter[];
+}
+
+export interface InventoryManagedMatch {
+  readonly resourceId: string;
+  readonly revisionId: string;
+}
+
+export interface InventoryCandidate {
+  readonly id: string;
+  readonly kind: Capability;
+  readonly name: string;
+  readonly contentFingerprint: string;
+  readonly state: InventoryCandidateState;
+  readonly defaultSelected: boolean;
+  readonly sources: readonly InventorySourceProvenance[];
+  readonly relatedAdapters: readonly InventoryRelatedAdapter[];
+  readonly findings: readonly InventoryFinding[];
+  readonly managedMatch?: InventoryManagedMatch;
+  readonly conflictGroupId?: string;
+}
+
+export interface InventoryCounts {
+  readonly total: number;
+  readonly ready: number;
+  readonly needsAttention: number;
+  readonly inStore: number;
+  readonly observedSources: number;
+  readonly failedSources: number;
+}
+
+export interface InventoryRefreshResult {
+  readonly generatedAt: string;
+  readonly candidates: readonly InventoryCandidate[];
+  readonly findings: readonly InventoryFinding[];
+  readonly counts: InventoryCounts;
+  readonly completeness: InventoryCompleteness;
+}
+
 export interface ControlPlaneValidationIssue {
   readonly path: string;
   readonly message: string;

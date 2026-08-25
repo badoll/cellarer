@@ -53,6 +53,17 @@ On a headless machine without an OS credential manager, configure the protected
 node packages/cli/dist/bin.js init --agent codex
 ```
 
+Refresh the read-only Inventory across every registered bounded user source, or
+one exact adapter. Add `--dir <project>` to include that current project:
+
+```bash
+node packages/cli/dist/bin.js inventory refresh
+node packages/cli/dist/bin.js inventory refresh --agent codex
+```
+
+Inventory reports safe candidates, provenance, findings, Store matches, counts,
+and completeness; it does not import or write agent targets.
+
 Use this repository's README as a real Rule input and an isolated project
 directory as the target:
 
@@ -94,7 +105,7 @@ node packages/cli/dist/bin.js ui
 
 | Area | Main operations |
 | --- | --- |
-| Library | Import, inspect, update, rename, remove, export, and bundle resources. |
+| Library | Refresh Inventory; import, inspect, update, rename, remove, export, and bundle resources. |
 | Agents | Detect agents, configure adapters, and inspect supported targets. |
 | Distribution | Preview and sync rules, MCP servers, and skills by agent, scope, collection, or profile. |
 | Safety | Verify drift, preserve target ownership, recover interrupted operations, and revert receipts. |
