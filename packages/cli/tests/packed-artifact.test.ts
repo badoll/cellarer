@@ -96,6 +96,8 @@ describe("packed CLI artifact", () => {
     );
 
     expect(gate).toContain('"--dry-run"');
+    expect(gate).not.toContain('"--agent"');
+    expect(gate).not.toContain('"--no-agent"');
     expect(gate).toContain("KEYCHAIN_MODULE_UNAVAILABLE");
     expect(gate).toContain("KEYCHAIN_SMOKE_ISOLATION_UNAVAILABLE");
     expect(gate).toContain("optionalKeychainInstalled(installed)");

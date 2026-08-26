@@ -314,12 +314,16 @@ async function exerciseInstalledRelease(installed) {
     "schema discovery failed",
   );
 
-  const dryRun = jsonOutput(
-    await cli(installed, ["--output", "json", "init", "--agent", "codex,claude-code", "--dry-run"]),
-  );
+  const dryRun = jsonOutput(await cli(installed, ["--output", "json", "init", "--dry-run"]));
   assert(dryRun.data?.dryRun === true, "installed init --dry-run did not return a preview");
   assert(!(await exists(installed.store)), "installed init --dry-run mutated isolated state");
-  jsonOutput(await cli(installed, ["--output", "json", "init", "--agent", "codex,claude-code"]));
+  const initialized = jsonOutput(await cli(installed, ["--output", "json", "init"]));
+  assert(
+    initialized.data?.confirmation?.status === "not-offered" &&
+      initialized.data?.confirmation?.reason === "non-interactive" &&
+      initialized.data?.import?.status === "not-started",
+    "installed init did not follow the non-interactive Inventory contract",
+  );
   const doctor = jsonOutput(await cli(installed, ["--output", "json", "doctor"]));
   assert(doctor.command === "doctor", "doctor did not return its protocol envelope");
   assertTypedKeychainCapability(doctor, "optional-installed");
@@ -338,10 +342,8 @@ async function exerciseInstalledRelease(installed) {
   );
   const agents = jsonOutput(await cli(installed, ["--output", "json", "agents"]));
   assert(
-    ["codex", "claude-code"].every((id) =>
-      agents.data?.agents?.some((agent) => agent.id === id && agent.enabled),
-    ),
-    "multi-agent initialization was not visible",
+    ["codex", "claude-code"].every((id) => agents.data?.agents?.some((agent) => agent.id === id)),
+    "registered agents were not discoverable after initialization",
   );
 
   await assertUnsupportedNodeDoesNotMutate(installed);
@@ -351,7 +353,7 @@ async function exerciseInstalledRelease(installed) {
 }
 
 async function exerciseNativeUnavailableRelease(installed) {
-  jsonOutput(await cli(installed, ["--output", "json", "init", "--agent", "codex"]));
+  jsonOutput(await cli(installed, ["--output", "json", "init"]));
   const doctor = jsonOutput(await cli(installed, ["--output", "json", "doctor"]));
   assertTypedKeychainCapability(doctor, "module-unavailable");
   await assertVaultFallback(installed);
@@ -387,7 +389,7 @@ async function assertUnsupportedNodeDoesNotMutate(installed) {
   );
   const result = await run(
     process.execPath,
-    ["--require", preload, installed.jsBin, "init", "--agent", "codex"],
+    ["--require", preload, installed.jsBin, "init"],
     installed.projectRoot,
     { ...installed.env, CELLARER_HOME: store },
     true,
