@@ -460,20 +460,32 @@ describe("transaction journal interruption recovery", () => {
     const plaintextSecret = "journal-canary-secret-value";
     const originalTargetContent = "journal-canary-original-target-content";
     const statePath = join(storeRoot, "state.json");
+    const planAction = {
+      op: "write",
+      target: targetA,
+      content: plaintextSecret,
+      previewBefore: originalTargetContent,
+    };
     const mutationPlan = createAuthorizedMutationPlan(t.env, storeRoot, {
       schemaVersion: 1,
       planId: "plan-sensitive",
       operation: "apply",
       baseRevision: 0,
       normalizedInputs: {
-        preview: { before: originalTargetContent, after: plaintextSecret },
+        storeRoot,
+        scope: "global",
+        agents: [],
+        configFingerprint: sha256("fixture-config"),
+        storeProvenance: [],
+        capabilityRootProvenance: [],
+        distributePlan: { actions: [planAction], warnings: [], conflicts: [] },
       },
       actions: [
         {
           actionId: "action-1",
           kind: "write",
           target: targetA,
-          payload: { content: plaintextSecret, previewBefore: originalTargetContent },
+          payload: { planAction },
         },
       ],
       targetPreconditions: [

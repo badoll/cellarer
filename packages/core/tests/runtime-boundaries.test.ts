@@ -133,6 +133,7 @@ const BOUNDARY_ROLE_INVENTORY: Readonly<Record<BoundaryRole, readonly string[]>>
     "protocol/journal.ts",
     "protocol/mutation-lock.ts",
     "protocol/operation-adapter.ts",
+    "protocol/operation-contracts.ts",
     "protocol/operation-execution.ts",
     "protocol/presentation.ts",
     "protocol/publication.ts",
@@ -1045,12 +1046,20 @@ describe("Core runtime effect ordering", () => {
         env,
         storeRoot,
         "settings",
-        "runtime-boundary-characterization",
+        "config-update",
         async () => ({
           value: undefined,
           publications: [{ path: target, data, mode: 0o600 }],
         }),
-        { secretPublicationGuard: activeSecretPublicationGuard },
+        {
+          normalizedInputs: {
+            businessInput: { kind: "settings", action: "update", settings: { method: "copy" } },
+            changedFields: ["defaults.method"],
+          },
+          provenancePaths: [target],
+          selfContainedPublications: true,
+          secretPublicationGuard: activeSecretPublicationGuard,
+        },
       );
 
     const rejected = await publish(`unsafe ${canary}`).catch((error: unknown) => error);

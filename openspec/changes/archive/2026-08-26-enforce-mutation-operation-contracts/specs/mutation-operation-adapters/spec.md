@@ -1,20 +1,4 @@
-# mutation-operation-adapters Specification
-
-## Purpose
-Define how typed domain mutation operations adapt to the single transaction kernel while preserving operation-specific semantics and safety boundaries.
-
-## Requirements
-
-### Requirement: Every mutation adapts through one execution kernel
-Each supported mutation operation MUST use one registered typed operation adapter to translate normalized domain intent and coherent observations into the exact canonical action set. The existing mutation kernel SHALL remain the sole owner of authority verification, currentness, locks, journal sequencing, atomic publication, effect execution, receipts, and recovery control.
-
-#### Scenario: Registered operation is applied
-- **WHEN** a current authorized domain plan is applied
-- **THEN** its operation adapter validates and prepares the exact action set and the single kernel executes it
-
-#### Scenario: Operation attempts to bypass the kernel
-- **WHEN** a mutation path performs a Store, target, provider, journal, or recovery effect outside the registered kernel path
-- **THEN** architecture and effect-spy tests fail before the change can be closed
+## MODIFIED Requirements
 
 ### Requirement: Operation adapters preserve domain semantics
 An operation adapter MUST own a closed normalized intent, provenance binding, operation-specific semantic validation, receipt projection, and recovery descriptor. It MUST select one exact statically registered mutation plan contract and MUST reject unknown, extra, missing, duplicated, reordered, or cross-contract actions before product observation or effects. Each selected contract MUST define whether an empty action set is valid for its existing converged semantics. An adapter MUST NOT infer policy from human messages or reason text.
@@ -34,13 +18,6 @@ An operation adapter MUST own a closed normalized intent, provenance binding, op
 #### Scenario: Human reason wording changes
 - **WHEN** an action description changes without changing its typed operation semantics
 - **THEN** authorization, execution, receipt, and recovery behavior remain unchanged
-
-### Requirement: Operation migration preserves observable and effect parity
-Migrating an existing operation to an adapter MUST preserve its canonical plan compatibility, authority scope, precondition ordering, exact external effects, reference-only observability, receipt semantics, recovery behavior, CLI/API result mapping, and Store format unless a separate explicit behavior change specifies otherwise.
-
-#### Scenario: Existing operation is migrated
-- **WHEN** characterization inputs are planned and applied before and after migration
-- **THEN** canonical plan evidence, ordered effect trace, receipt, conflict classes, and recovery result remain equivalent
 
 ### Requirement: Operation registration is exhaustive and closed
 Every executable mutation operation discriminant MUST map to exactly one adapter, and every executable mutation contract discriminant within that adapter MUST map to exactly one statically composed contract. Operations without an existing contract field MUST map to one fixed contract. Unknown or duplicate operation and contract discriminants MUST fail closed. Runtime configuration or custom agent definitions MUST NOT install executable mutation adapters or contracts. Recovery-only action kinds MUST NOT be accepted by an executable contract.

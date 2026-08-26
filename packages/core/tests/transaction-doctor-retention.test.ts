@@ -10,6 +10,7 @@ import {
   acquireStoreRecoveryLock,
 } from "../src/protocol/mutation-lock.js";
 import { pruneOperationRecoveryArtifacts } from "../src/protocol/recovery.js";
+import { sha256 } from "../src/store/checksum.js";
 import { initStore } from "../src/store/store.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
@@ -28,14 +29,23 @@ describe("mutation doctor and retention", () => {
 
   it("adds incomplete journal evidence to the existing Core doctor report", async () => {
     const target = t.path("home", ".agent", "rules.md");
+    const planAction = { op: "write", target };
     const plan = createAuthorizedMutationPlan(t.env, storeRoot, {
       schemaVersion: 1,
       planId: "plan-doctor",
       operation: "apply",
       baseRevision: 0,
-      normalizedInputs: {},
+      normalizedInputs: {
+        storeRoot,
+        scope: "global",
+        agents: [],
+        configFingerprint: sha256("fixture-config"),
+        storeProvenance: [],
+        capabilityRootProvenance: [],
+        distributePlan: { actions: [planAction], warnings: [], conflicts: [] },
+      },
       targetPreconditions: [{ actionId: "action-1", target, expected: { state: "absent" } }],
-      actions: [{ actionId: "action-1", kind: "write", target, payload: {} }],
+      actions: [{ actionId: "action-1", kind: "write", target, payload: { planAction } }],
       expires: { policy: "none" },
     });
     await expect(

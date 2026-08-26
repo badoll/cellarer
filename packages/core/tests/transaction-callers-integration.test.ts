@@ -96,16 +96,25 @@ describe("transaction caller integration", () => {
     const lowTargetSegment = "tiny-target-path";
     const lowExpiresAt = "2020-01-01T00:00:00.000Z";
     const target = t.path("home", ".agent", lowTargetSegment);
+    const planAction = { op: "write", target };
     const baseInput = {
       schemaVersion: 1 as const,
       planId: lowPlanId,
       operation: "apply" as const,
       baseRevision: 0,
-      normalizedInputs: {},
+      normalizedInputs: {
+        storeRoot,
+        scope: "global",
+        agents: [],
+        configFingerprint: sha256("fixture-config"),
+        storeProvenance: [],
+        capabilityRootProvenance: [],
+        distributePlan: { actions: [planAction], warnings: [], conflicts: [] },
+      },
       targetPreconditions: [
         { actionId: lowActionId, target, expected: { state: "absent" as const } },
       ],
-      actions: [{ actionId: lowActionId, kind: "write", target, payload: {} }],
+      actions: [{ actionId: lowActionId, kind: "write", target, payload: { planAction } }],
       expires: { policy: "none" as const },
     };
     const serialized = async (plan: MutationPlan) => {

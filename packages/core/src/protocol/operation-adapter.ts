@@ -12,6 +12,7 @@ import type {
   MutationPlan,
   OperationResult,
 } from "./models.js";
+import { type MutationPlanContract, mutationPlanContractFor } from "./operation-contracts.js";
 
 type StoreMutationIntent = CanonicalJsonObject & { readonly mutationKind: string };
 
@@ -39,11 +40,12 @@ export interface MutationOperationAdapter<
 > {
   readonly operation: Operation;
   readonly recovery: MutationOperationRecoveryDescriptor;
+  readonly selectContract: (plan: MutationPlan) => MutationPlanContract | null;
   readonly normalizeIntent: (plan: MutationPlan) => Intent;
-  readonly bindProvenance: (intent: Intent) => CanonicalJsonValue | null;
+  readonly bindProvenance: (plan: MutationPlan) => CanonicalJsonValue | null;
   readonly validateActionSet: (plan: MutationPlan) => boolean;
-  readonly prepareEffects: <Prepared>(prepare: () => Prepared) => Prepared;
-  readonly projectReceipt: (result: OperationResult) => Receipt;
+  readonly prepareEffects: <Prepared>(plan: MutationPlan, prepare: () => Prepared) => Prepared;
+  readonly projectReceipt: (plan: MutationPlan, result: OperationResult) => Receipt;
 }
 
 export type AnyMutationOperationAdapter = {
@@ -55,7 +57,7 @@ export interface MutationOperationRegistry {
   readonly values: () => readonly AnyMutationOperationAdapter[];
 }
 
-const operationActionKinds = {
+const recoveryActionKinds = {
   initialize: ["mkdir", "preserve-file", "publish-file"],
   apply: ["copy", "merge", "overwrite", "sync-gitignore", "symlink", "write"],
   revert: ["remove-target", "restore-snapshot", "sync-gitignore"],
@@ -88,18 +90,10 @@ const operationActionKinds = {
   "sync-uninstall": ["remove-target", "sync-gitignore"],
 } as const satisfies Readonly<Record<MutationOperation, readonly string[]>>;
 
-const storeIntentOperations = [
-  "initialize",
-  "settings",
-  "secret-metadata",
-  "store-import",
-] as const satisfies readonly MutationOperation[];
-
 function defineAdapter<Operation extends MutationOperation>(
   operation: Operation,
 ): MutationOperationAdapter<Operation> {
-  const allowedActionKinds = operationActionKinds[operation];
-  const allowed = new Set<string>(allowedActionKinds);
+  const allowedActionKinds = recoveryActionKinds[operation];
   return Object.freeze({
     operation,
     recovery: Object.freeze({
@@ -107,23 +101,32 @@ function defineAdapter<Operation extends MutationOperation>(
       allowedActionKinds,
       externalEffects: "manual-only" as const,
     }),
-    normalizeIntent: (plan: MutationPlan) => {
-      const intent = plan.normalizedInputs;
-      if (
-        storeIntentOperations.includes(operation as (typeof storeIntentOperations)[number]) &&
-        (typeof intent.mutationKind !== "string" || intent.mutationKind.length === 0)
-      ) {
-        throw new TypeError(`${operation} mutation intent has no typed mutation kind`);
-      }
-      return intent as MutationOperationIntentByOperation[Operation];
+    normalizeIntent: (plan: MutationPlan) =>
+      requireContract(operation, plan).normalizeIntent(
+        plan,
+      ) as MutationOperationIntentByOperation[Operation],
+    bindProvenance: (plan: MutationPlan) => requireContract(operation, plan).bindProvenance(plan),
+    selectContract: (plan: MutationPlan) => {
+      const contract = mutationPlanContractFor(plan);
+      return contract?.operation === operation ? contract : null;
     },
-    bindProvenance: (intent: MutationOperationIntentByOperation[Operation]) =>
-      intent.storeProvenance ?? intent.provenance ?? null,
-    validateActionSet: (plan: MutationPlan) =>
-      plan.operation === operation && plan.actions.every((action) => allowed.has(action.kind)),
-    prepareEffects: <Prepared>(prepare: () => Prepared): Prepared => prepare(),
-    projectReceipt: (result: OperationResult) => result,
+    validateActionSet: (plan: MutationPlan) => {
+      const contract = mutationPlanContractFor(plan);
+      return contract?.operation === operation && contract.validateActionSet(plan);
+    },
+    prepareEffects: <Prepared>(plan: MutationPlan, prepare: () => Prepared): Prepared =>
+      requireContract(operation, plan).prepareEffects(prepare),
+    projectReceipt: (plan: MutationPlan, result: OperationResult) =>
+      requireContract(operation, plan).projectReceipt(result),
   });
+}
+
+function requireContract(operation: MutationOperation, plan: MutationPlan): MutationPlanContract {
+  const contract = mutationPlanContractFor(plan);
+  if (!contract || contract.operation !== operation) {
+    throw new TypeError(`${operation} mutation plan has no registered contract`);
+  }
+  return contract;
 }
 
 const adaptersByOperation = {
@@ -160,7 +163,7 @@ export function createMutationOperationRegistry(
     }
     registered.set(adapter.operation, adapter);
   }
-  const missing = Object.keys(operationActionKinds).filter(
+  const missing = Object.keys(recoveryActionKinds).filter(
     (operation) => !registered.has(operation),
   );
   if (missing.length > 0) {
@@ -236,9 +239,14 @@ export function assertMutationPlanActionAlignment(plan: MutationPlan): void {
     actionIds.size !== plan.actions.length ||
     preconditionsByAction.size !== plan.targetPreconditions.length ||
     plan.actions.length !== plan.targetPreconditions.length ||
-    plan.actions.some(
-      (action) => preconditionsByAction.get(action.actionId)?.target !== action.target,
-    )
+    plan.actions.some((action, index) => {
+      const ordered = plan.targetPreconditions[index];
+      return (
+        ordered?.actionId !== action.actionId ||
+        ordered.target !== action.target ||
+        preconditionsByAction.get(action.actionId)?.target !== action.target
+      );
+    })
   ) {
     throw new TypeError("mutation plan actions and target preconditions are not one-to-one");
   }
@@ -262,7 +270,9 @@ export function characterizeMutationOperationPlan(
   readonly receiptProjection: "kernel-operation-receipt-v1";
   readonly recovery: MutationOperationRecoveryDescriptor;
 } {
-  if (adapter.operation !== plan.operation || !adapter.validateActionSet(plan)) {
+  assertMutationPlanActionAlignment(plan);
+  const contract = adapter.selectContract(plan);
+  if (adapter.operation !== plan.operation || !contract || !contract.validateActionSet(plan)) {
     throw new TypeError("mutation plan does not match its operation adapter");
   }
   return Object.freeze({

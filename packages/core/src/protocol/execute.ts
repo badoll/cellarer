@@ -87,7 +87,7 @@ export async function executeMutationPlan(
   if (!verifyMutationPlanAuthorization(env, storeRoot, plan)) return invalidPlanResult();
   const adapter = resolveMutationOperationAdapter(plan);
   if (!adapter) return invalidPlanResult();
-  const executePreparedEffects = adapter.prepareEffects(() => execute);
+  const executePreparedEffects = adapter.prepareEffects(plan, () => execute);
   const suppliedAuthorityLease = options.authorityLease;
   const authorityLease =
     suppliedAuthorityLease ?? (await acquireCurrentMutationAuthorityLease(env).catch(() => null));
@@ -465,7 +465,7 @@ export async function executeMutationPlan(
     releaseAttempted = true;
     await acquired.lock.release();
     await removeOperationJournal(env, storeRoot);
-    return adapter.projectReceipt({ ok: true, receipt });
+    return adapter.projectReceipt(plan, { ok: true, receipt });
   } catch (error) {
     if (error instanceof PublicationPostconditionError) {
       let recoveryJournal = journal;
