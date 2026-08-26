@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import type { Env, MutationAuthorityLease } from "../env.js";
 import { assertSafeAtomicPublicationPath } from "../fs/safety.js";
 import { assertFinalSerializedSecretBytes } from "../secrets/final-bytes.js";
+import type { SecretValue } from "../secrets/observable.js";
 import type { StorePublicationSecretGuard } from "../secrets/provider-ports.js";
 import { captureAnchoredSafeRecursiveSource } from "../secrets/safe-tree.js";
 import { sha256 } from "../store/checksum.js";
@@ -76,6 +77,11 @@ export interface StoreMutationPlanBindings {
   readonly validatePublications?: (publications: readonly StorePublicationInput[]) => void;
   /** Read-only provider observation used by final serialized-byte guards. */
   readonly secretPublicationGuard?: StorePublicationSecretGuard;
+  /** Domain-aware final-byte validation after the publication's closed schema has passed. */
+  readonly validateFinalPublicationBytes?: (
+    publication: StorePublicationInput,
+    knownValues: readonly SecretValue[],
+  ) => void;
 }
 
 export interface AppliedStorePublicationPlan {
@@ -428,7 +434,7 @@ async function prepareStoreActionMutationPlan<T>(
       );
       operationEnv = guarded.env;
       for (const publication of publications) {
-        assertFinalSerializedSecretBytes(publication.data, guarded.knownValues, publication.path);
+        validateFinalPublicationBytes(bindings, publication, guarded.knownValues);
       }
     }
     const publicationActions: MutationPlanAction[] = publications.map((publication, index) => ({
@@ -520,6 +526,7 @@ export async function applyStorePublicationPlan(
     readonly requiredProvenancePathsByMutationKind?: Readonly<Record<string, readonly string[]>>;
     readonly requiredNormalizedInputKeys?: readonly string[];
     readonly validatePublicationData?: (data: string) => void;
+    readonly validateFinalPublicationBytes?: StoreMutationPlanBindings["validateFinalPublicationBytes"];
     readonly validatePlanUnderLock?: (
       plan: MutationPlan,
       publication: StorePublicationInput,
@@ -545,7 +552,11 @@ export async function applyStorePublicationPlan(
   try {
     let guarded = await options.secretPublicationGuard.prepare(env, storeRoot);
     let operationEnv = guarded.env;
-    assertFinalSerializedSecretBytes(decoded.data, guarded.knownValues, decoded.action.target);
+    validateFinalPublicationBytes(
+      options,
+      { path: decoded.action.target, data: decoded.data, mode: decoded.mode },
+      guarded.knownValues,
+    );
     const operation = await executePreparedMutationOperation(
       operationEnv,
       storeRoot,
@@ -595,10 +606,10 @@ export async function applyStorePublicationPlan(
           if (finalProvenance) return finalProvenance;
           guarded = await options.secretPublicationGuard.prepare(operationEnv, storeRoot);
           operationEnv = guarded.env;
-          assertFinalSerializedSecretBytes(
-            decoded.data,
+          validateFinalPublicationBytes(
+            options,
+            { path: decoded.action.target, data: decoded.data, mode: decoded.mode },
             guarded.knownValues,
-            decoded.action.target,
           );
           return null;
         },
@@ -608,6 +619,18 @@ export async function applyStorePublicationPlan(
   } finally {
     if (!suppliedLease) await authorityLease.release();
   }
+}
+
+function validateFinalPublicationBytes(
+  options: Pick<StoreMutationPlanBindings, "validateFinalPublicationBytes">,
+  publication: StorePublicationInput,
+  knownValues: readonly SecretValue[],
+): void {
+  if (options.validateFinalPublicationBytes) {
+    options.validateFinalPublicationBytes(publication, knownValues);
+    return;
+  }
+  assertFinalSerializedSecretBytes(publication.data, knownValues, publication.path);
 }
 
 function decodeSelfContainedPublicationPlan(

@@ -13,6 +13,7 @@ import {
 } from "../src/protocol/canonical.js";
 import {
   createProviderScope,
+  inventoryActiveSecretValues as inventoryActiveSecretValuesFromInput,
   providerScopeForEnv,
   withProviderScope,
 } from "../src/secrets/active-values.js";
@@ -21,6 +22,7 @@ import {
   createSecretValue,
   observableKnownValues,
   redactObservable,
+  registerObservablePublicControlPlanePlan,
   serializeObservable,
   withObservableKnownValues,
 } from "../src/secrets/observable.js";
@@ -104,6 +106,26 @@ describe("scoped secret values", () => {
     } finally {
       t.cleanup();
     }
+  });
+
+  it("does not inventory the standard shell PWD as a password", async () => {
+    const active = await inventoryActiveSecretValuesFromInput(
+      {
+        useCase: "environment-only",
+        environment: {
+          PWD: "/tmp/isolated-project",
+          API_TOKEN: "ordinary-active-token-value",
+        },
+        observation: {},
+        scopeCarrier: {},
+      },
+      "/tmp/isolated-store",
+      { secretMode: "env" },
+    );
+
+    expect(active.map(({ reference }) => reference)).toEqual([
+      environmentSecretReference("API_TOKEN"),
+    ]);
   });
 
   it("deduplicates concurrent failures for the same provider token", async () => {
@@ -335,6 +357,58 @@ describe("observable secret boundaries", () => {
       config: {
         artifacts: {
           "rules/style": { secretPatternSuppressions: [{ rule: "[REDACTED]" }] },
+        },
+      },
+    });
+  });
+
+  it("preserves custom MCP metadata only for a registered control-plane plan", () => {
+    const createPlan = () => ({
+      normalizedInputs: {
+        businessInput: {
+          adapter: {
+            mcp: {
+              supportedSecretReferences: ["environment", "cellarer"],
+            },
+          },
+        },
+      },
+    });
+    const unregistered = createPlan();
+    const registered = registerObservablePublicControlPlanePlan(createPlan());
+
+    expect(JSON.parse(serializeObservable("cli", { plan: unregistered }))).toMatchObject({
+      plan: {
+        normalizedInputs: {
+          businessInput: {
+            adapter: {
+              mcp: { supportedSecretReferences: ["[REDACTED]", "[REDACTED]"] },
+            },
+          },
+        },
+      },
+    });
+    expect(JSON.parse(serializeObservable("cli", { plan: registered }))).toMatchObject({
+      plan: {
+        normalizedInputs: {
+          businessInput: {
+            adapter: {
+              mcp: { supportedSecretReferences: ["environment", "cellarer"] },
+            },
+          },
+        },
+      },
+    });
+    expect(
+      JSON.parse(serializeObservable("cli", { plan: JSON.parse(JSON.stringify(registered)) })),
+    ).toMatchObject({
+      plan: {
+        normalizedInputs: {
+          businessInput: {
+            adapter: {
+              mcp: { supportedSecretReferences: ["[REDACTED]", "[REDACTED]"] },
+            },
+          },
         },
       },
     });

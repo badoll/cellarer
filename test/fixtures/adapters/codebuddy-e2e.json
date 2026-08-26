@@ -1,0 +1,22 @@
+{
+  "displayName": "CodeBuddy (E2E fixture only)",
+  "rules": {
+    "project": "{dir}/.codebuddy/RULES.md",
+    "format": "markdown"
+  },
+  "mcp": {
+    "project": "{dir}/.codebuddy/mcp.json",
+    "format": "json",
+    "serversKey": "mcpServers",
+    "supportedSecretReferences": ["environment"]
+  },
+  "skills": {
+    "project": "{dir}/.codebuddy/skills",
+    "format": "dir"
+  },
+  "capabilities": {
+    "rules": ["project"],
+    "mcp": ["project"],
+    "skills": ["project"]
+  }
+}

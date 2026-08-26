@@ -4,8 +4,11 @@ import type { Env } from "./env.js";
 import type { CanonicalJsonObject } from "./protocol/models.js";
 import {
   planStorePublicationMutation,
+  type StorePublicationInput,
   type StorePublicationMutationPlan,
 } from "./protocol/store-mutation.js";
+import { assertFinalSerializedTextBytes } from "./secrets/final-bytes.js";
+import type { SecretValue } from "./secrets/observable.js";
 import { activeSecretPublicationGuard } from "./secrets/publication-guard.js";
 import {
   type CellarerConfig,
@@ -47,6 +50,14 @@ export function validateConfigPublication(data: string): void {
   }
 }
 
+export function validateConfigFinalPublicationBytes(
+  publication: StorePublicationInput,
+  knownValues: readonly SecretValue[],
+): void {
+  validateConfigPublication(publication.data);
+  assertFinalSerializedTextBytes(publication.data, knownValues);
+}
+
 export function validateDerivedConfig(value: unknown): CellarerConfig {
   try {
     return parseConfigValue(value);
@@ -77,6 +88,7 @@ function configMutationBindings(options: ConfigMutationOptions) {
     normalizedInputs: { ...(options.normalizedInputs ?? {}), changedFields: options.changedFields },
     selfContainedPublications: true,
     secretPublicationGuard: activeSecretPublicationGuard,
+    validateFinalPublicationBytes: validateConfigFinalPublicationBytes,
     validatePublications: (publications: readonly { readonly data: string }[]) => {
       for (const publication of publications) validateConfigPublication(publication.data);
     },

@@ -19,9 +19,7 @@ export function assertFinalSerializedSecretBytes(
   knownValues: readonly SecretValue[],
   source?: string,
 ): void {
-  if (containsObservableKnownValue(data, knownValues) || scanTextForSecrets(data).length > 0) {
-    throw new FinalSecretByteGuardError();
-  }
+  assertFinalSerializedTextBytes(data, knownValues);
   if (source && scanStructuredFileSecretFindings(source, data).length > 0) {
     throw new FinalSecretByteGuardError();
   }
@@ -31,5 +29,14 @@ export function assertFinalSerializedSecretBytes(
     }
   } catch (error) {
     if (error instanceof FinalSecretByteGuardError) throw error;
+  }
+}
+
+export function assertFinalSerializedTextBytes(
+  data: string,
+  knownValues: readonly SecretValue[],
+): void {
+  if (containsObservableKnownValue(data, knownValues) || scanTextForSecrets(data).length > 0) {
+    throw new FinalSecretByteGuardError();
   }
 }

@@ -80,7 +80,6 @@ interface ProviderResolution {
 }
 
 const PROVIDER_SCOPE = Symbol("cellarer.provider-scope");
-
 export function createProviderScope(options: ActiveSecretValueOptions): ProviderScope {
   return {
     mode: options.secretMode,
@@ -222,7 +221,9 @@ export async function inventoryActiveSecretValues(
       ? existing
       : (createProviderScope(options) as MutableProviderScope);
   const environmentReferences = Object.entries(input.environment).flatMap(([name, value]) =>
-    value && isSensitiveSecretFieldName(name) ? [environmentSecretReference(name)] : [],
+    value && name !== "PWD" && isSensitiveSecretFieldName(name)
+      ? [environmentSecretReference(name)]
+      : [],
   );
   await resolveActiveSecretValues(
     { ...input, scopeCarrier: withProviderScope(input.scopeCarrier, scope) },

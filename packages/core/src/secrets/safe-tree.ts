@@ -143,10 +143,14 @@ export function sliceSafeRecursiveSnapshot(
 }
 
 function safeRecursiveSnapshotFromTree(tree: FileTreeSnapshot): SafeRecursiveSnapshot {
-  const rootPath = tree.rootPath;
-  const root = tree.nodes.find((node) => node.relativePath === "");
+  const normalizedTree = Object.freeze({
+    ...tree,
+    nodes: Object.freeze([...tree.nodes].sort(compareSnapshotNodePaths)),
+  });
+  const rootPath = normalizedTree.rootPath;
+  const root = normalizedTree.nodes.find((node) => node.relativePath === "");
   if (!root) throw new UnsafeRecursiveSourceError(rootPath, "stale");
-  const files = tree.nodes.flatMap((node) => {
+  const files = normalizedTree.nodes.flatMap((node) => {
     if (node.kind !== "file" || !node.data) return [];
     return [
       Object.freeze({
@@ -160,7 +164,7 @@ function safeRecursiveSnapshotFromTree(tree: FileTreeSnapshot): SafeRecursiveSna
       }),
     ];
   });
-  const directories = tree.nodes.flatMap((node) =>
+  const directories = normalizedTree.nodes.flatMap((node) =>
     node.kind === "directory"
       ? [Object.freeze({ relativePath: node.relativePath, mode: node.mode })]
       : [],
@@ -170,10 +174,23 @@ function safeRecursiveSnapshotFromTree(tree: FileTreeSnapshot): SafeRecursiveSna
     kind: root.kind,
     files: Object.freeze(files),
     directories: Object.freeze(directories),
-    fingerprint: snapshotFingerprint(tree),
-    identity: sha256(JSON.stringify(tree.nodes.map((node) => [node.relativePath, node.identity]))),
-    tree,
+    fingerprint: snapshotFingerprint(normalizedTree),
+    identity: sha256(
+      JSON.stringify(normalizedTree.nodes.map((node) => [node.relativePath, node.identity])),
+    ),
+    tree: normalizedTree,
   });
+}
+
+function compareSnapshotNodePaths(
+  left: FileTreeSnapshot["nodes"][number],
+  right: FileTreeSnapshot["nodes"][number],
+): number {
+  return left.relativePath < right.relativePath
+    ? -1
+    : left.relativePath > right.relativePath
+      ? 1
+      : 0;
 }
 
 /** Compatibility view for scanners that only need file contents. */

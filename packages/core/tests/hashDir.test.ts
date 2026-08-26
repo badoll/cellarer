@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { hashDir } from "../src/fs/hashDir.js";
+import {
+  assertSafeRecursiveSnapshotCurrent,
+  captureSafeRecursiveSource,
+  installSafeRecursiveSnapshot,
+} from "../src/secrets/safe-tree.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
 describe("fs/hashDir", () => {
@@ -22,6 +27,22 @@ describe("fs/hashDir", () => {
     await seedDir("a", { "SKILL.md": "hello", "sub/x.txt": "world" });
     await seedDir("b", { "SKILL.md": "hello", "sub/x.txt": "world" });
     expect(await hashDir(t.env, t.path("a"))).toBe(await hashDir(t.env, t.path("b")));
+  });
+
+  it("matches no-follow snapshot fingerprints for mixed-case nested Skill paths", async () => {
+    await seedDir("skill", {
+      "SKILL.md": "# Skill\n",
+      "references/fixture.txt": "fixture\n",
+    });
+    const path = t.path("skill");
+
+    const snapshot = await captureSafeRecursiveSource(t.env, path);
+    expect(snapshot.fingerprint).toBe(await hashDir(t.env, path));
+    await expect(assertSafeRecursiveSnapshotCurrent(t.env, snapshot)).resolves.toBeUndefined();
+
+    const copy = t.path("copy");
+    await installSafeRecursiveSnapshot(t.env, snapshot, copy, false);
+    expect(await hashDir(t.env, copy)).toBe(snapshot.fingerprint);
   });
 
   it("changes when a file content changes", async () => {

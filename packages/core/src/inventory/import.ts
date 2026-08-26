@@ -23,7 +23,10 @@ import {
   parseResourceRecord,
   resourceMetadataPath,
 } from "../resources/model.js";
-import { assertFinalSerializedSecretBytes } from "../secrets/final-bytes.js";
+import {
+  assertFinalSerializedSecretBytes,
+  assertFinalSerializedTextBytes,
+} from "../secrets/final-bytes.js";
 import {
   captureAnchoredSafeRecursiveSource,
   captureSafeRecursiveSource,
@@ -526,7 +529,7 @@ async function collectionMembershipAction(
     };
   }
   const data = `${JSON.stringify(next, null, 2)}\n`;
-  assertFinalSerializedSecretBytes(data, [], target);
+  assertInventoryConfigPublication(data);
   const payload = {
     collectionId,
     resourceIds,
@@ -860,7 +863,7 @@ function decodeCollectionAction(
     return null;
   }
   try {
-    assertFinalSerializedSecretBytes(action.payload.data, [], action.target);
+    assertInventoryConfigPublication(action.payload.data);
     const config = parseConfigValue(JSON.parse(action.payload.data));
     if (
       candidateIds.length !== resourceIds.length ||
@@ -1081,9 +1084,18 @@ async function executeInventoryImportAction(
     );
     return;
   }
-  assertFinalSerializedSecretBytes(decoded.data, [], decoded.action.target);
+  if (decoded.type === "collection") {
+    assertInventoryConfigPublication(decoded.data);
+  } else {
+    assertFinalSerializedSecretBytes(decoded.data, [], decoded.action.target);
+  }
   await env.fs.mkdir(dirname(decoded.action.target), { recursive: true });
   await env.fs.publishFileAtomically(decoded.action.target, decoded.data, { mode: decoded.mode });
+}
+
+function assertInventoryConfigPublication(data: string): void {
+  parseConfigValue(JSON.parse(data));
+  assertFinalSerializedTextBytes(data, []);
 }
 
 function publicationSnapshot(

@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  applyInventoryStoreImportPlan,
   InventoryStoreImportPlanningError,
   planInventoryStoreImport,
 } from "../src/inventory/import.js";
@@ -66,6 +67,42 @@ describe("Inventory Store import planning", () => {
       1024 * 1024,
     );
     expect(await t.env.fs.snapshotTreeNoFollow(storeRoot)).toEqual(before);
+  });
+
+  it("plans collection membership when valid custom MCP metadata is already configured", async () => {
+    const configPath = join(storeRoot, "config.json");
+    const config = JSON.parse(await t.env.fs.readFile(configPath)) as Record<string, unknown>;
+    config.customAdapters = {
+      "custom-mcp": {
+        mcp: {
+          project: "{dir}/.custom/mcp.json",
+          format: "json",
+          serversKey: "mcpServers",
+          supportedSecretReferences: ["environment"],
+        },
+      },
+    };
+    await t.env.fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    const reviewed = await refreshInventory(t.env, { storeRoot, agentId: "agents-md" });
+    const candidate = reviewed.candidates.find(({ kind }) => kind === "rules");
+    if (!candidate) throw new Error("missing reviewed candidate");
+
+    const planned = await planInventoryStoreImport(t.env, {
+      storeRoot,
+      candidateIds: [candidate.id],
+      intoCollection: "default",
+      refresh: { agentId: "agents-md" },
+    });
+
+    expect(planned.mutationPlan.actions.map(({ kind }) => kind)).toContain(
+      "inventory-collection-membership",
+    );
+
+    await expect(
+      applyInventoryStoreImportPlan(t.env, planned.mutationPlan, { storeRoot }),
+    ).resolves.toMatchObject({
+      operation: { ok: true, receipt: { outcome: "committed" } },
+    });
   });
 
   it("does not infer selection and rejects duplicate or unknown candidate IDs", async () => {

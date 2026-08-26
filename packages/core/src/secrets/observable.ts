@@ -73,6 +73,7 @@ const OBSERVABLE_PROVIDER_SCOPE = Symbol("cellarer.observable-provider-scope");
 const observableMutationAuthorizations = new WeakMap<object, MutationAuthorizationEnvelope>();
 const observablePublicControlPlaneConfigs = new WeakSet<object>();
 const observableOpenApiDocuments = new WeakSet<object>();
+const CONTROL_PLANE_PLAN_METADATA_ROOT = "$validated-control-plane-plan";
 
 export interface ObservableProviderScope {
   readonly knownValues: readonly SecretValue[];
@@ -205,6 +206,12 @@ export function registerObservablePublicControlPlaneConfig<T extends object>(val
   return value;
 }
 
+/** Marks a Core-validated control-plane plan for path-specific public adapter metadata. */
+export function registerObservablePublicControlPlanePlan<T extends object>(value: T): T {
+  observablePublicControlPlaneConfigs.add(value);
+  return value;
+}
+
 /**
  * Internal identity registry for an OpenAPI snapshot that public-boundary has already cloned,
  * validated, and frozen. Do not expose this generic marker from the package barrel.
@@ -322,9 +329,8 @@ function redactValue(
   }
   if (seen.has(value)) throw new TypeError("observable output cannot contain circular values");
   seen.add(value);
-  const currentPublicConfigPath = observablePublicControlPlaneConfigs.has(value)
-    ? []
-    : publicConfigPath;
+  const registeredPublicPath = registeredPublicControlPlanePath(value);
+  const currentPublicConfigPath = registeredPublicPath ?? publicConfigPath;
   if (Array.isArray(value)) {
     const entries = strictArrayDataValues(value);
     if (!entries) return REDACTED_SECRET;
@@ -452,10 +458,28 @@ function isPublicControlPlaneMetadataField(
   return (
     (key === "secretPatternSuppressions" && path.length === 2 && path[0] === "artifacts") ||
     (key === "supportedSecretReferences" &&
-      path.length === 3 &&
-      (path[0] === "adapterOverrides" || path[0] === "customAdapters") &&
-      path[2] === "mcp")
+      ((path.length === 3 &&
+        (path[0] === "adapterOverrides" || path[0] === "customAdapters") &&
+        path[2] === "mcp") ||
+        (path.length === 5 &&
+          path[0] === CONTROL_PLANE_PLAN_METADATA_ROOT &&
+          path[1] === "normalizedInputs" &&
+          path[2] === "businessInput" &&
+          path[3] === "adapter" &&
+          path[4] === "mcp")))
   );
+}
+
+function registeredPublicControlPlanePath(value: object): readonly string[] | undefined {
+  if (!observablePublicControlPlaneConfigs.has(value)) return undefined;
+  try {
+    const normalizedInputs = Object.getOwnPropertyDescriptor(value, "normalizedInputs");
+    return normalizedInputs && "value" in normalizedInputs && normalizedInputs.enumerable
+      ? [CONTROL_PLANE_PLAN_METADATA_ROOT]
+      : [];
+  } catch {
+    return undefined;
+  }
 }
 
 const REDACTED_OBSERVABLE_KEY = "[REDACTED_KEY]";

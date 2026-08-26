@@ -676,42 +676,51 @@ const targetAcknowledgement = dataObject(["kind", "token"], {
   kind: jsonSchema.enumeration(["replace-unowned", "override-drift", "revert-drift"]),
   token: jsonSchema.string({ pattern: "^sha256:[0-9a-f]{64}$" }),
 });
-const distributePlanAction = dataObject(
-  ["artifact", "agent", "scope", "capability", "target", "method", "op"],
-  {
-    artifact: jsonSchema.string({ minLength: 1 }),
-    artifactIds: stringArray,
-    agent: jsonSchema.string({ minLength: 1 }),
-    scope,
-    capability: jsonSchema.enumeration(["rules", "mcp", "skills"]),
-    target: jsonSchema.string({ minLength: 1 }),
-    source: jsonSchema.string({ minLength: 1 }),
-    method: jsonSchema.enumeration(["symlink", "copy"]),
-    op: jsonSchema.enumeration(["write", "symlink", "copy", "merge", "overwrite", "skip"]),
-    reason: jsonSchema.string(),
-    preview: dataObject([], { before: jsonSchema.string(), after: jsonSchema.string() }),
-    secretRefs: stringArray,
-    accidentalPlaintext: jsonSchema.boolean(),
-    desiredEvidence: dataObject(["method"], {
-      method: jsonSchema.enumeration(["write", "symlink", "copy"]),
-      contentFingerprint: jsonSchema.string({ minLength: 1 }),
-      sourceFingerprint: jsonSchema.string({ minLength: 1 }),
-      sourceIdentity: jsonSchema.string({ minLength: 1 }),
+const distributePlanActionProperties: Readonly<Record<string, JsonSchema>> = {
+  artifact: jsonSchema.string({ minLength: 1 }),
+  artifactIds: stringArray,
+  agent: jsonSchema.string({ minLength: 1 }),
+  scope,
+  capability: jsonSchema.enumeration(["rules", "mcp", "skills"]),
+  source: jsonSchema.string({ minLength: 1 }),
+  method: jsonSchema.enumeration(["symlink", "copy"]),
+  reason: jsonSchema.string(),
+  preview: dataObject([], { before: jsonSchema.string(), after: jsonSchema.string() }),
+  secretRefs: stringArray,
+  accidentalPlaintext: jsonSchema.boolean(),
+  desiredEvidence: dataObject(["method"], {
+    method: jsonSchema.enumeration(["write", "symlink", "copy"]),
+    contentFingerprint: jsonSchema.string({ minLength: 1 }),
+    sourceFingerprint: jsonSchema.string({ minLength: 1 }),
+    sourceIdentity: jsonSchema.string({ minLength: 1 }),
+  }),
+  storeInputs: jsonSchema.array(
+    dataObject(["artifactId", "path", "fingerprint"], {
+      artifactId: jsonSchema.string({ minLength: 1 }),
+      path: jsonSchema.string({ minLength: 1 }),
+      fingerprint: jsonSchema.string({ minLength: 1 }),
     }),
-    storeInputs: jsonSchema.array(
-      dataObject(["artifactId", "path", "fingerprint"], {
-        artifactId: jsonSchema.string({ minLength: 1 }),
-        path: jsonSchema.string({ minLength: 1 }),
-        fingerprint: jsonSchema.string({ minLength: 1 }),
-      }),
-    ),
-    ownership: targetOwnership,
-    replacement: dataObject(["acknowledgement", "snapshotRequired"], {
-      acknowledgement: targetAcknowledgement,
-      snapshotRequired: { const: true },
+  ),
+  ownership: targetOwnership,
+  replacement: dataObject(["acknowledgement", "snapshotRequired"], {
+    acknowledgement: targetAcknowledgement,
+    snapshotRequired: { const: true },
+  }),
+};
+const distributePlanAction: JsonSchema = {
+  oneOf: [
+    dataObject(["artifact", "agent", "scope", "capability", "target", "method", "op"], {
+      ...distributePlanActionProperties,
+      target: jsonSchema.string(),
+      op: { const: "skip" },
     }),
-  },
-);
+    dataObject(["artifact", "agent", "scope", "capability", "target", "method", "op"], {
+      ...distributePlanActionProperties,
+      target: jsonSchema.string({ minLength: 1 }),
+      op: jsonSchema.enumeration(["write", "symlink", "copy", "merge", "overwrite"]),
+    }),
+  ],
+};
 const targetConflict = dataObject(["code", "target", "message", "ownership"], {
   code: jsonSchema.enumeration([
     "UNOWNED_TARGET",
@@ -847,6 +856,24 @@ const distributionNormalizedInputs = dataObject(
     capabilityRootProvenance: jsonSchema.array(capabilityRootProvenanceDescriptor),
     dir: jsonSchema.string({ minLength: 1 }),
     capabilities: capabilityArray,
+    resourceIds: jsonSchema.array(
+      jsonSchema.string({ pattern: "^(?:rules|mcp|skills)/[A-Za-z0-9._-]+$" }),
+    ),
+    method: jsonSchema.enumeration(["symlink", "copy"]),
+    mcpStrategy: jsonSchema.enumeration(["merge", "overwrite"]),
+    syncProfile: dataObject(["profileId", "profileRevision", "resolvedResources"], {
+      profileId: jsonSchema.string({ pattern: "^[A-Za-z0-9._-]+$" }),
+      profileRevision: jsonSchema.string({ pattern: "^sha256:[0-9a-f]{64}$" }),
+      resolvedResources: jsonSchema.array(
+        dataObject(["resourceId", "revision", "capability"], {
+          resourceId: jsonSchema.string({
+            pattern: "^(?:rules|mcp|skills)/[A-Za-z0-9._-]+$",
+          }),
+          revision: jsonSchema.string({ pattern: "^sha256:[0-9a-f]{64}$" }),
+          capability: jsonSchema.enumeration(["rules", "mcp", "skills"]),
+        }),
+      ),
+    }),
     distributePlan,
   },
 );

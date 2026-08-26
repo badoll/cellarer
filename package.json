@@ -12,6 +12,7 @@
   "scripts": {
     "build": "turbo run build",
     "artifact:pack": "node scripts/artifact-release-gate.mjs --pack-only",
+    "e2e:resources": "node scripts/artifact-release-gate.mjs --resource-e2e",
     "release:readiness": "node scripts/artifact-release-gate.mjs",
     "version:check": "node scripts/prepare-version.mjs --check",
     "version:prepare": "node scripts/prepare-version.mjs",

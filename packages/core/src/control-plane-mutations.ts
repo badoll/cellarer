@@ -1,6 +1,10 @@
 import { join } from "node:path";
 import { z } from "zod";
-import { planConfigMutation, validateConfigPublication } from "./config-mutation.js";
+import {
+  planConfigMutation,
+  validateConfigFinalPublicationBytes,
+  validateConfigPublication,
+} from "./config-mutation.js";
 import { ControlPlaneValidationError } from "./control-plane-validation.js";
 import type { Env } from "./env.js";
 import { refreshInventory } from "./inventory/projector.js";
@@ -23,6 +27,7 @@ import {
   StoreMutationConflictError,
   type StorePublicationInput,
 } from "./protocol/store-mutation.js";
+import { registerObservablePublicControlPlanePlan } from "./secrets/observable.js";
 import { activeSecretPublicationGuard } from "./secrets/publication-guard.js";
 import {
   type AdapterBodyConfig,
@@ -748,6 +753,7 @@ export async function applyControlPlaneMutationPlan(
   );
   const businessInput = decodeControlPlaneBusinessInput(normalizedPlan);
   if (!businessInput) return invalidAppliedControlPlanePlan(normalizedPlan);
+  registerObservablePublicControlPlanePlan(normalizedPlan);
   const requiredTarget = join(input.storeRoot, CONFIG_FILENAME);
   const requiredProvenancePathsByMutationKind = Object.fromEntries(
     CONTROL_PLANE_MUTATION_KINDS.map((mutationKind) => [
@@ -763,6 +769,7 @@ export async function applyControlPlaneMutationPlan(
     requiredProvenancePathsByMutationKind,
     requiredNormalizedInputKeys: ["businessInput"],
     validatePublicationData: validateConfigPublication,
+    validateFinalPublicationBytes: validateConfigFinalPublicationBytes,
     validatePlanUnderLock: async (lockedPlan, publication) =>
       validateControlPlanePlanUnderLock(
         env,
@@ -805,15 +812,19 @@ async function mutateConfig(
   const prepare = () => prepareControlPlaneConfig(env, opts.storeRoot, normalizedBusinessInput);
   if (opts.dryRun) {
     const planned = await planConfigMutation(env, mutationOptions, prepare);
-    return { plan: planned.plan, changedFields };
+    return {
+      plan: registerObservablePublicControlPlanePlan(planned.plan),
+      changedFields,
+    };
   }
   const planned = await planConfigMutation(env, mutationOptions, prepare);
-  const applied = await applyControlPlaneMutationPlan(env, planned.plan, {
+  const publicPlan = registerObservablePublicControlPlanePlan(planned.plan);
+  const applied = await applyControlPlaneMutationPlan(env, publicPlan, {
     storeRoot: opts.storeRoot,
   });
   if (!applied.operation.ok) throw new StoreMutationConflictError(applied.operation.conflict);
   return {
-    plan: planned.plan,
+    plan: publicPlan,
     changedFields,
     receipt: { ...applied.operation.receipt, changedFields },
     ...(applied.postCommitInventoryRefresh

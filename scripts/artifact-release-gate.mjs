@@ -5,11 +5,13 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { runResourceJourney } from "../test/e2e/resource-journey.mjs";
 import { optionalKeychainInstalled } from "./artifact-release-gate-helpers.mjs";
 
 const exec = promisify(execFile);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packOnly = process.argv.slice(2).includes("--pack-only");
+const resourceE2eOnly = process.argv.slice(2).includes("--resource-e2e");
 const offlineRegistry = execFileSync("pnpm", ["config", "get", "registry"], {
   cwd: repositoryRoot,
   encoding: "utf8",
@@ -27,7 +29,17 @@ try {
   const first = await packSet("first");
   const second = await packSet("second");
   await inspectPackSet(first, second);
-  if (!packOnly) {
+  if (resourceE2eOnly) {
+    const resourceInstalled = await installPackedSet(first, {
+      name: "resource-e2e",
+      includeOptionalDependencies: false,
+    });
+    assert(
+      !optionalKeychainInstalled(resourceInstalled),
+      "resource E2E install unexpectedly contains native keychain package",
+    );
+    await exerciseResourceJourney(resourceInstalled);
+  } else if (!packOnly) {
     const installed = await installPackedSet(first, {
       name: "with-optional",
       includeOptionalDependencies: true,
@@ -46,10 +58,14 @@ try {
       "no-optional install unexpectedly contains native keychain package",
     );
     await exerciseNativeUnavailableRelease(withoutOptional);
+    await exerciseResourceJourney(withoutOptional);
   }
-  await writeLocalResults(first, packOnly ? "pack" : "readiness");
+  await writeLocalResults(
+    first,
+    packOnly ? "pack" : resourceE2eOnly ? "resource-e2e" : "readiness",
+  );
   process.stdout.write(
-    `${packOnly ? "artifact pack inspection" : "artifact release gate"} passed\n`,
+    `${packOnly ? "artifact pack inspection" : resourceE2eOnly ? "isolated resource E2E" : "artifact release gate"} passed\n`,
   );
 } finally {
   await fs.rm(temporaryRoot, { recursive: true, force: true });
@@ -377,6 +393,209 @@ async function exerciseNativeUnavailableRelease(installed) {
   const doctor = jsonOutput(await cli(installed, ["--output", "json", "doctor"]));
   assertTypedKeychainCapability(doctor, "module-unavailable");
   await assertVaultFallback(installed);
+}
+
+async function exerciseResourceJourney(installed) {
+  const journey = await runResourceJourney({
+    command: installed.binPath,
+    consumerRoot: installed.projectRoot,
+    repositoryRoot,
+    baseEnvironment: installed.env,
+    mode: process.env.CELLARER_E2E_MODE ?? "fixture",
+    skillsPool: process.env.CELLARER_E2E_SKILLS_POOL,
+    inspectSidecar: (checkpoint) => assertResourceJourneySidecar(installed, checkpoint),
+  });
+  assert(journey.status === "passed", "isolated resource journey did not pass");
+}
+
+async function assertResourceJourneySidecar(installed, checkpoint) {
+  const token = "cellarer-resource-e2e-sidecar-token-canary";
+  const lifetimeFd = 4;
+  const child = spawn(
+    installed.binPath,
+    [
+      "--output",
+      "json",
+      "ui",
+      "--port",
+      "0",
+      "--token-fd",
+      "3",
+      "--lifetime-fd",
+      String(lifetimeFd),
+    ],
+    {
+      cwd: checkpoint.layout.testRoot,
+      env: checkpoint.environment,
+      stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"],
+    },
+  );
+  const exit = childExit(child);
+  const stdout = [];
+  const stderr = [];
+  child.stdout.on("data", (chunk) => stdout.push(chunk));
+  child.stderr.on("data", (chunk) => stderr.push(chunk));
+  child.stdio[3].end(`${token}\n`);
+
+  try {
+    const readyEnvelope = await waitForJsonOutput(child);
+    assert(readyEnvelope.status === "success", "resource sidecar did not publish success");
+    const ready = readyEnvelope.data;
+    assert(
+      ready?.authMode === "bearer" &&
+        ready.lifecycle === "owned-v1" &&
+        /^http:\/\/127\.0\.0\.1:[1-9][0-9]*$/.test(ready.baseUrl),
+      "resource sidecar ready record is invalid",
+    );
+    const headers = { authorization: `Bearer ${token}` };
+
+    const dashboard = await fetch(`${ready.baseUrl}/`);
+    assert(
+      dashboard.ok && (await dashboard.text()).includes('<div id="root"></div>'),
+      "resource sidecar dashboard asset failed",
+    );
+    const asset = (
+      await fs.readdir(
+        join(installed.projectRoot, "node_modules", "@cellarer", "web", "client", "dist", "assets"),
+      )
+    ).find((name) => name.endsWith(".js"));
+    assert(asset, "packed Web JavaScript asset is missing during resource journey");
+    const staticResponse = await fetch(`${ready.baseUrl}/assets/${asset}`);
+    assert(
+      staticResponse.ok && (await staticResponse.text()).length > 100,
+      "resource sidecar installed JavaScript asset failed",
+    );
+
+    const dir = encodeURIComponent(checkpoint.layout.testRoot);
+    const inventory = await installedApiJson(
+      `${ready.baseUrl}/api/v1/inventory/pool-source?dir=${dir}`,
+      { headers },
+      "resource sidecar Inventory",
+    );
+    assertJsonEqual(
+      [...inventory.candidates.map(({ id }) => id)].sort(),
+      checkpoint.expected.inventoryCandidateIds,
+      "resource sidecar Inventory candidate IDs differ from CLI",
+    );
+
+    const agentCsv = checkpoint.expected.distributionAgents.join(",");
+    const resources = await installedApiJson(
+      `${ready.baseUrl}/api/v1/resources?destination=project&dir=${dir}&agents=${encodeURIComponent(agentCsv)}&collections=default&includeDiscovered=false`,
+      { headers },
+      "resource sidecar resources",
+    );
+    assertJsonEqual(
+      [...resources.resources.map(({ id }) => id)].sort(),
+      checkpoint.expected.resourceIds,
+      "resource sidecar resource IDs differ from CLI",
+    );
+
+    const status = await installedApiJson(
+      `${ready.baseUrl}/api/v1/status?scope=project&dir=${dir}`,
+      { headers },
+      "resource sidecar status",
+    );
+    assertJsonEqual(
+      statusProjection(status.items, checkpoint.expected.distributionAgents),
+      statusProjection(checkpoint.expected.statusItems, checkpoint.expected.distributionAgents),
+      "resource sidecar status differs from CLI",
+    );
+
+    const verification = await installedApiJson(
+      `${ready.baseUrl}/api/v1/verify`,
+      {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({
+          scope: "project",
+          dir: checkpoint.layout.testRoot,
+          agents: checkpoint.expected.distributionAgents,
+          collections: ["default"],
+          capabilities: ["rules", "mcp", "skills"],
+          method: "copy",
+        }),
+      },
+      "resource sidecar verification",
+    );
+    assertJsonEqual(
+      verificationProjection(verification),
+      verificationProjection(checkpoint.expected.verification),
+      "resource sidecar verification differs from CLI",
+    );
+
+    child.stdio[lifetimeFd].end();
+    assert(await settlesWithin(exit, 3_000), "resource sidecar did not close after lifetime EOF");
+    const result = await exit;
+    assert(
+      result.code === 0 && result.signal === null,
+      "resource sidecar lifetime exit was not clean",
+    );
+    const observedStdout = Buffer.concat(stdout).toString().trim();
+    const observedStderr = Buffer.concat(stderr).toString();
+    assert(observedStdout.split("\n").length === 1, "resource sidecar stdout was not one record");
+    assert(!observedStdout.includes(token), "resource sidecar stdout exposed bearer material");
+    assert(!observedStderr.includes(token), "resource sidecar stderr exposed bearer material");
+  } finally {
+    await terminateChild(child, exit);
+  }
+}
+
+async function installedApiJson(url, init, label) {
+  const response = await fetch(url, init);
+  const envelope = await response.json();
+  assert(response.ok && envelope.status === "success", `${label} failed`);
+  return envelope.data;
+}
+
+function statusProjection(items, agents) {
+  const selected = new Set(agents);
+  return items
+    .filter(({ agent }) => selected.has(agent))
+    .map(({ artifact, agent, scope, capability, target, status }) => ({
+      artifact,
+      agent,
+      scope,
+      capability,
+      target,
+      status,
+    }))
+    .sort(compareStableRecords);
+}
+
+function verificationProjection(report) {
+  return {
+    storeRevision: report.storeRevision,
+    healthy: report.healthy,
+    recoveryStatus: report.recovery.status,
+    desiredVsApplied: {
+      status: report.desiredVsApplied.status,
+      items: report.desiredVsApplied.items
+        .map(({ agent, scope, capability, target, status }) => ({
+          agent,
+          scope,
+          capability,
+          target,
+          status,
+        }))
+        .sort(compareStableRecords),
+    },
+    appliedVsDisk: {
+      status: report.appliedVsDisk.status,
+      items: statusProjection(report.appliedVsDisk.items, [
+        ...new Set(report.appliedVsDisk.items.map(({ agent }) => agent)),
+      ]),
+    },
+  };
+}
+
+function compareStableRecords(left, right) {
+  const leftKey = JSON.stringify(left);
+  const rightKey = JSON.stringify(right);
+  return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+}
+
+function assertJsonEqual(actual, expected, message) {
+  assert(JSON.stringify(actual) === JSON.stringify(expected), message);
 }
 
 function assertTypedKeychainCapability(doctor, expectedBranch) {

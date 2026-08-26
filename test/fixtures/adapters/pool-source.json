@@ -1,0 +1,22 @@
+{
+  "displayName": "Isolated resource pool source",
+  "rules": {
+    "project": "{dir}/.sandbox/source/RULES.md",
+    "format": "markdown"
+  },
+  "mcp": {
+    "project": "{dir}/.sandbox/source/mcp.json",
+    "format": "json",
+    "serversKey": "mcpServers",
+    "supportedSecretReferences": ["environment"]
+  },
+  "skills": {
+    "project": "{dir}/.sandbox/source/skills",
+    "format": "dir"
+  },
+  "capabilities": {
+    "rules": ["project"],
+    "mcp": ["project"],
+    "skills": ["project"]
+  }
+}

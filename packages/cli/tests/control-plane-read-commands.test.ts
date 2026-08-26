@@ -499,6 +499,47 @@ describe("control-plane read commands", () => {
     await expect(fs.stat(target)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("publishes copy selection and targetless unsupported skips in plan JSON", async () => {
+    const mcpPath = join(storeRoot, "store", "mcp", "fixture.json");
+    await fs.writeFile(mcpPath, '{"command":"node","args":["--version"]}\n', "utf8");
+    const configPath = join(storeRoot, "config.json");
+    const config = JSON.parse(await fs.readFile(configPath, "utf8")) as {
+      artifacts: Record<string, { collections: string[] }>;
+    };
+    config.artifacts["mcp/fixture"] = { collections: ["default"] };
+    await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+    const result = await invoke([
+      "plan",
+      "--agent",
+      "agents-md",
+      "--scope",
+      "project",
+      "--dir",
+      project,
+      "--mcp",
+      "--method",
+      "copy",
+    ]);
+
+    expect(result).toMatchObject({
+      status: "success",
+      data: {
+        plan: { normalizedInputs: { method: "copy" } },
+        preview: {
+          actions: [
+            {
+              agent: "agents-md",
+              capability: "mcp",
+              op: "skip",
+              target: "",
+            },
+          ],
+        },
+      },
+    });
+  });
+
   it.each([
     "json",
     "jsonl",

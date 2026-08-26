@@ -960,9 +960,7 @@ function snapshotPathNoFollowSync(
   const nodes = decodeSnapshotWorkerNodes(result.nodes, includeData, path);
   return Object.freeze({
     rootPath: normalizedPath,
-    nodes: Object.freeze(
-      nodes.sort((left, right) => left.relativePath.localeCompare(right.relativePath)),
-    ),
+    nodes: Object.freeze(nodes.sort(compareSnapshotRelativePaths)),
   });
 }
 
@@ -1155,14 +1153,23 @@ function snapshotTreeNoFollowSync(
   }
   return Object.freeze({
     rootPath,
-    nodes: Object.freeze(
-      nodes.sort((left, right) => left.relativePath.localeCompare(right.relativePath)),
-    ),
+    nodes: Object.freeze(nodes.sort(compareSnapshotRelativePaths)),
   });
 }
 
 async function snapshotFileNoFollow(rootPath: string): Promise<FileTreeSnapshot> {
   return snapshotFileNoFollowSync(rootPath, true);
+}
+
+function compareSnapshotRelativePaths(
+  left: FileTreeSnapshotNode,
+  right: FileTreeSnapshotNode,
+): number {
+  return left.relativePath < right.relativePath
+    ? -1
+    : left.relativePath > right.relativePath
+      ? 1
+      : 0;
 }
 
 async function snapshotTreeNoFollow(

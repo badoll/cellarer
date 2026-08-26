@@ -192,6 +192,7 @@ describe("control-plane agent and config mutation commands", () => {
   }, 30_000);
 
   it("adds and updates typed custom adapters and reports exact removal dependencies", async () => {
+    const configPath = join(storeRoot, "config.json");
     const adapter = '{"displayName":"My Agent","rules":{"global":"~/.my-agent/RULES.md"}}';
     expect(await invoke(["agent", "add", "my-agent", "--adapter", adapter])).toMatchObject({
       status: "success",
@@ -199,6 +200,21 @@ describe("control-plane agent and config mutation commands", () => {
     });
     const updated = '{"displayName":"My Updated Agent","rules":{"global":"~/.my-agent/RULES.md"}}';
     await invoke(["agent", "update", "my-agent", "--adapter", updated]);
+
+    const mcpAdapter =
+      '{"mcp":{"project":"{dir}/.fixture/mcp.json","format":"json","serversKey":"mcpServers","supportedSecretReferences":["environment"]}}';
+    const customMcp = await invoke(["agent", "add", "custom-mcp", "--adapter", mcpAdapter]);
+    expect(customMcp, JSON.stringify(customMcp)).toMatchObject({
+      status: "success",
+      data: { receipt: { outcome: "committed" } },
+    });
+    expect(JSON.parse(await fs.readFile(configPath, "utf8"))).toMatchObject({
+      customAdapters: {
+        "custom-mcp": {
+          mcp: { supportedSecretReferences: ["environment"] },
+        },
+      },
+    });
 
     const ownedTarget = join(root, "owned", "RULES.md");
     await fs.writeFile(

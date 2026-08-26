@@ -11,3 +11,10 @@ artifacts/
 .codex/
 .DS_Store
 skills-lock.json
+test/.sandbox/
+test/.reports/
+test/CLAUDE.md
+test/AGENTS.md
+test/.mcp.json
+test/.gitignore
+test/.codebuddy/

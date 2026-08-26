@@ -166,6 +166,49 @@ describe("planned control-plane mutations", () => {
     });
   });
 
+  it("publishes schema-valid custom MCP metadata through direct and serialized mutations", async () => {
+    const adapter = {
+      mcp: {
+        project: "{dir}/.fixture/mcp.json",
+        format: "json" as const,
+        serversKey: "mcpServers",
+        supportedSecretReferences: ["environment" as const],
+      },
+    };
+
+    const direct = await mutateCustomAdapter(t.env, {
+      storeRoot,
+      action: "add",
+      agentId: "direct-mcp",
+      adapter,
+    });
+    expect(direct.receipt).toMatchObject({ outcome: "committed", resultingRevision: 1 });
+
+    const planned = await mutateCustomAdapter(t.env, {
+      storeRoot,
+      action: "add",
+      agentId: "serialized-mcp",
+      adapter,
+      dryRun: true,
+    });
+    const applied = await applyControlPlaneMutationPlan(
+      t.env,
+      JSON.parse(JSON.stringify(planned.plan)),
+      { storeRoot },
+    );
+
+    expect(applied.operation).toMatchObject({
+      ok: true,
+      receipt: { outcome: "committed", resultingRevision: 2 },
+    });
+    await expect(loadConfig(t.env, storeRoot)).resolves.toMatchObject({
+      customAdapters: {
+        "direct-mcp": adapter,
+        "serialized-mcp": adapter,
+      },
+    });
+  });
+
   it("returns complete targeted Inventory for the exact committed Custom Agent definition", async () => {
     const oldRules = t.path("home", ".targeted-old", "RULES.md");
     const newRules = t.path("home", ".targeted-new", "RULES.md");
