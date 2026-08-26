@@ -2,7 +2,7 @@ import { execFile, execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { optionalKeychainInstalled } from "./artifact-release-gate-helpers.mjs";
@@ -126,6 +126,11 @@ async function inspectPackSet(first, second) {
 
   const versions = new Set(packages.map((name) => required(manifests, name).version));
   assert(versions.size === 1, "release package versions are not synchronized");
+  const [version] = versions;
+  assert(
+    typeof version === "string" && isStableSemver(version),
+    `stable release package version is invalid or prerelease: ${String(version)}`,
+  );
   assert(
     required(manifests, "web").dependencies?.["@cellarer/core"] ===
       required(manifests, "core").version,
@@ -263,9 +268,23 @@ async function installPackedSet(tarballs, { name, includeOptionalDependencies })
       `${name} resolves into workspace: ${installedRoot}`,
     );
   }
-  const bin = join(projectRoot, "node_modules", ".bin", "cellarer");
+  const binDirectory = join(projectRoot, "node_modules", ".bin");
+  const binPath = join(binDirectory, "cellarer");
   const jsBin = join(projectRoot, "node_modules", "@cellarer", "cli", "dist", "bin.js");
+  const realBin = await fs.realpath(binPath);
   const realJsBin = await fs.realpath(jsBin);
+  assert(
+    isInside(realProjectRoot, realBin),
+    `installed cellarer command resolves outside clean install: ${realBin}`,
+  );
+  assert(
+    !isInside(realRepositoryRoot, realBin),
+    `installed cellarer command resolves into workspace: ${realBin}`,
+  );
+  assert(
+    !(await fs.readFile(binPath, "utf8")).includes(realRepositoryRoot),
+    "installed cellarer command shim points into workspace",
+  );
   assert(
     isInside(realProjectRoot, realJsBin),
     `CLI JavaScript entry resolves outside clean install: ${realJsBin}`,
@@ -274,7 +293,8 @@ async function installPackedSet(tarballs, { name, includeOptionalDependencies })
     !isInside(realRepositoryRoot, realJsBin),
     `CLI JavaScript entry resolves into workspace: ${realJsBin}`,
   );
-  return { projectRoot, home, store, pnpmHome, env, bin, jsBin };
+  prependCommandPath(env, binDirectory);
+  return { projectRoot, home, store, pnpmHome, env, bin: "cellarer", binPath, jsBin };
 }
 
 async function writeLocalResults(tarballs, gate) {
@@ -613,6 +633,11 @@ function isolatedEnv({ home, store, pnpmHome }) {
   };
 }
 
+function prependCommandPath(env, directory) {
+  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+  env[pathKey] = [directory, env[pathKey]].filter(Boolean).join(delimiter);
+}
+
 async function cli(installed, args, options = {}) {
   return run(installed.bin, args, installed.projectRoot, installed.env, options.allowFailure);
 }
@@ -745,6 +770,12 @@ async function exists(path) {
 function isInside(parent, child) {
   const path = relative(parent, child);
   return path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path);
+}
+
+function isStableSemver(value) {
+  return /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(
+    value,
+  );
 }
 
 function required(map, key) {

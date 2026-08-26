@@ -1,6 +1,6 @@
 {
   "name": "@cellarer/cli",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0",
   "type": "module",
   "description": "多 AI agent 的 skills / mcp / rules 全局统一管理 CLI",
   "license": "MIT",
@@ -24,8 +24,8 @@
     "typecheck": "tsc -b"
   },
   "dependencies": {
-    "@cellarer/core": "0.1.0-alpha.0",
-    "@cellarer/web": "0.1.0-alpha.0",
+    "@cellarer/core": "0.1.0",
+    "@cellarer/web": "0.1.0",
     "commander": "catalog:"
   },
   "optionalDependencies": {

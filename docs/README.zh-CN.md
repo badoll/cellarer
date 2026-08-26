@@ -11,11 +11,8 @@
 第一次使用时，先阅读根目录的 [README](../README.zh-CN.md) 并完成其中的首次流程。
 需要理解某项决策或执行低频操作时，再回到本文档的对应章节。
 
-为方便阅读，本文示例使用未来安装后的 `cellarer` 命令。在 package 发布前，请替换为：
-
-```bash
-node packages/cli/dist/bin.js
-```
+本文示例统一使用安装后的 `cellarer` 命令。从源码 checkout 工作的 contributor 与
+release maintainer 可使用[开发与发布](#开发与发布)中记录的源码入口。
 
 需要精确参数或机器合同时，以运行时发现结果为准：
 
@@ -635,26 +632,37 @@ MCP 还必须声明目标原生消费的精确
 Monorepo 使用 pnpm 与 Node.js `>=20.19`：
 
 ```bash
+pnpm install
 pnpm build
 pnpm test
 pnpm lint
 pnpm typecheck
+node packages/cli/dist/bin.js --help
 ```
 
 行为变更需要同步 Core、CLI、Web、测试、公开文档与相关 OpenSpec capability requirement。
 公开文档变更同时更新 English 与简体中文。
 
-已准备的公开 package set 为 `0.1.0-alpha.0`：
+首个稳定公开 package set 为 `0.1.0`：
 
 - `@cellarer/core`：运行时逻辑与随包 adapter 配置；
 - `@cellarer/web`：server 输出与构建后的 dashboard assets；
 - `@cellarer/cli`：`cellarer` 可执行文件。
 
-Workspace root 保持 private，目前没有 package 被发布。Release readiness 使用隔离的
-Store/home path，在 Ubuntu、macOS、Windows 的 Node 20.19 上验证干净 packed artifact：
+Workspace root 保持 private，本仓库尚未执行 registry publication。另行授权并发布后，
+可安装 CLI package 并直接调用它的可执行文件：
 
 ```bash
-pnpm version:check -- 0.1.0-alpha.0
+npm install --global @cellarer/cli
+cellarer --version
+cellarer init
+```
+
+Release readiness 使用隔离的 Store/home path 与 command-path resolution，在 Ubuntu、
+macOS、Windows 的 Node 20.19 上验证干净 packed artifact：
+
+```bash
+pnpm version:check -- 0.1.0
 pnpm artifact:pack
 CI=true pnpm release:readiness
 ```

@@ -14,12 +14,9 @@ If you are new, start with the root [README](../README.md) and complete its firs
 workflow. Return here when you need to understand a decision or use a less
 common operation.
 
-Examples in this guide use the future installed command `cellarer` for
-readability. Until the package is published, substitute:
-
-```bash
-node packages/cli/dist/bin.js
-```
+Examples in this guide use the installed `cellarer` command. Contributors and
+release maintainers working from a source checkout can use the source entrypoint
+documented under [Development and release](#development-and-release).
 
 Use runtime discovery when you need exact flags or machine contracts:
 
@@ -724,28 +721,40 @@ schema or codec boundary instead of embedding special behavior in CLI or Web.
 The monorepo uses pnpm and Node.js `>=20.19`:
 
 ```bash
+pnpm install
 pnpm build
 pnpm test
 pnpm lint
 pnpm typecheck
+node packages/cli/dist/bin.js --help
 ```
 
 For behavior changes, keep Core, CLI, Web, tests, public docs, and relevant
 OpenSpec capability requirements aligned. Public documentation changes update
 English and Simplified Chinese together.
 
-The prepared public package set is `0.1.0-alpha.0`:
+The first stable public package set is `0.1.0`:
 
 - `@cellarer/core`: runtime logic and packaged adapter configuration;
 - `@cellarer/web`: server output and built dashboard assets;
 - `@cellarer/cli`: the `cellarer` executable.
 
-The workspace root remains private. No package has been published. Release
-readiness is tested on Node 20.19 across Ubuntu, macOS, and Windows using clean
-packed artifacts and isolated Store/home paths:
+The workspace root remains private. Registry publication has not been performed
+from this repository. After a separately authorized publication, install the CLI
+package and invoke its direct executable with:
 
 ```bash
-pnpm version:check -- 0.1.0-alpha.0
+npm install --global @cellarer/cli
+cellarer --version
+cellarer init
+```
+
+Release readiness is tested on Node 20.19 across Ubuntu, macOS, and Windows
+using clean packed artifacts, command-path resolution, and isolated Store/home
+paths:
+
+```bash
+pnpm version:check -- 0.1.0
 pnpm artifact:pack
 CI=true pnpm release:readiness
 ```

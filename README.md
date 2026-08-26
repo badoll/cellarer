@@ -20,9 +20,9 @@ The project is built around three ideas:
 
 ## Status and requirements
 
-cellarer is pre-release. The public packages are prepared as
-`0.1.0-alpha.0`, but they have not been published, so the supported path today
-is to build and run the CLI from this repository.
+The first stable public package set is prepared as `0.1.0`. The release
+artifacts pass the clean-install gate, but they have not been published to npm;
+registry publication remains a separate release action.
 
 - Node.js `>=20.19`
 - pnpm `10.12.1`
@@ -31,16 +31,19 @@ is to build and run the CLI from this repository.
 Regular Rule and MCP files work on all three platforms. Recursive local Skill
 directory import currently requires Darwin or Linux on x64/arm64.
 
-## Build and run
+## Install and run
+
+After the registry release, install the CLI package globally. Its package name
+is scoped, but the installed executable is the direct `cellarer` command:
 
 ```bash
-pnpm install
-pnpm build
-node packages/cli/dist/bin.js --help
+npm install --global @cellarer/cli
+cellarer --help
 ```
 
-After publication, the same command surface will be available through the
-`cellarer` executable. Until then, the examples below use the built source path.
+Until registry publication, release maintainers can build and exercise the same
+packed command locally with the steps in [Development](#development). The user
+workflows below use the installed product interface.
 
 ## First workflow
 
@@ -52,7 +55,7 @@ On a headless machine without an OS credential manager, configure the protected
 [mutation authority](docs/README.md#mutation-authority) before `init`.
 
 ```bash
-node packages/cli/dist/bin.js init
+cellarer init
 ```
 
 Declining leaves Store initialization complete and imports nothing. Partial or
@@ -61,8 +64,8 @@ Machine modes return the closed redacted Store and Inventory phases without a
 prompt or import:
 
 ```bash
-node packages/cli/dist/bin.js --output json init
-node packages/cli/dist/bin.js --non-interactive init
+cellarer --output json init
+cellarer --non-interactive init
 ```
 
 Init no longer accepts `--agent`, `--no-agent`, or structured `agents`. Agent
@@ -72,8 +75,8 @@ Refresh the read-only Inventory across every registered bounded user source, or
 one exact adapter. Add `--dir <project>` to include that current project:
 
 ```bash
-node packages/cli/dist/bin.js inventory refresh
-node packages/cli/dist/bin.js inventory refresh --agent codex
+cellarer inventory refresh
+cellarer inventory refresh --agent codex
 ```
 
 Inventory reports safe candidates, provenance, findings, Store matches, counts,
@@ -90,9 +93,9 @@ apply the unchanged `mutationPlan` returned by that command. Import never
 distributes resources to agent targets:
 
 ```bash
-node packages/cli/dist/bin.js --output json inventory import plan \
+cellarer --output json inventory import plan \
   --candidate '<candidate-id>'
-node packages/cli/dist/bin.js inventory import apply \
+cellarer inventory import apply \
   --plan '<mutationPlan JSON returned by plan>'
 ```
 
@@ -104,11 +107,11 @@ malformed or ambiguous fields, and multiple candidate secret fields remain
 blocked:
 
 ```bash
-node packages/cli/dist/bin.js --output json inventory adopt plan \
+cellarer --output json inventory adopt plan \
   --candidate '<candidate-id>' \
   --selector '{"kind":"environment","server":"example","name":"API_TOKEN"}' \
   --provider vault
-node packages/cli/dist/bin.js inventory adopt apply \
+cellarer inventory adopt apply \
   --plan '<mutationPlan JSON returned by plan>' --confirm
 ```
 
@@ -124,25 +127,25 @@ directory as the target:
 
 ```bash
 mkdir .cellarer-demo
-node packages/cli/dist/bin.js add ./README.md
+cellarer add ./README.md
 ```
 
 Preview before writing, then apply the same selection:
 
 ```bash
-node packages/cli/dist/bin.js apply --dry-run --agent codex --rules \
+cellarer apply --dry-run --agent codex --rules \
   --dir "$PWD/.cellarer-demo"
-node packages/cli/dist/bin.js apply --agent codex --rules \
+cellarer apply --agent codex --rules \
   --dir "$PWD/.cellarer-demo"
 ```
 
 Inspect the result or roll it back:
 
 ```bash
-node packages/cli/dist/bin.js status --agent codex --dir "$PWD/.cellarer-demo"
-node packages/cli/dist/bin.js revert --dry-run --agent codex \
+cellarer status --agent codex --dir "$PWD/.cellarer-demo"
+cellarer revert --dry-run --agent codex \
   --dir "$PWD/.cellarer-demo"
-node packages/cli/dist/bin.js revert --agent codex \
+cellarer revert --agent codex \
   --dir "$PWD/.cellarer-demo"
 rmdir .cellarer-demo
 ```
@@ -153,7 +156,7 @@ selects the agent's real global configuration.
 Start the loopback-only Web console:
 
 ```bash
-node packages/cli/dist/bin.js ui
+cellarer ui
 ```
 
 ## What it manages
@@ -166,7 +169,7 @@ node packages/cli/dist/bin.js ui
 | Safety | Verify drift, preserve target ownership, recover interrupted operations, and revert receipts. |
 | Clients | Use the human CLI, versioned JSON/JSONL protocol, or authenticated local `/api/v1`. |
 
-Run `node packages/cli/dist/bin.js <command> --help` for exact options. Automated
+Run `cellarer <command> --help` for exact options. Automated
 callers can discover stable command and schema contracts with `capabilities`
 and `schema`.
 
@@ -184,10 +187,12 @@ release procedures, read the [detailed guide](docs/README.md).
 ## Development
 
 ```bash
+pnpm install
 pnpm build
 pnpm test
 pnpm lint
 pnpm typecheck
+node packages/cli/dist/bin.js --help
 ```
 
 ## License

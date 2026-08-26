@@ -16,8 +16,8 @@ cellarer 面向在同一台机器上使用多个 AI coding agent 的开发者。
 
 ## 状态与运行要求
 
-cellarer 仍处于发布前阶段。公开 package 已准备为 `0.1.0-alpha.0`，但尚未发布，
-因此目前受支持的使用方式是从本仓库构建并运行 CLI。
+首个稳定公开 package set 已准备为 `0.1.0`。Release artifact 已通过干净安装 gate，
+但尚未发布到 npm；registry publication 仍是独立的发布动作。
 
 - Node.js `>=20.19`
 - pnpm `10.12.1`
@@ -26,16 +26,18 @@ cellarer 仍处于发布前阶段。公开 package 已准备为 `0.1.0-alpha.0`�
 普通 Rule 与 MCP 文件支持上述三个平台；递归导入本地 Skill 目录目前要求 Darwin 或
 Linux x64/arm64。
 
-## 构建与运行
+## 安装与运行
+
+Registry release 完成后，全局安装 CLI package。Package 名带 scope，但安装后的
+可执行文件就是可直接调用的 `cellarer`：
 
 ```bash
-pnpm install
-pnpm build
-node packages/cli/dist/bin.js --help
+npm install --global @cellarer/cli
+cellarer --help
 ```
 
-package 发布后，同一命令面将通过 `cellarer` 可执行文件提供。在此之前，下面的示例
-使用源码构建产物路径。
+Registry publication 前，release maintainer 可按[开发](#开发)中的步骤从本地 packed
+artifact 验证同一命令。下面的用户流程统一使用安装后的产品入口。
 
 ## 第一次完整使用
 
@@ -46,7 +48,7 @@ package 发布后，同一命令面将通过 `cellarer` 可执行文件提供。
 [mutation authority](docs/README.zh-CN.md#mutation-authority)。
 
 ```bash
-node packages/cli/dist/bin.js init
+cellarer init
 ```
 
 拒绝确认会保留已完成的 Store 初始化且不导入任何资源。Inventory 为 partial 或 failed 时会
@@ -54,8 +56,8 @@ node packages/cli/dist/bin.js init
 Inventory 阶段结果，不提示也不导入：
 
 ```bash
-node packages/cli/dist/bin.js --output json init
-node packages/cli/dist/bin.js --non-interactive init
+cellarer --output json init
+cellarer --non-interactive init
 ```
 
 Init 不再接受 `--agent`、`--no-agent` 或 structured `agents`。Agent target 只由后续独立
@@ -65,8 +67,8 @@ Init 不再接受 `--agent`、`--no-agent` 或 structured `agents`。Agent targe
 可同时包含当前 project：
 
 ```bash
-node packages/cli/dist/bin.js inventory refresh
-node packages/cli/dist/bin.js inventory refresh --agent codex
+cellarer inventory refresh
+cellarer inventory refresh --agent codex
 ```
 
 Inventory 返回安全候选、provenance、findings、Store 匹配、计数与完整度，不会导入资源或
@@ -80,9 +82,9 @@ refresh。partial 或 failed 会单独报告，不会撤销已提交的 mutation
 `mutationPlan`。导入不会将资源下发到 agent target：
 
 ```bash
-node packages/cli/dist/bin.js --output json inventory import plan \
+cellarer --output json inventory import plan \
   --candidate '<candidate-id>'
-node packages/cli/dist/bin.js inventory import apply \
+cellarer inventory import apply \
   --plan '<plan 返回的 mutationPlan JSON>'
 ```
 
@@ -92,11 +94,11 @@ node packages/cli/dist/bin.js inventory import apply \
 malformed 或 ambiguous 字段，以及含多个候选密钥字段的 candidate 仍然受阻：
 
 ```bash
-node packages/cli/dist/bin.js --output json inventory adopt plan \
+cellarer --output json inventory adopt plan \
   --candidate '<candidate-id>' \
   --selector '{"kind":"environment","server":"example","name":"API_TOKEN"}' \
   --provider vault
-node packages/cli/dist/bin.js inventory adopt apply \
+cellarer inventory adopt apply \
   --plan '<plan 返回的 mutationPlan JSON>' --confirm
 ```
 
@@ -109,25 +111,25 @@ create-if-absent provider capability；argv 与 machine input 都不接受密钥
 
 ```bash
 mkdir .cellarer-demo
-node packages/cli/dist/bin.js add ./README.md
+cellarer add ./README.md
 ```
 
 先预览，再使用相同选择执行下发：
 
 ```bash
-node packages/cli/dist/bin.js apply --dry-run --agent codex --rules \
+cellarer apply --dry-run --agent codex --rules \
   --dir "$PWD/.cellarer-demo"
-node packages/cli/dist/bin.js apply --agent codex --rules \
+cellarer apply --agent codex --rules \
   --dir "$PWD/.cellarer-demo"
 ```
 
 检查结果或进行回滚：
 
 ```bash
-node packages/cli/dist/bin.js status --agent codex --dir "$PWD/.cellarer-demo"
-node packages/cli/dist/bin.js revert --dry-run --agent codex \
+cellarer status --agent codex --dir "$PWD/.cellarer-demo"
+cellarer revert --dry-run --agent codex \
   --dir "$PWD/.cellarer-demo"
-node packages/cli/dist/bin.js revert --agent codex \
+cellarer revert --agent codex \
   --dir "$PWD/.cellarer-demo"
 rmdir .cellarer-demo
 ```
@@ -137,7 +139,7 @@ rmdir .cellarer-demo
 启动仅监听 loopback 的 Web 控制台：
 
 ```bash
-node packages/cli/dist/bin.js ui
+cellarer ui
 ```
 
 ## 管理范围
@@ -150,7 +152,7 @@ node packages/cli/dist/bin.js ui
 | 安全 | 验证漂移、保护目标所有权、恢复中断 operation，并按 receipt 回滚。 |
 | Clients | 使用人类 CLI、版本化 JSON/JSONL 协议或经过认证的本地 `/api/v1`。 |
 
-使用 `node packages/cli/dist/bin.js <command> --help` 查看精确选项。自动化调用方可通过
+使用 `cellarer <command> --help` 查看精确选项。自动化调用方可通过
 `capabilities` 与 `schema` 发现稳定的命令和 Schema 合同。
 
 ## 架构概览
@@ -165,10 +167,12 @@ mutation 规则。
 ## 开发
 
 ```bash
+pnpm install
 pnpm build
 pnpm test
 pnpm lint
 pnpm typecheck
+node packages/cli/dist/bin.js --help
 ```
 
 ## License
