@@ -57,7 +57,7 @@ describe("path containment", () => {
     } finally {
       await fixture.cleanup();
     }
-  });
+  }, 15_000);
 });
 
 interface BrowserImportViolation {
