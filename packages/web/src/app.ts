@@ -91,6 +91,7 @@ import {
   statusControlPlane,
   summaryControlPlane,
   updateSyncProfile,
+  VerificationInputError,
   validateControlPlaneConfig,
   validateResourceBundle,
   verifyControlPlane,
@@ -661,12 +662,12 @@ export function createApp(inputDeps: AppDeps) {
   app.onError((err, c) => {
     if (c.req.path.startsWith("/api/v1/")) {
       const id = requestId(c);
-      if (err instanceof ClientApiInputError) {
+      if (err instanceof ClientApiInputError || err instanceof VerificationInputError) {
         return c.json(
           clientFailure(id, {
             code: "INVALID_INPUT",
             message: "Request input is invalid",
-            ...(err.details ? { details: err.details } : {}),
+            ...(err instanceof ClientApiInputError && err.details ? { details: err.details } : {}),
           }),
           400,
         );

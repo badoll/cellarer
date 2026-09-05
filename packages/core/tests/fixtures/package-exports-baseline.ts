@@ -1,4 +1,5 @@
 // Frozen from the pre-partition Core package surface at e9c618c.
+// Verification coverage additions are recorded by make-verification-outcomes-truthful.
 // This fixture records public API facts only; tests must not reconstruct it from Git history.
 export const baselineRootRuntimeKeys = [
   "AGENT_ID_PATTERN",
@@ -32,6 +33,7 @@ export const baselineRootRuntimeKeys = [
   "StoreRevisionChangedDuringPlanningError",
   "SyncProfileError",
   "SyncTargetUninstallError",
+  "VerificationInputError",
   "activityPath",
   "add",
   "addEntries",
@@ -308,6 +310,7 @@ export const baselineRootTypeNames = [
   "CollectionMembersMutationBody",
   "CollectionMutationOptions",
   "CollectionUpdateMutationBody",
+  "ConfigurationOutcome",
   "ControlPlaneAgentDetailDto",
   "ControlPlaneAgentDetailOptions",
   "ControlPlaneAgentDto",
@@ -575,8 +578,12 @@ export const baselineRootTypeNames = [
   "TargetReplacementApproval",
   "TargetStateReceipt",
   "ValidatedResourceBundle",
+  "VerificationCoverage",
+  "VerificationCoverageItem",
+  "VerificationCoverageOutcome",
   "VerificationOptions",
   "VerificationReport",
+  "VerificationRuntimeEvidence",
 ] as const;
 
 export const baselineTouchedPublicSignatures = {
@@ -612,7 +619,7 @@ export const baselineTouchedPublicSignatures = {
   statusIdentityKey:
     '(item: Pick<StatusItem, "agent" | "scope" | "capability" | "target">) => string',
   inCollections: "(artifactCollections: string[], selected: string[]) => boolean",
-  plan: '(env: Env, opts: DistributeOptions, execution?: { providerAccess?: "allowed" | "forbidden"; capabilityRootCapture?: CapabilityRootCapture; }) => Promise<DistributePlan>',
+  plan: '(env: Env, opts: DistributeOptions, execution?: { providerAccess?: "allowed" | "forbidden"; onCoverage?: (outcome: VerificationCoverageOutcome) => void; capabilityRootCapture?: CapabilityRootCapture; }) => Promise<DistributePlan>',
   status: "(env: Env, opts: StatusOptions) => Promise<StatusItem[]>",
   canonicalJson: "(value: unknown) => string",
   canonicalMutationPlan: "(plan: MutationPlanInput | MutationPlan) => string",

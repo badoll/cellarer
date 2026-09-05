@@ -29,7 +29,11 @@ import type {
   TargetOwner,
   TargetOwnershipEvidence,
 } from "../model/index.js";
-import type { AssertExact, ExactContract } from "../protocol/client-types.js";
+import type {
+  AssertExact,
+  ExactContract,
+  VerificationCoverageOutcome,
+} from "../protocol/client-types.js";
 import { resolveCurrentResourceArtifact } from "../resources/model.js";
 import {
   attachProviderScope,
@@ -95,6 +99,7 @@ async function planImplementation(
   opts: DistributeOptions,
   execution: {
     providerAccess?: "allowed" | "forbidden";
+    onCoverage?: (outcome: VerificationCoverageOutcome) => void;
     capabilityRootCapture?: CapabilityRootCapture;
   } = {},
 ) {
@@ -111,6 +116,7 @@ async function planImplementation(
       execution.capabilityRootCapture ??
       (await captureCapabilityRootSnapshots(env, opts.storeRoot, requestedCapabilities));
   } catch (error) {
+    execution.onCoverage?.("failed");
     const message = error instanceof Error ? error.message : String(error);
     return {
       actions: opts.agents.flatMap((agent) =>
@@ -235,6 +241,7 @@ async function planImplementation(
     }
     // agents.<id>.enabled = false → 显式禁用,跳过该 agent 的全部能力。
     if (config.adapterOverrides[agentId]?.enabled === false) {
+      execution.onCoverage?.("disabled");
       warnings.push(`agent "${agentId}" is disabled in config.json — skipped`);
       continue;
     }
@@ -242,6 +249,7 @@ async function planImplementation(
     for (const cap of capabilities) {
       const supportedScopes = adapter.capabilities[cap] ?? [];
       if (!supportedScopes.includes(opts.scope)) {
+        execution.onCoverage?.("unsupported");
         warnings.push(
           `agent "${agentId}" does not support ${cap} in ${opts.scope} scope — skipped`,
         );
@@ -251,8 +259,14 @@ async function planImplementation(
       // planner 内 adapter.paths() 可能抛(如配置模板越界 expand,§6.6 分享场景)。
       // 隔离到 agent+capability 粒度:转 skip + 告警,不让一个坏适配器炸掉整批下发。
       try {
-        actions.push(...(await PLANNERS[cap](ctx, adapter)));
+        const planned = await PLANNERS[cap](ctx, adapter);
+        actions.push(...planned);
+        const selected = { rules: selectedRules, mcp: selectedMcp, skills: selectedSkills }[cap];
+        execution.onCoverage?.(
+          planned.length > 0 ? "covered" : selected.length === 0 ? "no-op" : "blocked",
+        );
       } catch (err) {
+        execution.onCoverage?.("failed");
         const msg = err instanceof Error ? err.message : String(err);
         warnings.push(`agent "${agentId}" ${cap} planning failed — skipped: ${msg}`);
         const skip = skipAction(agentId, cap, opts.scope, method);
@@ -325,6 +339,7 @@ export async function plan(
   opts: DistributeOptions,
   execution: {
     providerAccess?: "allowed" | "forbidden";
+    onCoverage?: (outcome: VerificationCoverageOutcome) => void;
     capabilityRootCapture?: CapabilityRootCapture;
   } = {},
 ): Promise<DistributePlan> {

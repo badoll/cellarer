@@ -2494,8 +2494,44 @@ const dashboardAgentDefinitionSchema = objectSchema(
 export type DashboardAgentSchemaContract = AssertSchemaContract<
   ExactSchemaContract<typeof dashboardAgentDefinitionSchema, DashboardAgentReadiness>
 >;
+const verificationCoverageSchema = objectSchema(
+  {
+    expected: integerSchema(),
+    observed: integerSchema(),
+    failed: integerSchema(),
+    complete: booleanSchema,
+    items: arraySchema(
+      objectSchema(
+        {
+          agent: stringSchema(),
+          scope: scopeSchema,
+          capability: enumSchema(["rules", "mcp", "skills"]),
+          outcome: enumSchema(["covered", "no-op", "unsupported", "disabled", "blocked", "failed"]),
+          code: enumSchema([
+            "EVALUATED",
+            "EMPTY_SELECTION",
+            "UNSUPPORTED_CAPABILITY",
+            "AGENT_DISABLED",
+            "PLANNING_BLOCKED",
+            "PLANNING_FAILED",
+            "OBSERVATION_FAILED",
+          ]),
+        },
+        ["agent", "scope", "capability", "outcome", "code"],
+      ),
+    ),
+  },
+  ["expected", "observed", "failed", "complete", "items"],
+);
+const configurationOutcomeSchema = enumSchema(["healthy", "unhealthy", "no-op", "incomplete"]);
+const verificationRuntimeSchema = objectSchema({ observation: enumSchema(["unknown"]) }, [
+  "observation",
+]);
 const dashboardCoverageDefinitionSchema = objectSchema(
   {
+    configuration: configurationOutcomeSchema,
+    coverage: verificationCoverageSchema,
+    runtime: verificationRuntimeSchema,
     collection: nonEmptyStringSchema,
     scope: scopeSchema,
     percentage: { type: ["number", "null"] },
@@ -2511,6 +2547,9 @@ const dashboardCoverageDefinitionSchema = objectSchema(
     emptyReason: stringSchema(),
   },
   [
+    "configuration",
+    "coverage",
+    "runtime",
     "collection",
     "scope",
     "percentage",
@@ -2870,8 +2909,20 @@ const verificationDataSchema = objectSchema(
     ),
     recovery: mutationRecoveryPresentationSchema,
     healthy: booleanSchema,
+    configuration: configurationOutcomeSchema,
+    coverage: verificationCoverageSchema,
+    runtime: verificationRuntimeSchema,
   },
-  ["storeRevision", "desiredVsApplied", "appliedVsDisk", "recovery", "healthy"],
+  [
+    "storeRevision",
+    "desiredVsApplied",
+    "appliedVsDisk",
+    "recovery",
+    "healthy",
+    "configuration",
+    "coverage",
+    "runtime",
+  ],
 );
 
 const dashboardSummaryDataSchema = objectSchema(

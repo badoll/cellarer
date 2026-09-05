@@ -1,4 +1,9 @@
-import type { Capability, Destination, ResourceState } from "@cellarer/core/client-api";
+import type {
+  Capability,
+  ConfigurationOutcome,
+  Destination,
+  ResourceState,
+} from "@cellarer/core/client-api";
 
 export type { Destination, ResourceState } from "@cellarer/core/client-api";
 
@@ -33,4 +38,14 @@ export function summarizeResourceCounts(resources: readonly ResourceCountLike[])
   };
   for (const resource of resources) counts[resource.state] += 1;
   return counts;
+}
+
+export function configurationLabel(outcome: ConfigurationOutcome): string {
+  const labels: Record<ConfigurationOutcome, string> = {
+    healthy: "Configuration healthy",
+    unhealthy: "Configuration unhealthy",
+    "no-op": "No resources to verify",
+    incomplete: "Configuration incomplete",
+  };
+  return labels[outcome];
 }

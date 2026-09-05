@@ -6,6 +6,7 @@ export type {
   ActivityEvent,
   Capability,
   ClientErrorCode,
+  ConfigurationOutcome,
   ControlPlaneAgentDto,
   ControlPlaneAgentListDto,
   ControlPlaneResourceDto,
@@ -40,6 +41,10 @@ export type {
   Scope,
   SettingsSummary,
   StatusItem,
+  VerificationCoverage,
+  VerificationCoverageItem,
+  VerificationCoverageOutcome,
+  VerificationRuntimeEvidence,
 } from "./client-types.js";
 
 export const CLIENT_API_VERSION = "1.0" as const;

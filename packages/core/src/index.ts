@@ -204,6 +204,7 @@ export {
   type DesiredAppliedStatus,
   type DesiredAppliedVerification,
   type EvidenceComparison,
+  VerificationInputError,
   type VerificationOptions,
   type VerificationReport,
   verify,
@@ -327,6 +328,7 @@ export {
   resolveClientRequestId,
 } from "./protocol/client.js";
 export type {
+  ConfigurationOutcome,
   InventoryCandidate,
   InventoryCandidateState,
   InventoryCompleteness,
@@ -343,6 +345,10 @@ export type {
   InventorySecretFieldSelector,
   InventorySecretProviderPrecondition,
   InventorySourceProvenance,
+  VerificationCoverage,
+  VerificationCoverageItem,
+  VerificationCoverageOutcome,
+  VerificationRuntimeEvidence,
 } from "./protocol/client-types.js";
 export { targetState } from "./protocol/execute.js";
 export {

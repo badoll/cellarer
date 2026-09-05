@@ -177,7 +177,12 @@ describe("shared control-plane DTO contracts", () => {
     expect(config).toMatchObject({ revision: 0, config: { defaults: expect.any(Object) } });
     expect(diff).toMatchObject({ storeRevision: 0, status: expect.any(String), items: [] });
     expect(status).toMatchObject({ generatedAt: expect.any(String), items: [] });
-    expect(verification).toMatchObject({ storeRevision: 0, healthy: true });
+    expect(verification).toMatchObject({
+      storeRevision: 0,
+      healthy: false,
+      configuration: "no-op",
+      runtime: { observation: "unknown" },
+    });
     expect(summary).toMatchObject({
       generatedAt: expect.any(String),
       artifactCounts: { total: 0 },

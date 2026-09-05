@@ -1,4 +1,4 @@
-import { status, verify } from "@cellarer/core";
+import { status, VerificationInputError, verify } from "@cellarer/core";
 import { Command } from "commander";
 import { resolveContext } from "../context.js";
 import { printMutationRecovery } from "../mutation-output.js";
@@ -38,7 +38,7 @@ export function createStatusCommandContract(definition: CommandContractMetadata<
         .option("--json", "JSON 输出(CI 漂移检查用)"),
     normalize: ({ command }) => command.opts<StatusOpts>(),
     execute: async (opts) => {
-      const ctx = await resolveContext(opts);
+      const ctx = await resolveContext(opts, "none");
       const verification =
         ctx.agents.length > 0
           ? await verify(ctx.env, {
@@ -63,6 +63,12 @@ export function createStatusCommandContract(definition: CommandContractMetadata<
       if (!outcome.ok) return;
       const { items, verification } = outcome.data;
       if (verification) {
+        console.log(
+          `configuration: ${verification.configuration}; native runtime: ${verification.runtime.observation}`,
+        );
+        console.log(
+          `coverage: ${verification.coverage.observed}/${verification.coverage.expected}`,
+        );
         console.log(`desired-vs-applied: ${verification.desiredVsApplied.status}`);
         for (const item of verification.desiredVsApplied.items) {
           if (item.status === "in-sync") continue;
@@ -83,6 +89,9 @@ export function createStatusCommandContract(definition: CommandContractMetadata<
         );
       }
     },
-    mapError: () => undefined,
+    mapError: (error) =>
+      error instanceof VerificationInputError
+        ? { code: "INVALID_INPUT", message: error.message }
+        : undefined,
   });
 }

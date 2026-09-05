@@ -1,8 +1,9 @@
 import { promises as fs, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRealEnv } from "@cellarer/core";
+import { apply, createRealEnv } from "@cellarer/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { deterministicMutationAuthority } from "../../core/tests/helpers/mutation-authority.js";
 import { createApp } from "../../web/src/app.js";
 import { HEADLESS_MUTATION_AUTHORITY_ENV } from "../src/mutation-authority.js";
 import { buildProgram } from "../src/program.js";
@@ -59,6 +60,99 @@ describe("CLI and HTTP read parity", () => {
     expect(httpResponse.status, JSON.stringify(http)).toBe(200);
     expect(http.status).toBe("success");
     expect(withoutVolatile(http.data)).toEqual(withoutVolatile(cli.data));
+  });
+
+  it.each([
+    "unknown",
+    "unsupported",
+    "disabled",
+    "no-op",
+    "failed",
+    "healthy",
+    "drift",
+  ] as const)("preserves verification coverage and exit semantics for %s", async (scenario) => {
+    const project = join(root, "project");
+    await fs.mkdir(project, { recursive: true });
+    let agent = "claude-code";
+    const capabilities = scenario === "failed" ? ["rules", "mcp"] : ["rules"];
+    if (scenario === "unknown") agent = "unknown";
+    if (scenario === "no-op") await fs.rm(join(storeRoot, "store", "rules", "style.md"));
+    if (scenario === "unsupported" || scenario === "disabled") {
+      const configPath = join(storeRoot, "config.json");
+      const config = JSON.parse(await fs.readFile(configPath, "utf8"));
+      if (scenario === "disabled") config.adapterOverrides = { "claude-code": { enabled: false } };
+      else {
+        config.customAdapters = {
+          "mcp-only": {
+            displayName: "MCP only",
+            rules: { global: "~/.global-only/RULES.md" },
+          },
+        };
+        agent = "mcp-only";
+      }
+      await fs.writeFile(configPath, JSON.stringify(config));
+    }
+    const env = { ...createRealEnv(), mutationAuthority: deterministicMutationAuthority() };
+    if (scenario === "healthy" || scenario === "drift" || scenario === "failed")
+      await apply(env, {
+        storeRoot,
+        scope: "project",
+        dir: project,
+        agents: [agent],
+        capabilities: ["rules"],
+      });
+    if (scenario === "failed")
+      await fs.writeFile(join(storeRoot, "store", "mcp", "bad.json"), "{bad json");
+    if (scenario === "drift") await fs.writeFile(join(project, "CLAUDE.md"), "external drift");
+    delete process.env[HEADLESS_MUTATION_AUTHORITY_ENV];
+    const cli = await invoke([
+      "verify",
+      "--scope",
+      "project",
+      "--dir",
+      project,
+      "--agent",
+      agent,
+      ...capabilities.map((capability) => `--${capability}`),
+    ]);
+    const exit = process.exitCode ?? 0;
+    const response = await createApp({
+      env: { ...env, mutationAuthority: undefined },
+      storeRoot,
+      auth: { mode: "trusted-embedded" },
+    }).request("/api/v1/verify", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ scope: "project", dir: project, agents: [agent], capabilities }),
+    });
+    const http = (await response.json()) as Record<string, unknown>;
+    if (scenario === "unknown") {
+      expect(cli).toMatchObject({ status: "error", error: { code: "INVALID_INPUT" } });
+      expect(http).toMatchObject({ status: "error", error: { code: "INVALID_INPUT" } });
+      expect(
+        await invoke(["diff", "--scope", "project", "--dir", project, "--agent", agent]),
+      ).toMatchObject({ status: "error", error: { code: "INVALID_INPUT" } });
+      expect(process.exitCode).toBe(2);
+      expect(exit).toBe(2);
+      expect(response.status).toBe(400);
+    } else {
+      const expected =
+        scenario === "healthy"
+          ? "healthy"
+          : scenario === "drift"
+            ? "unhealthy"
+            : scenario === "no-op"
+              ? "no-op"
+              : "incomplete";
+      expect(response.status, JSON.stringify(http)).toBe(200);
+      expect(http.data).toEqual(cli.data);
+      expect(cli.data).toMatchObject({
+        configuration: expected,
+        healthy: scenario === "healthy",
+        runtime: { observation: "unknown" },
+      });
+      expect(exit).toBe(scenario === "healthy" || scenario === "no-op" ? 0 : 3);
+    }
   });
 
   it("preserves the stable domain error code and non-disclosing remediation boundary", async () => {

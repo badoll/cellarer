@@ -166,9 +166,20 @@ Verification keeps three signals separate:
 - last applied receipts versus current disk state;
 - incomplete or manually recoverable mutation state.
 
-Only convergence on all relevant axes is healthy. An interrupted operation
-keeps its journal and blocks later writes until evidence-based recovery finishes
-or reports exact manual work.
+Configuration is `healthy` only when every requested Agent/scope/capability is
+covered, at least one target is verified, and all three axes converge. The
+`coverage` object retains each request's typed outcome and expected/observed/failed
+counts. Valid empty selections are `no-op` with `healthy: false`; unsupported,
+disabled, blocked, or failed requests are `incomplete`. Complete observations with
+state differences are `unhealthy`. Unknown Agent identities are invalid input.
+`runtime.observation` remains `unknown`: matching files do not prove native Agent
+loading or MCP connectivity.
+
+Verification needs no mutation authority or secret provider. It only observes
+journal and lock presence for recovery: absent state is clean; outstanding or
+unreadable state conservatively requires authorized recovery inspection. An
+interrupted operation keeps its journal and blocks later writes until
+evidence-based recovery finishes or reports exact manual work.
 
 ## Common workflows
 
@@ -373,6 +384,14 @@ cellarer --output json revert --agent codex --dry-run
 
 `status` without an agent reports ledger-versus-disk items. With an agent, it
 can include the complete desired, disk, and recovery verification model.
+
+`verify` exits 0 for `healthy` or a legitimate `no-op`, 2 for invalid input, and 3
+(`DOMAIN_VALIDATION_FAILED`) for `incomplete` or `unhealthy`; error envelopes retain
+the report in `data`. This corrects previously successful empty or skipped results.
+The CLI and HTTP envelopes keep their existing protocol versions and now require
+`configuration`, `coverage`, and `runtime` report fields. HTTP 200 only means the
+query completed; inspect `data.configuration` to determine its result. Web coverage
+cards display the same Core outcome and independent native runtime evidence.
 
 Always diagnose an interrupted operation with `operation recover <id>
 --dry-run`. Run recovery only when the result permits it. Never delete

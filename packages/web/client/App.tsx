@@ -14,6 +14,7 @@ import { readApiJson } from "./api-state.js";
 import { DashboardIcon, type DashboardIconName } from "./dashboard-icons.js";
 import { InventoryPage } from "./inventory-page.js";
 import {
+  configurationLabel,
   type Page,
   RESOURCE_KINDS,
   type ResourceState,
@@ -464,7 +465,7 @@ function AgentReadinessList(props: { agents: DashboardAgentReadiness[] }) {
   );
 }
 
-function CoverageList(props: { groups: DashboardCoverageGroup[] | null }) {
+export function CoverageList(props: { groups: DashboardCoverageGroup[] | null }) {
   if (!props.groups) return <p className="empty-state">Loading collection coverage...</p>;
   if (props.groups.length === 0) return <p className="empty-state">No collection coverage yet.</p>;
   return (
@@ -481,9 +482,20 @@ function CoverageList(props: { groups: DashboardCoverageGroup[] | null }) {
               <span>{group.targetsCount} targets</span>
             </div>
           </div>
+          {group.coverage.items
+            .filter((item) => item.outcome !== "covered" && item.outcome !== "no-op")
+            .map((item) => (
+              <p className="tag amber" key={`${item.agent}:${item.capability}`}>
+                {item.agent} · {item.capability}: {item.outcome} ({item.code})
+              </p>
+            ))}
           <div className="coverage-row">
             <div>
-              <strong>{group.percentage === null ? "n/a" : `${group.percentage}%`}</strong>
+              <strong>{configurationLabel(group.configuration)}</strong>
+              <span className="muted-row">Native Agent loading: {group.runtime.observation}</span>
+              <span className="muted-row">
+                Requests evaluated: {group.coverage.observed}/{group.coverage.expected}
+              </span>
               <span className="muted-row">
                 {group.desiredCount === 0
                   ? group.emptyReason

@@ -1,3 +1,4 @@
+import { loadRegistryFromConfig } from "../adapters/registry.js";
 import type { Env } from "../env.js";
 import type {
   AppliedMethod,
@@ -10,12 +11,24 @@ import type {
   TargetOwner,
 } from "../model/index.js";
 import { canonicalJson } from "../protocol/canonical.js";
+import type {
+  ConfigurationOutcome,
+  VerificationCoverage,
+  VerificationCoverageItem,
+  VerificationCoverageOutcome,
+  VerificationRuntimeEvidence,
+} from "../protocol/client-types.js";
+import { readOperationJournal } from "../protocol/journal.js";
+import {
+  readStoreMutationLockOwner,
+  readStoreRecoveryLockOwner,
+} from "../protocol/mutation-lock.js";
 import {
   type MutationRecoveryPresentation,
   mutationRecoveryPresentation,
 } from "../protocol/presentation.js";
-import { diagnoseMutationRecovery } from "../protocol/recovery.js";
 import { readStoreRevision } from "../protocol/store-revision.js";
+import { loadConfig } from "../store/config.js";
 import { loadLedger, matchesFilter, targetKey } from "../store/ledger.js";
 import { plan } from "./plan.js";
 import { status } from "./status.js";
@@ -82,42 +95,130 @@ export interface VerificationReport {
   readonly appliedVsDisk: AppliedDiskVerification;
   readonly recovery: MutationRecoveryPresentation;
   readonly healthy: boolean;
+  readonly configuration: ConfigurationOutcome;
+  readonly coverage: VerificationCoverage;
+  readonly runtime: VerificationRuntimeEvidence;
 }
 
 export async function verify(env: Env, opts: VerificationOptions): Promise<VerificationReport> {
-  const capabilities = opts.capabilities ?? ["rules"];
-  const [desiredPlan, ledger, diskItems, diagnosis, storeRevision] = await Promise.all([
-    plan(env, {
-      storeRoot: opts.storeRoot,
-      scope: opts.scope,
-      dir: opts.dir,
-      agents: opts.agents,
-      resourceIds: opts.resourceIds,
-      collections: opts.collections,
-      capabilities,
-      method: opts.method,
-      mcpStrategy: opts.mcpStrategy,
-      secretMode: "env",
-      dryRun: true,
-    }),
+  const agents = [...new Set(opts.agents)];
+  const capabilities = [...new Set(opts.capabilities ?? ["rules" as const])];
+  const config = await loadConfig(env, opts.storeRoot);
+  const registry = await loadRegistryFromConfig(env, config);
+  if (agents.some((agent) => !registry.get(agent))) {
+    throw new VerificationInputError();
+  }
+  const planned = await Promise.all(
+    agents.flatMap((agent) =>
+      capabilities.map(async (capability) => {
+        const observation: { outcome: VerificationCoverageOutcome } = { outcome: "failed" };
+        let actions: PlanAction[] = [];
+        if (config.adapterOverrides[agent]?.enabled === false) {
+          observation.outcome = "disabled";
+        } else if (!registry.get(agent)?.capabilities[capability]?.includes(opts.scope)) {
+          observation.outcome = "unsupported";
+        } else
+          try {
+            const result = await plan(
+              env,
+              {
+                ...opts,
+                agents: [agent],
+                capabilities: [capability],
+                secretMode: "env",
+                dryRun: true,
+              },
+              {
+                providerAccess: "forbidden",
+                onCoverage: (value) => {
+                  observation.outcome = value;
+                },
+              },
+            );
+            actions = result.actions;
+            if (
+              observation.outcome === "covered" &&
+              (result.invalidLedger ||
+                actions.some(
+                  (action) =>
+                    action.op === "skip" &&
+                    !(
+                      action.desiredEvidence && action.ownership?.classification === "owned-drifted"
+                    ),
+                ))
+            )
+              observation.outcome = "blocked";
+          } catch {
+            observation.outcome = "failed";
+          }
+        const codes: Record<VerificationCoverageOutcome, VerificationCoverageItem["code"]> = {
+          covered: "EVALUATED",
+          "no-op": "EMPTY_SELECTION",
+          unsupported: "UNSUPPORTED_CAPABILITY",
+          disabled: "AGENT_DISABLED",
+          blocked: "PLANNING_BLOCKED",
+          failed: "PLANNING_FAILED",
+        };
+        return {
+          actions,
+          item: {
+            agent,
+            scope: opts.scope,
+            capability,
+            outcome: observation.outcome,
+            code: codes[observation.outcome],
+          } satisfies VerificationCoverageItem,
+        };
+      }),
+    ),
+  );
+  const desiredPlan = { actions: planned.flatMap((result) => result.actions) };
+  const coverageItems: VerificationCoverageItem[] = planned.map((result) => result.item);
+  const [ledger, diskResults, recovery, storeRevision] = await Promise.all([
     loadLedger(env, opts.storeRoot),
-    status(env, {
-      storeRoot: opts.storeRoot,
-      scope: opts.scope,
-      dir: opts.dir,
-      agents: opts.agents,
-    }),
-    diagnoseMutationRecovery(env, opts.storeRoot),
+    Promise.all(
+      agents.map(async (agent) => {
+        try {
+          return await status(env, {
+            storeRoot: opts.storeRoot,
+            scope: opts.scope,
+            dir: opts.dir,
+            agents: [agent],
+          });
+        } catch {
+          for (let index = 0; index < coverageItems.length; index++) {
+            const item = coverageItems[index];
+            if (item?.agent === agent)
+              coverageItems[index] = { ...item, outcome: "failed", code: "OBSERVATION_FAILED" };
+          }
+          return [];
+        }
+      }),
+    ),
+    observeVerificationRecovery(env, opts.storeRoot),
     readStoreRevision(env, opts.storeRoot),
   ]);
+  const diskItems = diskResults.flat();
+  const observed = coverageItems.filter(
+    (item) => item.outcome === "covered" || item.outcome === "no-op",
+  ).length;
+  const coverage: VerificationCoverage = {
+    expected: coverageItems.length,
+    observed,
+    failed: coverageItems.filter((item) => item.outcome === "failed").length,
+    complete: observed === coverageItems.length,
+    items: coverageItems,
+  };
 
   const applied = ledger.owners.filter(
     (owner) =>
+      agents.includes(owner.agent) &&
       matchesFilter(owner, {
         scope: opts.scope,
         dir: opts.dir,
-        agents: opts.agents,
-      }) && capabilities.includes(owner.capability),
+        agents,
+      }) &&
+      capabilities.includes(owner.capability),
   );
   const desired = desiredPlan.actions.filter(
     (action) =>
@@ -192,17 +293,27 @@ export async function verify(env: Env, opts: VerificationOptions): Promise<Verif
     status: scopedDiskItems.every((item) => item.status === "ok") ? "converged" : "diverged",
     items: scopedDiskItems,
   };
-  const recovery = mutationRecoveryPresentation(diagnosis);
+  const converged =
+    desiredVsApplied.status === "converged" &&
+    appliedVsDisk.status === "converged" &&
+    recovery.status === "clean";
+  const configuration: ConfigurationOutcome = !coverage.complete
+    ? "incomplete"
+    : !converged
+      ? "unhealthy"
+      : desiredItems.length > 0
+        ? "healthy"
+        : "no-op";
 
   return {
     storeRevision,
     desiredVsApplied,
     appliedVsDisk,
     recovery,
-    healthy:
-      desiredVsApplied.status === "converged" &&
-      appliedVsDisk.status === "converged" &&
-      recovery.status === "clean",
+    coverage,
+    configuration,
+    runtime: { observation: "unknown" },
+    healthy: configuration === "healthy",
   };
 }
 
@@ -290,4 +401,42 @@ function desiredAppliedStatus(
 
 function normalizeAppliedMethod(method: AppliedMethod): DesiredPlacementMethod {
   return method === "junction" ? "symlink" : method;
+}
+
+export class VerificationInputError extends Error {
+  readonly code = "INVALID_INPUT";
+  constructor() {
+    super("Verification contains an unregistered Agent identity");
+  }
+}
+
+async function observeVerificationRecovery(
+  env: Env,
+  storeRoot: string,
+): Promise<MutationRecoveryPresentation> {
+  try {
+    const [journal, lockOwner, recoveryLockOwner] = await Promise.all([
+      readOperationJournal(env, storeRoot),
+      readStoreMutationLockOwner(env, storeRoot),
+      readStoreRecoveryLockOwner(env, storeRoot),
+    ]);
+    if (!journal && !lockOwner && !recoveryLockOwner) return { status: "clean" };
+    return mutationRecoveryPresentation({
+      status: "manual-recovery-required",
+      journal,
+      lockOwner,
+      recoveryLockOwner,
+      receipt: null,
+      message: "Outstanding operation state requires authorized recovery inspection",
+    });
+  } catch {
+    return mutationRecoveryPresentation({
+      status: "manual-recovery-required",
+      journal: null,
+      lockOwner: null,
+      recoveryLockOwner: null,
+      receipt: null,
+      message: "Operation state could not be observed",
+    });
+  }
 }

@@ -22,6 +22,7 @@ import {
   showControlPlaneOperation,
   showControlPlaneResource,
   summaryControlPlane,
+  VerificationInputError,
   validateControlPlaneConfig,
   verifyControlPlane,
 } from "@cellarer/core";
@@ -497,7 +498,10 @@ export function createDiffCommandContract(definition: CommandContractMetadata<"d
       for (const item of outcome.data.items)
         output.log(`  ${item.status ?? "?"} ${item.target ?? ""}`);
     },
-    mapError: () => undefined,
+    mapError: (error) =>
+      error instanceof VerificationInputError
+        ? { code: "INVALID_INPUT", message: error.message }
+        : undefined,
   });
 }
 
@@ -514,17 +518,35 @@ export function createVerifyCommandContract(definition: CommandContractMetadata<
     normalize: ({ command }) => command.opts<VerificationOpts>(),
     execute: async (opts, { invocation }) => {
       const { ctx, query } = await verificationQuery(opts, invocation);
-      return commandSuccess(await verifyControlPlane(ctx.env, query));
+      const report = await verifyControlPlane(ctx.env, query);
+      return report.configuration === "healthy" || report.configuration === "no-op"
+        ? commandSuccess(report)
+        : commandFailure(
+            {
+              code: "DOMAIN_VALIDATION_FAILED",
+              message: "Configuration verification is incomplete or unhealthy",
+            },
+            report,
+          );
     },
     presentText: (outcome) => {
-      if (!outcome.ok) return;
+      if (!outcome.data) return;
       const output = createSafeConsole(outcome.data);
-      output.log(outcome.data.healthy ? "验证通过。" : "验证发现问题。");
+      output.log(`配置验证: ${outcome.data.configuration}`);
+      output.log(`  coverage: ${outcome.data.coverage.observed}/${outcome.data.coverage.expected}`);
+      for (const item of outcome.data.coverage.items)
+        output.log(
+          `  ${item.agent}/${item.scope}/${item.capability}: ${item.outcome} (${item.code})`,
+        );
+      output.log(`  native runtime: ${outcome.data.runtime.observation}`);
       output.log(`  desired-vs-applied: ${outcome.data.desiredVsApplied.status}`);
       output.log(`  applied-vs-disk: ${outcome.data.appliedVsDisk.status}`);
       output.log(`  recovery: ${outcome.data.recovery.status}`);
     },
-    mapError: () => undefined,
+    mapError: (error) =>
+      error instanceof VerificationInputError
+        ? { code: "INVALID_INPUT", message: error.message }
+        : undefined,
   });
 }
 
@@ -712,7 +734,7 @@ export function createOperationShowCommandContract(
 async function verificationQuery(opts: VerificationOpts, invocation: CliInvocation) {
   const ctx = await resolveContext(
     { agent: opts.agent, dir: opts.dir, collection: opts.collection },
-    "optional",
+    "none",
   );
   const scope = parseScope(opts.scope, invocation) ?? ctx.scope;
   const method = parseEnum(opts.method, ["symlink", "copy"] as const, "method", invocation);

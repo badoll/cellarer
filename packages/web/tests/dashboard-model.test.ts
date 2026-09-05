@@ -1,4 +1,11 @@
+import { apply, dashboardSummary } from "@cellarer/core";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { loadConfig, saveConfig } from "../../core/src/store/config.js";
+import { initStore, writeRuleArtifact } from "../../core/src/store/store.js";
+import { ensureBaseDirs, makeTmpEnv } from "../../core/tests/helpers/env.js";
+import { CoverageList } from "../client/App.js";
 import {
   type AgentInfo,
   type ArtifactsResponse,
@@ -8,6 +15,7 @@ import {
   type StatusItem,
 } from "../client/dashboard-model.js";
 import {
+  configurationLabel,
   destinationLabel,
   resourceKindLabel,
   summarizeResourceCounts,
@@ -66,6 +74,13 @@ describe("dashboard model summary", () => {
 });
 
 describe("product model helpers", () => {
+  it("presents the Core configuration outcome without treating empty or partial coverage as healthy", () => {
+    expect(configurationLabel("incomplete")).toBe("Configuration incomplete");
+    expect(configurationLabel("no-op")).toBe("No resources to verify");
+    expect(configurationLabel("healthy")).toBe("Configuration healthy");
+    expect(configurationLabel("unhealthy")).toBe("Configuration unhealthy");
+  });
+
   it("labels destinations with user-facing language", () => {
     expect(destinationLabel("user")).toBe("User-level");
     expect(destinationLabel("project")).toBe("Project-level");
@@ -209,3 +224,54 @@ function cell(
   if (!found) throw new Error(`missing cell ${columnId}`);
   return found;
 }
+
+describe("Core-backed coverage cards", () => {
+  it("renders no-op, healthy, and disabled coverage with independent runtime evidence", async () => {
+    const t = makeTmpEnv();
+    try {
+      await ensureBaseDirs(t);
+      const storeRoot = t.path("home", ".cellarer");
+      await initStore(t.env, storeRoot);
+      const options = {
+        storeRoot,
+        scope: "global" as const,
+        agents: ["claude-code"],
+        capabilities: ["rules" as const],
+      };
+      const render = async () => {
+        const summary = await dashboardSummary(t.env, options);
+        return {
+          group: summary.distributionCoverage[0],
+          html: renderToStaticMarkup(
+            createElement(CoverageList, { groups: summary.distributionCoverage }),
+          ),
+        };
+      };
+      const empty = await render();
+      expect(empty.group).toMatchObject({
+        configuration: "no-op",
+        coverage: { expected: 1, observed: 1, complete: true },
+      });
+      expect(empty.html).toContain("No resources to verify");
+      expect(empty.html).toContain("Native Agent loading: unknown");
+      await writeRuleArtifact(t.env, storeRoot, "style", "Be clear");
+      await apply(t.env, options);
+      const healthy = await render();
+      expect(healthy.group).toMatchObject({ configuration: "healthy", percentage: 100 });
+      expect(healthy.html).toContain("Configuration healthy");
+      const config = await loadConfig(t.env, storeRoot);
+      config.adapterOverrides["claude-code"] = { enabled: false };
+      await saveConfig(t.env, storeRoot, config);
+      const disabled = await render();
+      expect(disabled.group).toMatchObject({
+        configuration: "incomplete",
+        coverage: { expected: 1, observed: 0, complete: false },
+      });
+      expect(disabled.html).toContain("Configuration incomplete");
+      expect(disabled.html).toContain("AGENT_DISABLED");
+      expect(disabled.html).not.toContain("Configuration healthy");
+    } finally {
+      await t.cleanup();
+    }
+  });
+});

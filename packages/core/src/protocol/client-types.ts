@@ -722,6 +722,9 @@ export interface DashboardAgentReadiness {
 }
 
 export interface DashboardCoverageGroup {
+  configuration: ConfigurationOutcome;
+  coverage: VerificationCoverage;
+  runtime: VerificationRuntimeEvidence;
   collection: Collection;
   scope: Scope;
   percentage: number | null;
@@ -788,4 +791,37 @@ export interface SettingsSummary {
   builtinAdapterIds: string[];
   customAdapterIds: string[];
   secretRefs: { name: string; ledgerEntryCount: number }[];
+}
+
+export type VerificationCoverageOutcome =
+  | "covered"
+  | "no-op"
+  | "unsupported"
+  | "disabled"
+  | "blocked"
+  | "failed";
+export interface VerificationCoverageItem {
+  readonly agent: string;
+  readonly scope: Scope;
+  readonly capability: Capability;
+  readonly outcome: VerificationCoverageOutcome;
+  readonly code:
+    | "EVALUATED"
+    | "EMPTY_SELECTION"
+    | "UNSUPPORTED_CAPABILITY"
+    | "AGENT_DISABLED"
+    | "PLANNING_BLOCKED"
+    | "PLANNING_FAILED"
+    | "OBSERVATION_FAILED";
+}
+export interface VerificationCoverage {
+  readonly expected: number;
+  readonly observed: number;
+  readonly failed: number;
+  readonly complete: boolean;
+  readonly items: readonly VerificationCoverageItem[];
+}
+export type ConfigurationOutcome = "healthy" | "unhealthy" | "no-op" | "incomplete";
+export interface VerificationRuntimeEvidence {
+  readonly observation: "unknown";
 }

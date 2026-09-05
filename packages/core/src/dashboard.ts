@@ -5,6 +5,7 @@ import { inCollections, plan } from "./engine/plan.js";
 import { planActionPresentationClass } from "./engine/plan-presentation.js";
 import { status } from "./engine/status.js";
 import type { DistributeOptions, StatusItem } from "./engine/types.js";
+import { type VerificationReport, verify } from "./engine/verification.js";
 import type { Env } from "./env.js";
 import type { Capability, Scope } from "./model/index.js";
 import type {
@@ -274,7 +275,7 @@ async function coverageGroups(
   const groups: ReturnType<typeof coverageGroup>[] = [];
   for (const collection of collections) {
     for (const scope of scopes) {
-      const p = await plan(env, {
+      const selection = {
         storeRoot: opts.storeRoot,
         scope,
         dir: scope === "project" ? opts.dir : undefined,
@@ -283,7 +284,11 @@ async function coverageGroups(
         capabilities,
         secretMode: "env",
         dryRun: true,
-      } satisfies DistributeOptions);
+      } satisfies DistributeOptions;
+      const verification = await verify(env, selection);
+      const p = await plan(env, selection, { providerAccess: "forbidden" }).catch(() => ({
+        actions: [],
+      }));
       const desired = p.actions.filter(
         (action) =>
           planActionPresentationClass(
@@ -319,6 +324,9 @@ async function coverageGroups(
       const lastAppliedAt = latestAppliedAt(ledgerEntries, collection, scope, artifacts);
       groups.push(
         coverageGroup({
+          configuration: verification.configuration,
+          coverage: verification.coverage,
+          runtime: verification.runtime,
           collection,
           scope,
           percentage,
@@ -347,6 +355,9 @@ export type DashboardCoverageProducerContract = AssertExact<
 >;
 
 function coverageGroup(input: {
+  configuration: VerificationReport["configuration"];
+  coverage: VerificationReport["coverage"];
+  runtime: VerificationReport["runtime"];
   collection: string;
   scope: Scope;
   percentage: number | null;

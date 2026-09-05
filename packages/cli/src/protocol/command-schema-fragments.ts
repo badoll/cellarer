@@ -1514,14 +1514,65 @@ const appliedDiskVerification = dataObject(["status", "items"], {
   status: jsonSchema.enumeration(["converged", "diverged"]),
   items: jsonSchema.array(statusItem),
 });
+const verificationCoverage = dataObject(["expected", "observed", "failed", "complete", "items"], {
+  expected: jsonSchema.integer(),
+  observed: jsonSchema.integer(),
+  failed: jsonSchema.integer(),
+  complete: jsonSchema.boolean(),
+  items: jsonSchema.array(
+    dataObject(["agent", "scope", "capability", "outcome", "code"], {
+      agent: jsonSchema.string(),
+      scope,
+      capability: jsonSchema.enumeration(["rules", "mcp", "skills"]),
+      outcome: jsonSchema.enumeration([
+        "covered",
+        "no-op",
+        "unsupported",
+        "disabled",
+        "blocked",
+        "failed",
+      ]),
+      code: jsonSchema.enumeration([
+        "EVALUATED",
+        "EMPTY_SELECTION",
+        "UNSUPPORTED_CAPABILITY",
+        "AGENT_DISABLED",
+        "PLANNING_BLOCKED",
+        "PLANNING_FAILED",
+        "OBSERVATION_FAILED",
+      ]),
+    }),
+  ),
+});
+const configurationOutcome = jsonSchema.enumeration([
+  "healthy",
+  "unhealthy",
+  "no-op",
+  "incomplete",
+]);
+const verificationRuntime = dataObject(["observation"], {
+  observation: jsonSchema.enumeration(["unknown"]),
+});
 const verifyOutput = dataObject(
-  ["storeRevision", "desiredVsApplied", "appliedVsDisk", "recovery", "healthy"],
+  [
+    "storeRevision",
+    "desiredVsApplied",
+    "appliedVsDisk",
+    "recovery",
+    "healthy",
+    "configuration",
+    "coverage",
+    "runtime",
+  ],
   {
     storeRevision: jsonSchema.integer(),
     desiredVsApplied: desiredAppliedVerification,
     appliedVsDisk: appliedDiskVerification,
     recovery: mutationRecoveryPresentation,
     healthy: jsonSchema.boolean(),
+    configuration: configurationOutcome,
+    coverage: verificationCoverage,
+    runtime: verificationRuntime,
   },
 );
 const dashboardCapabilityReadiness = dataObject(["capability", "status", "paths", "warnings"], {
@@ -1569,6 +1620,9 @@ const capabilityCounts = dataObject(["rules", "mcp", "skills"], {
 });
 const dashboardCoverage = dataObject(
   [
+    "configuration",
+    "coverage",
+    "runtime",
     "collection",
     "scope",
     "percentage",
@@ -1582,6 +1636,9 @@ const dashboardCoverage = dataObject(
     "artifactsCount",
   ],
   {
+    configuration: configurationOutcome,
+    coverage: verificationCoverage,
+    runtime: verificationRuntime,
     collection: jsonSchema.string({ minLength: 1 }),
     scope,
     percentage: { type: ["integer", "null"], minimum: 0, maximum: 100 },

@@ -2,7 +2,7 @@ import { promises as fs, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRealEnv } from "@cellarer/core";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HEADLESS_MUTATION_AUTHORITY_ENV } from "../src/mutation-authority.js";
 import { buildProgram } from "../src/program.js";
 import { commandRegistry } from "../src/protocol/command-registry.js";
@@ -173,6 +173,69 @@ describe("control-plane read commands", () => {
         counts: { managed: 1, synced: 0, drifted: 1, missing: 0, blocked: 0 },
       },
     });
+  });
+
+  it("renders explicit no-op and incomplete configuration in text output", async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const log = vi.spyOn(console, "log").mockImplementation((...values) => {
+      stdout.push(values.join(" "));
+    });
+    const originalOut = process.stdout.write;
+    const originalErr = process.stderr.write;
+    process.stdout.write = ((chunk: unknown) => {
+      stdout.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    process.stderr.write = ((chunk: unknown) => {
+      stderr.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      await buildProgram().parseAsync(
+        [
+          "node",
+          "cellarer",
+          "verify",
+          "--scope",
+          "project",
+          "--dir",
+          project,
+          "--agent",
+          "claude-code",
+        ],
+        { from: "node" },
+      );
+      expect(stdout.join("")).toContain("配置验证: no-op");
+      expect(stdout.join("")).toContain("native runtime: unknown");
+      expect(stdout.join("")).not.toContain("验证通过");
+      const configPath = join(storeRoot, "config.json");
+      const config = JSON.parse(await fs.readFile(configPath, "utf8"));
+      config.adapterOverrides = { "claude-code": { enabled: false } };
+      await fs.writeFile(configPath, JSON.stringify(config));
+      stdout.length = 0;
+      await buildProgram().parseAsync(
+        [
+          "node",
+          "cellarer",
+          "verify",
+          "--scope",
+          "project",
+          "--dir",
+          project,
+          "--agent",
+          "claude-code",
+        ],
+        { from: "node" },
+      );
+      expect(stdout.join("")).toContain("配置验证: incomplete");
+      expect(stdout.join("")).toContain("AGENT_DISABLED");
+      expect(process.exitCode).toBe(3);
+    } finally {
+      log.mockRestore();
+      process.stdout.write = originalOut;
+      process.stderr.write = originalErr;
+    }
   });
 
   it("shows agent, collection, config, diff, discovery, verification, and operation DTOs", async () => {

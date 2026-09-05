@@ -139,8 +139,15 @@ unowned-existing 或 invalid-owner。
 - 最后一次 applied receipt 与当前磁盘；
 - 未完成或需要人工处理的 mutation 状态。
 
-相关轴全部收敛才是 healthy。中断 operation 保留 journal 并阻止后续写入，直到基于证据
-完成恢复，或返回精确的人工处理要求。
+只有每个请求的 Agent/scope/capability 均得到覆盖、至少验证一个目标且三个轴全部收敛时，
+配置才是 `healthy`。`coverage` 保留逐项 typed outcome 及 expected/observed/failed 计数。
+合法空选择为 `no-op` 且 `healthy: false`；unsupported、disabled、blocked 或 failed 请求
+为 `incomplete`；完整观察中存在状态差异则为 `unhealthy`。未知 Agent 属于输入错误。
+`runtime.observation` 保持 `unknown`：文件一致不能证明原生 Agent 已加载或 MCP 已连通。
+
+验证不需要 mutation authority 或 secret provider。Recovery 轴只观察 journal 和锁是否
+存在：均不存在时为 clean；存在遗留状态或无法读取时，保守要求执行有授权的恢复诊断。
+中断 operation 保留 journal 并阻止后续写入，直到基于证据完成恢复，或返回精确的人工处理要求。
 
 ## 常见工作流
 
@@ -326,6 +333,13 @@ cellarer --output json revert --agent codex --dry-run
 
 不带 agent 的 `status` 报告 ledger-versus-disk items；带 agent 时可以包含完整的 desired、
 disk 和 recovery 验证模型。
+
+`verify` 对 `healthy` 或合法 `no-op` 返回退出码 0，输入错误返回 2，`incomplete` 或
+`unhealthy` 返回 3（`DOMAIN_VALIDATION_FAILED`）；错误 envelope 的 `data` 仍保留报告。
+这修正了此前空结果或跳过请求可能被当作成功的行为。CLI 与 HTTP envelope 保持现有协议
+版本，报告新增必需字段 `configuration`、`coverage` 和 `runtime`。HTTP 200 仅表示查询
+完成，判断结果须读取 `data.configuration`。Web 覆盖卡片展示同一 Core 结果，并单列
+原生运行时证据。
 
 中断 operation 必须先运行 `operation recover <id> --dry-run` 诊断，只在结果允许时执行
 恢复。绝不能因为 `mutation.lock`、`recovery.lock` 或 `operations/active.json` 看起来很旧
