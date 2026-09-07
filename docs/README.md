@@ -436,6 +436,12 @@ passphrases are not accepted as option values and are never printed by `ls`.
 
 ### Web UI and local API
 
+The Library Collection filter is carried into **Sync to Agents**. With no filter,
+sync uses Store defaults, not every Collection. Only matching Store resources are
+synced; discovered resources must be imported first. Changing the selection or
+closing the dialog discards the preview. Apply submits the reviewed plan unchanged;
+a stale-plan rejection requires a fresh preview and is never retried automatically.
+
 ```bash
 cellarer ui
 ```

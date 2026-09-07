@@ -14,6 +14,7 @@ import {
   summarizeResourceCounts,
 } from "./product-model.js";
 import { SyncDialog } from "./sync-dialog.js";
+import { collectionFilterSelection } from "./sync-selection.js";
 
 interface ApiState<T> {
   data: T | null;
@@ -143,6 +144,7 @@ export function ResourcePage(props: { kind: Capability }) {
       <SyncDialog
         open={syncOpen}
         kinds={[props.kind]}
+        collections={collectionFilterSelection(collection)}
         onClose={() => setSyncOpen(false)}
         onApplied={() => {
           setSyncOpen(false);

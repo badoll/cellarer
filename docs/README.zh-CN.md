@@ -380,6 +380,11 @@ vault passphrase。密钥真值和 passphrase 不作为 option value，也不会
 
 ### Web UI 与本地 API
 
+Library 的 Collection 筛选会传入 **Sync to Agents**。无筛选时，同步使用 Store
+默认集合，并非全部集合。仅同步匹配的 Store 资源；discovered 资源需要先导入。
+修改选择或关闭弹窗会作废预览。Apply 原样提交已审查的计划；计划过期被拒绝后，
+需要重新预览，不会自动重试。
+
 ```bash
 cellarer ui
 ```

@@ -1,62 +1,20 @@
 import type { Capability, DistributePlan, MutationPlan } from "@cellarer/core/client-api";
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { apiFetch } from "./api.js";
-import { readApiJson } from "./api-state.js";
+import { ClientApiError, isClientReplanRequired, readApiJson } from "./api-state.js";
 import { type Destination, destinationLabel, resourceKindLabel } from "./product-model.js";
 
-interface SyncRequest {
-  agents: string[];
-  destination: Destination;
-  dir?: string;
-  resources?: {
-    kinds?: Capability[];
-    collections?: string[];
-  };
-}
+import {
+  buildSyncSelection,
+  isProjectDirMissing,
+  type SyncRequest,
+  syncRequestKey,
+} from "./sync-selection.js";
 
-interface SyncRequestInput {
-  agents: string;
-  destination: Destination;
-  dir: string;
-  kinds?: Capability[];
-  collections?: string[];
-}
-
-function nonEmptyArray<T>(items: T[] | undefined): T[] | undefined {
-  return items && items.length > 0 ? [...items] : undefined;
-}
+export { buildSyncRequest, isProjectDirMissing, syncRequestKey } from "./sync-selection.js";
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
-}
-
-export function isProjectDirMissing(destination: Destination, dir: string): boolean {
-  return destination === "project" && dir.trim() === "";
-}
-
-export function buildSyncRequest(input: SyncRequestInput): SyncRequest {
-  const kinds = nonEmptyArray(input.kinds);
-  const collections = nonEmptyArray(input.collections);
-  const resources = kinds || collections ? { kinds, collections } : undefined;
-  return {
-    agents: input.agents
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean),
-    destination: input.destination,
-    dir: input.destination === "project" ? input.dir.trim() : undefined,
-    resources,
-  };
-}
-
-export function syncRequestKey(request: SyncRequest): string {
-  return JSON.stringify({
-    agents: request.agents,
-    destination: request.destination,
-    dir: request.dir ?? "",
-    kinds: request.resources?.kinds ?? [],
-    collections: request.resources?.collections ?? [],
-  });
 }
 
 export function SyncDialog(props: {
@@ -75,27 +33,31 @@ export function SyncDialog(props: {
   const [error, setError] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [applying, setApplying] = useState(false);
-  const latestRequestKey = useRef("");
+  const generation = useRef(0);
+  const busy = useRef(false);
 
-  useEffect(() => {
-    if (!props.open) return;
-    setPlan(null);
-    setMutationPlan(null);
-    setPlannedRequest(null);
-    setError(null);
-  }, [props.open, props.kinds, props.collections]);
-
-  if (!props.open) return null;
-
-  const request = buildSyncRequest({
+  const selection = buildSyncSelection({
     agents,
     destination,
     dir,
     kinds: props.kinds,
     collections: props.collections,
   });
-  const currentRequestKey = syncRequestKey(request);
-  latestRequestKey.current = currentRequestKey;
+  const { request, key: currentRequestKey } = selection;
+  // Bind authority to committed normalized input and a dialog session, not array identity.
+  useLayoutEffect(() => {
+    generation.current += 1;
+    setPlan(null);
+    setMutationPlan(null);
+    setPlannedRequest(null);
+    setError(null);
+    setPreviewing(false);
+    return () => {
+      generation.current += 1;
+    };
+  }, [props.open, currentRequestKey]);
+
+  if (!props.open) return null;
   const dirMissing = isProjectDirMissing(destination, dir);
   const hasAgents = request.agents.length > 0;
   const hasCurrentPreview =
@@ -107,16 +69,18 @@ export function SyncDialog(props: {
   const canApply = canPreview && hasCurrentPreview;
 
   function resetPlan() {
+    generation.current += 1;
     setPlan(null);
     setMutationPlan(null);
     setPlannedRequest(null);
   }
 
   async function preview() {
-    if (!canPreview) return;
+    if (!canPreview || busy.current) return;
+    resetPlan();
     setError(null);
     setPreviewing(true);
-    const requestKey = syncRequestKey(request);
+    const requestGeneration = ++generation.current;
     try {
       const response = await apiFetch("/api/v1/sync/plan", {
         method: "POST",
@@ -126,22 +90,25 @@ export function SyncDialog(props: {
       const nextPlan = await readApiJson<{ plan: DistributePlan; mutationPlan: MutationPlan }>(
         response,
       );
-      if (requestKey !== latestRequestKey.current) return;
+      if (requestGeneration !== generation.current) return;
       setPlan(nextPlan.plan);
       setMutationPlan(nextPlan.mutationPlan);
       setPlannedRequest(request);
     } catch (err) {
+      if (requestGeneration !== generation.current) return;
       setPlan(null);
       setMutationPlan(null);
       setPlannedRequest(null);
       setError(errorMessage(err));
     } finally {
-      setPreviewing(false);
+      if (requestGeneration === generation.current) setPreviewing(false);
     }
   }
 
   async function applySync() {
-    if (!plannedRequest || !mutationPlan || !hasCurrentPreview) return;
+    if (!canApply || !plannedRequest || !mutationPlan || busy.current) return;
+    busy.current = true;
+    const requestGeneration = generation.current;
     setError(null);
     setApplying(true);
     try {
@@ -151,10 +118,19 @@ export function SyncDialog(props: {
         body: JSON.stringify({ mutationPlan }),
       });
       await readApiJson<unknown>(response);
+      if (requestGeneration !== generation.current) return;
+      resetPlan();
       props.onApplied();
     } catch (err) {
-      setError(errorMessage(err));
+      if (requestGeneration !== generation.current) return;
+      resetPlan();
+      const message =
+        err instanceof ClientApiError ? `${err.code}: ${err.message}` : errorMessage(err);
+      setError(
+        isClientReplanRequired(err) ? `${message}. Preview again to review a fresh plan.` : message,
+      );
     } finally {
+      busy.current = false;
       setApplying(false);
     }
   }
@@ -172,7 +148,7 @@ export function SyncDialog(props: {
             <h3>Sync to Agents</h3>
             <p>Preview writes to agent targets before applying the selected resources.</p>
           </div>
-          <button type="button" className="link-button" onClick={props.onClose}>
+          <button type="button" className="link-button" disabled={applying} onClick={props.onClose}>
             Close
           </button>
         </div>
@@ -182,21 +158,22 @@ export function SyncDialog(props: {
             <span>Target agents</span>
             <input
               type="text"
+              disabled={applying}
               value={agents}
               onChange={(event) => {
                 setAgents(event.target.value);
-                resetPlan();
               }}
             />
           </label>
           <div className="sync-resource-summary">
             <span>Resources</span>
-            <strong>{resourceSummary(props.kinds)}</strong>
-            <p>{props.collections?.length ? props.collections.join(", ") : "All collections"}</p>
+            <strong>{selection.resourceSummary}</strong>
+            <p>{selection.collectionSummary}</p>
+            <p>Syncs matching Store resources. Discovered resources must be imported first.</p>
           </div>
         </div>
 
-        <fieldset className="segmented sync-destination">
+        <fieldset className="segmented sync-destination" disabled={applying}>
           <legend className="visually-hidden">Destination</legend>
           {(["user", "project"] as Destination[]).map((item) => (
             <label className={destination === item ? "selected" : ""} key={item}>
@@ -205,7 +182,6 @@ export function SyncDialog(props: {
                 checked={destination === item}
                 onChange={() => {
                   setDestination(item);
-                  resetPlan();
                 }}
               />
               {destinationLabel(item)}
@@ -220,10 +196,10 @@ export function SyncDialog(props: {
               className="dir-input"
               type="text"
               placeholder="Project root absolute path"
+              disabled={applying}
               value={dir}
               onChange={(event) => {
                 setDir(event.target.value);
-                resetPlan();
               }}
             />
           </label>
@@ -255,11 +231,6 @@ export function SyncDialog(props: {
       </section>
     </div>
   );
-}
-
-function resourceSummary(kinds: Capability[] | undefined): string {
-  if (!kinds || kinds.length === 0) return "All resource kinds";
-  return kinds.map(resourceKindLabel).join(", ");
 }
 
 function SyncPlanTable(props: { plan: DistributePlan }) {
