@@ -18,3 +18,4 @@ test/AGENTS.md
 test/.mcp.json
 test/.gitignore
 test/.codebuddy/
+/openspec/
