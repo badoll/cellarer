@@ -69,7 +69,7 @@ describe("init Inventory onboarding", () => {
       fs.readFile(join(storeRoot, "store", "skills", "inventory-demo", "SKILL.md"), "utf8"),
     ).resolves.toContain("description: initial");
     await expect(
-      fs.readFile(join(root, ".codex", "skills", "inventory-demo", "SKILL.md"), "utf8"),
+      fs.readFile(join(root, ".agents", "skills", "inventory-demo", "SKILL.md"), "utf8"),
     ).resolves.toContain("description: initial");
     await expect(fs.stat(join(root, ".claude"))).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -306,7 +306,7 @@ async function explicitAgentOverrides(root: string): Promise<Record<string, unkn
 }
 
 async function createReadySkill(root: string, name: string, description: string): Promise<string> {
-  const path = join(root, ".codex", "skills", name, "SKILL.md");
+  const path = join(root, ".agents", "skills", name, "SKILL.md");
   await fs.mkdir(join(path, ".."), { recursive: true });
   await fs.writeFile(path, `---\nname: ${name}\ndescription: ${description}\n---\n`, "utf8");
   return path;

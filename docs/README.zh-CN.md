@@ -588,6 +588,43 @@ client code 中没有 secret-value input 或 general provider handle。
 `POST /api/v1/import/apply` route 已移除并返回 not found。Client 必须使用上述 Inventory
 route；server 不会翻译旧 request 或捕获的 scan plan。
 
+### 内置兼容性证据
+
+Agents 页面与 Agent 读取 API 区分 documented 落点、unsupported 能力、unknown 证据及
+user-defined 覆盖。发现配置目录不代表原生加载成功。随包的 `compatibility/matrix.json`
+按日期版本记录 42 个能力/scope 格、官方来源与加载前提；随包证据中没有 native-verified 格。
+通用 AGENTS.md adapter 依赖实际消费者实现相应约定。
+
+当前校准后的默认值包括：
+
+| Agent | 落点或限制 |
+| --- | --- |
+| Claude Code | 用户 MCP：`~/.claude.json`；保留无关设置。 |
+| Gemini CLI | 项目 Rules：`GEMINI.md`；Skills：`~/.gemini/skills` 与 `.gemini/skills`。 |
+| Cursor | 用户 Skills：`~/.cursor/skills`；项目 MDC Rules 带 `alwaysApply: true`。全局 User Rules 需在 Cursor 设置中配置，不支持作为文件目标。 |
+| Codex | 用户 Skills：`~/.agents/skills`。 |
+| Windsurf Cascade | 项目 Skills：`.windsurf/skills`；不支持项目 MCP 文件落点。 |
+
+这些合同以默认配置根目录及文档中的信任/启用设置为前提。MDC 包装仅接受纯文本规则；
+需要条件触发的 frontmatter 会被标为 unsupported。覆盖配置会撤销相关能力的内置证据，
+并标记为 user-defined。
+
+若旧受管目标使用其他落点，规划返回 `relocation-required`。先审查该目标的显式
+uninstall/revert，再为新落点独立生成计划。不会自动迁移或复制目标。原生文件含明文
+密钥且无法通过现有 reference-only 防护时会被阻断。
+
+维护者可在 checkout 构建后运行被动检查：
+
+```bash
+node test/e2e/native-agent-compatibility.mjs --fixture-only
+```
+
+可选的 `--native --agent codex --capability mcp --scope global --binary /absolute/path/to/codex --version <exact-version>`
+模式要求 Linux 与 `/usr/bin/bwrap`。它隔离 HOME、项目、Store、凭据与网络，检查精确版本
+二进制能否识别 fixture 配置；不启动 MCP server，也不验证连通性。其他执行方案/平台或
+缺少前提时返回 unavailable（退出码 3）。Linux 执行路径尚未针对真实二进制验证；随包
+证据不包含原生验证结果。Fixture 内容不会被执行。
+
 ## 自定义 Adapter
 
 用户配置位于 `~/.cellarer/config.json`；自定义 Store 使用

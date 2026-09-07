@@ -26,5 +26,8 @@ export function renderRules(fragments: RuleFragment[]): string {
 
 // 是否由 cellarer 生成:首个非空白行是否为 generated header。
 export function isGenerated(content: string): boolean {
-  return content.trimStart().startsWith(GENERATED_HEADER);
+  return content
+    .trimStart()
+    .replace(/^---\nalwaysApply: true\n---\n/, "")
+    .startsWith(GENERATED_HEADER);
 }

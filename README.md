@@ -173,6 +173,10 @@ Run `cellarer <command> --help` for exact options. Automated
 callers can discover stable command and schema contracts with `capabilities`
 and `schema`.
 
+Built-in compatibility evidence and corrected placements are described in the
+[detailed guide](docs/README.md#built-in-compatibility-evidence). Configuration discovery does
+not establish native loading; prior owned placements require an explicit reviewed transition.
+
 ## Architecture in brief
 
 cellarer is a TypeScript monorepo. `@cellarer/core` owns the store, planning,

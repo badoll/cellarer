@@ -175,7 +175,7 @@ export function AgentsPage() {
                     </td>
                     <td>
                       <span className={`tag ${agent.detected ? "green" : "amber"}`}>
-                        {agent.detected ? "detected" : "missing"}
+                        {agent.detected ? "configuration found" : "not found"}
                       </span>
                     </td>
                     <td className="path-cell mono">
@@ -183,6 +183,7 @@ export function AgentsPage() {
                     </td>
                     <td>
                       <div className="capability-strip">{capabilityTags(agent)}</div>
+                      <CompatibilityEvidence evidence={agent.compatibility} />
                     </td>
                     <td>
                       <label className="switch-row">
@@ -364,4 +365,36 @@ export function adapterPatch(
 function mcpPatch(path: string, builtin: boolean) {
   if (builtin) return { global: path };
   return { global: path, format: "json" as const, serversKey: "mcpServers" };
+}
+
+export function CompatibilityEvidence({
+  evidence,
+}: {
+  evidence: ControlPlaneAgentDto["compatibility"];
+}) {
+  return (
+    <details>
+      <summary>Compatibility evidence</summary>
+      {evidence.map((cell) => (
+        <div key={`${cell.capability}/${cell.scope}`}>
+          <strong>
+            {cell.capability}/{cell.scope}: {cell.evidence}
+          </strong>
+          <p>Native loading: {cell.native} (not verified)</p>
+          {cell.location && <code>{cell.location}</code>}
+          {cell.prerequisites.map((text) => (
+            <p key={text}>{text}</p>
+          ))}
+          {cell.sources.map((url) => (
+            <p key={url}>
+              <a href={url} target="_blank" rel="noreferrer">
+                Official contract
+              </a>
+            </p>
+          ))}
+          <small>Contract {cell.contractVersion}</small>
+        </div>
+      ))}
+    </details>
+  );
 }

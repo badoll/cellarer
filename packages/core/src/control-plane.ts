@@ -1,4 +1,9 @@
 import { ZodError } from "zod";
+import {
+  type CompatibilityMatrix,
+  describeCompatibility,
+  loadCompatibility,
+} from "./adapters/compatibility.js";
 import { dashboardSummary } from "./dashboard.js";
 import { doctor } from "./diagnostics.js";
 import { status } from "./engine/status.js";
@@ -232,13 +237,14 @@ export async function showControlPlaneResource(
 }
 
 async function listControlPlaneAgentsImplementation(env: Env, opts: ControlPlaneAgentOptions) {
-  const [report, config, packaged] = await Promise.all([
+  const [report, config, packaged, compatibility] = await Promise.all([
     doctor(env, { ...opts, agents: opts.agents ? [...opts.agents] : undefined }),
     loadConfig(env, opts.storeRoot),
     packagedConfigText(env).then(parsePackagedConfigForSettings),
+    loadCompatibility(env),
   ]);
   const builtinIds = new Set(Object.keys(packaged.builtinAdapters));
-  const agents = report.agents.map((agent) => agentDto(agent, config, builtinIds));
+  const agents = report.agents.map((agent) => agentDto(agent, config, builtinIds, compatibility));
   return readonlyProducer({
     storeRoot: opts.storeRoot,
     scope: opts.scope,
@@ -259,9 +265,13 @@ function agentDto(
   agent: Awaited<ReturnType<typeof doctor>>["agents"][number],
   config: Awaited<ReturnType<typeof loadConfig>>,
   builtinIds: ReadonlySet<string>,
+  compatibility: CompatibilityMatrix,
 ) {
   const detectionEvidence: { readonly root?: string } = agent.root ? { root: agent.root } : {};
-  const adapterKind = builtinIds.has(agent.id) ? ("built-in" as const) : ("custom" as const);
+  const adapterKind =
+    builtinIds.has(agent.id) && !Object.hasOwn(config.customAdapters, agent.id)
+      ? ("built-in" as const)
+      : ("custom" as const);
   return readonlyProducer({
     id: agent.id,
     displayName: agent.displayName,
@@ -273,6 +283,20 @@ function agentDto(
       Object.hasOwn(config.customAdapters, agent.id),
     enabled: agent.enabled,
     detectionEvidence,
+    compatibility: readonlyList(
+      describeCompatibility(
+        compatibility,
+        adapterKind === "custom" ? "" : agent.id,
+        agent.scope,
+        config.adapterOverrides[agent.id],
+      ).map((cell) =>
+        readonlyProducer({
+          ...cell,
+          sources: readonlyList(cell.sources),
+          prerequisites: readonlyList(cell.prerequisites),
+        }),
+      ),
+    ),
     capabilities: readonlyList(agent.supportedCapabilities),
     capabilityScopes: readonlyProducer({
       rules: readonlyList(agent.capabilities.rules),

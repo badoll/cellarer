@@ -46,7 +46,7 @@ describe("Inventory bundled client view", () => {
               id: "source:v1:demo",
               kind: "skills",
               scope: "global",
-              location: "~/.codex/skills/inventory-demo",
+              location: "~/.agents/skills/inventory-demo",
               adapters: [{ id: "codex", displayName: "Codex", enabled: false, detected: false }],
             },
           ],
@@ -83,7 +83,7 @@ describe("Inventory bundled client view", () => {
     expect(html).toContain("Inventory is partial");
     expect(html).toContain("inventory-demo");
     expect(html).toContain("Ready");
-    expect(html).toContain("~/.codex/skills/inventory-demo");
+    expect(html).toContain("~/.agents/skills/inventory-demo");
     expect(html).toContain("PROBABLE_SECRET");
     expect(html).toContain("remove-secret-values");
     expect(html).toContain('aria-label="Select inventory-demo" checked=""');

@@ -102,7 +102,7 @@ describe("resource lifecycle dependency, rename, remove, and bundles", () => {
           agent: "codex",
           capability: "skills",
           resourceId: "skills/example-skill",
-          target: expect.stringContaining("/.codex/skills/example-skill"),
+          target: expect.stringContaining("/.agents/skills/example-skill"),
         },
       ],
     });

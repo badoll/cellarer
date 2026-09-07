@@ -83,9 +83,10 @@ describe("engine/plan", () => {
     expect(p.actions.map((a) => a.agent).sort()).toEqual(
       ["agents-md", "claude-code", "codex", "cursor"].sort(),
     );
-    expect(p.actions.find((a) => a.agent === "cursor")?.target).toBe(
-      t.path("home", ".cursor", "rules", "cellarer.mdc"),
-    );
+    expect(p.actions.find((a) => a.agent === "cursor")).toMatchObject({
+      op: "skip",
+      reason: "capability rules/global not supported",
+    });
   });
 
   it("skips an unsupported capability/scope with a warning", async () => {

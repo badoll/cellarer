@@ -1,0 +1,29 @@
+{
+  "standard": {
+    "mcpServers": {
+      "sample": {
+        "command": "sample-not-executed",
+        "args": []
+      }
+    }
+  },
+  "claudeUser": {
+    "theme": "dark",
+    "projects": {},
+    "mcpServers": {
+      "sample": {
+        "command": "sample-not-executed"
+      }
+    }
+  },
+  "opencode": {
+    "mcp": {
+      "sample": {
+        "type": "local",
+        "command": ["sample-not-executed"],
+        "environment": {}
+      }
+    }
+  },
+  "codex": "[mcp_servers.sample]\ncommand = \"sample-not-executed\"\n"
+}

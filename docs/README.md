@@ -678,6 +678,46 @@ The superseded `GET /api/v1/discovery`, `POST /api/v1/scan/plan`,
 must use the Inventory routes above; the server does not translate legacy
 requests or captured scan plans.
 
+### Built-in compatibility evidence
+
+The Agents page and agent read API distinguish documented placements, unsupported capabilities,
+unknown evidence and user-defined overrides. Finding a configuration directory does not verify
+native loading. The packaged `compatibility/matrix.json` records 42 capability/scope cells,
+official sources and prerequisites under a dated contract; no bundled cell is native-verified.
+The generic AGENTS.md adapter depends on an actual consumer implementing its conventions.
+
+Current corrected defaults include:
+
+| Agent | Placement or limitation |
+| --- | --- |
+| Claude Code | User MCP: `~/.claude.json`; unrelated settings are preserved. |
+| Gemini CLI | Project Rules: `GEMINI.md`; Skills: `~/.gemini/skills` and `.gemini/skills`. |
+| Cursor | User Skills: `~/.cursor/skills`; project MDC Rules include `alwaysApply: true`. Global User Rules require Cursor settings and are unsupported as a file target. |
+| Codex | User Skills: `~/.agents/skills`. |
+| Windsurf Cascade | Project Skills: `.windsurf/skills`; project MCP file placement is unsupported. |
+
+These contracts assume default configuration roots and the documented trust/enablement settings.
+MDC wrapping accepts plain rules only; frontmatter requiring conditional activation is unsupported.
+An override withdraws evidence for the affected capability and marks it user-defined.
+
+If a prior owned target uses another placement, planning returns `relocation-required`. Review an
+explicit uninstall/revert for that target before making a separate plan for the corrected location.
+No target is automatically relocated or duplicated. A native file containing plaintext secrets
+is blocked if it cannot pass the existing reference-only safeguards.
+
+Maintainers can run passive checks from the checkout after building:
+
+```bash
+node test/e2e/native-agent-compatibility.mjs --fixture-only
+```
+
+The optional `--native --agent codex --capability mcp --scope global --binary /absolute/path/to/codex --version <exact-version>`
+mode requires Linux and `/usr/bin/bwrap`. It isolates HOME, project, Store, credentials and network,
+and checks whether that exact binary recognizes the fixture configuration; it does not start an
+MCP server or verify connectivity. Other recipes/platforms or missing prerequisites report
+unavailable (exit 3). The Linux execution path has not yet been exercised against a real binary;
+no native result is included in the bundled evidence. Fixture content is never executed.
+
 ## Custom adapters
 
 User configuration lives in `~/.cellarer/config.json`, or under

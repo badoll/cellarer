@@ -407,8 +407,8 @@ describe("versioned HTTP mutation journeys", () => {
   });
 
   it("keeps first-run Inventory review, decline, exact import, and stale remediation separate", async () => {
-    const firstSource = join(root, "home", ".codex", "skills", "first-run", "SKILL.md");
-    const staleSource = join(root, "home", ".codex", "skills", "stale-run", "SKILL.md");
+    const firstSource = join(root, "home", ".agents", "skills", "first-run", "SKILL.md");
+    const staleSource = join(root, "home", ".agents", "skills", "stale-run", "SKILL.md");
     await env.fs.mkdir(join(firstSource, ".."), { recursive: true });
     await env.fs.mkdir(join(staleSource, ".."), { recursive: true });
     await env.fs.writeFile(
@@ -502,7 +502,7 @@ describe("versioned HTTP mutation journeys", () => {
   });
 
   it("preserves safe first-run candidates when Inventory refresh is partial", async () => {
-    const safeSource = join(root, "home", ".codex", "skills", "safe-run", "SKILL.md");
+    const safeSource = join(root, "home", ".agents", "skills", "safe-run", "SKILL.md");
     const externalRules = join(root, "external-rules.md");
     await env.fs.mkdir(join(safeSource, ".."), { recursive: true });
     await env.fs.writeFile(

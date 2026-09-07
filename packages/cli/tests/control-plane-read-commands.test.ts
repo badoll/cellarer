@@ -621,7 +621,7 @@ describe("control-plane read commands", () => {
             agent: "claude-code",
             scope: "global",
             capability: "mcp",
-            target: join(root, "home", ".claude", "mcp.json"),
+            target: join(root, "home", ".claude.json"),
             artifactIds: ["mcp/context"],
             receipt: {
               method: "write",

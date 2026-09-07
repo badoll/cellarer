@@ -708,7 +708,7 @@ describe("resource update check, private staging, and Store-only apply", () => {
       method: "symlink",
     });
     expect(deployed.failures).toEqual([]);
-    const target = t.path("home", ".codex", "skills", "example-skill", "SKILL.md");
+    const target = t.path("home", ".agents", "skills", "example-skill", "SKILL.md");
     expect(await t.env.fs.readFile(target)).toBe(OLD_SKILL);
 
     t.env.resourceSourceTransport = transport({ commit: NEXT_COMMIT, content: NEW_SKILL });

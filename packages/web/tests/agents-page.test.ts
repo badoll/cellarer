@@ -77,3 +77,28 @@ describe("AgentsPage adapter helpers", () => {
     else expect(html).not.toContain("Retry manually");
   });
 });
+
+it("shows documented and user-defined evidence without implying native success", async () => {
+  const { CompatibilityEvidence } = await import("../client/agents-page.js");
+  for (const evidence of ["documented", "user-defined"] as const) {
+    const html = renderToStaticMarkup(
+      createElement(CompatibilityEvidence, {
+        evidence: [
+          {
+            capability: "mcp",
+            scope: "global",
+            evidence,
+            native: "unknown",
+            contractVersion: "2026-09-07.1",
+            location: null,
+            sources: [],
+            prerequisites: ["Must be enabled."],
+          },
+        ],
+      }),
+    );
+    expect(html).toContain(evidence);
+    expect(html).toContain("unknown (not verified)");
+    expect(html).toContain("Must be enabled.");
+  }
+});

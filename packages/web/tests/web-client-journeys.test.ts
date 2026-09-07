@@ -277,7 +277,7 @@ function onboardingInventory(completeness: "complete" | "partial"): InventoryRef
             id: "source:codex",
             kind: "skills",
             scope: "global",
-            location: "~/.codex/skills/shared-skill",
+            location: "~/.agents/skills/shared-skill",
             adapters: [{ id: "codex", displayName: "Codex", enabled: false, detected: true }],
           },
           {

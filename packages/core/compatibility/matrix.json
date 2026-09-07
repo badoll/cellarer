@@ -1,0 +1,688 @@
+{
+  "schemaVersion": 1,
+  "contractVersion": "2026-09-07.1",
+  "checkedAt": "2026-09-07",
+  "agentVersionPolicy": "Documentation snapshot only; no Agent binary version has been certified.",
+  "cells": [
+    {
+      "agent": "agents-md",
+      "capability": "rules",
+      "scope": "global",
+      "location": "~/.agents/AGENTS.md",
+      "evidence": "unknown",
+      "sources": ["https://agents.md/", "https://agentskills.io/specification"],
+      "prerequisites": [
+        "Generic convention; an actual consuming Agent must implement discovery. No generic global Rules loader is specified."
+      ],
+      "fixture": "rules.md",
+      "native": "unknown"
+    },
+    {
+      "agent": "agents-md",
+      "capability": "rules",
+      "scope": "project",
+      "location": "{dir}/AGENTS.md",
+      "evidence": "documented",
+      "sources": ["https://agents.md/", "https://agentskills.io/specification"],
+      "prerequisites": [
+        "Generic convention; an actual consuming Agent must implement discovery. No generic global Rules loader is specified."
+      ],
+      "fixture": "rules.md",
+      "native": "unknown"
+    },
+    {
+      "agent": "agents-md",
+      "capability": "mcp",
+      "scope": "global",
+      "location": null,
+      "evidence": "unsupported",
+      "sources": ["https://agents.md/", "https://agentskills.io/specification"],
+      "prerequisites": ["No MCP loader is defined by AGENTS.md."],
+      "fixture": "mcp-examples.json",
+      "native": "unknown"
+    },
+    {
+      "agent": "agents-md",
+      "capability": "mcp",
+      "scope": "project",
+      "location": null,
+      "evidence": "unsupported",
+      "sources": ["https://agents.md/", "https://agentskills.io/specification"],
+      "prerequisites": ["No MCP loader is defined by AGENTS.md."],
+      "fixture": "mcp-examples.json",
+      "native": "unknown"
+    },
+    {
+      "agent": "agents-md",
+      "capability": "skills",
+      "scope": "global",
+      "location": "~/.agents/skills",
+      "evidence": "unknown",
+      "sources": ["https://agents.md/", "https://agentskills.io/specification"],
+      "prerequisites": [
+        "SKILL.md requires name and description; discovery is consumer-specific, not guaranteed by the file format."
+      ],
+      "fixture": "skill.md",
+      "native": "unknown"
+    },
+    {
+      "agent": "agents-md",
+      "capability": "skills",
+      "scope": "project",
+      "location": "{dir}/.agents/skills",
+      "evidence": "unknown",
+      "sources": ["https://agents.md/", "https://agentskills.io/specification"],
+      "prerequisites": [
+        "SKILL.md requires name and description; discovery is consumer-specific, not guaranteed by the file format."
+      ],
+      "fixture": "skill.md",
+      "native": "unknown"
+    },
+    {
+      "agent": "claude-code",
+      "capability": "rules",
+      "scope": "global",
+      "location": "~/.claude/CLAUDE.md",
+      "evidence": "documented",
+      "sources": [
+        "https://code.claude.com/docs/en/memory",
+        "https://code.claude.com/docs/en/mcp",
+        "https://code.claude.com/docs/en/skills"
+      ],
+      "prerequisites": ["Default CLAUDE_CONFIG_DIR; launch in the project hierarchy; no excludes."],
+      "fixture": "rules.md",
+      "native": "unknown"
+    },
+    {
+      "agent": "claude-code",
+      "capability": "rules",
+      "scope": "project",
+      "location": "{dir}/CLAUDE.md",
+      "evidence": "documented",
+      "sources": [
+        "https://code.claude.com/docs/en/memory",
+        "https://code.claude.com/docs/en/mcp",
+        "https://code.claude.com/docs/en/skills"
+      ],
+      "prerequisites": ["Default CLAUDE_CONFIG_DIR; launch in the project hierarchy; no excludes."],
+      "fixture": "rules.md",
+      "native": "unknown"
+    },
+    {
+      "agent": "claude-code",
+      "capability": "mcp",
+      "scope": "global",
+      "location": "~/.claude.json",
+      "evidence": "documented",
+      "sources": [
+        "https://code.claude.com/docs/en/memory",
+        "https://code.claude.com/docs/en/mcp",
+        "https://code.claude.com/docs/en/skills"
+      ],
+      "prerequisites": [
+        "Default config directory; mcpServers object; project trust/server approval may be required; preserve other settings."
+      ],
+      "fixture": "mcp-examples.json",
+      "native": "unknown"
+    },
+    {
+      "agent": "claude-code",
+      "capability": "mcp",
+      "scope": "project",
+      "location": "{dir}/.mcp.json",
+      "evidence": "documented",
+      "sources": [
+        "https://code.claude.com/docs/en/memory",
+        "https://code.claude.com/docs/en/mcp",
+        "https://code.claude.com/docs/en/skills"
+      ],
+      "prerequisites": [
+        "Default config directory; mcpServers object; project trust/server approval may be required; preserve other settings."
+      ],
+      "fixture": "mcp-examples.json",
+      "native": "unknown"
+    },
+    {
+      "agent": "claude-code",
+      "capability": "skills",
+      "scope": "global",
+      "location": "~/.claude/skills",
+      "evidence": "documented",
+      "sources": [
+        "https://code.claude.com/docs/en/memory",
+        "https://code.claude.com/docs/en/mcp",
+        "https://code.claude.com/docs/en/skills"
+      ],
+      "prerequisites": [
+        "Default config directory; valid SKILL.md name/description; skills can be disabled."
+      ],
+      "fixture": "skill.md",
+      "native": "unknown"
+    },
+    {
+      "agent": "claude-code",
+      "capability": "skills",
+      "scope": "project",
+      "location": "{dir}/.claude/skills",
+      "evidence": "documented",
+      "sources": [
+        "https://code.claude.com/docs/en/memory",
+        "https://code.claude.com/docs/en/mcp",
+        "https://code.claude.com/docs/en/skills"
+      ],
+      "prerequisites": [
+        "Default config directory; valid SKILL.md name/description; skills can be disabled."
+      ],
+      "fixture": "skill.md",
+      "native": "unknown"
+    },
+    {
+      "agent": "codex",
+      "capability": "rules",
+      "scope": "global",
+      "location": "~/.codex/AGENTS.md",
+      "evidence": "documented",
+      "sources": [
+        "https://developers.openai.com/codex/guides/agents-md/",
+        "https://developers.openai.com/codex/mcp/",
+        "https://developers.openai.com/codex/skills/"
+      ],
+      "prerequisites": [
+        "Default CODEX_HOME; instruction limits/AGENTS.override.md can affect loading."
+      ],
+      "fixture": "rules.md",
+      "native": "unknown"
+    },
+    {
+      "agent": "codex",
+      "capability": "rules",
+      "scope": "project",
+      "location": "{dir}/AGENTS.md",
+      "evidence": "documented",
+      "sources": [
+        "https://developers.openai.com/codex/guides/agents-md/",
+        "https://developers.openai.com/codex/mcp/",
+        "https://developers.openai.com/codex/skills/"
+      ],
+      "prerequisites": [
+        "Default CODEX_HOME; instruction limits/AGENTS.override.md can affect loading."
+      ],
+      "fixture": "rules.md",
+      "native": "unknown"
+    },
+    {
+      "agent": "codex",
+      "capability": "mcp",
+      "scope": "global",
+      "location": "~/.codex/config.toml",
+      "evidence": "documented",
+      "sources": [
+        "https://developers.openai.com/codex/guides/agents-md/",
+        "https://developers.openai.com/codex/mcp/",
+        "https://developers.openai.com/codex/skills/"
+      ],
+      "prerequisites": [
+        "Default CODEX_HOME; trusted project for project config; valid mcp_servers tables."
+      ],
+      "fixture": "mcp-examples.json",
+      "native": "unknown"
+    },
+    {
+      "agent": "codex",
+      "capability": "mcp",
+      "scope": "project",
+      "location": "{dir}/.codex/config.toml",
+      "evidence": "documented",
+      "sources": [
+        "https://developers.openai.com/codex/guides/agents-md/",
+        "https://developers.openai.com/codex/mcp/",
+        "https://developers.openai.com/codex/skills/"
+      ],
+      "prerequisites": [
+        "Default CODEX_HOME; trusted project for project config; valid mcp_servers tables."
+      ],
+      "fixture": "mcp-examples.json",
+      "native": "unknown"
+    },
+    {
+      "agent": "codex",
+      "capability": "skills",
+      "scope": "global",
+      "location": "~/.agents/skills",
+      "evidence": "documented",
+      "sources": [
+        "https://developers.openai.com/codex/guides/agents-md/",
+        "https://developers.openai.com/codex/mcp/",
+        "https://developers.openai.com/codex/skills/"
+      ],
+      "prerequisites": [
+        "Valid SKILL.md; skills enabled; repository traversal is bounded by its root."
+      ],
+      "fixture": "skill.md",
+      "native": "unknown"
+    },
+    {
+      "agent": "codex",
+      "capability": "skills",
+      "scope": "project",
+      "location": "{dir}/.agents/skills",
+      "evidence": "documented",
+      "sources": [
+        "https://developers.openai.com/codex/guides/agents-md/",
+        "https://developers.openai.com/codex/mcp/",
+        "https://developers.openai.com/codex/skills/"
+      ],
+      "prerequisites": [
+        "Valid SKILL.md; skills enabled; repository traversal is bounded by its root."
+      ],
+      "fixture": "skill.md",
+      "native": "unknown"
+    },
+    {
+      "agent": "cursor",
+      "capability": "rules",
+      "scope": "global",
+      "location": null,
+      "evidence": "unsupported",
+      "sources": [
+        "https://cursor.com/docs/rules",
+        "https://cursor.com/docs/mcp",
+        "https://cursor.com/docs/skills"
+      ],
+      "prerequisites": [
+        "Project MDC requires alwaysApply: true for unconditional rules; global User Rules are configured in the UI, not this file."
+      ],
+      "fixture": "rules.mdc",
+      "native": "unknown"
+    },
+    {
+      "agent": "cursor",
+      "capability": "rules",
+      "scope": "project",
+      "location": "{dir}/.cursor/rules/cellarer.mdc",
+      "evidence": "documented",
+      "sources": [
+        "https://cursor.com/docs/rules",
+        "https://cursor.com/docs/mcp",
+        "https://cursor.com/docs/skills"
+      ],
+      "prerequisites": [
+        "Project MDC requires alwaysApply: true for unconditional rules; global User Rules are configured in the UI, not this file."
+      ],
+      "fixture": "rules.mdc",
+      "native": "unknown"
+    },
+    {
+      "agent": "cursor",
+      "capability": "mcp",
+      "scope": "global",
+      "location": "~/.cursor/mcp.json",
+      "evidence": "documented",
+      "sources": [
+        "https://cursor.com/docs/rules",
+        "https://cursor.com/docs/mcp",
+        "https://cursor.com/docs/skills"
+      ],
+      "prerequisites": ["Valid mcpServers object; tools enabled by the user."],
+      "fixture": "mcp-examples.json",
+      "native": "unknown"
+    },
+    {
+      "agent": "cursor",
+      "capability": "mcp",
+      "scope": "project",
+      "location": "{dir}/.cursor/mcp.json",
+      "evidence": "documented",
+      "sources": [
+        "https://cursor.com/docs/rules",
+        "https://cursor.com/docs/mcp",
+        "https://cursor.com/docs/skills"
+      ],
+      "prerequisites": ["Valid mcpServers object; tools enabled by the user."],
+      "fixture": "mcp-examples.json",
+      "native": "unknown"
+    },
+    {
+      "agent": "cursor",
+      "capability": "skills",
+      "scope": "global",
+      "location": "~/.cursor/skills",
+      "evidence": "documented",
+      "sources": [
+        "https://cursor.com/docs/rules",
+        "https://cursor.com/docs/mcp",
+        "https://cursor.com/docs/skills"
+      ],
+      "prerequisites": [
+        "Local Agent; valid SKILL.md name/description; user files are not automatically available to remote agents."
+      ],
+      "fixture": "skill.md",
+      "native": "unknown"
+    },
+    {
+      "agent": "cursor",
+      "capability": "skills",
+      "scope": "project",
+      "location": "{dir}/.agents/skills",
+      "evidence": "documented",
+      "sources": [
+        "https://cursor.com/docs/rules",
+        "https://cursor.com/docs/mcp",
+        "https://cursor.com/docs/skills"
+      ],
+      "prerequisites": [
+        "Local Agent; valid SKILL.md name/description; user files are not automatically available to remote agents."
+      ],
+      "fixture": "skill.md",
+      "native": "unknown"
+    },
+    {
+      "agent": "gemini-cli",
+      "capability": "rules",
+      "scope": "global",
+      "location": "~/.gemini/GEMINI.md",
+      "evidence": "documented",
+      "sources": [
+        "https://geminicli.com/docs/cli/gemini-md/",
+        "https://geminicli.com/docs/tools/mcp-server/",
+        "https://geminicli.com/docs/cli/skills/"
+      ],
+      "prerequisites": [
+        "Default context.fileName is GEMINI.md; do not assume an AGENTS.md override."
+      ],
+      "fixture": "rules.md",
+      "native": "unknown"
+    },
+    {
+      "agent": "gemini-cli",
+      "capability": "rules",
+      "scope": "project",
+      "location": "{dir}/GEMINI.md",
+      "evidence": "documented",
+      "sources": [
+        "https://geminicli.com/docs/cli/gemini-md/",
+        "https://geminicli.com/docs/tools/mcp-server/",
+        "https://geminicli.com/docs/cli/skills/"
+      ],
+      "prerequisites": [
+        "Default context.fileName is GEMINI.md; do not assume an AGENTS.md override."
+      ],
+      "fixture": "rules.md",
+      "native": "unknown"
+    },
+    {
+      "agent": "gemini-cli",
+      "capability": "mcp",
+      "scope": "global",
+      "location": "~/.gemini/settings.json",
+      "evidence": "documented",
+      "sources": [
+        "https://geminicli.com/docs/cli/gemini-md/",
+        "https://geminicli.com/docs/tools/mcp-server/",
+        "https://geminicli.com/docs/cli/skills/"
+      ],
+      "prerequisites": [
+        "Default settings locations; valid mcpServers object; trust and tool consent may apply."
+      ],
+      "fixture": "mcp-examples.json",
+      "native": "unknown"
+    },
+    {
+      "agent": "gemini-cli",
+      "capability": "mcp",
+      "scope": "project",
+      "location": "{dir}/.gemini/settings.json",
+      "evidence": "documented",
+      "sources": [
+        "https://geminicli.com/docs/cli/gemini-md/",
+        "https://geminicli.com/docs/tools/mcp-server/",
+        "https://geminicli.com/docs/cli/skills/"
+      ],
+      "prerequisites": [
+        "Default settings locations; valid mcpServers object; trust and tool consent may apply."
+      ],
+      "fixture": "mcp-examples.json",
+      "native": "unknown"
+    },
+    {
+      "agent": "gemini-cli",
+      "capability": "skills",
+      "scope": "global",
+      "location": "~/.gemini/skills",
+      "evidence": "documented",
+      "sources": [
+        "https://geminicli.com/docs/cli/gemini-md/",
+        "https://geminicli.com/docs/tools/mcp-server/",
+        "https://geminicli.com/docs/cli/skills/"
+      ],
+      "prerequisites": [
+        "Valid SKILL.md and enabled skills; .agents aliases can shadow these locations."
+      ],
+      "fixture": "skill.md",
+      "native": "unknown"
+    },
+    {
+      "agent": "gemini-cli",
+      "capability": "skills",
+      "scope": "project",
+      "location": "{dir}/.gemini/skills",
+      "evidence": "documented",
+      "sources": [
+        "https://geminicli.com/docs/cli/gemini-md/",
+        "https://geminicli.com/docs/tools/mcp-server/",
+        "https://geminicli.com/docs/cli/skills/"
+      ],
+      "prerequisites": [
+        "Valid SKILL.md and enabled skills; .agents aliases can shadow these locations."
+      ],
+      "fixture": "skill.md",
+      "native": "unknown"
+    },
+    {
+      "agent": "opencode",
+      "capability": "rules",
+      "scope": "global",
+      "location": "~/.config/opencode/AGENTS.md",
+      "evidence": "documented",
+      "sources": [
+        "https://opencode.ai/docs/rules/",
+        "https://opencode.ai/docs/config/",
+        "https://opencode.ai/docs/skills/",
+        "https://opencode.ai/docs/mcp-servers/"
+      ],
+      "prerequisites": ["Default config directory; instruction discovery enabled."],
+      "fixture": "rules.md",
+      "native": "unknown"
+    },
+    {
+      "agent": "opencode",
+      "capability": "rules",
+      "scope": "project",
+      "location": "{dir}/AGENTS.md",
+      "evidence": "documented",
+      "sources": [
+        "https://opencode.ai/docs/rules/",
+        "https://opencode.ai/docs/config/",
+        "https://opencode.ai/docs/skills/",
+        "https://opencode.ai/docs/mcp-servers/"
+      ],
+      "prerequisites": ["Default config directory; instruction discovery enabled."],
+      "fixture": "rules.md",
+      "native": "unknown"
+    },
+    {
+      "agent": "opencode",
+      "capability": "mcp",
+      "scope": "global",
+      "location": "~/.config/opencode/opencode.json",
+      "evidence": "documented",
+      "sources": [
+        "https://opencode.ai/docs/rules/",
+        "https://opencode.ai/docs/config/",
+        "https://opencode.ai/docs/skills/",
+        "https://opencode.ai/docs/mcp-servers/"
+      ],
+      "prerequisites": [
+        "Default config directory; mcp entries use type local/remote, command array and environment."
+      ],
+      "fixture": "mcp-examples.json",
+      "native": "unknown"
+    },
+    {
+      "agent": "opencode",
+      "capability": "mcp",
+      "scope": "project",
+      "location": "{dir}/opencode.json",
+      "evidence": "documented",
+      "sources": [
+        "https://opencode.ai/docs/rules/",
+        "https://opencode.ai/docs/config/",
+        "https://opencode.ai/docs/skills/",
+        "https://opencode.ai/docs/mcp-servers/"
+      ],
+      "prerequisites": [
+        "Default config directory; mcp entries use type local/remote, command array and environment."
+      ],
+      "fixture": "mcp-examples.json",
+      "native": "unknown"
+    },
+    {
+      "agent": "opencode",
+      "capability": "skills",
+      "scope": "global",
+      "location": "~/.config/opencode/skills",
+      "evidence": "documented",
+      "sources": [
+        "https://opencode.ai/docs/rules/",
+        "https://opencode.ai/docs/config/",
+        "https://opencode.ai/docs/skills/",
+        "https://opencode.ai/docs/mcp-servers/"
+      ],
+      "prerequisites": [
+        "Valid SKILL.md; skill permission enabled; project discovery within git worktree."
+      ],
+      "fixture": "skill.md",
+      "native": "unknown"
+    },
+    {
+      "agent": "opencode",
+      "capability": "skills",
+      "scope": "project",
+      "location": "{dir}/.agents/skills",
+      "evidence": "documented",
+      "sources": [
+        "https://opencode.ai/docs/rules/",
+        "https://opencode.ai/docs/config/",
+        "https://opencode.ai/docs/skills/",
+        "https://opencode.ai/docs/mcp-servers/"
+      ],
+      "prerequisites": [
+        "Valid SKILL.md; skill permission enabled; project discovery within git worktree."
+      ],
+      "fixture": "skill.md",
+      "native": "unknown"
+    },
+    {
+      "agent": "windsurf",
+      "capability": "rules",
+      "scope": "global",
+      "location": null,
+      "evidence": "unsupported",
+      "sources": [
+        "https://docs.windsurf.com/windsurf/cascade/agents-md",
+        "https://docs.windsurf.com/windsurf/cascade/mcp",
+        "https://docs.windsurf.com/windsurf/cascade/skills"
+      ],
+      "prerequisites": [
+        "Workspace-root AGENTS.md is always-on in Cascade; no global Rules placement declared here."
+      ],
+      "fixture": "rules.md",
+      "native": "unknown"
+    },
+    {
+      "agent": "windsurf",
+      "capability": "rules",
+      "scope": "project",
+      "location": "{dir}/AGENTS.md",
+      "evidence": "documented",
+      "sources": [
+        "https://docs.windsurf.com/windsurf/cascade/agents-md",
+        "https://docs.windsurf.com/windsurf/cascade/mcp",
+        "https://docs.windsurf.com/windsurf/cascade/skills"
+      ],
+      "prerequisites": [
+        "Workspace-root AGENTS.md is always-on in Cascade; no global Rules placement declared here."
+      ],
+      "fixture": "rules.md",
+      "native": "unknown"
+    },
+    {
+      "agent": "windsurf",
+      "capability": "mcp",
+      "scope": "global",
+      "location": "~/.codeium/windsurf/mcp_config.json",
+      "evidence": "documented",
+      "sources": [
+        "https://docs.windsurf.com/windsurf/cascade/agents-md",
+        "https://docs.windsurf.com/windsurf/cascade/mcp",
+        "https://docs.windsurf.com/windsurf/cascade/skills"
+      ],
+      "prerequisites": [
+        "Cascade global mcpServers file; project-scoped MCP file has no documented loader."
+      ],
+      "fixture": "mcp-examples.json",
+      "native": "unknown"
+    },
+    {
+      "agent": "windsurf",
+      "capability": "mcp",
+      "scope": "project",
+      "location": null,
+      "evidence": "unsupported",
+      "sources": [
+        "https://docs.windsurf.com/windsurf/cascade/agents-md",
+        "https://docs.windsurf.com/windsurf/cascade/mcp",
+        "https://docs.windsurf.com/windsurf/cascade/skills"
+      ],
+      "prerequisites": [
+        "Cascade global mcpServers file; project-scoped MCP file has no documented loader."
+      ],
+      "fixture": "mcp-examples.json",
+      "native": "unknown"
+    },
+    {
+      "agent": "windsurf",
+      "capability": "skills",
+      "scope": "global",
+      "location": "~/.codeium/windsurf/skills",
+      "evidence": "documented",
+      "sources": [
+        "https://docs.windsurf.com/windsurf/cascade/agents-md",
+        "https://docs.windsurf.com/windsurf/cascade/mcp",
+        "https://docs.windsurf.com/windsurf/cascade/skills"
+      ],
+      "prerequisites": [
+        "Cascade Skills, not Devin Local Agent; valid SKILL.md; workspace uses .windsurf/skills."
+      ],
+      "fixture": "skill.md",
+      "native": "unknown"
+    },
+    {
+      "agent": "windsurf",
+      "capability": "skills",
+      "scope": "project",
+      "location": "{dir}/.windsurf/skills",
+      "evidence": "documented",
+      "sources": [
+        "https://docs.windsurf.com/windsurf/cascade/agents-md",
+        "https://docs.windsurf.com/windsurf/cascade/mcp",
+        "https://docs.windsurf.com/windsurf/cascade/skills"
+      ],
+      "prerequisites": [
+        "Cascade Skills, not Devin Local Agent; valid SKILL.md; workspace uses .windsurf/skills."
+      ],
+      "fixture": "skill.md",
+      "native": "unknown"
+    }
+  ]
+}

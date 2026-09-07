@@ -91,7 +91,7 @@ describe("engine mcp distribution", () => {
       capabilities: ["mcp"],
     });
     expect(r.entries).toHaveLength(1);
-    const target = t.path("home", ".claude", "mcp.json");
+    const target = t.path("home", ".claude.json");
     const parsed = JSON.parse(await t.env.fs.readFile(target));
     expect(parsed.mcpServers.context7.command).toBe("npx");
     expect(r.entries[0]?.capability).toBe("mcp");
@@ -145,7 +145,7 @@ describe("engine mcp distribution", () => {
       capabilities: ["mcp" as const],
     };
     await apply(t.env, opts);
-    const target = t.path("home", ".claude", "mcp.json");
+    const target = t.path("home", ".claude.json");
     const after1 = await t.env.fs.readFile(target);
     const led1 = JSON.stringify(await loadLedger(t.env, storeRoot));
     await apply(t.env, opts);
@@ -155,7 +155,7 @@ describe("engine mcp distribution", () => {
 
   it("overwrite strategy replaces servers section but keeps other fields", async () => {
     const storeRoot = await seedStore(t, { mcp: { only: { command: "y" } } });
-    const target = t.path("home", ".claude", "mcp.json");
+    const target = t.path("home", ".claude.json");
     await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
     await t.env.fs.writeFile(
       target,
@@ -1040,7 +1040,7 @@ describe("per-agent config (adapterOverrides.<id>)", () => {
         config.adapterOverrides["claude-code"] = { mcp: { mergeStrategy: "overwrite" } };
       },
     });
-    const target = t.path("home", ".claude", "mcp.json");
+    const target = t.path("home", ".claude.json");
     await t.env.fs.mkdir(t.path("home", ".claude"), { recursive: true });
     await t.env.fs.writeFile(target, JSON.stringify({ mcpServers: { gone: { command: "x" } } }));
     await applyReplacingUnowned(t, {

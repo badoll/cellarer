@@ -11,11 +11,11 @@
 //   - 实际落地方式(可能因 Windows 回退)记台账的 AppliedMethod,与计划 method 区分。
 
 import { join, normalize } from "node:path";
+import { renderRulesForTarget } from "../adapters/codec.js";
 import { loadRegistry } from "../adapters/registry.js";
 import type { AgentAdapter, RuleFragment } from "../adapters/types.js";
 import type { Env } from "../env.js";
 import { readFileOrNull } from "../fs/probe.js";
-import { renderRules } from "../markers.js";
 import type { McpServer } from "../mcp/model.js";
 import type {
   Artifact,
@@ -58,6 +58,7 @@ import {
 } from "./capability-snapshot.js";
 import { planMcp, type RenderedMcp, renderMcp } from "./mcp-plan.js";
 import { dedupeCollisions } from "./plan/collision.js";
+import { requiresRelocation } from "./plan/relocation.js";
 import { applyRecursiveSecretGuard } from "./plan/secret-guard.js";
 import { planSkills } from "./skills-plan.js";
 import type { DistributeOptions } from "./types.js";
@@ -247,6 +248,23 @@ async function planImplementation(
     }
 
     for (const cap of capabilities) {
+      try {
+        if (await requiresRelocation(env, adapter, cap, opts.scope, opts.dir, ledger.owners)) {
+          execution.onCoverage?.("blocked");
+          const skipped = skipAction(agentId, cap, opts.scope, method);
+          skipped.reason =
+            "relocation-required: handle the prior owned placement through a reviewed uninstall before planning this placement";
+          actions.push(skipped);
+          warnings.push(`agent "${agentId}" ${cap}/${opts.scope}: ${skipped.reason}`);
+          continue;
+        }
+      } catch {
+        execution.onCoverage?.("blocked");
+        const skipped = skipAction(agentId, cap, opts.scope, method);
+        skipped.reason = "relocation-required: prior placement could not be safely compared";
+        actions.push(skipped);
+        continue;
+      }
       const supportedScopes = adapter.capabilities[cap] ?? [];
       if (!supportedScopes.includes(opts.scope)) {
         execution.onCoverage?.("unsupported");
@@ -619,7 +637,7 @@ async function planRules(
   const target = adapter.paths(env, opts.scope, opts.dir).rules;
   if (!target || fragments.length === 0) return null;
 
-  const after = renderRules(fragments);
+  const after = renderRulesForTarget(target, fragments);
   const contentFingerprint = sha256(after);
   // before 是 per-agent 差异:既供 dry-run diff,也是 apply 幂等短路的依据。
   const before = (await readFileOrNull(env, target)) ?? undefined;

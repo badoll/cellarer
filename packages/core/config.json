@@ -50,7 +50,7 @@
         "format": "markdown"
       },
       "mcp": {
-        "global": "~/.claude/mcp.json",
+        "global": "~/.claude.json",
         "project": "{dir}/.mcp.json",
         "format": "json",
         "serversKey": "mcpServers",
@@ -85,7 +85,7 @@
         "supportedSecretReferences": []
       },
       "skills": {
-        "global": "~/.codex/skills",
+        "global": "~/.agents/skills",
         "project": "{dir}/.agents/skills",
         "format": "dir"
       },
@@ -101,7 +101,6 @@
         "global": ["~/.cursor"]
       },
       "rules": {
-        "global": "~/.cursor/rules/cellarer.mdc",
         "project": "{dir}/.cursor/rules/cellarer.mdc",
         "format": "markdown"
       },
@@ -113,12 +112,12 @@
         "supportedSecretReferences": []
       },
       "skills": {
-        "global": "~/.cursor/skills-cursor",
+        "global": "~/.cursor/skills",
         "project": "{dir}/.agents/skills",
         "format": "dir"
       },
       "capabilities": {
-        "rules": ["global", "project"],
+        "rules": ["project"],
         "mcp": ["global", "project"],
         "skills": ["global", "project"]
       }
@@ -130,7 +129,7 @@
       },
       "rules": {
         "global": "~/.gemini/GEMINI.md",
-        "project": "{dir}/AGENTS.md",
+        "project": "{dir}/GEMINI.md",
         "format": "markdown"
       },
       "mcp": {
@@ -143,7 +142,12 @@
       "capabilities": {
         "rules": ["global", "project"],
         "mcp": ["global", "project"],
-        "skills": []
+        "skills": ["global", "project"]
+      },
+      "skills": {
+        "global": "~/.gemini/skills",
+        "project": "{dir}/.gemini/skills",
+        "format": "dir"
       }
     },
     "opencode": {
@@ -192,7 +196,6 @@
       },
       "mcp": {
         "global": "~/.codeium/windsurf/mcp_config.json",
-        "project": "{dir}/.codeium/windsurf/mcp_config.json",
         "format": "json",
         "serversKey": "mcpServers",
         "supportedSecretReferences": [],
@@ -202,12 +205,12 @@
       },
       "skills": {
         "global": "~/.codeium/windsurf/skills",
-        "project": "{dir}/.agents/skills",
+        "project": "{dir}/.windsurf/skills",
         "format": "dir"
       },
       "capabilities": {
         "rules": ["project"],
-        "mcp": ["global", "project"],
+        "mcp": ["global"],
         "skills": ["global", "project"]
       }
     }

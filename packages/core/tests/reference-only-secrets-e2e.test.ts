@@ -41,7 +41,7 @@ describe("reference-only secret canary end to end", () => {
     });
     expect(result).not.toHaveProperty("operation");
     expect(JSON.stringify(result)).not.toContain(CANARY);
-    const target = t.path("home", ".claude", "mcp.json");
+    const target = t.path("home", ".claude.json");
     await expect(t.env.fs.readFile(target)).resolves.toContain(ENV_REFERENCE);
     await expect(t.env.fs.readFile(target)).resolves.not.toContain(CANARY);
     await expect(t.env.fs.readFile(join(storeRoot, "state.json"))).resolves.not.toContain(CANARY);
@@ -72,7 +72,7 @@ describe("reference-only secret canary end to end", () => {
     );
     expect(JSON.stringify(result.plan.secretFindings)).not.toContain(CANARY);
     expect(JSON.stringify(result)).not.toContain(CANARY);
-    await expect(readFileOrNull(t.env, t.path("home", ".claude", "mcp.json"))).resolves.toBeNull();
+    await expect(readFileOrNull(t.env, t.path("home", ".claude.json"))).resolves.toBeNull();
     await expect(readFileOrNull(t.env, join(storeRoot, "state.json"))).resolves.toBeNull();
     await expect(readFileOrNull(t.env, activityPath(storeRoot))).resolves.toBeNull();
     await expect(readOperationJournal(t.env, storeRoot)).resolves.toBeNull();

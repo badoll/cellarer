@@ -126,7 +126,7 @@ describe("transaction verification axes", () => {
       capabilities: ["mcp" as const],
     };
     await apply(t.env, mcpOptions);
-    const target = t.path("home", ".claude", "mcp.json");
+    const target = t.path("home", ".claude.json");
     const changed = JSON.parse(await t.env.fs.readFile(target));
     changed.unrelatedUserSetting = true;
     await t.env.fs.writeFile(target, `${JSON.stringify(changed, null, 2)}\n`);

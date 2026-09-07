@@ -622,6 +622,17 @@ export interface ControlPlaneAgentTarget {
   readonly path: string;
 }
 
+export interface AgentCompatibilityEvidence {
+  readonly capability: Capability;
+  readonly scope: Scope;
+  readonly evidence: "documented" | "unsupported" | "unknown" | "user-defined";
+  readonly native: "unknown";
+  readonly contractVersion: string;
+  readonly location: string | null;
+  readonly sources: readonly string[];
+  readonly prerequisites: readonly string[];
+}
+
 export interface ControlPlaneAgentDto {
   readonly id: string;
   readonly displayName: string;
@@ -631,6 +642,7 @@ export interface ControlPlaneAgentDto {
   readonly configured: boolean;
   readonly enabled: boolean;
   readonly detectionEvidence: { readonly root?: string };
+  readonly compatibility: readonly AgentCompatibilityEvidence[];
   readonly capabilities: readonly Capability[];
   readonly capabilityScopes: Readonly<Record<Capability, readonly Scope[]>>;
   readonly targets: readonly ControlPlaneAgentTarget[];

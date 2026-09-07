@@ -23,11 +23,11 @@ describe("inventory import plan/apply commands", () => {
     process.env.HOME = join(root, "home");
     process.env[HEADLESS_MUTATION_AUTHORITY_ENV] =
       `v1:1:${Buffer.alloc(32, 0x42).toString("base64url")}`;
-    await fs.mkdir(join(root, "home", ".codex", "skills", "inventory-demo"), {
+    await fs.mkdir(join(root, "home", ".agents", "skills", "inventory-demo"), {
       recursive: true,
     });
     await fs.writeFile(
-      join(root, "home", ".codex", "skills", "inventory-demo", "SKILL.md"),
+      join(root, "home", ".agents", "skills", "inventory-demo", "SKILL.md"),
       "---\nname: inventory-demo\ndescription: inventory fixture\n---\n",
       "utf8",
     );

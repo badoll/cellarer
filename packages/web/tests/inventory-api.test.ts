@@ -26,11 +26,11 @@ describe("Inventory local client API", () => {
       randomId: () => "inventory-request",
       mutationAuthority: deterministicMutationAuthority(),
     };
-    await env.fs.mkdir(join(root, "home", ".codex", "skills", "inventory-demo"), {
+    await env.fs.mkdir(join(root, "home", ".agents", "skills", "inventory-demo"), {
       recursive: true,
     });
     await env.fs.writeFile(
-      join(root, "home", ".codex", "skills", "inventory-demo", "SKILL.md"),
+      join(root, "home", ".agents", "skills", "inventory-demo", "SKILL.md"),
       "---\nname: inventory-demo\ndescription: inventory fixture\n---\n",
       "utf8",
     );
@@ -123,6 +123,7 @@ describe("Inventory local client API", () => {
     }).request("/api/v1/inventory");
     expect(unauthenticated.status).toBe(401);
 
+    await env.fs.mkdir(join(root, "home", ".codex"), { recursive: true });
     await env.fs.symlink(join(root, "outside-rules.md"), join(root, "home", ".codex", "AGENTS.md"));
     const response = await createApp({
       env,

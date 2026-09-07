@@ -426,10 +426,28 @@ export async function runResourceJourney({
       status.data.items.every(({ status: state }) => state === "ok"),
       true,
     );
-    const verification = requireSuccess(
-      await client.invoke("verify", ["verify", ...distributionSelection]),
-      "healthy desired-state verification",
+    const fullVerification = await client.invoke("verify", ["verify", ...distributionSelection]);
+    assert.equal(fullVerification.exitClass, "domain-error");
+    assert.equal(fullVerification.envelope.data.configuration, "incomplete");
+    assert.equal(fullVerification.envelope.data.healthy, false);
+    assert.deepEqual(
+      fullVerification.envelope.data.coverage.items
+        .filter(({ outcome }) => outcome !== "covered")
+        .map(({ agent, capability, outcome }) => ({ agent, capability, outcome })),
+      [
+        { agent: "agents-md", capability: "rules", outcome: "blocked" },
+        { agent: "agents-md", capability: "mcp", outcome: "unsupported" },
+        { agent: "agents-md", capability: "skills", outcome: "blocked" },
+      ],
     );
+    const verificationAgents = [...new Set(distributed.data.entries.map(({ agent }) => agent))];
+    const ownerSelection = [...distributionSelection];
+    ownerSelection[ownerSelection.indexOf("--agent") + 1] = verificationAgents.join(",");
+    const verification = requireSuccess(
+      await client.invoke("verify", ["verify", ...ownerSelection]),
+      "healthy actual-owner verification",
+    );
+    assertions.push({ id: "unsupported-and-unowned-requests-remain-incomplete", passed: true });
     assert.equal(verification.data.healthy, true);
     assert.equal(verification.data.desiredVsApplied.status, "converged");
     assert.equal(verification.data.appliedVsDisk.status, "converged");
@@ -452,7 +470,7 @@ export async function runResourceJourney({
           resourceIds: [...imported.data.resourceIds].sort(),
           distributionAgents,
           statusItems: status.data.items,
-          verification: verification.data,
+          verification: fullVerification.envelope.data,
         },
       });
       evidence.push({ id: "installed-sidecar-parity", status: "passed" });

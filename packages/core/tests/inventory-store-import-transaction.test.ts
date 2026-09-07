@@ -23,12 +23,15 @@ describe("Inventory Store import transaction", () => {
     t = makeTmpEnv({ randomId: () => `inventory-transaction-${++randomId}` });
     await ensureBaseDirs(t);
     rulesPath = t.path("home", ".codex", "AGENTS.md");
-    await t.env.fs.mkdir(join(rulesPath, "..", "skills", "inventory-demo"), {
+    await t.env.fs.mkdir(join(rulesPath, ".."), {
+      recursive: true,
+    });
+    await t.env.fs.mkdir(t.path("home", ".agents", "skills", "inventory-demo"), {
       recursive: true,
     });
     await t.env.fs.writeFile(rulesPath, "# Reviewed rules\n");
     await t.env.fs.writeFile(
-      t.path("home", ".codex", "skills", "inventory-demo", "SKILL.md"),
+      t.path("home", ".agents", "skills", "inventory-demo", "SKILL.md"),
       "---\nname: inventory-demo\ndescription: transaction fixture\n---\n",
     );
   });

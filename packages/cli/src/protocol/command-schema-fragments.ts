@@ -491,6 +491,7 @@ const controlPlaneAgent = dataObject(
     "configured",
     "enabled",
     "detectionEvidence",
+    "compatibility",
     "capabilities",
     "capabilityScopes",
     "targets",
@@ -505,6 +506,35 @@ const controlPlaneAgent = dataObject(
     configured: jsonSchema.boolean(),
     enabled: jsonSchema.boolean(),
     detectionEvidence: dataObject([], { root: jsonSchema.string({ minLength: 1 }) }),
+    compatibility: jsonSchema.array(
+      dataObject(
+        [
+          "capability",
+          "scope",
+          "evidence",
+          "native",
+          "contractVersion",
+          "location",
+          "sources",
+          "prerequisites",
+        ],
+        {
+          capability: jsonSchema.enumeration(["rules", "mcp", "skills"]),
+          scope,
+          evidence: jsonSchema.enumeration([
+            "documented",
+            "unsupported",
+            "unknown",
+            "user-defined",
+          ]),
+          native: { const: "unknown" },
+          contractVersion: jsonSchema.string({ minLength: 1 }),
+          location: { type: ["string", "null"], minLength: 1 },
+          sources: stringArray,
+          prerequisites: stringArray,
+        },
+      ),
+    ),
     capabilities: capabilityArray,
     capabilityScopes: dataObject(["rules", "mcp", "skills"], {
       rules: jsonSchema.array(scope),

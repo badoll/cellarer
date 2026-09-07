@@ -41,7 +41,7 @@ describe("diagnostics", () => {
       paths: {
         rules: t.path("home", ".codex", "AGENTS.md"),
         mcp: t.path("home", ".codex", "config.toml"),
-        skillsDir: t.path("home", ".codex", "skills"),
+        skillsDir: t.path("home", ".agents", "skills"),
       },
     });
     expect(report.agents.find((agent) => agent.id === "claude-code")?.detected).toBe(false);
@@ -216,7 +216,8 @@ describe("diagnostics", () => {
     await initStore(t.env, storeRoot);
     await t.env.fs.mkdir(t.path("home", ".claude", "CLAUDE.md"), { recursive: true });
     await t.env.fs.mkdir(t.path("home", ".codex"), { recursive: true });
-    await t.env.fs.writeFile(t.path("home", ".codex", "skills"), "not a directory");
+    await t.env.fs.mkdir(t.path("home", ".agents"), { recursive: true });
+    await t.env.fs.writeFile(t.path("home", ".agents", "skills"), "not a directory");
 
     const report = await doctor(t.env, {
       storeRoot,

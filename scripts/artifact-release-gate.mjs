@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { runCompatibilityFixtures } from "../test/e2e/native-agent-compatibility.mjs";
 import { runResourceJourney } from "../test/e2e/resource-journey.mjs";
 import { optionalKeychainInstalled } from "./artifact-release-gate-helpers.mjs";
 
@@ -48,6 +49,10 @@ try {
       optionalKeychainInstalled(installed),
       "optional native keychain package was not installed",
     );
+    const compatibility = await runCompatibilityFixtures(
+      join(installed.projectRoot, "node_modules/@cellarer/core"),
+    );
+    assert(compatibility.results.length === 42, "installed compatibility matrix incomplete");
     await exerciseInstalledRelease(installed);
     const withoutOptional = await installPackedSet(first, {
       name: "without-optional",
@@ -111,6 +116,7 @@ async function inspectPackSet(first, second) {
         "package/dist/index.js",
         "package/dist/index.d.ts",
         "package/config.json",
+        "package/compatibility/matrix.json",
       ],
       web: [
         "package/README.md",
@@ -180,7 +186,7 @@ function assertPublicManifest(name, manifest) {
     core: {
       main: "./dist/index.js",
       types: "./dist/index.d.ts",
-      files: ["dist", "config.json"],
+      files: ["dist", "config.json", "compatibility"],
     },
     web: {
       main: "./dist/index.js",
@@ -226,7 +232,7 @@ function assertPublicManifest(name, manifest) {
 function assertAllowedEntry(name, entry) {
   const common = /^package\/(?:LICENSE|README\.md|package\.json)$/;
   const allowed = {
-    core: /^package\/(?:dist\/.*|config\.json)$/,
+    core: /^package\/(?:dist\/.*|compatibility\/(?:matrix\.json|fixtures\/(?:mcp-examples\.json|rules\.mdc?|skill\.md))|config\.json)$/,
     web: /^package\/(?:dist\/.*|client\/dist\/.*)$/,
     cli: /^package\/dist\/.*$/,
   }[name];

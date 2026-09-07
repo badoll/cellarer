@@ -158,7 +158,8 @@ describe("resource catalog", () => {
   });
 
   it("lists discovered agent-native resources before they are imported", async () => {
-    await t.env.fs.mkdir(t.path("home", ".codex", "skills", "study"), { recursive: true });
+    await t.env.fs.mkdir(t.path("home", ".agents", "skills", "study"), { recursive: true });
+    await t.env.fs.mkdir(t.path("home", ".codex"), { recursive: true });
     await t.env.fs.writeFile(t.path("home", ".codex", "AGENTS.md"), "# user rules");
     await t.env.fs.writeFile(
       t.path("home", ".codex", "config.toml"),
@@ -202,8 +203,9 @@ describe("resource catalog", () => {
           name: "study",
           state: "blocked",
           discovered: expect.objectContaining({
-            agent: "codex",
-            source: "~/.codex/skills/study",
+            agent: "agents-md",
+            relatedAdapters: expect.arrayContaining([expect.objectContaining({ id: "codex" })]),
+            source: "~/.agents/skills/study",
             findings: [expect.objectContaining({ code: "INVALID_STRUCTURE" })],
           }),
         }),
@@ -214,6 +216,7 @@ describe("resource catalog", () => {
   it("projects discovered resources from the accepted Inventory identity and safety boundary", async () => {
     const secretCanary = "ghp_1234567890abcdefghij1234567890";
     await t.env.fs.mkdir(t.path("home", ".agents", "skills", "study"), { recursive: true });
+    await t.env.fs.mkdir(t.path("home", ".codex"), { recursive: true });
     await t.env.fs.mkdir(t.path("home", ".agents", "skills", "private"), {
       recursive: true,
     });
@@ -245,7 +248,10 @@ describe("resource catalog", () => {
           expect.objectContaining({
             scope: "global",
             location: "~/.agents/skills/study",
-            adapters: [expect.objectContaining({ id: "agents-md" })],
+            adapters: [
+              expect.objectContaining({ id: "agents-md" }),
+              expect.objectContaining({ id: "codex" }),
+            ],
           }),
         ],
         findings: [],

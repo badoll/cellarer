@@ -27,11 +27,11 @@ describe("Inventory Store import local client API", () => {
       })(),
       mutationAuthority: deterministicMutationAuthority(),
     };
-    await env.fs.mkdir(join(root, "home", ".codex", "skills", "inventory-demo"), {
+    await env.fs.mkdir(join(root, "home", ".agents", "skills", "inventory-demo"), {
       recursive: true,
     });
     await env.fs.writeFile(
-      join(root, "home", ".codex", "skills", "inventory-demo", "SKILL.md"),
+      join(root, "home", ".agents", "skills", "inventory-demo", "SKILL.md"),
       "---\nname: inventory-demo\ndescription: inventory fixture\n---\n",
       "utf8",
     );

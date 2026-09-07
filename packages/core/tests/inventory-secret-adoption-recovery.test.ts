@@ -24,7 +24,7 @@ describe("Inventory secret-adoption orphan recovery", () => {
     t = makeTmpEnv({ randomId: () => "inventory-adoption-orphan" });
     await ensureBaseDirs(t);
     storeRoot = t.path("home", ".cellarer");
-    sourcePath = t.path("home", ".claude", "mcp.json");
+    sourcePath = t.path("home", ".claude.json");
     await initStore(t.env, storeRoot);
     await t.env.fs.mkdir(join(sourcePath, ".."), { recursive: true });
     await t.env.fs.writeFile(

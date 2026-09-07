@@ -103,7 +103,7 @@ describe("safe target planning and placement", () => {
     expect(second.plan.actions[0]?.ownership?.classification).toBe("owned-current");
     expect(second.entries[0]?.artifactIds).toEqual(["mcp/beta"]);
 
-    const target = t.path("home", ".claude", "mcp.json");
+    const target = t.path("home", ".claude.json");
     const rendered = JSON.parse(await t.env.fs.readFile(target));
     expect(Object.keys(rendered.mcpServers)).toEqual(["beta"]);
     const secondLedger = await loadLedger(t.env, storeRoot);
@@ -117,7 +117,7 @@ describe("safe target planning and placement", () => {
 
   it("hides an ownership-blocked MCP merge preview derived from existing secret fields", async () => {
     await writeMcpArtifact(t.env, storeRoot, "managed", { kind: "stdio", command: "managed" });
-    const target = t.path("home", ".claude", "mcp.json");
+    const target = t.path("home", ".claude.json");
     const existing = JSON.stringify({
       password: "ordinary-password",
       mcpServers: {

@@ -1944,6 +1944,30 @@ const agentDtoDefinitionSchema = objectSchema(
     configured: booleanSchema,
     enabled: booleanSchema,
     detectionEvidence: objectSchema({ root: nonEmptyStringSchema }),
+    compatibility: arraySchema(
+      objectSchema(
+        {
+          capability: capabilitySchema,
+          scope: scopeSchema,
+          evidence: enumSchema(["documented", "unsupported", "unknown", "user-defined"]),
+          native: { const: "unknown" },
+          contractVersion: nonEmptyStringSchema,
+          location: { anyOf: [nonEmptyStringSchema, { type: "null" }] },
+          sources: arraySchema(nonEmptyStringSchema),
+          prerequisites: arraySchema(nonEmptyStringSchema),
+        },
+        [
+          "capability",
+          "scope",
+          "evidence",
+          "native",
+          "contractVersion",
+          "location",
+          "sources",
+          "prerequisites",
+        ],
+      ),
+    ),
     capabilities: capabilityArraySchema,
     capabilityScopes: objectSchema(
       {
@@ -1970,6 +1994,7 @@ const agentDtoDefinitionSchema = objectSchema(
     "configured",
     "enabled",
     "detectionEvidence",
+    "compatibility",
     "capabilities",
     "capabilityScopes",
     "targets",

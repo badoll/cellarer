@@ -21,7 +21,8 @@
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
-    "config.json"
+    "config.json",
+    "compatibility"
   ],
   "engines": {
     "node": ">=20.19"

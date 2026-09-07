@@ -155,6 +155,9 @@ cellarer ui
 使用 `cellarer <command> --help` 查看精确选项。自动化调用方可通过
 `capabilities` 与 `schema` 发现稳定的命令和 Schema 合同。
 
+内置兼容性证据与校准后的落点见[详细指南](docs/README.zh-CN.md#内置兼容性证据)。发现配置
+不代表原生加载成功；已有受管旧落点需要显式审查后处理。
+
 ## 架构概览
 
 cellarer 是 TypeScript monorepo。`@cellarer/core` 负责 Store、规划、mutation、安全和
