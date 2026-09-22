@@ -57,6 +57,9 @@ catalogs:
     vitest:
       specifier: ^4.1.9
       version: 4.1.9
+    yaml:
+      specifier: 2.9.1
+      version: 2.9.1
     zod:
       specifier: ^4.4.3
       version: 4.4.3
@@ -82,7 +85,7 @@ importers:
         version: 6.0.3
       vitest:
         specifier: 'catalog:'
-        version: 4.1.9(@types/node@26.0.1)(@vitest/coverage-v8@4.1.9)(happy-dom@20.14.0)(vite@8.1.1(@types/node@26.0.1))
+        version: 4.1.9(@types/node@26.0.1)(@vitest/coverage-v8@4.1.9)(happy-dom@20.14.0)(vite@8.1.1(@types/node@26.0.1)(yaml@2.9.1))
 
   packages/cli:
     dependencies:
@@ -115,6 +118,9 @@ importers:
       smol-toml:
         specifier: 'catalog:'
         version: 1.7.0
+      yaml:
+        specifier: 'catalog:'
+        version: 2.9.1
       zod:
         specifier: 'catalog:'
         version: 4.4.3
@@ -149,7 +155,7 @@ importers:
         version: 19.2.3(@types/react@19.2.17)
       '@vitejs/plugin-react':
         specifier: ^6.0.3
-        version: 6.0.3(vite@8.1.1(@types/node@26.0.1))
+        version: 6.0.3(vite@8.1.1(@types/node@26.0.1)(yaml@2.9.1))
       happy-dom:
         specifier: ^20.14.0
         version: 20.14.0
@@ -164,7 +170,7 @@ importers:
         version: 6.0.3
       vite:
         specifier: 'catalog:'
-        version: 8.1.1(@types/node@26.0.1)
+        version: 8.1.1(@types/node@26.0.1)(yaml@2.9.1)
 
 packages:
 
@@ -955,6 +961,11 @@ packages:
       utf-8-validate:
         optional: true
 
+  yaml@2.9.1:
+    resolution: {integrity: sha512-3NxN8+78OdzbT7C/WjGsyfPAtJaN3FNDsWxv7Y7mcDsT/oOmgW8BpyQQFFBnvZE3j9Y2Sdz1ULFLezL7Eb2yFw==}
+    engines: {node: '>= 14.6'}
+    hasBin: true
+
   zod@4.4.3:
     resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
 
@@ -1224,10 +1235,10 @@ snapshots:
     dependencies:
       '@types/node': 26.0.1
 
-  '@vitejs/plugin-react@6.0.3(vite@8.1.1(@types/node@26.0.1))':
+  '@vitejs/plugin-react@6.0.3(vite@8.1.1(@types/node@26.0.1)(yaml@2.9.1))':
     dependencies:
       '@rolldown/pluginutils': 1.0.1
-      vite: 8.1.1(@types/node@26.0.1)
+      vite: 8.1.1(@types/node@26.0.1)(yaml@2.9.1)
 
   '@vitest/coverage-v8@4.1.9(vitest@4.1.9)':
     dependencies:
@@ -1241,7 +1252,7 @@ snapshots:
       obug: 2.1.3
       std-env: 4.1.0
       tinyrainbow: 3.1.0
-      vitest: 4.1.9(@types/node@26.0.1)(@vitest/coverage-v8@4.1.9)(happy-dom@20.14.0)(vite@8.1.1(@types/node@26.0.1))
+      vitest: 4.1.9(@types/node@26.0.1)(@vitest/coverage-v8@4.1.9)(happy-dom@20.14.0)(vite@8.1.1(@types/node@26.0.1)(yaml@2.9.1))
 
   '@vitest/expect@4.1.9':
     dependencies:
@@ -1252,13 +1263,13 @@ snapshots:
       chai: 6.2.2
       tinyrainbow: 3.1.0
 
-  '@vitest/mocker@4.1.9(vite@8.1.1(@types/node@26.0.1))':
+  '@vitest/mocker@4.1.9(vite@8.1.1(@types/node@26.0.1)(yaml@2.9.1))':
     dependencies:
       '@vitest/spy': 4.1.9
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 8.1.1(@types/node@26.0.1)
+      vite: 8.1.1(@types/node@26.0.1)(yaml@2.9.1)
 
   '@vitest/pretty-format@4.1.9':
     dependencies:
@@ -1517,7 +1528,7 @@ snapshots:
 
   undici-types@8.3.0: {}
 
-  vite@8.1.1(@types/node@26.0.1):
+  vite@8.1.1(@types/node@26.0.1)(yaml@2.9.1):
     dependencies:
       lightningcss: 1.32.0
       picomatch: 4.0.4
@@ -1527,11 +1538,12 @@ snapshots:
     optionalDependencies:
       '@types/node': 26.0.1
       fsevents: 2.3.3
+      yaml: 2.9.1
 
-  vitest@4.1.9(@types/node@26.0.1)(@vitest/coverage-v8@4.1.9)(happy-dom@20.14.0)(vite@8.1.1(@types/node@26.0.1)):
+  vitest@4.1.9(@types/node@26.0.1)(@vitest/coverage-v8@4.1.9)(happy-dom@20.14.0)(vite@8.1.1(@types/node@26.0.1)(yaml@2.9.1)):
     dependencies:
       '@vitest/expect': 4.1.9
-      '@vitest/mocker': 4.1.9(vite@8.1.1(@types/node@26.0.1))
+      '@vitest/mocker': 4.1.9(vite@8.1.1(@types/node@26.0.1)(yaml@2.9.1))
       '@vitest/pretty-format': 4.1.9
       '@vitest/runner': 4.1.9
       '@vitest/snapshot': 4.1.9
@@ -1548,7 +1560,7 @@ snapshots:
       tinyexec: 1.2.4
       tinyglobby: 0.2.17
       tinyrainbow: 3.1.0
-      vite: 8.1.1(@types/node@26.0.1)
+      vite: 8.1.1(@types/node@26.0.1)(yaml@2.9.1)
       why-is-node-running: 2.3.0
     optionalDependencies:
       '@types/node': 26.0.1
@@ -1565,5 +1577,7 @@ snapshots:
       stackback: 0.0.2
 
   ws@8.21.3: {}
+
+  yaml@2.9.1: {}
 
   zod@4.4.3: {}

@@ -26,7 +26,7 @@ import { GIT_SOURCE, LOCAL_SNAPSHOT_SOURCE } from "./fixtures/resource-lifecycle
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 import { deterministicMutationAuthority } from "./helpers/mutation-authority.js";
 
-const SKILL = `---\nname: example-skill\ndescription: lifecycle fixture\n---\n\n# Example\n`;
+const SKILL = `---\nname: example-skill\ndescription: |\n  lifecycle fixture\nmetadata:\n  custom: [one, two]\n---\n\n# Example\n`;
 const SKILL_WITH_REFERENCE = `${SKILL}\nToken: \${CELLARER_SECRET:github-token}\n`;
 
 describe("resource lifecycle dependency, rename, remove, and bundles", () => {

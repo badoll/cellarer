@@ -209,7 +209,8 @@ function findingRemediation(code: InventoryFindingCode): InventoryFindingRemedia
   }
   if (code === "UNSAFE_LINK") return "remove-unsafe-link";
   if (code === "SNAPSHOT_STALE" || code === "STORE_SNAPSHOT_STALE") return "retry-refresh";
-  if (code === "INVALID_STRUCTURE" || code === "PARSE_FAILED") return "fix-structure";
+  if (code === "INVALID_STRUCTURE" || code === "PARSE_FAILED" || code === "INVALID_MANIFEST")
+    return "fix-structure";
   if (code === "PROBABLE_SECRET") return "remove-secret-values";
   if (code === "secret-adoption-required") return "adopt-supported-secret";
   if (code === "CONFLICT") return "resolve-conflict";

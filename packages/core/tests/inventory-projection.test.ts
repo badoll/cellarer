@@ -29,7 +29,7 @@ describe("unified Inventory projection", () => {
     });
     await t.env.fs.writeFile(
       t.path("home", ".agents", "skills", "fresh-skill", "SKILL.md"),
-      "# Fresh\n",
+      "---\nname: fresh-skill\ndescription: Fresh\n---\n# Fresh\n",
     );
 
     const result = await refreshInventory(t.env, { storeRoot, agentId: "agents-md" });
@@ -49,7 +49,10 @@ describe("unified Inventory projection", () => {
 
   it("preserves safe candidates and reports partial completeness when one source is unsafe", async () => {
     await t.env.fs.mkdir(t.path("home", ".agents", "skills", "safe"), { recursive: true });
-    await t.env.fs.writeFile(t.path("home", ".agents", "skills", "safe", "SKILL.md"), "# Safe\n");
+    await t.env.fs.writeFile(
+      t.path("home", ".agents", "skills", "safe", "SKILL.md"),
+      "---\nname: safe\ndescription: Safe\n---\n# Safe\n",
+    );
     const external = t.path("external-rules.md");
     await t.env.fs.writeFile(external, "# External\n");
     await t.env.fs.mkdir(t.path("home", ".agents"), { recursive: true });
@@ -80,7 +83,10 @@ describe("unified Inventory projection", () => {
 
   it("preserves safe source candidates when managed Store projection fails", async () => {
     await t.env.fs.mkdir(t.path("home", ".agents", "skills", "safe"), { recursive: true });
-    await t.env.fs.writeFile(t.path("home", ".agents", "skills", "safe", "SKILL.md"), "# Safe\n");
+    await t.env.fs.writeFile(
+      t.path("home", ".agents", "skills", "safe", "SKILL.md"),
+      "---\nname: safe\ndescription: Safe\n---\n# Safe\n",
+    );
     await t.env.fs.writeFile(join(storeRoot, "store", "mcp", "broken.json"), "{not-json\n");
 
     const result = await refreshInventory(t.env, { storeRoot, agentId: "agents-md" });

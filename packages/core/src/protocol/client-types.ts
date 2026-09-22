@@ -445,6 +445,7 @@ export type InventoryFindingCode =
   | "UNSUPPORTED_SNAPSHOT"
   | "SNAPSHOT_STALE"
   | "INVALID_STRUCTURE"
+  | "INVALID_MANIFEST"
   | "PARSE_FAILED"
   | "PROBABLE_SECRET"
   | "secret-adoption-required"

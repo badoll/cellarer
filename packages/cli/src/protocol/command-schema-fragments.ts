@@ -114,6 +114,7 @@ const inventoryFinding = dataObject(["code", "severity", "scope", "remediation"]
     "UNSUPPORTED_SNAPSHOT",
     "SNAPSHOT_STALE",
     "INVALID_STRUCTURE",
+    "INVALID_MANIFEST",
     "PARSE_FAILED",
     "PROBABLE_SECRET",
     "secret-adoption-required",
@@ -286,6 +287,10 @@ const adapterSkills = dataObject([], {
   format: { const: "dir" },
 });
 const adapterDialect = dataObject([], {
+  expansionPositions: jsonSchema.array(
+    jsonSchema.enumeration(["command", "args", "env", "url", "headers"]),
+  ),
+  semanticDialect: jsonSchema.enumeration(["standard", "claude", "gemini", "codex"]),
   commandStyle: jsonSchema.enumeration(["scalar", "array"]),
   envKey: jsonSchema.string({ minLength: 1 }),
   urlKey: jsonSchema.string({ minLength: 1 }),
@@ -383,6 +388,10 @@ const configValidationAdapterSkills = dataObject([], {
   format: { const: "dir" },
 });
 const configValidationAdapterDialect = dataObject([], {
+  expansionPositions: jsonSchema.array(
+    jsonSchema.enumeration(["command", "args", "env", "url", "headers"]),
+  ),
+  semanticDialect: jsonSchema.enumeration(["standard", "claude", "gemini", "codex"]),
   commandStyle: jsonSchema.enumeration(["scalar", "array"]),
   envKey: jsonSchema.string({ minLength: 1 }),
   urlKey: jsonSchema.string({ minLength: 1 }),
@@ -976,6 +985,7 @@ const distributionNormalizedInputs = dataObject(
     "scope",
     "agents",
     "configFingerprint",
+    "resourceSemantics",
     "storeProvenance",
     "capabilityRootProvenance",
     "distributePlan",
@@ -985,6 +995,10 @@ const distributionNormalizedInputs = dataObject(
     scope,
     agents: stringArray,
     configFingerprint: jsonSchema.string({ pattern: "^sha256:[0-9a-f]{64}$" }),
+    resourceSemantics: dataObject(["version", "adapterFingerprint"], {
+      version: { const: "1" },
+      adapterFingerprint: jsonSchema.string({ pattern: "^sha256:[0-9a-f]{64}$" }),
+    }),
     storeProvenance: jsonSchema.array(storeProvenanceDescriptor),
     capabilityRootProvenance: jsonSchema.array(capabilityRootProvenanceDescriptor),
     dir: jsonSchema.string({ minLength: 1 }),

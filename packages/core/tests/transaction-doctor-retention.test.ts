@@ -40,6 +40,7 @@ describe("mutation doctor and retention", () => {
         scope: "global",
         agents: [],
         configFingerprint: sha256("fixture-config"),
+        resourceSemantics: { version: "1", adapterFingerprint: sha256("fixture-adapters") },
         storeProvenance: [],
         capabilityRootProvenance: [],
         distributePlan: { actions: [planAction], warnings: [], conflicts: [] },

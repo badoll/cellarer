@@ -11,7 +11,6 @@
 //   - 实际落地方式(可能因 Windows 回退)记台账的 AppliedMethod,与计划 method 区分。
 
 import { dirname, isAbsolute, join, normalize } from "node:path";
-import { renderRulesForTarget } from "../adapters/codec.js";
 import { loadRegistry } from "../adapters/registry.js";
 import type { AgentAdapter, RuleFragment } from "../adapters/types.js";
 import { canonicalDeploymentTarget } from "../deployments/model.js";
@@ -37,6 +36,8 @@ import type {
   VerificationCoverageOutcome,
 } from "../protocol/client-types.js";
 import { resolveCurrentResourceArtifact } from "../resources/model.js";
+import { ResourceSemanticsError } from "../resources/semantics.js";
+import { compileRules } from "../rules/compiler.js";
 import {
   attachProviderScope,
   createProviderScope,
@@ -253,7 +254,27 @@ async function planImplementation(
 
     for (const cap of capabilities) {
       try {
-        if (await requiresRelocation(env, adapter, cap, opts.scope, opts.dir, ledger.owners)) {
+        const ruleTarget =
+          cap === "rules" ? adapter.paths(env, opts.scope, opts.dir).rules : undefined;
+        const compiledRules = ruleTarget ? compileRules(ruleTarget, ctx.ruleFragments) : undefined;
+        const ruleTargets =
+          compiledRules?.status === "exact"
+            ? compiledRules.value.map((output) => ({
+                target: output.target,
+                artifactIds: output.sources.map((source) => source.replace(/\.md$/, "")),
+              }))
+            : undefined;
+        if (
+          await requiresRelocation(
+            env,
+            adapter,
+            cap,
+            opts.scope,
+            opts.dir,
+            ledger.owners,
+            ruleTargets,
+          )
+        ) {
           execution.onCoverage?.("blocked");
           const skipped = skipAction(agentId, cap, opts.scope, method);
           skipped.reason =
@@ -267,6 +288,7 @@ async function planImplementation(
         const skipped = skipAction(agentId, cap, opts.scope, method);
         skipped.reason = "relocation-required: prior placement could not be safely compared";
         actions.push(skipped);
+        warnings.push(`agent "${agentId}" ${cap} planning failed — skipped: ${skipped.reason}`);
         continue;
       }
       const supportedScopes = adapter.capabilities[cap] ?? [];
@@ -639,7 +661,7 @@ function skipAction(
 
 // rules planner:把单个 PlanAction(或无)包成数组,适配 planner 表签名。
 async function planRulesCapability(ctx: PlanContext, adapter: AgentAdapter): Promise<PlanAction[]> {
-  const action = await planRules(
+  return planRules(
     ctx.env,
     ctx.opts,
     adapter,
@@ -648,7 +670,6 @@ async function planRulesCapability(ctx: PlanContext, adapter: AgentAdapter): Pro
     ctx.method,
     ctx.stagedSources,
   );
-  return action ? [action] : [];
 }
 
 // mcp planner:委托 engine/mcp-plan(密钥已在顶层渲染好;此处只做 per-agent merge)。
@@ -696,34 +717,44 @@ async function planRules(
   fragments: RuleFragment[],
   method: LinkMethod,
   stagedSources: ReadonlyMap<string, SafeRecursiveSnapshot>,
-): Promise<PlanAction | null> {
+): Promise<PlanAction[]> {
   const target = adapter.paths(env, opts.scope, opts.dir).rules;
-  if (!target || fragments.length === 0) return null;
+  if (!target || fragments.length === 0) return [];
+  const compiled = compileRules(target, fragments);
+  if (compiled.status !== "exact")
+    throw new ResourceSemanticsError(compiled.status, compiled.reason);
+  return Promise.all(
+    compiled.value.map(async (output): Promise<PlanAction> => {
+      const target = output.target;
+      const selected = selectedRules.filter((artifact) =>
+        output.sources.includes(`rules/${artifact.name}.md`),
+      );
+      const after = output.content;
+      const contentFingerprint = sha256(after);
+      // before 是 per-agent 差异:既供 dry-run diff,也是 apply 幂等短路的依据。
+      const before = (await readFileOrNull(env, target)) ?? undefined;
 
-  const after = renderRulesForTarget(target, fragments);
-  const contentFingerprint = sha256(after);
-  // before 是 per-agent 差异:既供 dry-run diff,也是 apply 幂等短路的依据。
-  const before = (await readFileOrNull(env, target)) ?? undefined;
-
-  return {
-    // rules 是聚合制品,artifact 标 "rules/*" 并在 reason 列出参与的制品。
-    artifact: "rules/*",
-    artifactIds: selectedRules.map((artifact) => artifact.id),
-    agent: adapter.id,
-    scope: opts.scope,
-    capability: "rules",
-    target,
-    method,
-    // rules 落地是「渲染 concat 写入」,固定 op=write(非软链整文件)。
-    op: "write",
-    reason: selectedRules.map((a) => a.id).join(", "),
-    preview: { before, after },
-    desiredEvidence: {
-      method: "write",
-      contentFingerprint,
-    },
-    storeInputs: storeInputEvidence(selectedRules, stagedSources),
-  };
+      return {
+        // rules 是聚合制品,artifact 标 "rules/*" 并在 reason 列出参与的制品。
+        artifact: "rules/*",
+        artifactIds: selected.map((artifact) => artifact.id),
+        agent: adapter.id,
+        scope: opts.scope,
+        capability: "rules",
+        target,
+        method,
+        // rules 落地是「渲染 concat 写入」,固定 op=write(非软链整文件)。
+        op: "write",
+        reason: selected.map((a) => a.id).join(", "),
+        preview: { before, after },
+        desiredEvidence: {
+          method: "write",
+          contentFingerprint,
+        },
+        storeInputs: storeInputEvidence(selected, stagedSources),
+      };
+    }),
+  );
 }
 
 function requiredStagedSource(

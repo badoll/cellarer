@@ -39,6 +39,7 @@ import {
   installSafeRecursiveSnapshot,
   type SafeRecursiveSnapshot,
 } from "../secrets/safe-tree.js";
+import { parseSkillManifest } from "../skills/manifest.js";
 import { sha256 } from "../store/checksum.js";
 import {
   type CellarerConfig,
@@ -1323,14 +1324,7 @@ function validateContent(
     const manifest = files.find((file) => file.path === "SKILL.md");
     if (!manifest) throw new TypeError("Skill content is missing SKILL.md");
     const text = decodeUtf8(manifest.dataHex);
-    const manifestName = text
-      .match(/^---\r?\n[\s\S]*?^name:\s*["']?([^"'\r\n]+)["']?\s*$/m)?.[1]
-      ?.trim();
-    const description = text
-      .match(/^---\r?\n[\s\S]*?^description:\s*["']?([^"'\r\n]+)["']?\s*$/m)?.[1]
-      ?.trim();
-    if (manifestName !== name || !description)
-      throw new TypeError("Skill manifest identity is invalid");
+    parseSkillManifest(text, name);
   } else {
     if (content.kind !== "file" || files.length !== 1 || files[0]?.path !== "") {
       throw new TypeError("Rule and MCP content must be one regular file");

@@ -87,7 +87,7 @@ function buildMcp(spec: AgentSpec): AdapterMcp | undefined {
   if (!spec.mcp) return undefined;
   const format = spec.mcp.format ?? "json";
   return {
-    codec: mcpCodecFor(format, spec.mcp.dialect),
+    codec: mcpCodecFor(format, { ...spec.mcp.dialect, nativeId: spec.id }),
     serversKey: spec.mcp.serversKey ?? (format === "toml" ? "mcp_servers" : "mcpServers"),
     defaultStrategy: spec.mcp.mergeStrategy ?? "merge",
     supportedSecretReferences: spec.mcp.supportedSecretReferences,

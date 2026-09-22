@@ -220,10 +220,13 @@ describe("resource catalog", () => {
     await t.env.fs.mkdir(t.path("home", ".agents", "skills", "private"), {
       recursive: true,
     });
-    await t.env.fs.writeFile(t.path("home", ".agents", "skills", "study", "SKILL.md"), "# Study\n");
+    await t.env.fs.writeFile(
+      t.path("home", ".agents", "skills", "study", "SKILL.md"),
+      "---\nname: study\ndescription: Study\n---\n# Study\n",
+    );
     await t.env.fs.writeFile(
       t.path("home", ".agents", "skills", "private", "SKILL.md"),
-      `# Private\napi_key = "${secretCanary}"\n`,
+      `---\nname: private\ndescription: Private\n---\n# Private\napi_key = "${secretCanary}"\n`,
     );
 
     const catalog = await resourceCatalog(t.env, {

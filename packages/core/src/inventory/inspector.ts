@@ -13,6 +13,7 @@ import {
   sliceSafeRecursiveSnapshot,
   UnsafeRecursiveSourceError,
 } from "../secrets/safe-tree.js";
+import { parseSkillManifest } from "../skills/manifest.js";
 import { sha256 } from "../store/checksum.js";
 import { inventorySecretAdoptionOffers } from "./adoption-fields.js";
 import type { InventorySource } from "./enumerator.js";
@@ -179,7 +180,17 @@ function inspectSkills(
     .sort((left, right) => left.localeCompare(right));
   const candidates = childNames.map((name) => {
     const child = sliceSafeRecursiveSnapshot(snapshot, name);
-    const hasManifest = child.files.some((file) => file.relativePath === "SKILL.md");
+    const manifest = child.files.find((file) => file.relativePath === "SKILL.md");
+    let manifestValid = false;
+    let resourceName = name;
+    if (manifest) {
+      try {
+        resourceName = parseSkillManifest(manifest.content).name;
+        manifestValid = true;
+      } catch {
+        /* Invalid candidates stay visible and cannot publish. */
+      }
+    }
     const hasSecret = child.files.some(
       (file) =>
         scanTextForSecrets(file.content).length > 0 ||
@@ -188,10 +199,10 @@ function inspectSkills(
         ),
     );
     const findings: InventoryFindingCode[] = [
-      ...(!hasManifest ? (["INVALID_STRUCTURE"] as const) : []),
+      ...(!manifestValid ? ([manifest ? "INVALID_MANIFEST" : "INVALID_STRUCTURE"] as const) : []),
       ...(hasSecret ? (["PROBABLE_SECRET"] as const) : []),
     ];
-    return observation(source, child, name, findings, directoryPublication(child), name);
+    return observation(source, child, resourceName, findings, directoryPublication(child), name);
   });
   return frozenInspection(candidates, []);
 }

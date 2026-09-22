@@ -48,6 +48,7 @@ const fixtures: Readonly<
       scope: "global",
       agents: ["codex"],
       configFingerprint: sha256("config"),
+      resourceSemantics: { version: "1", adapterFingerprint: sha256("fixture-adapters") },
       storeProvenance: [],
       capabilityRootProvenance: [],
       distributePlan: {
@@ -73,6 +74,7 @@ const fixtures: Readonly<
       scope: "global",
       agents: ["codex"],
       configFingerprint: sha256("config"),
+      resourceSemantics: { version: "1", adapterFingerprint: sha256("fixture-adapters") },
       storeProvenance: [],
       capabilityRootProvenance: [],
       distributePlan: {

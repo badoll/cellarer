@@ -399,7 +399,7 @@ describe("Core runtime architecture boundaries", () => {
     const skillsModule = modules.find(({ id }) => id === "engine/skills-plan.ts");
     if (!planModule || !skillsModule) throw new Error("missing capability planners");
 
-    expect(planModule.imports).toContain("adapters/codec.ts");
+    expect(planModule.imports).toContain("rules/compiler.ts");
     expect(stripComments(planModule.source)).not.toMatch(/adapter\.(?:rules|skills)\b/u);
     expect(stripComments(skillsModule.source)).not.toMatch(/adapter\.skills\b/u);
   });

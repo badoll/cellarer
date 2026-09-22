@@ -1,3 +1,4 @@
+import { RESOURCE_SEMANTICS_VERSION } from "../resources/semantics.js";
 import { sha256 } from "../store/checksum.js";
 import { canonicalJson } from "./canonical.js";
 import type {
@@ -248,6 +249,7 @@ function validateApplyPlan(plan: MutationPlan): boolean {
   const keys = [
     "agents",
     "configFingerprint",
+    "resourceSemantics",
     "capabilityRootProvenance",
     "distributePlan",
     "scope",
@@ -270,6 +272,10 @@ function validateApplyPlan(plan: MutationPlan): boolean {
     (input.scope !== "global" && input.scope !== "project") ||
     !isStringArray(input.agents) ||
     !isSha256(input.configFingerprint) ||
+    !isPlainRecord(input.resourceSemantics) ||
+    !hasExactKeys(input.resourceSemantics, ["version", "adapterFingerprint"]) ||
+    input.resourceSemantics.version !== RESOURCE_SEMANTICS_VERSION ||
+    !isSha256(input.resourceSemantics.adapterFingerprint) ||
     !isStoreProvenance(input.storeProvenance) ||
     !Array.isArray(input.capabilityRootProvenance) ||
     !isPlainRecord(input.distributePlan) ||

@@ -610,7 +610,7 @@ describe("cli program wiring", () => {
       await fs.mkdir(project, { recursive: true });
       await fs.writeFile(
         join(storeRoot, "store", "mcp", "managed.json"),
-        JSON.stringify({ kind: "stdio", command: "managed" }),
+        JSON.stringify({ command: "managed" }),
         "utf8",
       );
       await fs.writeFile(

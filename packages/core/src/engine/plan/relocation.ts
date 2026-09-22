@@ -11,6 +11,7 @@ export async function requiresRelocation(
   scope: Scope,
   dir: string | undefined,
   owners: readonly TargetOwner[],
+  ruleTargets?: readonly { target: string; artifactIds: readonly string[] }[],
 ): Promise<boolean> {
   if (
     !owners.some(
@@ -34,7 +35,25 @@ export async function requiresRelocation(
   const location = paths[capability === "skills" ? "skillsDir" : capability];
   if (!location) return true;
   for (const owner of matching) {
-    const expected = capability === "skills" ? join(location, basename(owner.target)) : location;
+    let expected = capability === "skills" ? join(location, basename(owner.target)) : location;
+    if (capability === "rules" && location.endsWith(".mdc")) {
+      const sameTarget = ruleTargets?.find((output) => output.target === owner.target);
+      const movedSource = ruleTargets?.some((output) =>
+        output.artifactIds.some((id) => owner.artifactIds.includes(id)),
+      );
+      if (!sameTarget && movedSource) return true;
+      const names = owner.artifactIds.map((id) => id.replace(/^rules\//, ""));
+      const nativeName = basename(owner.target);
+      if (
+        names.some(
+          (name) =>
+            /^[A-Za-z0-9._-]+$/.test(name) &&
+            nativeName === `${basename(location, ".mdc")}.${name}.mdc`,
+        )
+      ) {
+        expected = join(dirname(location), nativeName);
+      }
+    }
     // Resolve parents only: a Skill target can itself be a managed symlink to the Store.
     const canonicalTarget = join(await canonicalPath(env, dirname(expected)), basename(expected));
     if (normalize(owner.target) !== canonicalTarget) return true;

@@ -91,7 +91,10 @@ describe("unified Inventory candidate inspection", () => {
     const second = t.path("home", ".two", "skills", "alpha");
     for (const path of [first, second]) {
       await t.env.fs.mkdir(path, { recursive: true });
-      await t.env.fs.writeFile(join(path, "SKILL.md"), "# Equivalent\n");
+      await t.env.fs.writeFile(
+        join(path, "SKILL.md"),
+        "---\nname: alpha\ndescription: Equivalent\n---\n# Equivalent\n",
+      );
     }
     const left = await inspectInventorySource(
       t.env,

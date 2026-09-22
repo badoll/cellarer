@@ -112,7 +112,10 @@
         "project": "{dir}/.mcp.json",
         "format": "json",
         "serversKey": "mcpServers",
-        "supportedSecretReferences": ["environment"]
+        "supportedSecretReferences": ["environment"],
+        "dialect": {
+          "semanticDialect": "claude"
+        }
       },
       "skills": {
         "global": "~/.claude/skills",
@@ -228,7 +231,10 @@
         "project": "{dir}/.codex/config.toml",
         "format": "toml",
         "serversKey": "mcp_servers",
-        "supportedSecretReferences": []
+        "supportedSecretReferences": ["environment"],
+        "dialect": {
+          "semanticDialect": "codex"
+        }
       },
       "skills": {
         "global": "~/.agents/skills",
@@ -341,7 +347,10 @@
         "project": "{dir}/.cursor/mcp.json",
         "format": "json",
         "serversKey": "mcpServers",
-        "supportedSecretReferences": []
+        "supportedSecretReferences": [],
+        "dialect": {
+          "semanticDialect": "standard"
+        }
       },
       "skills": {
         "global": "~/.cursor/skills",
@@ -525,7 +534,10 @@
         "project": "{dir}/.gemini/settings.json",
         "format": "json",
         "serversKey": "mcpServers",
-        "supportedSecretReferences": ["environment"]
+        "supportedSecretReferences": ["environment"],
+        "dialect": {
+          "semanticDialect": "gemini"
+        }
       },
       "capabilities": {
         "rules": ["global", "project"],
@@ -645,7 +657,8 @@
           "envKey": "environment",
           "typeField": "type",
           "stdioType": "local",
-          "remoteType": "remote"
+          "remoteType": "remote",
+          "semanticDialect": "standard"
         }
       },
       "skills": {
@@ -816,7 +829,8 @@
         "serversKey": "mcpServers",
         "supportedSecretReferences": [],
         "dialect": {
-          "urlKey": "serverUrl"
+          "urlKey": "serverUrl",
+          "semanticDialect": "standard"
         }
       },
       "skills": {

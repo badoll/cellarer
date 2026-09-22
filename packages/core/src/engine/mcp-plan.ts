@@ -6,9 +6,11 @@ import type { AgentAdapter } from "../adapters/types.js";
 import type { Env } from "../env.js";
 import { readFileOrNull } from "../fs/probe.js";
 import { applyMerge } from "../mcp/codec.js";
+import { compileMcp } from "../mcp/compiler.js";
 import type { MergeStrategy } from "../mcp/merge.js";
 import type { McpServer, McpServerSet } from "../mcp/model.js";
 import type { Artifact, PlanAction } from "../model/index.js";
+import { ResourceSemanticsError } from "../resources/semantics.js";
 import { isSensitiveSecretFieldName } from "../secrets/detector.js";
 import {
   parseSecretReference,
@@ -77,7 +79,7 @@ function renderNestedValue(acc: RenderAcc, value: unknown, field: string): unkno
     return value.map((item, index) => renderNestedValue(acc, item, `${field}[${index}]`));
   }
   if (value === null || typeof value !== "object") return value;
-  const out: Record<string, unknown> = {};
+  const out: Record<string, unknown> = Object.create(null);
   for (const [key, child] of Object.entries(value)) {
     out[key] = renderNestedValue(acc, child, key);
   }
@@ -93,7 +95,7 @@ function renderServerSecrets(server: McpServer, acc: RenderAcc): McpServer {
 
 // 渲染整组 server 的密钥(agent 无关,plan() 顶层算一次)。
 export async function renderMcp(opts: RenderMcpOptions): Promise<RenderedMcp> {
-  const incoming: McpServerSet = {};
+  const incoming: McpServerSet = Object.create(null);
   const acc: RenderAcc = { references: [], accidental: false };
   for (const { name, server } of opts.servers) {
     incoming[name] = renderServerSecrets(server, acc);
@@ -120,6 +122,9 @@ export async function planMcp(ctx: McpPlanContext, adapter: AgentAdapter): Promi
       `adapter "${adapter.id}" is incompatible with reference-only secrets: target does not support ${unsupportedReference.kind} reference "${secretReferenceToken(unsupportedReference)}" and would require cellarer plaintext materialization`,
     );
   }
+  const compiled = compileMcp(ctx.rendered.incoming, adapter.mcp);
+  if (compiled.status !== "exact")
+    throw new ResourceSemanticsError(compiled.status, compiled.reason);
   const target = adapter.paths(ctx.env, ctx.scope, ctx.dir).mcp;
   if (!target) return [];
 
@@ -129,7 +134,7 @@ export async function planMcp(ctx: McpPlanContext, adapter: AgentAdapter): Promi
   const desiredContent = applyMerge(
     adapter.mcp.codec,
     null,
-    ctx.rendered.incoming,
+    compiled.value,
     adapter.mcp.serversKey,
     "overwrite",
   );
@@ -138,7 +143,7 @@ export async function planMcp(ctx: McpPlanContext, adapter: AgentAdapter): Promi
   const content = applyMerge(
     adapter.mcp.codec,
     existing,
-    ctx.rendered.incoming,
+    compiled.value,
     adapter.mcp.serversKey,
     strategy,
     target,

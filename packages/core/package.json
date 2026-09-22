@@ -37,6 +37,7 @@
   "dependencies": {
     "age-encryption": "catalog:",
     "smol-toml": "catalog:",
+    "yaml": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {

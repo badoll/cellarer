@@ -3,6 +3,8 @@ import {
   type ReconciliationTransition,
   reconcileDistribution,
 } from "../deployments/reconciliation.js";
+import { compilationContract } from "../resources/compilation-contract.js";
+import { RESOURCE_SEMANTICS_VERSION } from "../resources/semantics.js";
 // apply = plan + 执行 + 写台账(不变量 3/5)。dryRun 只返回 plan,不落地。
 // 分派结构(M2 重构):按 PlanAction.op 查 handler 表,引擎不散写 if (cap === "rules" && op === "write")。
 // 每个 op handler 负责一种落地动作(write/merge/overwrite/symlink/copy),返回写入台账的条目。
@@ -388,6 +390,7 @@ async function planApplyMutationWithAuthorityLease(
   if (Object.hasOwn(opts, "syncProfile")) {
     throw new TypeError("sync profile owner evidence must be resolved from profiles.json");
   }
+  const resourceSemantics = await compilationContract(env);
   const requestedCapabilities = opts.capabilities ?? ["rules"];
   const syncProfileId = execution.syncProfileId;
   const initialCapabilityRoots = await captureCapabilityRootSnapshots(
@@ -527,7 +530,10 @@ async function planApplyMutationWithAuthorityLease(
     actions.push(gitignore.action);
     targetPreconditions.push(gitignore.precondition);
   }
+  if (canonicalJson(await compilationContract(env)) !== canonicalJson(resourceSemantics))
+    throw new TypeError("resource compilation contract changed while planning");
   const normalizedInputs = jsonObject({
+    resourceSemantics,
     storeRoot: opts.storeRoot,
     scope: opts.scope,
     agents: opts.agents,
@@ -693,7 +699,14 @@ export async function applyMutationPlan(
         },
         {
           authorityLease,
-          validatePreflightBeforeObservation: async () => validateApplyProvenance(false),
+          validatePreflightBeforeObservation: async () => {
+            if (
+              canonicalJson(await compilationContract(operationEnv)) !==
+              canonicalJson(mutationPlan.normalizedInputs.resourceSemantics)
+            )
+              return invalidPlanResult();
+            return validateApplyProvenance(false);
+          },
           validateBeforeObservationUnderLock: async () => {
             const provenance = await validateApplyProvenance(true);
             if (provenance) return provenance;
@@ -759,6 +772,11 @@ export async function applyMutationPlan(
             ) {
               return invalidPlanResult();
             }
+            if (
+              canonicalJson(await compilationContract(operationEnv)) !==
+              canonicalJson(mutationPlan.normalizedInputs.resourceSemantics)
+            )
+              return invalidPlanResult();
             const currentConfig = await loadConfig(operationEnv, context.storeRoot);
             if (sha256(canonicalJson(currentConfig)) !== decoded.configFingerprint) {
               return invalidPlanResult();
@@ -1448,6 +1466,7 @@ function decodeApplyMutation(
   const inputKeys = [
     "agents",
     "configFingerprint",
+    "resourceSemantics",
     "capabilityRootProvenance",
     "distributePlan",
     "scope",
@@ -1467,6 +1486,10 @@ function decodeApplyMutation(
     (input.scope !== "global" && input.scope !== "project") ||
     !Array.isArray(input.agents) ||
     !input.agents.every((agent) => typeof agent === "string") ||
+    typeof input.resourceSemantics !== "object" ||
+    input.resourceSemantics === null ||
+    !("version" in input.resourceSemantics) ||
+    input.resourceSemantics.version !== RESOURCE_SEMANTICS_VERSION ||
     typeof input.configFingerprint !== "string" ||
     !/^sha256:[0-9a-f]{64}$/.test(input.configFingerprint) ||
     !Array.isArray(input.storeProvenance) ||

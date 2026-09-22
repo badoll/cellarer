@@ -13,6 +13,13 @@ export async function runCompatibilityFixtures(coreRoot = join(repository, "pack
   const { loadCompatibility } = await import(
     pathToFileURL(join(coreRoot, "dist/adapters/compatibility.js")).href
   );
+  const { parseSkillManifest } = await import(
+    pathToFileURL(join(coreRoot, "dist/skills/manifest.js")).href
+  );
+  const { compileRules } = await import(
+    pathToFileURL(join(coreRoot, "dist/rules/compiler.js")).href
+  );
+  const { compileMcp } = await import(pathToFileURL(join(coreRoot, "dist/mcp/compiler.js")).href);
   const matrix = await loadCompatibility(env);
   const root = await fs.realpath(await fs.mkdtemp(join(tmpdir(), "cellarer-compatibility-")));
   try {
@@ -30,7 +37,31 @@ export async function runCompatibilityFixtures(coreRoot = join(repository, "pack
     const rules = await fs.readFile(join(fixtureRoot, "rules.md"), "utf8");
     const mdc = await fs.readFile(join(fixtureRoot, "rules.mdc"), "utf8");
     const skill = await fs.readFile(join(fixtureRoot, "skill.md"), "utf8");
-    assert.match(skill, /^---\nname: sample\ndescription: .+\n---\n/);
+    assert.equal(parseSkillManifest(skill).name, "sample");
+    assert.equal(
+      parseSkillManifest("---\nname: multiline\ndescription: |\n  first\n  second\n---\n")
+        .description,
+      "first\nsecond\n",
+    );
+    assert.throws(() =>
+      parseSkillManifest("---\nname: duplicate\nname: duplicate\ndescription: invalid\n---\n"),
+    );
+    const scoped = [
+      {
+        relPath: "rules/scoped.md",
+        content: '---\nalwaysApply: false\nglobs: "**/*.ts"\n---\nScoped',
+      },
+    ];
+    assert.equal(compileRules("/fixture/AGENTS.md", scoped).status, "requires-choice");
+    assert.equal(compileRules("/fixture/rules/cellarer.mdc", scoped).status, "exact");
+    const claude = registry.get("claude-code").mcp;
+    const gemini = registry.get("gemini-cli").mcp;
+    const native = claude.codec.decode(
+      '{"mcpServers":{"sample":{"command":"sample-not-executed","extension":true}}}',
+      claude.serversKey,
+    );
+    assert.equal(compileMcp(native.servers, claude).status, "exact");
+    assert.equal(compileMcp(native.servers, gemini).status, "requires-choice");
     for (const directory of ["home", "project", "store/store/rules", "store/store/skills/sample"])
       await fs.mkdir(join(root, directory), { recursive: true });
     await fs.writeFile(join(root, "store/store/rules/sample.md"), rules);

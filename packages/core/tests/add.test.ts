@@ -43,6 +43,25 @@ describe("engine/add — local source import", () => {
     expect(result.rejected).toEqual([{ kind: "skills", name: "structured-skill", reason: "" }]);
   });
 
+  it("uses the bounded manifest parser and preserves multiline source bytes", async () => {
+    const source = t.path("block-skill");
+    await t.env.fs.mkdir(source, { recursive: true });
+    const bytes =
+      "---\nname: block-skill\ndescription: |\n  first\n  second\nmetadata:\n  extension: [one, two]\n---\nBody\n";
+    await t.env.fs.writeFile(`${source}/SKILL.md`, bytes);
+    const result = await add(t.env, { storeRoot, source });
+    expect(result.candidates[0]?.description).toBe("first\nsecond\n");
+    expect(await t.env.fs.readFile(`${storeRoot}/store/skills/block-skill/SKILL.md`)).toBe(bytes);
+    await t.env.fs.writeFile(
+      `${source}/SKILL.md`,
+      bytes.replace("name: block-skill", "name: block-skill\nname: duplicate"),
+    );
+    expect((await add(t.env, { storeRoot, source, force: true })).rejected[0]?.reason).toContain(
+      "INVALID_MANIFEST",
+    );
+    expect(await t.env.fs.readFile(`${storeRoot}/store/skills/block-skill/SKILL.md`)).toBe(bytes);
+  });
+
   it("imports a local .md file into store/rules", async () => {
     const src = t.path("style.md");
     await t.env.fs.writeFile(src, "# coding style\nuse tabs");

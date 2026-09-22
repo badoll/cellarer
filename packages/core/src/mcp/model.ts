@@ -9,6 +9,7 @@ export type McpServerKind = "stdio" | "remote" | "custom";
 
 // 本地子进程型(stdio transport)。
 export interface McpStdioServer {
+  sourceDialect?: string;
   kind: "stdio";
   command: string;
   args?: string[];
@@ -19,6 +20,8 @@ export interface McpStdioServer {
 
 // 远程型(http/sse)。
 export interface McpRemoteServer {
+  sourceDialect?: string;
+  transport?: "sse" | "streamable-http" | "unknown";
   kind: "remote";
   url: string;
   headers?: Record<string, string>;
@@ -28,6 +31,7 @@ export interface McpRemoteServer {
 
 // 兜底:无法归入 stdio/remote 的条目,原样保留其字段(不丢弃)。
 export interface McpCustomServer {
+  sourceDialect?: string;
   kind: "custom";
   config: Record<string, unknown>;
 }
@@ -40,6 +44,10 @@ export type McpServerSet = Record<string, McpServer>;
 // 字段方言(借 kickoff §7.4 矩阵):不同 agent 的原生字段名/形态差异。
 // 默认 standard(claude/cursor/gemini/codex);opencode/windsurf 各有偏差。
 export interface McpDialect {
+  /** Adapter-owned provenance identity; configuration loaders supply this field. */
+  nativeId?: string;
+  expansionPositions?: ("command" | "args" | "env" | "url" | "headers")[];
+  semanticDialect?: "standard" | "claude" | "gemini" | "codex";
   // command 形态:"scalar"(command + args[],主流)| "array"(command[0]=cmd,command[1:]=args,opencode)。
   commandStyle?: "scalar" | "array";
   // env 字段名(opencode 用 "environment")。
@@ -54,7 +62,7 @@ export interface McpDialect {
 
 // 已解析方言:命令/键名有默认;type 判别字段无默认(undefined = 不写 type)。
 type ResolvedDialect = Required<Pick<McpDialect, "commandStyle" | "envKey" | "urlKey">> &
-  Pick<McpDialect, "typeField" | "stdioType" | "remoteType">;
+  Pick<McpDialect, "typeField" | "stdioType" | "remoteType" | "semanticDialect">;
 
 const STANDARD: Pick<McpDialect, "commandStyle" | "envKey" | "urlKey"> = {
   commandStyle: "scalar",
@@ -78,8 +86,29 @@ export function serverFromRaw(raw: unknown, dialect?: McpDialect): McpServer {
     // 非对象(异常输入)→ custom 包裹,避免抛错丢数据。
     return { kind: "custom", config: { value: raw } };
   }
+  if (!dialect && "$cellarerMcp" in raw) {
+    const evidence = raw.$cellarerMcp;
+    if (
+      !isPlainObject(evidence) ||
+      Object.keys(evidence).length !== 1 ||
+      typeof evidence.sourceDialect !== "string"
+    )
+      throw new TypeError("invalid MCP provenance");
+    const { $cellarerMcp: _evidence, ...body } = raw;
+    return { ...serverFromRaw(body), sourceDialect: evidence.sourceDialect };
+  }
   const dia = withDefaults(dialect);
+  const source = dialect ? { sourceDialect: mcpDialectIdentity(dialect) } : {};
   const known: string[] = [];
+  if (
+    (Array.isArray(raw.command) && raw.command.some((value) => typeof value !== "string")) ||
+    (raw.http_headers !== undefined && !isStringRecord(raw.http_headers)) ||
+    (raw.args !== undefined &&
+      (!Array.isArray(raw.args) || raw.args.some((value) => typeof value !== "string"))) ||
+    (raw[dia.envKey] !== undefined && !isStringRecord(raw[dia.envKey])) ||
+    (raw.headers !== undefined && !isStringRecord(raw.headers))
+  )
+    return { kind: "custom", config: { ...raw }, ...source };
 
   // command:标量方言取字符串;数组方言取首元为 command、其余为 args。
   let command: string | undefined;
@@ -94,7 +123,7 @@ export function serverFromRaw(raw: unknown, dialect?: McpDialect): McpServer {
   }
 
   if (command !== undefined) {
-    const server: McpStdioServer = { kind: "stdio", command };
+    const server: McpStdioServer = { kind: "stdio", command, ...source };
     if (argsFromCommand && argsFromCommand.length > 0) {
       server.args = argsFromCommand;
     } else if (dia.commandStyle === "scalar" && Array.isArray(raw.args)) {
@@ -105,31 +134,57 @@ export function serverFromRaw(raw: unknown, dialect?: McpDialect): McpServer {
     known.push(dia.envKey);
     // type 判别字段由 serverToRaw 重新生成,不进 extra(避免回写重复/陈旧)。
     if (dia.typeField) known.push(dia.typeField);
+    if (raw.type === "stdio") known.push("type");
     const extra = extraFields(raw, known);
     if (extra) server.extra = extra;
     return server;
   }
 
-  if (typeof raw[dia.urlKey] === "string") {
-    const server: McpRemoteServer = { kind: "remote", url: raw[dia.urlKey] as string };
-    const headers = toStringRecord(raw.headers);
+  const urlKey =
+    dia.semanticDialect === "gemini" && typeof raw.httpUrl === "string" ? "httpUrl" : dia.urlKey;
+  if (typeof raw[urlKey] === "string") {
+    const transport =
+      raw.type === "sse"
+        ? "sse"
+        : ["http", "streamable-http"].includes(String(raw.type))
+          ? "streamable-http"
+          : dia.semanticDialect === "gemini"
+            ? urlKey === "httpUrl"
+              ? "streamable-http"
+              : "sse"
+            : dia.semanticDialect === "codex"
+              ? "streamable-http"
+              : undefined;
+    const server: McpRemoteServer = {
+      kind: "remote",
+      url: raw[urlKey] as string,
+      ...source,
+      ...(transport ? { transport } : {}),
+    };
+    const headersKey = dia.semanticDialect === "codex" ? "http_headers" : "headers";
+    const headers = toStringRecord(raw[headersKey]);
     if (headers) server.headers = headers;
-    const knownRemote = [dia.urlKey, "headers"];
+    const knownRemote = [urlKey, headersKey];
     if (dia.typeField) knownRemote.push(dia.typeField);
+    if (["sse", "http", "streamable-http"].includes(String(raw.type))) knownRemote.push("type");
     const extra = extraFields(raw, knownRemote);
     if (extra) server.extra = extra;
     return server;
   }
-  return { kind: "custom", config: { ...raw } };
+  return { kind: "custom", config: { ...raw }, ...source };
 }
 
 // canonical → 原生 server 对象(写回 agent 文件用)。dialect 缺省为 standard。
 export function serverToRaw(server: McpServer, dialect?: McpDialect): Record<string, unknown> {
   const dia = withDefaults(dialect);
+  const provenance =
+    !dialect && server.sourceDialect
+      ? { $cellarerMcp: { sourceDialect: server.sourceDialect } }
+      : {};
   switch (server.kind) {
     case "stdio": {
       // extra 先铺底,再写 type(若方言要求)+ 规范字段(规范字段优先,顺序稳定)。
-      const out: Record<string, unknown> = { ...server.extra };
+      const out: Record<string, unknown> = { ...server.extra, ...provenance };
       if (dia.typeField && dia.stdioType) out[dia.typeField] = dia.stdioType;
       if (dia.commandStyle === "array") {
         out.command = [server.command, ...(server.args ?? [])];
@@ -141,20 +196,31 @@ export function serverToRaw(server: McpServer, dialect?: McpDialect): Record<str
       return out;
     }
     case "remote": {
-      const out: Record<string, unknown> = { ...server.extra };
+      const out: Record<string, unknown> = { ...server.extra, ...provenance };
       if (dia.typeField && dia.remoteType) out[dia.typeField] = dia.remoteType;
-      out[dia.urlKey] = server.url;
-      if (server.headers && Object.keys(server.headers).length > 0) out.headers = server.headers;
+      const urlKey =
+        dia.semanticDialect === "gemini" && server.transport === "streamable-http"
+          ? "httpUrl"
+          : dia.urlKey;
+      out[urlKey] = server.url;
+      if (
+        server.transport &&
+        server.transport !== "unknown" &&
+        !["gemini", "codex"].includes(dia.semanticDialect ?? "")
+      )
+        out.type = server.transport === "streamable-http" ? "http" : "sse";
+      if (server.headers && Object.keys(server.headers).length > 0)
+        out[dia.semanticDialect === "codex" ? "http_headers" : "headers"] = server.headers;
       return out;
     }
     case "custom":
-      return { ...server.config };
+      return { ...server.config, ...provenance };
   }
 }
 
 // 解析一整组原生 servers(name → raw)→ canonical set。
 export function serverSetFromRaw(raw: Record<string, unknown>, dialect?: McpDialect): McpServerSet {
-  const set: McpServerSet = {};
+  const set: McpServerSet = Object.create(null);
   for (const [name, value] of Object.entries(raw)) {
     set[name] = serverFromRaw(value, dialect);
   }
@@ -163,7 +229,7 @@ export function serverSetFromRaw(raw: Record<string, unknown>, dialect?: McpDial
 
 // canonical set → 原生 servers 对象(name → raw)。
 export function serverSetToRaw(set: McpServerSet, dialect?: McpDialect): Record<string, unknown> {
-  const raw: Record<string, unknown> = {};
+  const raw: Record<string, unknown> = Object.create(null);
   for (const [name, server] of Object.entries(set)) {
     raw[name] = serverToRaw(server, dialect);
   }
@@ -183,9 +249,27 @@ function extraFields(
   raw: Record<string, unknown>,
   known: string[],
 ): Record<string, unknown> | undefined {
-  const out: Record<string, unknown> = {};
+  const out: Record<string, unknown> = Object.create(null);
   for (const [k, v] of Object.entries(raw)) {
     if (!known.includes(k)) out[k] = v;
   }
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+export function mcpDialectIdentity(dialect?: McpDialect): string {
+  const d = withDefaults(dialect);
+  return JSON.stringify([
+    dialect?.nativeId ?? null,
+    d.semanticDialect ?? "standard",
+    d.commandStyle,
+    d.envKey,
+    d.urlKey,
+    d.typeField ?? null,
+    d.stdioType ?? null,
+    d.remoteType ?? null,
+    [...(dialect?.expansionPositions ?? [])].sort(),
+  ]);
+}
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return isPlainObject(value) && Object.values(value).every((item) => typeof item === "string");
 }

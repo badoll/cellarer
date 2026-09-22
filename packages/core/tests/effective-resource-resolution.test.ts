@@ -50,7 +50,10 @@ describe("bounded effective resource projection", () => {
   it("preserves three conflicting candidates and blocks default import despite a known winner", async () => {
     await config("ranked");
     for (const rank of [1, 2, 3])
-      await put(t.path("home", `.pool-${rank}`, "demo", "SKILL.md"), `# Version ${rank}\n`);
+      await put(
+        t.path("home", `.pool-${rank}`, "demo", "SKILL.md"),
+        `---\nname: demo\ndescription: Version ${rank}\n---\n# Version ${rank}\n`,
+      );
     const result = await refreshInventory(t.env, { storeRoot, agentId: "fixture" });
     expect(result.candidates).toHaveLength(3);
     expect(
@@ -73,7 +76,10 @@ describe("bounded effective resource projection", () => {
       }),
     ).rejects.toThrow();
     const before = result.candidates.map((row) => row.id).sort();
-    await put(t.path("home", ".pool-1", "demo", "SKILL.md"), "# Version 3\n");
+    await put(
+      t.path("home", ".pool-1", "demo", "SKILL.md"),
+      "---\nname: demo\ndescription: Version 3\n---\n# Version 3\n",
+    );
     const merged = await refreshInventory(t.env, { storeRoot, agentId: "fixture" });
     expect(merged.candidates).toHaveLength(2);
     expect(merged.candidates.every((row) => before.includes(row.id))).toBe(true);
@@ -84,7 +90,10 @@ describe("bounded effective resource projection", () => {
   it("does not guess a winner for unknown policies or incomplete sources", async () => {
     await config("unknown");
     for (const rank of [1, 2])
-      await put(t.path("home", `.pool-${rank}`, "demo", "SKILL.md"), `# Version ${rank}\n`);
+      await put(
+        t.path("home", `.pool-${rank}`, "demo", "SKILL.md"),
+        `---\nname: demo\ndescription: Version ${rank}\n---\n# Version ${rank}\n`,
+      );
     const result = await refreshInventory(t.env, { storeRoot, agentId: "fixture" });
     expect(result.effectiveResources?.every((row) => row.state === "ambiguous")).toBe(true);
     await config("ranked");
@@ -95,8 +104,14 @@ describe("bounded effective resource projection", () => {
   });
   it("uses the builtin Claude project context and personal priority without searching parents", async () => {
     const projectRoot = t.path("project");
-    await put(t.path("home", ".claude", "skills", "demo", "SKILL.md"), "# Personal\n");
-    await put(join(projectRoot, ".claude", "skills", "demo", "SKILL.md"), "# Project\n");
+    await put(
+      t.path("home", ".claude", "skills", "demo", "SKILL.md"),
+      "---\nname: demo\ndescription: Personal\n---\n# Personal\n",
+    );
+    await put(
+      join(projectRoot, ".claude", "skills", "demo", "SKILL.md"),
+      "---\nname: demo\ndescription: Project\n---\n# Project\n",
+    );
     const result = await refreshInventory(t.env, {
       storeRoot,
       agentId: "claude-code",

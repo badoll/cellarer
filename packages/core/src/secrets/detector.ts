@@ -282,6 +282,10 @@ export function scanStructuredSecretFindings(value: unknown): StructuredSecretFi
     }
     if (typeof current !== "object" || current === null) return;
     for (const [key, child] of Object.entries(current)) {
+      // Codex native fields contain environment variable names, not secret values. Keep
+      // this structural exception narrower than the generic sensitive-name heuristic.
+      if (/^\$\.mcp_servers\.[^.]+$/.test(path) && isNativeEnvironmentReferenceField(key, child))
+        continue;
       visit(
         child,
         path ? `${path}.${key}` : key,
@@ -783,4 +787,18 @@ function scanUrl(value: string, path: string, findings: StructuredSecretFinding[
       findings.push({ path, rule: "url-secret-query" });
     }
   }
+}
+
+function isNativeEnvironmentReferenceField(key: string, value: unknown): boolean {
+  const name = (item: unknown): boolean =>
+    typeof item === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(item);
+  if (key === "bearer_token_env_var") return name(value);
+  if (key === "env_vars") return Array.isArray(value) && value.every(name);
+  return (
+    key === "env_http_headers" &&
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.values(value).every(name)
+  );
 }

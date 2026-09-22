@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "contractVersion": "2026-09-07.1",
+  "contractVersion": "2026-09-22.1",
   "checkedAt": "2026-09-07",
   "agentVersionPolicy": "Documentation snapshot only; no Agent binary version has been certified.",
   "cells": [
@@ -290,7 +290,7 @@
         "https://cursor.com/docs/skills"
       ],
       "prerequisites": [
-        "Project MDC requires alwaysApply: true for unconditional rules; global User Rules are configured in the UI, not this file."
+        "Project MDC uses alwaysApply/globs/description activation metadata; conditional resources retain separate native targets. Global User Rules are configured in the UI, not this file."
       ],
       "fixture": "rules.mdc",
       "native": "unknown"
@@ -307,7 +307,7 @@
         "https://cursor.com/docs/skills"
       ],
       "prerequisites": [
-        "Project MDC requires alwaysApply: true for unconditional rules; global User Rules are configured in the UI, not this file."
+        "Project MDC uses alwaysApply/globs/description activation metadata; conditional resources retain separate native targets. Global User Rules are configured in the UI, not this file."
       ],
       "fixture": "rules.mdc",
       "native": "unknown"

@@ -55,6 +55,7 @@ function addReferenceAdapter(config: CellarerConfig, id: string, globalTarget: s
       project: `{dir}/.${id}/mcp.json`,
       format: "json",
       supportedSecretReferences: ["environment", "cellarer"],
+      dialect: { expansionPositions: ["env", "args"] },
     },
   };
 }
@@ -605,7 +606,7 @@ describe("engine mcp — secret handling (red line)", () => {
 
     expect(result.actions.find((candidate) => candidate.agent === agent)).toMatchObject({
       op: "skip",
-      reason: expect.stringMatching(/incompatible.*plaintext materialization/i),
+      reason: expect.stringMatching(/incompatible.*plaintext materialization|MCP_ENV_REFERENCE/i),
     });
     expect(JSON.stringify(result)).not.toContain("configured");
   });
@@ -677,7 +678,7 @@ describe("engine mcp — secret handling (red line)", () => {
 
     expect(result.actions.find((candidate) => candidate.agent === "legacy")).toMatchObject({
       op: "skip",
-      reason: expect.stringMatching(/incompatible.*plaintext materialization/i),
+      reason: expect.stringMatching(/incompatible.*plaintext materialization|MCP_ENV_REFERENCE/i),
     });
   });
 

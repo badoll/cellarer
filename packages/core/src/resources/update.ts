@@ -42,6 +42,7 @@ import {
   installSafeRecursiveSnapshot,
   type SafeRecursiveSnapshot,
 } from "../secrets/safe-tree.js";
+import { parseSkillManifest } from "../skills/manifest.js";
 import { sha256 } from "../store/checksum.js";
 import { loadLedger } from "../store/ledger.js";
 import { listMcpArtifacts, listRuleArtifacts, listSkillArtifacts } from "../store/store.js";
@@ -721,13 +722,7 @@ async function validateCandidate(
     const manifest = files.find((file) => file.path === "SKILL.md");
     if (!manifest) throw new TypeError("Skill update is missing SKILL.md");
     const text = decodeUtf8(manifest.dataHex);
-    const name = text.match(/^---\r?\n[\s\S]*?^name:\s*["']?([^"'\r\n]+)["']?\s*$/m)?.[1]?.trim();
-    const description = text
-      .match(/^---\r?\n[\s\S]*?^description:\s*["']?([^"'\r\n]+)["']?\s*$/m)?.[1]
-      ?.trim();
-    if (name !== current.record.name || !description) {
-      throw new TypeError("Skill manifest identity or description is invalid");
-    }
+    parseSkillManifest(text, current.record.name);
   } else {
     if (content.kind !== "file" || files.length !== 1 || files[0]?.path !== "") {
       throw new TypeError("Rule and MCP updates must be one regular file");

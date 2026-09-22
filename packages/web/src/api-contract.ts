@@ -1825,6 +1825,7 @@ const resourceInventoryFindingSchema = objectSchema(
       "UNSUPPORTED_SNAPSHOT",
       "SNAPSHOT_STALE",
       "INVALID_STRUCTURE",
+      "INVALID_MANIFEST",
       "PARSE_FAILED",
       "PROBABLE_SECRET",
       "secret-adoption-required",
@@ -2327,6 +2328,8 @@ const adapterRulesSchema = objectSchema({
   format: { const: "markdown" },
 });
 const adapterMcpDialectSchema = objectSchema({
+  expansionPositions: arraySchema(enumSchema(["command", "args", "env", "url", "headers"])),
+  semanticDialect: enumSchema(["standard", "claude", "gemini", "codex"]),
   commandStyle: enumSchema(["scalar", "array"]),
   envKey: nonEmptyStringSchema,
   urlKey: nonEmptyStringSchema,
@@ -3157,6 +3160,7 @@ const inventoryFindingSchema = objectSchema(
       "UNSUPPORTED_SNAPSHOT",
       "SNAPSHOT_STALE",
       "INVALID_STRUCTURE",
+      "INVALID_MANIFEST",
       "PARSE_FAILED",
       "PROBABLE_SECRET",
       "secret-adoption-required",

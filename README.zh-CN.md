@@ -26,6 +26,8 @@ cellarer 面向在同一台机器上使用多个 AI coding agent 的开发者。
 普通 Rule 与 MCP 文件支持上述三个平台；递归导入本地 Skill 目录目前要求 Darwin 或
 Linux x64/arm64。
 
+资源转换保留受支持的 Skill manifest、Rule 触发方式与 MCP transport；无法等价映射时明确阻断，详见[原生兼容性](docs/README.zh-CN.md#内置兼容性证据)。
+
 ## 安装与运行
 
 Registry release 完成后，全局安装 CLI package。Package 名带 scope，但安装后的

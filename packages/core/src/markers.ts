@@ -28,6 +28,6 @@ export function renderRules(fragments: RuleFragment[]): string {
 export function isGenerated(content: string): boolean {
   return content
     .trimStart()
-    .replace(/^---\nalwaysApply: true\n---\n/, "")
+    .replace(/^---[ \t]*\r?\n[\s\S]*?^---[ \t]*\r?\n/m, "")
     .startsWith(GENERATED_HEADER);
 }

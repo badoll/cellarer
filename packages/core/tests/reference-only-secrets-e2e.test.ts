@@ -230,6 +230,7 @@ describe("reference-only secret canary end to end", () => {
         project: "{dir}/.reference-native/mcp.json",
         format: "json",
         supportedSecretReferences: ["environment", "cellarer"],
+        dialect: { expansionPositions: ["env"] },
       },
     };
     await t.env.fs.writeFile(
@@ -299,6 +300,7 @@ describe("reference-only secret canary end to end", () => {
         project: "{dir}/.reference-native/mcp.json",
         format: "json",
         supportedSecretReferences: ["environment", "cellarer"],
+        dialect: { expansionPositions: ["env"] },
       },
     };
     await t.env.fs.writeFile(
@@ -364,6 +366,7 @@ describe("reference-only secret canary end to end", () => {
         project: "{dir}/.reference-native/mcp.json",
         format: "json",
         supportedSecretReferences: ["environment", "cellarer"],
+        dialect: { expansionPositions: ["env"] },
       },
     };
     await t.env.fs.writeFile(

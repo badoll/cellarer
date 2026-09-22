@@ -34,7 +34,8 @@ const FIXTURES: readonly Fixture[] = [
     capability: "mcp",
     source: "mcp/leaky.json",
     line: 1,
-    content: (value) => JSON.stringify({ command: "npx", args: ["--credential", value] }),
+    content: (value) =>
+      JSON.stringify({ command: "npx", args: ["--credential", ...value.split("\n")] }),
   },
   {
     artifactId: "skills/leaky",

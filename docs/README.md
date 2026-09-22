@@ -605,7 +605,7 @@ authenticated readiness reports Store, authority, lock, and recovery blockers.
 ### Reference-only output
 
 Rendering preserves a reference only when the target adapter declares that its
-exact native output supports that reference kind. `secretMode` selects a
+exact native output supports that reference kind and position. `secretMode` selects a
 provider for presence checks and known-value scanning; it never authorizes
 plaintext rendering.
 
@@ -789,7 +789,25 @@ Current corrected defaults include:
 | Windsurf Cascade | Project Skills: `.windsurf/skills`; project MCP file placement is unsupported. |
 
 These contracts assume default configuration roots and the documented trust/enablement settings.
-MDC wrapping accepts plain rules only; frontmatter requiring conditional activation is unsupported.
+Skills use the same bounded YAML manifest parser during add, Inventory import, updates and bundle
+imports. Names and nonempty descriptions are required; quoted and multiline descriptions and
+non-executable extension metadata are retained with the original bytes. Duplicate keys, tags,
+anchors/aliases, more than 64 KiB of frontmatter, over 32 nesting levels or 4096 YAML nodes are rejected.
+
+Rules without metadata are always on. Cursor MDC `alwaysApply`, `globs` and `description` preserve
+always-on, path-scoped, manual and agent-selected activation. Conditional resources receive separate
+native files, with at most 128 outputs per selection. A target that cannot express the trigger returns
+`requires-choice` or `unsupported`; an explicit local fork can change intent without rewriting the source.
+
+MCP compilation distinguishes stdio, SSE, streamable HTTP and unknown transport. A URL alone does
+not select a portable transport. Native extension provenance is retained in Store data; unknown fields
+can round-trip only to the same native adapter dialect. Cross-dialect extensions require a choice.
+Claude supports typed environment references in command, args, env, URL and headers; Gemini support
+is limited to env. Codex supports exact header references through `env_http_headers`, and same-name
+environment references through `env_vars`; environment aliases and interpolated expressions are rejected.
+Custom dialects must declare `expansionPositions` as well as `supportedSecretReferences`; custom claims
+remain user-defined. The compiler never reads secret providers. Distribution plans bind the active
+semantic version, packaged adapter contract, source evidence and final bytes; stale contracts cannot apply.
 An override withdraws evidence for the affected capability and marks it user-defined.
 
 If a prior owned target uses another placement, planning returns `relocation-required`. Review an

@@ -31,6 +31,8 @@ registry publication remains a separate release action.
 Regular Rule and MCP files work on all three platforms. Recursive local Skill
 directory import currently requires Darwin or Linux on x64/arm64.
 
+Resource conversion preserves supported Skill manifests, Rule triggers and MCP transports. Unsupported mappings are blocked explicitly; see [native compatibility](docs/README.md#built-in-compatibility-evidence).
+
 ## Install and run
 
 After the registry release, install the CLI package globally. Its package name

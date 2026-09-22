@@ -526,7 +526,7 @@ transport；authenticated readiness 报告 Store、authority、lock 与 recovery
 
 ### Reference-only 输出
 
-只有目标 adapter 声明其精确原生输出支持某种 reference kind 时，渲染才保留该引用。
+只有目标 adapter 声明其精确原生输出支持某种 reference kind 和位置时，渲染才保留该引用。
 `secretMode` 选择用于存在性检查和已知值扫描的 provider，从不授权明文渲染。
 
 导入内容、staged trees、生成 bytes、plans、journals、receipts、errors、CLI 输出与 Web
@@ -678,9 +678,22 @@ user-defined 覆盖。发现配置目录不代表原生加载成功。随包的 
 | Codex | 用户 Skills：`~/.agents/skills`。 |
 | Windsurf Cascade | 项目 Skills：`.windsurf/skills`；不支持项目 MCP 文件落点。 |
 
-这些合同以默认配置根目录及文档中的信任/启用设置为前提。MDC 包装仅接受纯文本规则；
-需要条件触发的 frontmatter 会被标为 unsupported。覆盖配置会撤销相关能力的内置证据，
-并标记为 user-defined。
+这些合同以默认配置根目录及文档中的信任/启用设置为前提。覆盖配置会撤销相关能力的内置证据，并标记为 user-defined。
+
+Skills 在 add、Inventory import、update 与 bundle import 中共用有界 YAML manifest parser。
+name 与非空 description 必填；引号、多行描述及不可执行的扩展元数据随原始 bytes 保留。
+重复键、tag、anchor/alias，以及超过 64 KiB frontmatter、32 层嵌套或 4096 个 YAML 节点都会被拒绝。
+
+无元数据的 Rule 始终启用。Cursor MDC 的 `alwaysApply`、`globs`、`description` 保留始终启用、
+路径匹配、手动与 Agent 按描述选择四种触发方式。条件资源分别生成原生文件，每次选择最多 128 个输出。
+目标无法表达触发方式时返回 `requires-choice` 或 `unsupported`；可通过显式 local fork 改变意图，原来源不被重写。
+
+MCP 编译区分 stdio、SSE、streamable HTTP 与 unknown，单凭 URL 不推断可移植 transport。
+Store 保留原生扩展的来源方言；未知字段只能在同一原生 Adapter 方言内 round-trip，跨方言需另作选择。
+Claude 支持 command、args、env、URL、headers 中的 typed 环境引用；Gemini 仅支持 env 位置。
+Codex 将精确 header 引用映射到 `env_http_headers`，同名环境引用映射到 `env_vars`；环境别名和插值表达式被拒绝。
+自定义方言须同时声明 `expansionPositions` 与 `supportedSecretReferences`，这些声明仍属于 user-defined 证据。
+编译器不读取 secret provider。下发计划绑定语义版本、packaged Adapter 合同、来源证据与最终 bytes；旧合同不可 apply。
 
 若旧受管目标使用其他落点，规划返回 `relocation-required`。先审查该目标的显式
 uninstall/revert，再为新落点独立生成计划。不会自动迁移或复制目标。原生文件含明文

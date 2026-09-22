@@ -30,7 +30,7 @@ import { deterministicMutationAuthority } from "./helpers/mutation-authority.js"
 
 const NEXT_COMMIT = "fedcba9876543210fedcba9876543210fedcba98";
 const OLD_SKILL = `---\nname: example-skill\ndescription: old\n---\n\n# Old\n`;
-const NEW_SKILL = `---\nname: example-skill\ndescription: new\n---\n\n# New\n`;
+const NEW_SKILL = `---\nname: example-skill\ndescription: |\n  new\n---\n\n# New\n`;
 let cleanupCalls = 0;
 
 describe("resource update check, private staging, and Store-only apply", () => {

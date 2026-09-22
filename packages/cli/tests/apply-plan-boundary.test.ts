@@ -330,6 +330,7 @@ describe("apply external plan boundary", () => {
         project: "{dir}/.reference-native/mcp.json",
         format: "json",
         supportedSecretReferences: ["cellarer"],
+        dialect: { expansionPositions: ["env"] },
       },
       capabilities: { mcp: ["project"] },
     };
@@ -400,6 +401,7 @@ describe("apply external plan boundary", () => {
           project: "{dir}/.environment-native/mcp.json",
           format: "json",
           supportedSecretReferences: ["environment"],
+          dialect: { expansionPositions: ["env"] },
         },
         capabilities: { mcp: ["project"] },
       };

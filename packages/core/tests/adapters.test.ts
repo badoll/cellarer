@@ -103,7 +103,7 @@ describe("adapters/config defaults", () => {
       expect(adapters["agents-md"]!.capabilities.rules).toEqual(["global", "project"]);
     });
 
-    it("declares environment support only for built-ins that consume the exact current token", () => {
+    it("declares environment support only for built-ins with verified native mappings", () => {
       expect(
         Object.fromEntries(
           ["claude-code", "gemini-cli", "codex", "cursor", "opencode", "windsurf"].map((id) => [
@@ -114,7 +114,7 @@ describe("adapters/config defaults", () => {
       ).toEqual({
         "claude-code": ["environment"],
         "gemini-cli": ["environment"],
-        codex: [],
+        codex: ["environment"],
         cursor: [],
         opencode: [],
         windsurf: [],

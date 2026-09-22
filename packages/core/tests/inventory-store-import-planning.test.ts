@@ -29,6 +29,28 @@ describe("Inventory Store import planning", () => {
 
   afterEach(() => t.cleanup());
 
+  it("keeps invalid manifests visible and blocks the Inventory import path", async () => {
+    const root = t.path("home", ".agents", "skills", "invalid");
+    await t.env.fs.mkdir(root, { recursive: true });
+    await t.env.fs.writeFile(
+      join(root, "SKILL.md"),
+      "---\nname: invalid\nname: duplicate\ndescription: Invalid\n---\nBody",
+    );
+    const inventory = await refreshInventory(t.env, { storeRoot, agentId: "agents-md" });
+    const candidate = inventory.candidates.find((item) => item.kind === "skills");
+    expect(candidate?.findings).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: "INVALID_MANIFEST" })]),
+    );
+    expect(candidate?.state).toBe("needs-attention");
+    await expect(
+      planInventoryStoreImport(t.env, {
+        storeRoot,
+        candidateIds: [candidate?.id ?? "missing"],
+        refresh: { agentId: "agents-md" },
+      }),
+    ).rejects.toBeInstanceOf(InventoryStoreImportPlanningError);
+  });
+
   it("seals one exact current candidate against the coherent Store revision", async () => {
     await publishStoreRevision(t.env, storeRoot, 7);
     const reviewed = await refreshInventory(t.env, { storeRoot, agentId: "agents-md" });

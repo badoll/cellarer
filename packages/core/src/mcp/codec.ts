@@ -22,6 +22,7 @@ export interface McpDecodeResult {
 
 export interface McpCodec {
   format: "json" | "toml";
+  dialect?: McpDialect;
   // 解析既有文件内容(null = 不存在)为 canonical + 文档余量。
   decode(content: string | null, preferredKey: string): McpDecodeResult;
   // 把合并后的 servers 段写回文档,渲染为文件文本。
@@ -55,6 +56,7 @@ export function applyMerge(
 function makeJsonCodec(dialect?: McpDialect): McpCodec {
   return {
     format: "json",
+    dialect,
     decode(content, preferredKey) {
       if (content === null || content.trim().length === 0) {
         return { servers: {}, doc: {}, serversKey: preferredKey };
@@ -68,7 +70,7 @@ function makeJsonCodec(dialect?: McpDialect): McpCodec {
     encode(decoded, merged) {
       // 保留 servers 段之外的文档字段;只替换 servers 段。
       const out: Record<string, unknown> = { ...decoded.doc };
-      out[decoded.serversKey] = serverSetToRaw(merged, dialect);
+      out[decoded.serversKey] = serverSetToRaw(merged, dialect ?? {});
       return `${JSON.stringify(out, null, 2)}\n`;
     },
   };
@@ -80,6 +82,7 @@ function makeJsonCodec(dialect?: McpDialect): McpCodec {
 function makeTomlCodec(dialect?: McpDialect): McpCodec {
   return {
     format: "toml",
+    dialect,
     decode(content, preferredKey) {
       if (content === null || content.trim().length === 0) {
         return { servers: {}, doc: {}, serversKey: preferredKey };
@@ -92,7 +95,7 @@ function makeTomlCodec(dialect?: McpDialect): McpCodec {
     },
     encode(decoded, merged) {
       const out: Record<string, unknown> = { ...decoded.doc };
-      out[decoded.serversKey] = serverSetToRaw(merged, dialect);
+      out[decoded.serversKey] = serverSetToRaw(merged, dialect ?? {});
       // smol-toml 对空对象不产出表头;servers 段为空时清掉键,避免渲染异常。
       if (Object.keys(merged).length === 0) delete out[decoded.serversKey];
       const text = stringifyToml(out);

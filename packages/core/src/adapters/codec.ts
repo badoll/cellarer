@@ -1,4 +1,6 @@
 import { renderRules } from "../markers.js";
+import { ResourceSemanticsError } from "../resources/semantics.js";
+import { compileRules } from "../rules/compiler.js";
 import type { RuleFragment, RulesCodec } from "./types.js";
 
 /** @deprecated Rules use the single built-in markdown renderer during execution. */
@@ -6,11 +8,11 @@ export const markdownRulesCodec: RulesCodec = {
   render: (fragments) => renderRules(fragments),
 };
 
-/** MDC needs an explicit activation envelope; conditional source rules need a semantic compiler. */
+/** Compatibility helper for callers that explicitly require one native output. */
 export function renderRulesForTarget(target: string, fragments: RuleFragment[]): string {
-  if (!target.endsWith(".mdc")) return renderRules(fragments);
-  if (fragments.some((fragment) => /^---\s*\r?\n/.test(fragment.content.trimStart()))) {
-    throw new Error("unsupported: rule frontmatter requires explicit semantic conversion");
-  }
-  return `---\nalwaysApply: true\n---\n${renderRules(fragments)}`;
+  const result = compileRules(target, fragments);
+  if (result.status !== "exact") throw new ResourceSemanticsError(result.status, result.reason);
+  if (result.value.length !== 1 || !result.value[0])
+    throw new ResourceSemanticsError("unsupported", "RULE_TARGET_SET_REQUIRED");
+  return result.value[0].content;
 }

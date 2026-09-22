@@ -41,6 +41,7 @@ import {
   type SafeRecursiveSnapshot,
   UnsafeRecursiveSourceError,
 } from "../secrets/safe-tree.js";
+import { parseSkillManifest } from "../skills/manifest.js";
 import { sha256 } from "../store/checksum.js";
 import { type CellarerConfig, CONFIG_FILENAME, loadConfig } from "../store/config.js";
 import {
@@ -758,67 +759,21 @@ function parseSkillFrontmatter(content: string): {
   warnings: string[];
   error?: string;
 } {
-  const warnings: string[] = [];
-  const normalized = content.replace(/^\uFEFF/, "");
-  const lines = normalized.split(/\r?\n/);
-  if (lines[0]?.trim() !== "---") {
-    return { frontmatter: null, warnings, error: "SKILL.md frontmatter is missing" };
-  }
-  const end = lines.findIndex((line, i) => i > 0 && ["---", "..."].includes(line.trim()));
-  if (end === -1) {
-    return { frontmatter: null, warnings, error: "SKILL.md frontmatter is not closed" };
-  }
-
-  const data: { name?: string; description?: string; metadata?: { internal?: boolean } } = {};
-  let section: string | null = null;
-  for (const raw of lines.slice(1, end)) {
-    if (raw.trim().length === 0 || raw.trimStart().startsWith("#")) continue;
-    const indent = raw.match(/^ */)?.[0].length ?? 0;
-    const trimmed = raw.trim();
-    const colon = trimmed.indexOf(":");
-    if (colon === -1) {
-      warnings.push(`ignored unsupported frontmatter line "${trimmed}"`);
-      continue;
-    }
-    const key = trimmed.slice(0, colon).trim();
-    const value = trimmed.slice(colon + 1).trim();
-    if (indent === 0) {
-      section = key;
-      if (key === "name") data.name = scalar(value);
-      else if (key === "description") data.description = scalar(value);
-      else if (key === "metadata") data.metadata ??= {};
-    } else if (section === "metadata" && key === "internal") {
-      data.metadata ??= {};
-      data.metadata.internal = ["true", "1", "yes"].includes(scalar(value).toLowerCase());
-    }
-  }
-
-  if (!data.name || !data.description) {
+  try {
+    const manifest = parseSkillManifest(content);
     return {
-      frontmatter: null,
-      warnings,
-      error: "SKILL.md frontmatter must include name and description",
+      frontmatter: {
+        name: manifest.name,
+        description: manifest.description,
+        ...(manifest.metadata
+          ? { metadata: { internal: manifest.metadata.internal === true } }
+          : {}),
+      },
+      warnings: [],
     };
+  } catch {
+    return { frontmatter: null, warnings: [], error: "unsupported: INVALID_MANIFEST" };
   }
-  return {
-    frontmatter: {
-      name: data.name,
-      description: data.description,
-      ...(data.metadata ? { metadata: data.metadata } : {}),
-    },
-    warnings,
-  };
-}
-
-function scalar(value: string): string {
-  const trimmed = value.trim();
-  if (
-    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-    (trimmed.startsWith("'") && trimmed.endsWith("'"))
-  ) {
-    return trimmed.slice(1, -1);
-  }
-  return trimmed;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

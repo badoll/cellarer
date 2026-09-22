@@ -107,6 +107,8 @@ const pathTemplate = z
 
 const dialectSchema = z
   .object({
+    expansionPositions: z.array(z.enum(["command", "args", "env", "url", "headers"])).optional(),
+    semanticDialect: z.enum(["standard", "claude", "gemini", "codex"]).optional(),
     commandStyle: z.enum(["scalar", "array"]).optional(),
     envKey: nonEmptyString.optional(),
     urlKey: nonEmptyString.optional(),
