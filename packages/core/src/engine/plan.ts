@@ -105,6 +105,7 @@ async function planImplementation(
     onCoverage?: (outcome: VerificationCoverageOutcome) => void;
     capabilityRootCapture?: CapabilityRootCapture;
     syncProfile?: SyncProfileTargetEvidence;
+    reconcile?: boolean;
   } = {},
 ) {
   const warnings: string[] = [];
@@ -324,7 +325,8 @@ async function planImplementation(
       const remaining = ledger.owners.filter(
         (owner) =>
           owner.target === action.target &&
-          (!(action.consumerAgents ?? [action.agent]).includes(owner.agent) ||
+          ((!execution.reconcile &&
+            !(action.consumerAgents ?? [action.agent]).includes(owner.agent)) ||
             owner.syncProfile?.profileId !== execution.syncProfile?.profileId),
       );
       if (
@@ -335,7 +337,10 @@ async function planImplementation(
             (owner.receipt.method === "junction" ? "symlink" : owner.receipt.method) !==
               action.desiredEvidence?.method ||
             (action.desiredEvidence?.method === "write"
-              ? owner.receipt.fingerprint !== action.desiredEvidence.contentFingerprint
+              ? owner.receipt.fingerprint !==
+                (execution.reconcile && action.capability === "mcp"
+                  ? sha256(action.preview?.after ?? "")
+                  : action.desiredEvidence.contentFingerprint)
               : owner.receipt.sourceFingerprint !== action.desiredEvidence?.sourceFingerprint),
         )
       ) {
@@ -416,6 +421,7 @@ export async function plan(
     onCoverage?: (outcome: VerificationCoverageOutcome) => void;
     capabilityRootCapture?: CapabilityRootCapture;
     syncProfile?: SyncProfileTargetEvidence;
+    reconcile?: boolean;
   } = {},
 ): Promise<DistributePlan> {
   return planImplementation(env, opts, execution);

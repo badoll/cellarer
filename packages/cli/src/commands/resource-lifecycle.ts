@@ -1,4 +1,5 @@
 import {
+  applyDeploymentBaselinePlan,
   applyDeploymentUpgradePlan,
   applyResourceBundleImportPlan,
   applyResourceExportPlan,
@@ -13,6 +14,7 @@ import {
   listSyncProfiles,
   type MutationPlan,
   planAvailableResourceUpdate,
+  planDeploymentBaseline,
   planDeploymentUpgrade,
   planResourceBundleImport,
   planResourceExport,
@@ -711,6 +713,62 @@ export function createDeploymentUpgradeCommandContract(
             invocation,
           );
         return planDeploymentUpgrade(env, { storeRoot });
+      }),
+    presentText: (outcome) => presentOutcome(outcome, presentPlan),
+    mapError: (error) =>
+      error instanceof Error && !(error instanceof CliInputError)
+        ? { code: "DOMAIN_VALIDATION_FAILED", message: error.message }
+        : undefined,
+  });
+}
+
+export function createDeploymentBaselineCommandContract(
+  definition: CommandContractMetadata<"sync.baseline">,
+) {
+  return defineCommandContract<
+    "sync.baseline",
+    PlanOpts & { deploymentId: string; selectors: string },
+    unknown
+  >(definition, {
+    createCommand: () =>
+      new Command("baseline")
+        .requiredOption("--deployment-id <id>", "已有 Deployment 的精确 ID")
+        .requiredOption("--selectors <names>", "显式审查的 MCP server 名称，逗号分隔")
+        .description("审查未知 MCP 子项归属，仅更新 Store")
+        .option("--dry-run", "预览 sealed Store-only baseline plan")
+        .option("--plan <json>", "应用已审查的 baseline plan JSON"),
+    normalize: ({ command }) =>
+      command.opts<PlanOpts & { deploymentId: string; selectors: string }>(),
+    execute: (input, { invocation }) =>
+      executeDomain<unknown>(async () => {
+        const { env, storeRoot } = await resolveContext({}, "required");
+        if (input.plan !== undefined) {
+          if (input.dryRun)
+            throw new CliInputError(
+              "INVALID_INPUT",
+              "--plan and --dry-run cannot be combined",
+              { fields: ["plan", "dryRun"] },
+              invocation,
+            );
+          const result = await applyDeploymentBaselinePlan(env, parsePlan(input.plan, invocation), {
+            storeRoot,
+            deploymentId: input.deploymentId,
+            selectors: input.selectors.split(",").map((value) => value.trim()),
+          });
+          return operationOutcome(result, result.operation);
+        }
+        if (!input.dryRun)
+          throw new CliInputError(
+            "INPUT_REQUIRED",
+            "use --dry-run to preview or --plan to apply an approved baseline",
+            { fields: ["plan"] },
+            invocation,
+          );
+        return planDeploymentBaseline(env, {
+          storeRoot,
+          deploymentId: input.deploymentId,
+          selectors: input.selectors.split(",").map((value) => value.trim()),
+        });
       }),
     presentText: (outcome) => presentOutcome(outcome, presentPlan),
     mapError: (error) =>

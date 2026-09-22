@@ -207,6 +207,8 @@ describe("drift-aware revert", () => {
       projectRoot: _removed,
       deploymentId: _id,
       deploymentRoot: _root,
+      itemAttribution: _attribution,
+      contributions: _contributions,
       ...preReleaseOwner
     } = owner;
     await t.env.fs.writeFile(

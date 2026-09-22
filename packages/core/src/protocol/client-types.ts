@@ -161,6 +161,7 @@ export type StoreRevision = number;
 export type MutationOperation =
   | "initialize"
   | "apply"
+  | "sync-reconcile"
   | "revert"
   | "settings"
   | "secret-metadata"

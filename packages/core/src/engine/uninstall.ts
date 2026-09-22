@@ -1,5 +1,7 @@
 import { isAbsolute, join, normalize } from "node:path";
+import { loadRegistry } from "../adapters/registry.js";
 import type { Env } from "../env.js";
+import { atomicWrite } from "../fs/atomicWrite.js";
 import type {
   SyncProfileTargetEvidence,
   TargetAcknowledgement,
@@ -25,6 +27,7 @@ import type {
 import { resolveAuthorizedMutationOperationAdapter } from "../protocol/operation-adapter.js";
 import { executePreparedMutationOperation } from "../protocol/operation-execution.js";
 import { observeAtStableStoreRevision } from "../protocol/store-revision.js";
+import { scanStructuredSecretFindings, scanTextForSecrets } from "../secrets/detector.js";
 import { sha256 } from "../store/checksum.js";
 import {
   duplicateTargetOwnerKeys,
@@ -51,7 +54,8 @@ export interface SyncTargetUninstallOptions {
 
 export interface SyncTargetUninstallTarget {
   readonly consumerSet?: readonly string[];
-  readonly proposedAction?: "remove-target" | "detach-consumer";
+  readonly proposedAction?: "remove-target" | "detach-consumer" | "prune-mcp";
+  readonly after?: string;
   readonly key: string;
   readonly target: string;
   readonly agent: string;
@@ -208,7 +212,9 @@ export async function applySyncTargetUninstallPlanWithinAuthorityScope(
           if (
             !action ||
             action.target !== owner.target ||
-            (action.kind !== "remove-target" && action.kind !== "detach-consumer")
+            (action.kind !== "remove-target" &&
+              action.kind !== "detach-consumer" &&
+              action.kind !== "prune-mcp")
           ) {
             throw new TypeError("sync uninstall action is not bound to its owner");
           }
@@ -222,11 +228,16 @@ export async function applySyncTargetUninstallPlanWithinAuthorityScope(
           try {
             if (action.kind === "remove-target")
               await env.fs.rm(owner.target, { recursive: true, force: true });
+            if (action.kind === "prune-mcp")
+              await atomicWrite(env, owner.target, String(action.payload.after));
             const after = await targetState(env, owner.target);
             if (
               action.kind === "remove-target"
                 ? after.state !== "absent"
-                : !sameTargetReceipt(authorized.before, after)
+                : action.kind === "prune-mcp"
+                  ? after.state !== "present" ||
+                    after.fingerprint !== sha256(String(action.payload.after))
+                  : !sameTargetReceipt(authorized.before, after)
             ) {
               throw Object.assign(new Error("sync uninstall postcondition failed"), {
                 code: "ACTION_POSTCONDITION_FAILED",
@@ -467,9 +478,50 @@ async function buildUninstall(
           message: blockReason,
         });
       }
+      let after: string | undefined;
+      if (!detach && !blocked && owner.capability === "mcp") {
+        try {
+          if (owner.itemAttribution !== "known" || driftOverridden)
+            throw new TypeError(
+              "attribution-required: MCP uninstall requires intact attributed contributions",
+            );
+          const adapter = (await loadRegistry(env, opts.storeRoot)).get(owner.agent);
+          if (!adapter?.mcp) throw new TypeError("MCP adapter unavailable");
+          const decoded = adapter.mcp.codec.decode(
+            await env.fs.readFile(owner.target),
+            adapter.mcp.serversKey,
+          );
+          for (const item of owner.contributions ?? []) {
+            if (
+              !Object.hasOwn(decoded.servers, item.selector) ||
+              sha256(canonicalJson(decoded.servers[item.selector])) !== item.fingerprint
+            )
+              throw new TypeError("MCP contribution drift");
+            delete decoded.servers[item.selector];
+          }
+          after = adapter.mcp.codec.encode(decoded, decoded.servers);
+          if (scanTextForSecrets(after).length || scanStructuredSecretFindings(decoded).length)
+            throw new TypeError("MCP prune output contains secret-like content");
+        } catch (error) {
+          blocked = true;
+          after = undefined;
+          blockReason = error instanceof Error ? error.message : "MCP attribution invalid";
+          conflicts.push({
+            code: "UNINSTALL_TARGET_INVALID_OWNER",
+            key,
+            target: owner.target,
+            message: blockReason,
+          });
+        }
+      }
       targets.push({
+        ...(after !== undefined ? { after } : {}),
         consumerSet: physicalConsumers.map(entryKey).sort(),
-        proposedAction: detach ? "detach-consumer" : "remove-target",
+        proposedAction: detach
+          ? "detach-consumer"
+          : after !== undefined
+            ? "prune-mcp"
+            : "remove-target",
         key,
         target: owner.target,
         agent: owner.agent,
@@ -503,6 +555,10 @@ async function buildUninstall(
       "remove-target",
     target: owner.target,
     payload: jsonObject({
+      ...(observed.value.targets.find((target) => target.key === entryKey(owner))?.after !==
+      undefined
+        ? { after: observed.value.targets.find((target) => target.key === entryKey(owner))?.after }
+        : {}),
       ownerKey: entryKey(owner),
       artifactIds: [...owner.artifactIds].sort((left, right) => left.localeCompare(right)),
       receiptFingerprint: owner.receipt.fingerprint,
@@ -511,7 +567,17 @@ async function buildUninstall(
     ...(observed.value.targets.find((target) => target.key === entryKey(owner))?.proposedAction ===
     "detach-consumer"
       ? {}
-      : { postcondition: { state: "absent" as const } }),
+      : observed.value.targets.find((target) => target.key === entryKey(owner))?.after !== undefined
+        ? {
+            postcondition: {
+              state: "present" as const,
+              fingerprint: sha256(
+                observed.value.targets.find((target) => target.key === entryKey(owner))?.after ??
+                  "",
+              ),
+            },
+          }
+        : { postcondition: { state: "absent" as const } }),
   }));
   const remainingLedger = makeLedger([...observed.value.remainingOwners], 3);
   const projectDirs = [

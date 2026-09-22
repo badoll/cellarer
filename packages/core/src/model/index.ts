@@ -50,7 +50,16 @@ export interface SyncProfileTargetEvidence {
 }
 
 // state.json v2 以物理目标而非输入制品为 owner 身份。artifactIds 只记录该目标的来源集合。
+export interface ManagedContribution {
+  selector: string;
+  fingerprint: string;
+  resourceIds: string[];
+  provenance: "resource" | "local-baseline";
+}
+
 export interface TargetOwner {
+  itemAttribution?: "unknown" | "known";
+  contributions?: ManagedContribution[];
   // Present only on a consumer projection of authoritative v3 deployment state.
   deploymentId?: string;
   deploymentRoot?: string;
@@ -93,7 +102,8 @@ export interface Deployment {
   receipt: AppliedReceipt;
   artifactIds: string[];
   secretRefs?: string[];
-  itemAttribution: "unknown";
+  itemAttribution: "unknown" | "known";
+  contributions?: ManagedContribution[];
   consumers: DeploymentConsumer[];
 }
 

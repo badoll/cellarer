@@ -616,6 +616,9 @@ const mutationOperation = jsonSchema.enumeration([
   "settings",
   "secret-metadata",
   "store-import",
+  "resource-lifecycle",
+  "sync-uninstall",
+  "sync-reconcile",
 ]);
 const operationSummary = dataObject(
   [
@@ -1423,6 +1426,15 @@ const controlPlaneOperationReceipt = dataObject(
 const ledgerEntry = dataObject(
   ["agent", "scope", "capability", "target", "artifactIds", "receipt"],
   {
+    itemAttribution: jsonSchema.enumeration(["unknown", "known"]),
+    contributions: jsonSchema.array(
+      dataObject(["selector", "fingerprint", "resourceIds", "provenance"], {
+        selector: jsonSchema.string({ minLength: 1 }),
+        fingerprint: jsonSchema.string({ minLength: 1 }),
+        resourceIds: stringArray,
+        provenance: jsonSchema.enumeration(["resource", "local-baseline"]),
+      }),
+    ),
     deploymentId: jsonSchema.string({ minLength: 1 }),
     deploymentRoot: jsonSchema.string({ minLength: 1 }),
     syncProfile: syncProfileTargetEvidence,

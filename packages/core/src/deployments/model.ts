@@ -44,6 +44,12 @@ const consumerSchema = z
     (value) => (value.kind === "profile") === (value.profile !== undefined),
     "profile evidence must match consumer kind",
   );
+export const contributionSchema = z.strictObject({
+  selector: z.string().min(1),
+  fingerprint: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  resourceIds: z.array(artifactId),
+  provenance: z.enum(["resource", "local-baseline"]),
+});
 const deploymentSchema = z.strictObject({
   id: z.string(),
   key: z.string(),
@@ -68,7 +74,8 @@ const deploymentSchema = z.strictObject({
         .refine((name) => name.trim() === name && !/[{}\r\n]/.test(name)),
     )
     .optional(),
-  itemAttribution: z.literal("unknown"),
+  itemAttribution: z.enum(["unknown", "known"]),
+  contributions: z.array(contributionSchema).optional(),
   consumers: z.array(consumerSchema).min(1),
 });
 
@@ -124,6 +131,13 @@ export function makeDeployment(input: Omit<Deployment, "id"> & { id?: string }):
     throw new TypeError("deployment identity does not match physical target");
   if (record.target === record.root || !isWithinRoot(record.root, record.target))
     throw new TypeError("deployment target outside root");
+  if (record.itemAttribution === "known" && !record.contributions)
+    throw new TypeError("known attribution requires contributions");
+  if (
+    new Set(record.contributions?.map((item) => item.selector)).size !==
+    (record.contributions?.length ?? 0)
+  )
+    throw new TypeError("duplicate contribution selector");
   const keys = new Set<string>();
   for (const consumer of record.consumers) {
     if (consumer.root !== record.root)
@@ -171,6 +185,9 @@ export function projectDeployment(
       ...(consumer.scope === "project" ? { projectRoot: consumer.root } : {}),
       artifactIds: [...record.artifactIds],
       receipt: { ...record.receipt },
+      ...(record.contributions
+        ? { itemAttribution: record.itemAttribution, contributions: record.contributions }
+        : {}),
       ...(consumer.profile ? { syncProfile: consumer.profile } : {}),
       ...(record.secretRefs ? { secretRefs: [...record.secretRefs] } : {}),
     }));

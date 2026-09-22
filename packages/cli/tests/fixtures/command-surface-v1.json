@@ -156,7 +156,8 @@
     "inventory.import.apply",
     "inventory.adopt.plan",
     "inventory.adopt.apply",
-    "sync.upgrade-state"
+    "sync.upgrade-state",
+    "sync.baseline"
   ],
   "commands": [
     {
@@ -5058,6 +5059,104 @@
             "option": "plan",
             "positional": null,
             "encoded": true
+          }
+        ]
+      }
+    },
+    {
+      "path": "sync.baseline",
+      "aliases": [],
+      "description": "审查未知 MCP 子项归属，仅更新 Store",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "--deployment-id <id>",
+          "attributeName": "deploymentId",
+          "description": "已有 Deployment 的精确 ID",
+          "short": null,
+          "long": "--deployment-id",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": true,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--selectors <names>",
+          "attributeName": "selectors",
+          "description": "显式审查的 MCP server 名称，逗号分隔",
+          "short": null,
+          "long": "--selectors",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": true,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "预览 sealed Store-only baseline plan",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--plan <json>",
+          "attributeName": "plan",
+          "description": "应用已审查的 baseline plan JSON",
+          "short": null,
+          "long": "--plan",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:sync.baseline:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:sync.baseline:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "deploymentId",
+            "option": "deploymentId",
+            "positional": null,
+            "encoded": false
+          },
+          {
+            "field": "selectors",
+            "option": "selectors",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "plan",
+            "option": "plan",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
           }
         ]
       }

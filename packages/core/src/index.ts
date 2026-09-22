@@ -119,6 +119,11 @@ export {
   dashboardSummary,
   statusIdentityKey,
 } from "./dashboard.js";
+export {
+  applyDeploymentBaselinePlan,
+  type DeploymentBaselineOptions,
+  planDeploymentBaseline,
+} from "./deployments/baseline.js";
 export { applyDeploymentUpgradePlan, planDeploymentUpgrade } from "./deployments/upgrade.js";
 export {
   type AgentDoctorReport,
@@ -277,6 +282,7 @@ export type {
   Ledger,
   LedgerEntry,
   LinkMethod,
+  ManagedContribution,
   PlanAction,
   Scope,
   SecretGuardFinding,

@@ -51,6 +51,7 @@ const currentMutationAuthorityScopes = new WeakMap<object, CurrentMutationAuthor
 export const MUTATION_OPERATIONS = [
   "initialize",
   "apply",
+  "sync-reconcile",
   "revert",
   "settings",
   "secret-metadata",
@@ -67,6 +68,7 @@ export const MUTATION_ACTION_KINDS = [
   "copy",
   "detach-consumer",
   "remove-target",
+  "prune-mcp",
   "restore-snapshot",
   "sync-gitignore",
   "publish-file",

@@ -306,6 +306,37 @@ Project profile 每次调用都需要当前绝对 workspace root。Apply 与 uni
 所有权、事务、引用和恢复规则。多个 Profile 或 Agent 可以消费相同的 Deployment；
 uninstall 解绑选定 Profile 的消费者，并保留其他消费者仍需使用的目标。
 
+### 协调已部署的 Profile
+
+`profile update` 只修改 Store 中的期望 revision，现有目标与已应用 revision 保持不变；
+在审查并应用新计划之前，`sync verify` 会报告 desired/applied divergence，表示待同步。
+只要 Deployment consumer 仍引用 Profile，删除就保持阻断。每次调用仅作用于当前 scope
+和显式指定的 workspace root。
+
+`sync plan` 现在生成 `sync-reconcile` operation。审查
+`data.mutationPlan.normalizedInputs.reconciliation` 中的 keep/add/update/remove/detach、
+当前选择、保留的受管贡献、未受管条目及阻断原因，再使用相同 workspace root 和
+`sync apply <profile> --plan '<exact-plan-json>'` 原样提交 `data.mutationPlan`。
+旧的 additive Profile 计划需重新生成。普通 `apply` 继续采用 additive 语义，保留的 MCP
+条目不会丢失受管归属。协调只移除有明确证据的受管条目，保留用户原生字段；会破坏其他
+consumer 期望的修改将被阻断。Store 资源更新不会自动下发。MCP uninstall 仅清理有归属
+的条目；有 snapshot 的目标仍需审查后的 revert，未知归属或 drift 会阻断删除。
+
+旧 MCP Deployment 缺少子项归属时，先检查其精确 ID 和原生条目，再单独审查仅修改 Store
+的本地 baseline：
+
+```bash
+cellarer --output json sync baseline --deployment-id '<deployment-id>' --selectors a,b --dry-run
+cellarer --output json sync baseline --deployment-id '<deployment-id>' --selectors a,b --plan '<exact-data.plan-json>'
+```
+
+Baseline 仅确认显式审查的当前 selector 和 fingerprint，不伪造历史资源来源，也不改目标。
+条目缺失或字节变化会使计划失效。HTTP 提供对应的
+`POST /api/v1/deployments/baseline/plan` 与 `/apply`。
+协调的目标效果与 Deployment 发布属于同一个 journal。中断可能留下部分效果；当前
+apply 系列的 durable journal 不保留可自动回放的执行授权，因此恢复会保留 manual recovery
+证据，不会自动重放、finalize 或 compensate。
+
 ### 升级所有权状态
 
 新 Store 写入 v3 Deployment 状态。读取现有 v2 ledger 不会自动升级；目标 mutation 前

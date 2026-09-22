@@ -26,6 +26,7 @@ const COMMANDS = [
   "sync.verify",
   "sync.uninstall",
   "sync.upgrade-state",
+  "sync.baseline",
 ] as const;
 
 const desired = JSON.stringify({
@@ -70,6 +71,62 @@ describe("resource lifecycle and sync-profile commands", () => {
     process.exitCode = previousExitCode;
     await fs.rm(root, { recursive: true, force: true });
   });
+
+  it("reviews and applies a Store-only MCP attribution baseline", async () => {
+    await fs.writeFile(
+      join(storeRoot, "store", "mcp", "a.json"),
+      JSON.stringify({ command: "fixture-a" }),
+    );
+    const definition = {
+      agentIds: ["claude-code"],
+      scope: "project",
+      resourceIds: ["mcp/a"],
+      collectionIds: [],
+      capabilities: ["mcp"],
+      method: "copy",
+      mergePolicy: "merge",
+    };
+    expect(
+      await invoke(["profile", "create", "mcp", "--desired", JSON.stringify(definition)], "json"),
+    ).toMatchObject({ status: "success" });
+    const planned = await invoke(
+      ["sync", "plan", "mcp", "--workspace-root", join(root, "project")],
+      "json",
+    );
+    expect(
+      await invoke(
+        [
+          "sync",
+          "apply",
+          "mcp",
+          "--workspace-root",
+          join(root, "project"),
+          "--plan",
+          JSON.stringify((planned.data as any).mutationPlan),
+        ],
+        "json",
+      ),
+    ).toMatchObject({ status: "success" });
+    const statePath = join(storeRoot, "state.json");
+    const state = JSON.parse(await fs.readFile(statePath, "utf8"));
+    const deployment = state.deployments[0];
+    deployment.itemAttribution = "unknown";
+    delete deployment.contributions;
+    await fs.writeFile(statePath, JSON.stringify(state));
+    const before = await fs.readFile(deployment.target, "utf8");
+    const args = ["sync", "baseline", "--deployment-id", deployment.id, "--selectors", "a"];
+    const preview = await invoke([...args, "--dry-run"], "json");
+    expect(preview.status).toBe("success");
+    const applied = await invoke(
+      [...args, "--plan", JSON.stringify((preview.data as any).plan)],
+      "json",
+    );
+    expect(applied).toMatchObject({ status: "success", data: { operation: { ok: true } } });
+    expect(await fs.readFile(deployment.target, "utf8")).toBe(before);
+    expect(
+      JSON.parse(await fs.readFile(statePath, "utf8")).deployments[0].contributions[0],
+    ).toMatchObject({ selector: "a", provenance: "local-baseline", resourceIds: [] });
+  }, 20_000);
 
   it("previews and applies an explicit sealed deployment state upgrade", async () => {
     const statePath = join(storeRoot, "state.json");

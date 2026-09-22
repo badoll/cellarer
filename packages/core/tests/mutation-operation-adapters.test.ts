@@ -85,6 +85,7 @@ describe("mutation operation adapters", () => {
     expect(mutationOperationAdapters.map(({ operation }) => operation)).toEqual([
       "initialize",
       "apply",
+      "sync-reconcile",
       "revert",
       "settings",
       "secret-metadata",

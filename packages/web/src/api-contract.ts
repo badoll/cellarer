@@ -609,6 +609,20 @@ const CLIENT_API_ROUTE_BASES = [
     authentication: "mutation",
     summary: "Apply an exact sync-profile uninstall plan",
   },
+  {
+    operationId: "planDeploymentBaseline",
+    method: "post",
+    path: "/api/v1/deployments/baseline/plan",
+    authentication: "mutation",
+    summary: "Review exact local MCP attribution without target writes",
+  },
+  {
+    operationId: "applyDeploymentBaseline",
+    method: "post",
+    path: "/api/v1/deployments/baseline/apply",
+    authentication: "mutation",
+    summary: "Apply reviewed Store-only MCP attribution",
+  },
 ] as const satisfies readonly ClientApiRouteBaseDefinition[];
 
 const JSON_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema";
@@ -1083,6 +1097,20 @@ function querySchemaFor(operationId: string): ClientJsonSchema {
 
 function bodySchemaFor(operationId: string): ClientJsonSchema {
   switch (operationId) {
+    case "planDeploymentBaseline":
+      return objectSchema({ deploymentId: nonEmptyStringSchema, selectors: stringArraySchema }, [
+        "deploymentId",
+        "selectors",
+      ]);
+    case "applyDeploymentBaseline":
+      return objectSchema(
+        {
+          deploymentId: nonEmptyStringSchema,
+          selectors: stringArraySchema,
+          mutationPlan: mutationPlanSchema,
+        },
+        ["deploymentId", "selectors", "mutationPlan"],
+      );
     case "planAgentMutation":
       return {
         oneOf: [
@@ -1583,6 +1611,7 @@ const operationReceiptDefinitionSchema = objectSchema(
       "store-import",
       "resource-lifecycle",
       "sync-uninstall",
+      "sync-reconcile",
     ]),
     baseRevision: integerSchema(),
     resultingRevision: integerSchema(),
@@ -2098,6 +2127,7 @@ const operationSummaryDefinitionSchema = objectSchema(
       "store-import",
       "resource-lifecycle",
       "sync-uninstall",
+      "sync-reconcile",
     ]),
     baseRevision: integerSchema(),
     resultingRevision: integerSchema(),
@@ -2137,6 +2167,18 @@ const syncProfileTargetEvidenceSchema = objectSchema(
 );
 const ledgerEntrySchema = objectSchema(
   {
+    itemAttribution: enumSchema(["unknown", "known"]),
+    contributions: arraySchema(
+      objectSchema(
+        {
+          selector: nonEmptyStringSchema,
+          fingerprint: nonEmptyStringSchema,
+          resourceIds: stringArraySchema,
+          provenance: enumSchema(["resource", "local-baseline"]),
+        },
+        ["selector", "fingerprint", "resourceIds", "provenance"],
+      ),
+    ),
     deploymentId: nonEmptyStringSchema,
     deploymentRoot: nonEmptyStringSchema,
     agent: nonEmptyStringSchema,
@@ -2600,7 +2642,8 @@ export type DashboardCoverageSchemaContract = AssertSchemaContract<
 const syncTargetUninstallTargetSchema = objectSchema(
   {
     consumerSet: stringArraySchema,
-    proposedAction: enumSchema(["detach-consumer", "remove-target"]),
+    proposedAction: enumSchema(["detach-consumer", "remove-target", "prune-mcp"]),
+    after: stringSchema(),
     key: nonEmptyStringSchema,
     target: nonEmptyStringSchema,
     agent: nonEmptyStringSchema,
@@ -2687,6 +2730,7 @@ const durableMutationPlanSchema = objectSchema(
       "store-import",
       "resource-lifecycle",
       "sync-uninstall",
+      "sync-reconcile",
     ]),
     baseRevision: integerSchema(),
     normalizedInputsDigest: nonEmptyStringSchema,
@@ -3333,6 +3377,20 @@ const openApiDocumentDataSchema = objectSchema(
 
 function successDataSchemaFor(operationId: string): ClientJsonSchema {
   switch (operationId) {
+    case "planDeploymentBaseline":
+      return objectSchema({ value: jsonDetailMapSchema, plan: mutationPlanSchema }, [
+        "value",
+        "plan",
+      ]);
+    case "applyDeploymentBaseline":
+      return objectSchema(
+        {
+          plan: mutationPlanSchema,
+          changedFields: stringArraySchema,
+          operation: operationResultDataSchema,
+        },
+        ["plan", "changedFields", "operation"],
+      );
     case "getHealth":
       return objectSchema({ live: booleanSchema }, ["live"]);
     case "bootstrapBrowserSession":
@@ -3757,6 +3815,7 @@ function createMutationPlanSchema() {
         "store-import",
         "resource-lifecycle",
         "sync-uninstall",
+        "sync-reconcile",
       ]),
       baseRevision: integerSchema(),
       normalizedInputs: jsonDetailMapSchema,

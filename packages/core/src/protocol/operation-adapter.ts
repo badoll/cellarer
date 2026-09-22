@@ -19,6 +19,7 @@ type StoreMutationIntent = CanonicalJsonObject & { readonly mutationKind: string
 export interface MutationOperationIntentByOperation {
   readonly initialize: StoreMutationIntent;
   readonly apply: CanonicalJsonObject;
+  readonly "sync-reconcile": CanonicalJsonObject;
   readonly revert: CanonicalJsonObject;
   readonly settings: StoreMutationIntent;
   readonly "secret-metadata": StoreMutationIntent;
@@ -60,6 +61,17 @@ export interface MutationOperationRegistry {
 const recoveryActionKinds = {
   initialize: ["mkdir", "preserve-file", "publish-file"],
   apply: ["copy", "merge", "overwrite", "sync-gitignore", "symlink", "write"],
+  "sync-reconcile": [
+    "copy",
+    "merge",
+    "overwrite",
+    "sync-gitignore",
+    "symlink",
+    "write",
+    "detach-consumer",
+    "remove-target",
+    "prune-mcp",
+  ],
   revert: ["detach-consumer", "remove-target", "restore-snapshot", "sync-gitignore"],
   settings: ["publish-file"],
   "secret-metadata": ["keychain-secret-delete", "keychain-secret-set", "publish-file"],
@@ -87,7 +99,7 @@ const recoveryActionKinds = {
     "rename-resource-content",
     "write-resource-bundle",
   ],
-  "sync-uninstall": ["detach-consumer", "remove-target", "sync-gitignore"],
+  "sync-uninstall": ["detach-consumer", "remove-target", "prune-mcp", "sync-gitignore"],
 } as const satisfies Readonly<Record<MutationOperation, readonly string[]>>;
 
 function defineAdapter<Operation extends MutationOperation>(
@@ -132,6 +144,7 @@ function requireContract(operation: MutationOperation, plan: MutationPlan): Muta
 const adaptersByOperation = {
   initialize: defineAdapter("initialize"),
   apply: defineAdapter("apply"),
+  "sync-reconcile": defineAdapter("sync-reconcile"),
   revert: defineAdapter("revert"),
   settings: defineAdapter("settings"),
   "secret-metadata": defineAdapter("secret-metadata"),
@@ -145,6 +158,7 @@ const adaptersByOperation = {
 export const mutationOperationAdapters = Object.freeze([
   adaptersByOperation.initialize,
   adaptersByOperation.apply,
+  adaptersByOperation["sync-reconcile"],
   adaptersByOperation.revert,
   adaptersByOperation.settings,
   adaptersByOperation["secret-metadata"],

@@ -20,6 +20,7 @@ import {
 } from "../src/index.js";
 import { createAuthorizedMutationPlan } from "../src/protocol/canonical.js";
 import { saveConfig } from "../src/store/config.js";
+import { loadLedgerForPlanning } from "../src/store/ledger.js";
 import { initStore, writeRuleArtifact } from "../src/store/store.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 import { deterministicMutationAuthority } from "./helpers/mutation-authority.js";
@@ -718,7 +719,7 @@ describe("versioned sync profiles", () => {
     await expect(t.env.fs.readFile(sharedTarget.target)).resolves.toContain("# Style");
   }, 20_000);
 
-  it("blocks profile update and delete while old exact profile owners remain uninstallable", async () => {
+  it("edits deployed desired state without changing targets and keeps old consumers uninstallable", async () => {
     await writeRuleArtifact(t.env, storeRoot, "safety", "# Safety\n");
     await createSyncProfile(t.env, { storeRoot, profileId: "daily", desired });
     const planned = await planSyncProfile(t.env, { storeRoot, profileId: "daily" });
@@ -732,16 +733,26 @@ describe("versioned sync profiles", () => {
       agentIds: ["claude-code"],
       resourceIds: ["rules/safety"],
     };
-    await expect(
-      updateSyncProfile(t.env, {
-        storeRoot,
-        profileId: "daily",
-        desired: replacement,
-      }),
-    ).rejects.toMatchObject({
-      code: "PROFILE_TARGETS_OWNED",
-      details: { profileId: "daily", targetKeys: [expect.any(String)] },
+    const beforeLedger = await loadLedgerForPlanning(t.env, storeRoot);
+    const target = beforeLedger.owners[0].target;
+    const beforeBytes = await t.env.fs.readFile(target, "utf8");
+    const updatedDesired = await updateSyncProfile(t.env, {
+      storeRoot,
+      profileId: "daily",
+      desired: replacement,
     });
+    expect(updatedDesired.profile?.revision).not.toBe(planned.profile.revision);
+    expect(await loadLedgerForPlanning(t.env, storeRoot)).toEqual(beforeLedger);
+    expect(await t.env.fs.readFile(target, "utf8")).toBe(beforeBytes);
+    const noOp = await updateSyncProfile(t.env, {
+      storeRoot,
+      profileId: "daily",
+      desired: replacement,
+    });
+    expect(noOp.profile).toEqual(updatedDesired.profile);
+    expect(
+      (await verifySyncProfile(t.env, { storeRoot, profileId: "daily" })).desiredVsApplied.status,
+    ).not.toBe("converged");
     await expect(deleteSyncProfile(t.env, { storeRoot, profileId: "daily" })).rejects.toMatchObject(
       {
         code: "PROFILE_TARGETS_OWNED",
@@ -753,7 +764,7 @@ describe("versioned sync profiles", () => {
       storeRoot,
       profileId: "daily",
     });
-    expect(uninstall.profile.revision).toBe(planned.profile.revision);
+    expect(uninstall.profile.revision).toBe(updatedDesired.profile?.revision);
     const removed = await applySyncProfileUninstallPlan(t.env, uninstall.mutationPlan, {
       storeRoot,
       profileId: "daily",

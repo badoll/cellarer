@@ -1,3 +1,8 @@
+import { appliedContributions } from "../deployments/contributions.js";
+import {
+  type ReconciliationTransition,
+  reconcileDistribution,
+} from "../deployments/reconciliation.js";
 // apply = plan + 执行 + 写台账(不变量 3/5)。dryRun 只返回 plan,不落地。
 // 分派结构(M2 重构):按 PlanAction.op 查 handler 表,引擎不散写 if (cap === "rules" && op === "write")。
 // 每个 op handler 负责一种落地动作(write/merge/overwrite/symlink/copy),返回写入台账的条目。
@@ -351,6 +356,7 @@ export async function planApplyMutation(
     providerAccess?: "allowed" | "forbidden";
     authorityLease?: MutationAuthorityLease;
     syncProfileId?: string;
+    reconcile?: boolean;
   } = {},
 ): Promise<PlannedApplyMutation> {
   requireMutationAuthority(env);
@@ -372,7 +378,11 @@ async function planApplyMutationWithAuthorityLease(
   env: Env,
   opts: DistributeOptions,
   planOptions: MutationPlanOptions,
-  execution: { providerAccess?: "allowed" | "forbidden"; syncProfileId?: string },
+  execution: {
+    providerAccess?: "allowed" | "forbidden";
+    syncProfileId?: string;
+    reconcile?: boolean;
+  },
 ): Promise<PlannedApplyMutation> {
   requireMutationAuthority(env);
   if (Object.hasOwn(opts, "syncProfile")) {
@@ -423,12 +433,24 @@ async function planApplyMutationWithAuthorityLease(
       capabilityRootCapture: capabilityRootsBefore,
       syncProfile,
     });
+    const reconciliation =
+      execution.reconcile && syncProfile
+        ? await reconcileDistribution(operationEnv, opts, distributePlan, syncProfile)
+        : undefined;
     const executable = distributePlan.actions.filter((action) => action.op !== "skip");
     const gitignore =
       opts.scope === "project" && opts.dir
         ? await planGitignoreMutation(operationEnv, opts.dir, [
             ...projectTargetsUnder(
-              await loadLedgerForPlanning(operationEnv, opts.storeRoot),
+              {
+                ...(await loadLedgerForPlanning(operationEnv, opts.storeRoot)),
+                owners: (await loadLedgerForPlanning(operationEnv, opts.storeRoot)).owners.filter(
+                  (owner) =>
+                    !reconciliation?.removals.some((removal) =>
+                      removal.ownerKeys.includes(entryKey(owner)),
+                    ),
+                ),
+              },
               opts.dir,
             ),
             ...executable.map((action) => action.target),
@@ -452,14 +474,21 @@ async function planApplyMutationWithAuthorityLease(
     }
     return {
       distributePlan,
+      reconciliation,
       gitignore,
       storeProvenance: provenanceBefore,
       capabilityRootProvenance: capabilityRootsBefore.descriptors,
       syncProfile,
     };
   });
-  const { distributePlan, gitignore, storeProvenance, capabilityRootProvenance, syncProfile } =
-    observed.value;
+  const {
+    distributePlan,
+    reconciliation,
+    gitignore,
+    storeProvenance,
+    capabilityRootProvenance,
+    syncProfile,
+  } = observed.value;
   const effectiveSecretMode = opts.secretMode ?? config.defaults.secretMode;
   const effectiveKeychainService = opts.keychainService ?? "cellarer";
   const executable = distributePlan.actions.filter((action) => action.op !== "skip");
@@ -480,6 +509,20 @@ async function planApplyMutationWithAuthorityLease(
         ? ({ state: "absent" } as const)
         : ({ state: "present", fingerprint: action.ownership.currentFingerprint } as const),
   }));
+  for (const removal of reconciliation?.removals ?? []) {
+    const actionId = sha256(canonicalJson(removal));
+    actions.push({
+      actionId,
+      kind: removal.kind,
+      target: removal.target,
+      payload: { removal: jsonObject(removal) },
+    });
+    targetPreconditions.push({
+      actionId,
+      target: removal.target,
+      expected: { state: "present", fingerprint: removal.fingerprint },
+    });
+  }
   if (gitignore) {
     actions.push(gitignore.action);
     targetPreconditions.push(gitignore.precondition);
@@ -490,6 +533,7 @@ async function planApplyMutationWithAuthorityLease(
     agents: opts.agents,
     ...(opts.resourceIds ? { resourceIds: opts.resourceIds } : {}),
     ...(syncProfile ? { syncProfile } : {}),
+    ...(reconciliation ? { reconciliation } : {}),
     configFingerprint: sha256(canonicalJson(config)),
     storeProvenance,
     capabilityRootProvenance,
@@ -504,7 +548,7 @@ async function planApplyMutationWithAuthorityLease(
     mutationPlan: createAuthorizedMutationPlan(operationEnv, opts.storeRoot, {
       schemaVersion: 1,
       planId: planOptions.planId ?? `plan-${operationEnv.randomId()}`,
-      operation: "apply",
+      operation: reconciliation ? "sync-reconcile" : "apply",
       baseRevision: observed.revision,
       normalizedInputs,
       targetPreconditions,
@@ -549,7 +593,9 @@ export async function applyMutationPlan(
     let decoded: ReturnType<typeof decodeApplyMutation>;
     let trustedOptions: DistributeOptions;
     try {
-      assertStrictMutationPlanRuntime(mutationPlan, "apply");
+      assertStrictMutationPlanRuntime(mutationPlan);
+      if (!["apply", "sync-reconcile"].includes(mutationPlan.operation))
+        throw new TypeError("wrong apply operation");
     } catch {
       return invalidApplyMutationResult(scope);
     }
@@ -557,7 +603,7 @@ export async function applyMutationPlan(
       return invalidApplyMutationResult(scope);
     }
     if (!verifyMutationPlanDigest(mutationPlan)) return invalidApplyDigestMutationResult(scope);
-    if (!resolveMutationOperationAdapterAfterIntegrity(mutationPlan, "apply")) {
+    if (!resolveMutationOperationAdapterAfterIntegrity(mutationPlan)) {
       return invalidApplyMutationResult(scope);
     }
     const suppliedLease = execution.authorityLease;
@@ -620,7 +666,7 @@ export async function applyMutationPlan(
         context.storeRoot,
         mutationPlan,
         async (_operationId, recordAction, authorizeAction) => {
-          if (mutationPlan.operation !== "apply") {
+          if (!["apply", "sync-reconcile"].includes(mutationPlan.operation)) {
             throw new TypeError("apply mutation requires an apply plan");
           }
           distributePlan = decoded.distributePlan;
@@ -648,7 +694,54 @@ export async function applyMutationPlan(
         {
           authorityLease,
           validatePreflightBeforeObservation: async () => validateApplyProvenance(false),
-          validateBeforeObservationUnderLock: async () => validateApplyProvenance(true),
+          validateBeforeObservationUnderLock: async () => {
+            const provenance = await validateApplyProvenance(true);
+            if (provenance) return provenance;
+            const canonicalSyncProfile =
+              mutationPlan.operation === "sync-reconcile"
+                ? await canonicalSyncProfileForDistribution(
+                    operationEnv,
+                    decoded.opts,
+                    decoded.syncProfile?.profileId,
+                  ).catch(() => undefined)
+                : undefined;
+            if (mutationPlan.operation === "sync-reconcile") {
+              if (!canonicalSyncProfile) return invalidPlanResult();
+              const replanOptions = {
+                ...decoded.opts,
+                snapshotPassphrase: context.snapshotPassphrase ?? trustedOptions.snapshotPassphrase,
+                replaceUnowned: decoded.executionPlan.actions.flatMap((action) =>
+                  action.replacement?.acknowledgement.kind === "replace-unowned"
+                    ? [action.replacement.acknowledgement.token]
+                    : [],
+                ),
+                overrideDrift: decoded.executionPlan.actions.flatMap((action) =>
+                  action.replacement?.acknowledgement.kind === "override-drift"
+                    ? [action.replacement.acknowledgement.token]
+                    : [],
+                ),
+              };
+              const expectedPlan = await plan(operationEnv, replanOptions, {
+                providerAccess: "forbidden",
+                syncProfile: canonicalSyncProfile,
+                reconcile: true,
+              });
+              const expected = await reconcileDistribution(
+                operationEnv,
+                decoded.opts,
+                expectedPlan,
+                canonicalSyncProfile,
+              );
+              if (
+                expected.blocked.length ||
+                canonicalJson(jsonObject(expected)) !==
+                  canonicalJson(mutationPlan.normalizedInputs.reconciliation) ||
+                canonicalJson(jsonObject(expectedPlan)) !== canonicalJson(decoded.distributePlan)
+              )
+                return invalidPlanResult();
+            }
+            return null;
+          },
           validateUnderLock: async () => {
             let canonicalSyncProfile: SyncProfileTargetEvidence | undefined;
             try {
@@ -747,7 +840,9 @@ export function preflightApplyMutationPlan(
   storeRoot: string,
 ): ApplyMutationPlanPreflight {
   try {
-    assertStrictMutationPlanRuntime(mutationPlan, "apply");
+    assertStrictMutationPlanRuntime(mutationPlan);
+    if (!["apply", "sync-reconcile"].includes(mutationPlan.operation))
+      throw new TypeError("wrong apply operation");
   } catch {
     return invalidApplyPlanPreflight();
   }
@@ -755,7 +850,7 @@ export function preflightApplyMutationPlan(
     return invalidApplyPlanPreflight();
   }
   if (!verifyMutationPlanDigest(mutationPlan)) return invalidApplyDigestPreflight();
-  if (!resolveMutationOperationAdapterAfterIntegrity(mutationPlan, "apply")) {
+  if (!resolveMutationOperationAdapterAfterIntegrity(mutationPlan)) {
     return invalidApplyPlanPreflight();
   }
   try {
@@ -1083,18 +1178,110 @@ async function executeApplyPlan(
     };
     await recordAction(receipt);
     actionReceipts.push(receipt);
+    const contributionPrior =
+      mutationPlan.operation === "sync-reconcile" && prior
+        ? {
+            ...prior,
+            contributions: prior.contributions?.filter(
+              (item) =>
+                !(
+                  mutationPlan.normalizedInputs
+                    .reconciliation as unknown as ReconciliationTransition
+                ).changes.some(
+                  (change) =>
+                    change.target === action.target &&
+                    change.selector === item.selector &&
+                    change.outcome === "remove",
+                ),
+            ),
+          }
+        : prior;
+    const attribution = await appliedContributions(env, opts.storeRoot, action, contributionPrior);
     const deploymentRoot = opts.scope === "global" ? env.homedir() : projectRoot;
     if (!deploymentRoot) throw new TypeError("deployment root missing");
     const deploymentId = sha256(JSON.stringify([normalize(action.target)]));
     for (const agent of action.consumerAgents ?? [action.agent]) {
-      entries.push({ ...appliedAction.entry, agent, deploymentId, deploymentRoot });
+      entries.push({
+        ...appliedAction.entry,
+        ...attribution,
+        artifactIds: [
+          ...new Set([
+            ...appliedAction.entry.artifactIds,
+            ...(attribution.contributions ?? []).flatMap((item) => item.resourceIds),
+          ]),
+        ],
+        agent,
+        deploymentId,
+        deploymentRoot,
+      });
     }
     if (appliedAction.transientSnapshotPath) {
       transientSnapshots.add(appliedAction.transientSnapshotPath);
     }
   }
 
-  const nextLedger = addEntries(ledger, entries);
+  const retainedLedger =
+    mutationPlan.operation === "sync-reconcile" && syncProfile
+      ? {
+          ...ledger,
+          owners: ledger.owners.filter(
+            (owner) =>
+              !(
+                owner.syncProfile?.profileId === syncProfile.profileId &&
+                entries.some((entry) => entry.target === owner.target) &&
+                !entries.some((entry) => entryKey(entry) === entryKey(owner))
+              ),
+          ),
+        }
+      : ledger;
+  let nextLedger = addEntries(retainedLedger, entries);
+  const transition =
+    mutationPlan.operation === "sync-reconcile"
+      ? (mutationPlan.normalizedInputs.reconciliation as unknown as ReconciliationTransition)
+      : undefined;
+  if (failures.length === 0)
+    for (const removal of transition?.removals ?? []) {
+      const action = mutationPlan.actions[mutationActionIndex++];
+      if (!action || canonicalJson(action.payload.removal) !== canonicalJson(removal))
+        throw new TypeError("reconciliation removal mismatch");
+      const authorized = await authorizeAction(action.actionId);
+      if (!authorized.ok) {
+        actionReceipts.push(authorized.receipt);
+        failedActionIds.push(action.actionId);
+        failures.push({
+          code: "ACTION_IO_FAILED",
+          target: action.target,
+          message: "reconciliation target changed",
+        });
+        break;
+      }
+      if (removal.kind === "remove-target")
+        await env.fs.rm(removal.target, { recursive: true, force: true });
+      if (removal.kind === "prune-mcp") await atomicWrite(env, removal.target, removal.after ?? "");
+      const after = await targetState(env, removal.target);
+      if (
+        removal.kind === "remove-target"
+          ? after.state !== "absent"
+          : removal.kind === "prune-mcp"
+            ? after.state !== "present" || after.fingerprint !== sha256(removal.after ?? "")
+            : !sameTargetReceipt(authorized.before, after)
+      )
+        throw new TypeError("reconciliation removal postcondition failed");
+      const receipt: OperationActionReceipt = {
+        actionId: action.actionId,
+        target: action.target,
+        outcome: sameTargetReceipt(authorized.before, after) ? "unchanged" : "applied",
+        before: authorized.before,
+        after,
+        recordedAt: env.now().toISOString(),
+      };
+      await recordAction(receipt);
+      actionReceipts.push(receipt);
+      nextLedger = {
+        ...nextLedger,
+        owners: nextLedger.owners.filter((owner) => !removal.ownerKeys.includes(entryKey(owner))),
+      };
+    }
   const gitignoreActions = mutationPlan.actions.slice(mutationActionIndex);
   if (failures.length === 0) {
     for (const action of gitignoreActions) {
@@ -1254,7 +1441,7 @@ function decodeApplyMutation(
   capabilityRootProvenance: readonly CapabilityRootProvenanceDescriptor[];
   syncProfile?: SyncProfileTargetEvidence;
 } {
-  if (planReceipt.operation !== "apply") {
+  if (!["apply", "sync-reconcile"].includes(planReceipt.operation)) {
     throw new TypeError("apply mutation requires an apply plan");
   }
   const input = planReceipt.normalizedInputs as Record<string, unknown>;
@@ -1273,6 +1460,7 @@ function decodeApplyMutation(
   if ("method" in input) inputKeys.push("method");
   if ("mcpStrategy" in input) inputKeys.push("mcpStrategy");
   if ("syncProfile" in input) inputKeys.push("syncProfile");
+  if (planReceipt.operation === "sync-reconcile") inputKeys.push("reconciliation");
   if (
     !hasExactKeys(input, inputKeys) ||
     typeof input.storeRoot !== "string" ||
@@ -1358,6 +1546,11 @@ function decodeApplyMutation(
   const gitignoreActions: MutationPlanAction[] = [];
   let reachedGitignoreActions = false;
   for (const mutationAction of planReceipt.actions) {
+    if (
+      planReceipt.operation === "sync-reconcile" &&
+      ["detach-consumer", "remove-target", "prune-mcp"].includes(mutationAction.kind)
+    )
+      continue;
     if (mutationAction.kind === "sync-gitignore") {
       reachedGitignoreActions = true;
       if (
@@ -1814,11 +2007,13 @@ async function applyContentWrite(
     prior &&
     action.preview?.before === content &&
     prior.receipt.fingerprint === checksum &&
-    prior.receipt.contentFingerprint === contentFingerprint &&
-    prior.projectRoot === projectRoot &&
-    sameArtifactIds(prior.artifactIds, actionArtifactIds(action))
+    prior.projectRoot === projectRoot
   ) {
-    return prior;
+    return {
+      ...prior,
+      artifactIds: actionArtifactIds(action),
+      receipt: { ...prior.receipt, ...(contentFingerprint ? { contentFingerprint } : {}) },
+    };
   }
 
   // 安全:不跟随软链写(防穿越);备份既有用户文件。

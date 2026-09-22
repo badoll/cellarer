@@ -204,6 +204,7 @@ const baselineTouchedRootTypes = [
   "Ledger",
   "LedgerEntry",
   "LinkMethod",
+  "ManagedContribution",
   "PlanAction",
   "Scope",
   "SecretGuardFinding",

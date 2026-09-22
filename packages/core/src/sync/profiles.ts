@@ -484,7 +484,7 @@ async function prepareMutation(
   if (input.action !== "create" && index < 0) {
     throw new SyncProfileError("PROFILE_NOT_FOUND", `profile "${input.profileId}" does not exist`);
   }
-  if (input.action !== "create") {
+  if (input.action === "delete") {
     const ledger = await loadLedgerForPlanning(env, storeRoot);
     const owners = ledger.owners.filter(
       (owner) => owner.syncProfile?.profileId === input.profileId,

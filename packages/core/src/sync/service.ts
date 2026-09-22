@@ -4,7 +4,6 @@ import {
   planApplyMutation,
   preflightApplyMutationPlan,
 } from "../engine/apply.js";
-import { plan as planDistribution } from "../engine/plan.js";
 import type {
   ApplyMutationResult,
   DistributeOptions,
@@ -18,7 +17,7 @@ import {
 } from "../engine/uninstall.js";
 import { type VerificationReport, verify } from "../engine/verification.js";
 import type { Env } from "../env.js";
-import type { DistributePlan, SyncProfileTargetEvidence } from "../model/index.js";
+import type { SyncProfileTargetEvidence } from "../model/index.js";
 import {
   assertCurrentMutationAuthorityScope,
   assertStrictMutationPlanRuntime,
@@ -30,8 +29,8 @@ import {
 } from "../protocol/canonical.js";
 import { invalidPlanResult } from "../protocol/execute.js";
 import type { MutationPlan } from "../protocol/models.js";
-import { sha256 } from "../store/checksum.js";
-import { targetKey } from "../store/ledger.js";
+import { mutationPresentation } from "../protocol/presentation.js";
+import { loadLedgerForPlanning, targetKey } from "../store/ledger.js";
 import {
   type ResolvedSyncProfileResource,
   resolveCanonicalSyncProfile,
@@ -91,6 +90,7 @@ export async function planSyncProfile(
       {},
       {
         syncProfileId: resolved.profile.profileId,
+        reconcile: true,
         authorityLease,
       },
     );
@@ -111,6 +111,17 @@ export async function applySyncProfilePlan(
 ): Promise<AppliedSyncProfile> {
   return withCurrentMutationAuthorityScope(env, async (authorityScope) => {
     const authorityLease = await assertCurrentMutationAuthorityScope(env, authorityScope);
+    if (mutationPlan.operation !== "sync-reconcile") {
+      const operation = invalidPlanResult();
+      return {
+        profileId: opts.profileId,
+        plan: { actions: [], warnings: [], conflicts: [] },
+        entries: [],
+        failures: [],
+        operation,
+        mutation: mutationPresentation(mutationPlan, operation),
+      };
+    }
     const preflight = preflightApplyMutationPlan(env, mutationPlan, opts.storeRoot);
     if (!preflight.ok) {
       const applied = await applyMutationPlan(
@@ -170,15 +181,17 @@ export async function planSyncProfileUninstall(
 ): Promise<PlannedSyncProfileUninstall> {
   return withCurrentMutationAuthorityScope(env, async (authorityScope) => {
     const resolved = await resolveProfileInvocation(env, opts, authorityScope);
-    const desiredPlan = await profileDistributionPlan(env, resolved.distributeOptions);
-    const targetKeys = exactTargetKeys(desiredPlan, resolved.syncProfile);
+    const targetKeys = await deployedProfileTargetKeys(
+      env,
+      resolved.distributeOptions,
+      opts.profileId,
+    );
     const planned = await planSyncTargetUninstallWithinAuthorityScope(
       env,
       {
         storeRoot: resolved.distributeOptions.storeRoot,
         targetKeys,
         acknowledgements: opts.acknowledgements,
-        syncProfile: resolved.syncProfile,
       },
       authorityScope,
     );
@@ -203,8 +216,11 @@ export async function applySyncProfileUninstallPlan(
       };
     }
     const resolved = await resolveProfileInvocation(env, opts, authorityScope);
-    const desiredPlan = await profileDistributionPlan(env, resolved.distributeOptions);
-    const expectedTargetKeys = exactTargetKeys(desiredPlan, resolved.syncProfile);
+    const expectedTargetKeys = await deployedProfileTargetKeys(
+      env,
+      resolved.distributeOptions,
+      opts.profileId,
+    );
     if (
       expectedTargetKeys.length !== opts.targetKeys.length ||
       expectedTargetKeys.some((key, index) => key !== opts.targetKeys[index])
@@ -223,17 +239,19 @@ export async function applySyncProfileUninstallPlan(
           storeRoot: resolved.distributeOptions.storeRoot,
           targetKeys: expectedTargetKeys,
           acknowledgements: opts.acknowledgements,
-          syncProfile: resolved.syncProfile,
         },
       },
       authorityScope,
       async () => {
         const locked = await resolveProfileInvocation(env, opts, authorityScope);
-        const lockedDesiredPlan = await profileDistributionPlan(env, locked.distributeOptions);
+        const lockedTargetKeys = await deployedProfileTargetKeys(
+          env,
+          locked.distributeOptions,
+          opts.profileId,
+        );
         return (
           canonicalJson(locked.syncProfile) === canonicalJson(resolved.syncProfile) &&
-          canonicalJson(exactTargetKeys(lockedDesiredPlan, locked.syncProfile)) ===
-            canonicalJson(expectedTargetKeys)
+          canonicalJson(lockedTargetKeys) === canonicalJson(expectedTargetKeys)
         );
       },
     );
@@ -309,30 +327,21 @@ function resolveWorkspaceRoot(
   return normalize(isAbsolute(supplied) ? supplied : join(env.cwd(), supplied));
 }
 
-async function profileDistributionPlan(
+async function deployedProfileTargetKeys(
   env: Env,
   options: DistributeOptions,
-): Promise<DistributePlan> {
-  return planDistribution(env, options, { providerAccess: "forbidden" });
-}
-
-function exactTargetKeys(plan: DistributePlan, syncProfile: SyncProfileTargetEvidence): string[] {
-  return [
-    ...new Set(
-      plan.actions
-        .filter((action) => action.target.length > 0)
-        .flatMap((action) =>
-          (action.consumerAgents ?? [action.agent]).map((agent) =>
-            targetKey({
-              ...action,
-              agent,
-              deploymentId: sha256(JSON.stringify([normalize(action.target)])),
-              syncProfile,
-            }),
-          ),
-        ),
-    ),
-  ].sort((left, right) => left.localeCompare(right));
+  profileId: string,
+): Promise<string[]> {
+  const ledger = await loadLedgerForPlanning(env, options.storeRoot);
+  return ledger.owners
+    .filter(
+      (owner) =>
+        owner.syncProfile?.profileId === profileId &&
+        owner.scope === options.scope &&
+        (options.scope === "global" || owner.projectRoot === options.dir),
+    )
+    .map(targetKey)
+    .sort();
 }
 
 function normalizeAbsolute(value: string, field: string): string {

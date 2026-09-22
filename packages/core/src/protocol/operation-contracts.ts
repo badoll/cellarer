@@ -53,24 +53,29 @@ const CONTROL_PLANE_MUTATION_KINDS = [
 const PROFILE_MUTATION_KINDS = ["profile-create", "profile-update", "profile-delete"] as const;
 
 const definitions: readonly ContractDefinition[] = [
-  contract(
-    "settings",
-    "deployment-upgrade",
-    false,
-    (plan) =>
-      hasExactKeys(plan.normalizedInputs, [
-        "changedFields",
-        "mutationKind",
-        "storeProvenance",
-        "targetEvidence",
-      ]) &&
-      isUniqueNonEmptyStringArray(plan.normalizedInputs.changedFields) &&
-      isStoreProvenance(plan.normalizedInputs.storeProvenance) &&
-      Array.isArray(plan.normalizedInputs.targetEvidence) &&
-      validatePublicationAction(plan, 0, { selfContained: true }),
+  ...["deployment-upgrade", "deployment-baseline"].map((kind) =>
+    contract(
+      "settings",
+      kind,
+      false,
+      (plan) =>
+        hasExactKeys(plan.normalizedInputs, [
+          "changedFields",
+          "mutationKind",
+          "storeProvenance",
+          "targetEvidence",
+        ]) &&
+        isUniqueNonEmptyStringArray(plan.normalizedInputs.changedFields) &&
+        isStoreProvenance(plan.normalizedInputs.storeProvenance) &&
+        (Array.isArray(plan.normalizedInputs.targetEvidence) ||
+          (kind === "deployment-baseline" &&
+            isPlainRecord(plan.normalizedInputs.targetEvidence))) &&
+        validatePublicationAction(plan, 0, { selfContained: true }),
+    ),
   ),
   contract("initialize", "initialize-store", false, (plan) => validateInitializePlan(plan)),
   fixedContract("apply", true, validateApplyPlan),
+  fixedContract("sync-reconcile", true, validateReconciliationPlan),
   fixedContract("revert", true, validateRevertPlan),
   ...[...CONTROL_PLANE_MUTATION_KINDS, ...PROFILE_MUTATION_KINDS].map((mutationKind) =>
     contract("settings", mutationKind, false, validateSettingsPlan),
@@ -784,7 +789,7 @@ function validateSyncUninstallPlan(plan: MutationPlan): boolean {
     [...businessInput.targetKeys].sort().join("\0") !== businessInput.targetKeys.join("\0") ||
     !Array.isArray(input.capabilitySnapshot) ||
     !Array.isArray(input.targets) ||
-    !suffixKinds(plan, new Set(["detach-consumer", "remove-target"]), "sync-gitignore")
+    !suffixKinds(plan, new Set(["detach-consumer", "remove-target", "prune-mcp"]), "sync-gitignore")
   ) {
     return false;
   }
@@ -798,7 +803,7 @@ function validateSyncUninstallPlan(plan: MutationPlan): boolean {
     return false;
   }
   const productActions = plan.actions.filter(
-    ({ kind }) => kind === "remove-target" || kind === "detach-consumer",
+    ({ kind }) => kind === "remove-target" || kind === "detach-consumer" || kind === "prune-mcp",
   );
   const executableTargets = input.targets.filter(
     (target) => isPlainRecord(target) && target.blocked === false,
@@ -845,4 +850,48 @@ function hasExactSyncUninstallBusinessInput(value: Record<string, unknown>): boo
     (!("acknowledgements" in value) || isStringArray(value.acknowledgements)) &&
     (!("syncProfile" in value) || isPlainRecord(value.syncProfile))
   );
+}
+
+function validateReconciliationPlan(plan: MutationPlan): boolean {
+  const transition = plan.normalizedInputs.reconciliation;
+  if (
+    !isPlainRecord(transition) ||
+    !hasExactKeys(transition, ["priorOwners", "removals", "changes", "blocked"]) ||
+    !Array.isArray(transition.removals) ||
+    !Array.isArray(transition.blocked) ||
+    !Array.isArray(transition.priorOwners) ||
+    !Array.isArray(transition.changes) ||
+    !isPlainRecord(plan.normalizedInputs.syncProfile)
+  )
+    return false;
+  const { reconciliation: _transition, ...normalizedInputs } = plan.normalizedInputs;
+  const removalActions = plan.actions.filter((action) =>
+    ["detach-consumer", "remove-target", "prune-mcp"].includes(action.kind),
+  );
+  if (
+    removalActions.length !== transition.removals.length ||
+    removalActions.some((action, index) => {
+      const removal = (transition.removals as unknown[])[index];
+      return (
+        !isPlainRecord(removal) ||
+        !hasExactKeys(action.payload, ["removal"]) ||
+        action.target !== removal.target ||
+        action.kind !== removal.kind ||
+        action.actionId !== sha256(canonicalJson(removal)) ||
+        canonicalJson(action.payload.removal) !== canonicalJson(removal)
+      );
+    })
+  )
+    return false;
+  const product = plan.actions.filter(
+    (action) => !removalActions.includes(action) && action.kind !== "sync-gitignore",
+  );
+  const ordered = [
+    ...product,
+    ...removalActions,
+    ...plan.actions.filter((action) => action.kind === "sync-gitignore"),
+  ];
+  if (ordered.some((action, index) => action !== plan.actions[index])) return false;
+  const actions = plan.actions.filter((action) => !removalActions.includes(action));
+  return validateApplyPlan({ ...plan, normalizedInputs, actions });
 }

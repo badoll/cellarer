@@ -5,6 +5,7 @@ import {
 } from "../protocol/command-contract.js";
 import { commandSchemaFragments as s } from "../protocol/command-schema-fragments.js";
 import {
+  createDeploymentBaselineCommandContract,
   createDeploymentUpgradeCommandContract,
   createProfileCommandContract,
   createResourceLifecycleCommandContract,
@@ -15,6 +16,30 @@ export function createResourceLifecycleSyncDomain(): CommandDomain {
   return defineCommandDomain({
     id: "resource-lifecycle-sync",
     contracts: [
+      createDeploymentBaselineCommandContract(
+        defineContractMetadata({
+          command: "sync.baseline",
+          catalogOrder: 68,
+          mutability: "write",
+          requiredFeatures: ["mutation-authority", "plan-apply"],
+          input: s.jsonSchema.object(
+            {
+              deploymentId: s.jsonSchema.string({ minLength: 1 }),
+              selectors: s.stringArray,
+              plan: s.opaquePlan,
+              dryRun: s.jsonSchema.boolean(),
+            },
+            ["deploymentId", "selectors"],
+          ),
+          bindings: [
+            s.option("deploymentId"),
+            s.option("selectors", undefined, s.joinList),
+            s.option("plan", undefined, s.stringifyJson),
+            s.option("dryRun"),
+          ],
+          output: s.opaqueJsonMap,
+        }),
+      ),
       createDeploymentUpgradeCommandContract(
         defineContractMetadata({
           command: "sync.upgrade-state",

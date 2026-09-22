@@ -811,6 +811,7 @@ describe("agent CLI protocol foundation", () => {
       "inventory.adopt.plan",
       "inventory.adopt.apply",
       "sync.upgrade-state",
+      "sync.baseline",
     ]);
 
     const schemaIds = new Set<string>();

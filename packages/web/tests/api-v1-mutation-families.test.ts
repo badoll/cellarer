@@ -9,7 +9,7 @@ import {
   planApplyMutation,
 } from "@cellarer/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { initStore, writeRuleArtifact } from "../../core/src/store/store.js";
+import { initStore, writeMcpArtifact, writeRuleArtifact } from "../../core/src/store/store.js";
 import { createApp } from "../src/app.js";
 import { deterministicMutationAuthority } from "./helpers/mutation-authority.js";
 
@@ -49,6 +49,52 @@ describe("versioned mutation families", () => {
   });
 
   afterEach(() => fs.rm(root, { recursive: true, force: true }));
+
+  it("round-trips reviewed local attribution without native writes", async () => {
+    await writeMcpArtifact(env, storeRoot, "a", { kind: "stdio", command: "fixture-a" });
+    const desired = {
+      agentIds: ["claude-code"],
+      scope: "project",
+      resourceIds: ["mcp/a"],
+      collectionIds: [],
+      capabilities: ["mcp"],
+      method: "copy",
+      mergePolicy: "merge",
+    };
+    const profile = await postData<{ plan: MutationPlan }>("/api/v1/profiles/plan", {
+      action: "create",
+      profileId: "daily",
+      desired,
+    });
+    await postData("/api/v1/profiles/apply", { mutationPlan: profile.plan });
+    const planned = await postData<{ mutationPlan: MutationPlan }>(
+      "/api/v1/profiles/daily/sync/plan",
+      { workspaceRoot },
+    );
+    expect(planned.mutationPlan.operation).toBe("sync-reconcile");
+    await postData("/api/v1/profiles/daily/sync/apply", {
+      workspaceRoot,
+      mutationPlan: planned.mutationPlan,
+    });
+    const statePath = join(storeRoot, "state.json");
+    const state = JSON.parse(await fs.readFile(statePath, "utf8"));
+    const deployment = state.deployments[0];
+    deployment.itemAttribution = "unknown";
+    delete deployment.contributions;
+    await fs.writeFile(statePath, JSON.stringify(state));
+    const before = await fs.readFile(deployment.target, "utf8");
+    const selection = { deploymentId: deployment.id, selectors: ["a"] };
+    const preview = await postData<{ plan: MutationPlan }>(
+      "/api/v1/deployments/baseline/plan",
+      selection,
+    );
+    const applied = await postData<{ operation: { ok: boolean } }>(
+      "/api/v1/deployments/baseline/apply",
+      { ...selection, mutationPlan: preview.plan },
+    );
+    expect(applied.operation.ok).toBe(true);
+    expect(await fs.readFile(deployment.target, "utf8")).toBe(before);
+  }, 20_000);
 
   it("round-trips an exact revert plan", async () => {
     const distribution = await planApplyMutation(env, {

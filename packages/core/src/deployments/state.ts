@@ -47,7 +47,8 @@ export function deploymentState(owners: readonly TargetOwner[]): DeploymentState
       receipt: owner.receipt,
       artifactIds: owner.artifactIds,
       ...(owner.secretRefs ? { secretRefs: owner.secretRefs } : {}),
-      itemAttribution: "unknown",
+      itemAttribution: owner.itemAttribution ?? "unknown",
+      ...(owner.contributions ? { contributions: owner.contributions } : {}),
       consumers: [consumer],
     });
     const prior = records.get(key);

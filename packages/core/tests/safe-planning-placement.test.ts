@@ -944,7 +944,13 @@ describe("safe target planning and placement", () => {
       JSON.stringify({
         version: 2,
         owners: [owner, { ...owner, artifactIds: ["rules/duplicate"] }].map(
-          ({ deploymentId: _id, deploymentRoot: _root, ...legacy }) => legacy,
+          ({
+            deploymentId: _id,
+            deploymentRoot: _root,
+            itemAttribution: _attribution,
+            contributions: _contributions,
+            ...legacy
+          }) => legacy,
         ),
       }),
     );
@@ -978,7 +984,13 @@ describe("safe target planning and placement", () => {
     const duplicateState = JSON.stringify({
       version: 2,
       owners: [owner, { ...owner, artifactIds: ["rules/duplicate"] }].map(
-        ({ deploymentId: _id, deploymentRoot: _root, ...legacy }) => legacy,
+        ({
+          deploymentId: _id,
+          deploymentRoot: _root,
+          itemAttribution: _attribution,
+          contributions: _contributions,
+          ...legacy
+        }) => legacy,
       ),
     });
     const statePath = t.path("home", ".cellarer", "state.json");
@@ -1009,7 +1021,13 @@ describe("safe target planning and placement", () => {
     const duplicateState = JSON.stringify({
       version: 2,
       owners: [ruleOwner, { ...ruleOwner, artifactIds: ["rules/duplicate"] }].map(
-        ({ deploymentId: _id, deploymentRoot: _root, ...legacy }) => legacy,
+        ({
+          deploymentId: _id,
+          deploymentRoot: _root,
+          itemAttribution: _attribution,
+          contributions: _contributions,
+          ...legacy
+        }) => legacy,
       ),
     });
     const statePath = join(storeRoot, "state.json");

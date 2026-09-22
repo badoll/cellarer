@@ -193,7 +193,18 @@ export function addOwners(ledger: Ledger, incoming: TargetOwner[]): Ledger {
       ];
       for (const [key, owner] of map)
         if (owner.target === target) {
-          map.set(key, { ...owner, receipt: materialization.receipt, artifactIds, secretRefs });
+          map.set(key, {
+            ...owner,
+            receipt: materialization.receipt,
+            artifactIds,
+            secretRefs,
+            ...(materialization.contributions
+              ? {
+                  contributions: materialization.contributions,
+                  itemAttribution: materialization.itemAttribution,
+                }
+              : {}),
+          });
         }
     }
   }

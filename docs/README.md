@@ -359,6 +359,43 @@ transaction, reference, and recovery rules. Multiple profiles or agents may
 consume an identical deployment. Uninstall detaches the selected profile
 consumers and keeps targets needed by the others.
 
+### Reconcile a deployed profile
+
+`profile update` changes only the Store's desired revision. Existing targets and
+applied revisions stay intact; `sync verify` reports desired/applied divergence
+until a new reviewed plan is applied. Deletion remains blocked while a Deployment
+consumer references the profile. Each invocation is bounded to its current scope
+and explicit workspace root.
+
+`sync plan` now produces a `sync-reconcile` operation. Review
+`data.mutationPlan.normalizedInputs.reconciliation`: it lists keep/add/update/remove/
+detach outcomes, selected and retained managed contributions, unmanaged entries,
+and blocking reasons. Apply that unchanged `data.mutationPlan` with
+`sync apply <profile> --plan '<exact-plan-json>'` and the same workspace root.
+An old additive profile plan must be rebuilt. Ordinary `apply` remains additive;
+retained MCP entries keep their managed attribution. Reconciliation removes only
+proven managed entries, preserves native user fields, and refuses changes that
+would invalidate another consumer. Store resource updates never distribute
+themselves. MCP uninstall prunes attributed entries; snapshot-backed targets still
+require reviewed revert, and unknown attribution or drift blocks removal.
+
+For an older MCP Deployment with unknown item attribution, inspect its exact ID
+and native entries, then separately review a Store-only local baseline:
+
+```bash
+cellarer --output json sync baseline --deployment-id '<deployment-id>' --selectors a,b --dry-run
+cellarer --output json sync baseline --deployment-id '<deployment-id>' --selectors a,b --plan '<exact-data.plan-json>'
+```
+
+A baseline claims only the explicitly reviewed current selectors and fingerprints;
+it does not invent historical resource provenance or alter targets. Missing entries
+or changed bytes invalidate it. HTTP clients have matching
+`POST /api/v1/deployments/baseline/plan` and `/apply` endpoints.
+Reconciliation uses one journal for target effects and Deployment publication.
+A crash can leave partial effects; current apply-family recovery preserves manual
+recovery evidence because its durable journal does not retain executable authority
+for automatic replay, finalization, or compensation.
+
 ### Upgrade ownership state
 
 New Stores write v3 deployment state. Reading an existing v2 ledger does not

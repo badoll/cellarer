@@ -9,6 +9,7 @@ import {
   AGENT_ID_PATTERN,
   type AppliedInventorySecretAdoption,
   applyControlPlaneMutationPlan,
+  applyDeploymentBaselinePlan,
   applyInventorySecretAdoptionPlan,
   applyInventoryStoreImportPlan,
   applyMutationPlan,
@@ -65,6 +66,7 @@ import {
   parseControlPlaneSettingsMutationBody,
   planApplyMutation,
   planAvailableResourceUpdate,
+  planDeploymentBaseline,
   planInventorySecretAdoption,
   planInventoryStoreImport,
   planResourceBundleImport,
@@ -1121,6 +1123,33 @@ export function createApp(inputDeps: AppDeps) {
       const body = await parseJsonBody(() => c.req.json<ControlPlanePlanApplyBody>());
       const applied = await applyControlPlaneMutationPlan(deps.env, body.mutationPlan, {
         storeRoot: deps.storeRoot,
+      });
+      if (!applied.operation.ok) {
+        const failure = clientMutationFailure(requestId(c), applied.operation.conflict);
+        return c.json(failure.body, failure.status);
+      }
+      const payload = clientSuccess(requestId(c), applied);
+      return withCorePayload(c.json(payload), payload);
+    })
+    .post("/api/v1/deployments/baseline/plan", async (c) => {
+      const body = await parseJsonBody(() =>
+        c.req.json<{ deploymentId: string; selectors: string[] }>(),
+      );
+      const planned = await planDeploymentBaseline(deps.env, {
+        ...body,
+        storeRoot: deps.storeRoot,
+      });
+      const payload = clientSuccess(requestId(c), planned);
+      return withCorePayload(c.json(payload), payload);
+    })
+    .post("/api/v1/deployments/baseline/apply", async (c) => {
+      const body = await parseJsonBody(() =>
+        c.req.json<{ deploymentId: string; selectors: string[]; mutationPlan: MutationPlan }>(),
+      );
+      const applied = await applyDeploymentBaselinePlan(deps.env, body.mutationPlan, {
+        storeRoot: deps.storeRoot,
+        deploymentId: body.deploymentId,
+        selectors: body.selectors,
       });
       if (!applied.operation.ok) {
         const failure = clientMutationFailure(requestId(c), applied.operation.conflict);

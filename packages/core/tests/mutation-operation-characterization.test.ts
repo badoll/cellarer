@@ -65,6 +65,31 @@ const fixtures: Readonly<
       },
     ],
   },
+  "sync-reconcile": {
+    normalizedInputs: {
+      reconciliation: { priorOwners: [], removals: [], changes: [], blocked: [] },
+      syncProfile: {},
+      storeRoot: "/workspace/store",
+      scope: "global",
+      agents: ["codex"],
+      configFingerprint: sha256("config"),
+      storeProvenance: [],
+      capabilityRootProvenance: [],
+      distributePlan: {
+        actions: [{ op: "write", target: "/workspace/apply" }],
+        warnings: [],
+        conflicts: [],
+      },
+    },
+    actions: [
+      {
+        actionId: "apply",
+        kind: "write",
+        target: "/workspace/apply",
+        payload: { planAction: { op: "write", target: "/workspace/apply" } },
+      },
+    ],
+  },
   revert: {
     normalizedInputs: {
       storeRoot: "/workspace/store",
