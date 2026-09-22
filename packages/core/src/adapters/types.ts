@@ -12,6 +12,23 @@ export interface AgentPaths {
   skillsDir?: string; // 例:~/.claude/skills / .agents/skills
 }
 
+/** Discovery is an independent, bounded read contract; paths() remains placement only. */
+export interface DiscoveryDescriptor {
+  readonly sourceId: string;
+  readonly scope: Scope;
+  readonly kind: Capability;
+  readonly path: string;
+  readonly locator: "file" | "tree";
+  readonly maxDepth: number;
+  readonly maxEntries: number;
+  readonly maxBytes: number;
+  readonly precedence: {
+    readonly policy: "unknown" | "ranked" | "cumulative";
+    readonly rank?: number;
+    readonly evidence: string;
+  };
+}
+
 export interface DetectResult {
   installed: boolean;
   root: string; // 该 agent 在此 scope 下的根目录(绝对路径)
@@ -49,6 +66,7 @@ export interface AgentAdapter {
   displayName: string;
   detect(env: Env, scope: Scope, dir?: string): Promise<DetectResult>;
   paths(env: Env, scope: Scope, dir?: string): AgentPaths;
+  discovery?(env: Env, scope: Scope, dir?: string): readonly DiscoveryDescriptor[];
   // 各能力在各 scope 下是否支持;未列出 → 下发时跳过并告警。
   capabilities: Record<Capability, Scope[]>;
   /** @deprecated Compatibility descriptor; execution does not dispatch through this field. */

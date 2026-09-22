@@ -84,6 +84,25 @@ Inventory 是导入前的实时只读视图。`inventory refresh` 检查每个�
 provenance 与 typed findings，标记 Store 匹配，并声明 complete、partial 或 failed 完整度。
 刷新不会导入、写入 target，也不会访问 mutation authority 或 secret provider。
 
+Discovery 来源与 placement 写入路径独立。七个内置 adapter 声明有界用户/项目来源；
+OpenCode 和 Cursor 还声明文档支持的兼容 Skill 目录。修改写入路径不会隐式修改发现来源。
+没有 `discovery` 的 custom adapter 保持 `placement-only` 视图。每条 discovery 指定
+`sourceId`、`scope`、`kind`、字面路径 `path`、`locator`（Rules/MCP 为 `file`，Skills 为 `tree`）、
+`maxDepth`、`maxEntries`、`maxBytes` 以及 `precedence`（`policy`、可选 `rank`、`evidence`）。
+Ranked 策略必须有 rank，较大者优先；cumulative 策略仅用于 Rules。
+
+`coverage` 报告 observed、excluded、unavailable 或 unknown 维度。Complete 仅指声明
+边界内完整：不搜索插件、托管/系统位置、父目录、任意嵌套工程、Rules import/glob 或其他
+原生扩展。明确提供的 project 根就是信任边界。捕获拒绝软链接，并在读取内容前执行预算；
+遗漏一个来源不会隐藏其他成功来源。内置每来源限制为深度 16、10,000 个文件及目录节点、
+16 MiB。Skill 候选仍是直接子目录，原生嵌套发现不在当前范围内。
+
+`effectiveResources` 按 adapter 和逻辑候选解释已观察范围内的 effective、shadowed、
+ambiguous 或 unknown，并附规则证据。Claude 个人 Skill 的声明优先级高于项目 Skill；
+已观察的 CLAUDE.md 片段累计参与。未核实的策略保持 unknown 或 ambiguous。
+这是基于文档的解释，不代表运行中的原生 Agent 已认证。冲突候选仍不默认选择，无论生效
+状态如何都需要精确导入选择。旧版 v1 客户端可以省略新增 coverage/resolution 字段。
+
 ### Collection
 
 Collection 按资源 ID 组织选择。初始化时创建 `default`；也可以建立 `work`、`personal`、

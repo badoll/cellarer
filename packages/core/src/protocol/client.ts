@@ -21,6 +21,8 @@ export type {
   InventoryCandidateState,
   InventoryCompleteness,
   InventoryCounts,
+  InventoryCoverage,
+  InventoryEffectiveResource,
   InventoryFinding,
   InventoryFindingCode,
   InventoryFindingRemediation,

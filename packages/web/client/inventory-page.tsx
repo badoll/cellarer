@@ -463,6 +463,17 @@ export function InventoryResultView(props: {
                     ))}
                   </td>
                   <td>
+                    {result.effectiveResources
+                      ?.filter((row) => row.candidateId === candidate.id)
+                      .map((row) => (
+                        <span
+                          className="muted-row"
+                          key={`${row.adapterId}:${row.sourceId}`}
+                          title={row.evidence}
+                        >
+                          {row.adapterId} · {row.scope} · {row.state}: {row.reason}
+                        </span>
+                      ))}
                     {candidate.relatedAdapters.map((adapter) => (
                       <span className="muted-row" key={adapter.id}>
                         {adapter.displayName} ({adapter.id})
@@ -511,6 +522,26 @@ export function InventoryResultView(props: {
             </tbody>
           </table>
         </div>
+        {result.coverage ? (
+          <details>
+            <summary>
+              Discovery coverage · bounded {result.resolutionContext ?? "user"} scope
+            </summary>
+            {result.coverage.map((coverage) => (
+              <p
+                className="muted-row"
+                key={`${coverage.adapterId}:${coverage.dimension}:${coverage.sourceId ?? "-"}`}
+              >
+                {coverage.adapterId} · {coverage.dimension} · {coverage.sourceId ?? ""} ·{" "}
+                {coverage.status} · {coverage.mode}: {coverage.location}{" "}
+                {coverage.bounds
+                  ? `depth ${coverage.bounds.maxDepth}, entries ${coverage.bounds.maxEntries}, bytes ${coverage.bounds.maxBytes}`
+                  : ""}{" "}
+                {coverage.reason}
+              </p>
+            ))}
+          </details>
+        ) : null}
         {result.findings.map((finding) => (
           <p className="warning-banner" key={`${finding.code}:${finding.sourceId ?? "refresh"}`}>
             {finding.code} · {finding.remediation}

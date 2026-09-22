@@ -17,6 +17,28 @@ describe("Inventory bundled client view", () => {
     const result: InventoryRefreshResult = {
       generatedAt: "2026-08-25T08:00:00.000Z",
       completeness: "partial",
+      resolutionContext: "user",
+      coverage: [
+        {
+          adapterId: "codex",
+          dimension: "plugins",
+          status: "excluded",
+          mode: "declared",
+          reason: "Not searched.",
+        },
+      ],
+      effectiveResources: [
+        {
+          candidateId: "inventory-candidate:v1:ready",
+          adapterId: "codex",
+          sourceId: "global-skills",
+          scope: "global",
+          state: "unknown",
+          policy: "unknown",
+          reason: "Native loading unknown.",
+          evidence: "fixture",
+        },
+      ],
       counts: {
         total: 2,
         ready: 1,
@@ -81,6 +103,10 @@ describe("Inventory bundled client view", () => {
       }),
     );
     expect(html).toContain("Inventory is partial");
+    expect(html).toContain("Discovery coverage");
+    expect(html).toContain("plugins");
+    expect(html).toContain("excluded");
+    expect(html).toContain("Native loading unknown.");
     expect(html).toContain("inventory-demo");
     expect(html).toContain("Ready");
     expect(html).toContain("~/.agents/skills/inventory-demo");

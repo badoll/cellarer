@@ -440,6 +440,7 @@ export type InventoryFindingCode =
   | "ADAPTER_PATHS_FAILED"
   | "SOURCE_OUTSIDE_BOUNDARY"
   | "SOURCE_UNREADABLE"
+  | "SOURCE_BUDGET_EXCEEDED"
   | "UNSAFE_LINK"
   | "UNSUPPORTED_SNAPSHOT"
   | "SNAPSHOT_STALE"
@@ -548,7 +549,45 @@ export interface InventoryCounts {
   readonly failedSources: number;
 }
 
+export interface InventoryEffectiveResource {
+  readonly candidateId: string;
+  readonly adapterId: string;
+  readonly sourceId: string;
+  readonly scope: Scope;
+  readonly state: "effective" | "shadowed" | "ambiguous" | "unknown";
+  readonly policy: "unknown" | "ranked" | "cumulative";
+  readonly reason: string;
+  readonly evidence: string;
+}
+
+export interface InventoryCoverage {
+  readonly location?: string;
+  readonly bounds?: {
+    readonly maxDepth: number;
+    readonly maxEntries: number;
+    readonly maxBytes: number;
+  };
+  readonly adapterId: string;
+  readonly sourceId?: string;
+  readonly scope?: Scope;
+  readonly kind?: Capability;
+  readonly dimension:
+    | "source"
+    | "plugins"
+    | "managed"
+    | "ancestors"
+    | "nested-projects"
+    | "native-expansion";
+  readonly status: "observed" | "excluded" | "unavailable" | "unknown";
+  readonly mode: "declared" | "placement-only";
+  readonly reason: string;
+}
+
 export interface InventoryRefreshResult {
+  /** Additive v1 evidence; older producers may omit it. Complete refers only to these bounds. */
+  readonly coverage?: readonly InventoryCoverage[];
+  readonly effectiveResources?: readonly InventoryEffectiveResource[];
+  readonly resolutionContext?: "user" | "project";
   readonly generatedAt: string;
   readonly candidates: readonly InventoryCandidate[];
   readonly findings: readonly InventoryFinding[];

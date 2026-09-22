@@ -748,6 +748,48 @@ describe("local client route registry", () => {
       schemaErrors(validMcpAdapter, customAdapterSchema, document.components.schemas, "$"),
     ).toEqual([]);
 
+    const discoveryAdapter = (precedence: unknown) => ({
+      action: "upsert-adapter",
+      agentId: "local-agent",
+      kind: "custom",
+      adapter: {
+        skills: { global: "~/.write" },
+        discovery: [
+          {
+            sourceId: "fixture",
+            scope: "global",
+            kind: "skills",
+            path: "~/.read",
+            locator: "tree",
+            maxDepth: 16,
+            maxEntries: 1000,
+            maxBytes: 10000,
+            precedence,
+          },
+        ],
+      },
+    });
+    for (const precedence of [
+      { policy: "unknown", evidence: "fixture" },
+      { policy: "ranked", rank: 1, evidence: "fixture" },
+    ]) {
+      const input = discoveryAdapter(precedence);
+      expect(() => parseAdapterBodyConfig(input.adapter)).not.toThrow();
+      expect(schemaErrors(input, customAdapterSchema, document.components.schemas, "$")).toEqual(
+        [],
+      );
+    }
+    for (const precedence of [
+      { policy: "ranked", evidence: "fixture" },
+      { policy: "unknown", evidence: "fixture", unexpected: true },
+    ]) {
+      const input = discoveryAdapter(precedence);
+      expect(() => parseAdapterBodyConfig(input.adapter)).toThrow();
+      expect(
+        schemaErrors(input, customAdapterSchema, document.components.schemas, "$"),
+      ).not.toEqual([]);
+    }
+
     const configSchema = inputBodySchema("validateConfig");
     const validConfigs = [
       { defaults: { method: "copy" } },

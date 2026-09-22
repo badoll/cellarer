@@ -109,6 +109,7 @@ const inventoryFinding = dataObject(["code", "severity", "scope", "remediation"]
     "ADAPTER_PATHS_FAILED",
     "SOURCE_OUTSIDE_BOUNDARY",
     "SOURCE_UNREADABLE",
+    "SOURCE_BUDGET_EXCEEDED",
     "UNSAFE_LINK",
     "UNSUPPORTED_SNAPSHOT",
     "SNAPSHOT_STALE",
@@ -191,10 +192,49 @@ const inventoryCounts = dataObject(
     failedSources: jsonSchema.integer(),
   },
 );
+const inventoryCoverage = dataObject(["adapterId", "dimension", "status", "mode", "reason"], {
+  location: jsonSchema.string(),
+  bounds: dataObject(["maxDepth", "maxEntries", "maxBytes"], {
+    maxDepth: jsonSchema.integer(),
+    maxEntries: jsonSchema.integer(),
+    maxBytes: jsonSchema.integer(),
+  }),
+  adapterId: agentId,
+  sourceId: jsonSchema.string({ minLength: 1 }),
+  scope,
+  kind: jsonSchema.enumeration(["rules", "mcp", "skills"]),
+  dimension: jsonSchema.enumeration([
+    "source",
+    "plugins",
+    "managed",
+    "ancestors",
+    "nested-projects",
+    "native-expansion",
+  ]),
+  status: jsonSchema.enumeration(["observed", "excluded", "unavailable", "unknown"]),
+  mode: jsonSchema.enumeration(["declared", "placement-only"]),
+  reason: jsonSchema.string(),
+});
+const inventoryEffectiveResource = dataObject(
+  ["candidateId", "adapterId", "sourceId", "scope", "state", "policy", "reason", "evidence"],
+  {
+    candidateId: jsonSchema.string({ minLength: 1 }),
+    adapterId: agentId,
+    sourceId: jsonSchema.string({ minLength: 1 }),
+    scope,
+    state: jsonSchema.enumeration(["effective", "shadowed", "ambiguous", "unknown"]),
+    policy: jsonSchema.enumeration(["unknown", "ranked", "cumulative"]),
+    reason: jsonSchema.string(),
+    evidence: jsonSchema.string(),
+  },
+);
 const inventoryRefreshOutput = dataObject(
   ["generatedAt", "candidates", "findings", "counts", "completeness"],
   {
     generatedAt: jsonSchema.string({ minLength: 1 }),
+    coverage: jsonSchema.array(inventoryCoverage),
+    effectiveResources: jsonSchema.array(inventoryEffectiveResource),
+    resolutionContext: jsonSchema.enumeration(["user", "project"]),
     candidates: jsonSchema.array(inventoryCandidate),
     findings: jsonSchema.array(inventoryFinding),
     counts: inventoryCounts,
@@ -258,7 +298,47 @@ const adapterCapabilities = dataObject([], {
   mcp: jsonSchema.array(scope),
   skills: jsonSchema.array(scope),
 });
+const adapterDiscovery = jsonSchema.array(
+  dataObject(
+    [
+      "sourceId",
+      "scope",
+      "kind",
+      "path",
+      "locator",
+      "maxDepth",
+      "maxEntries",
+      "maxBytes",
+      "precedence",
+    ],
+    {
+      sourceId: jsonSchema.string({ pattern: "^[a-z0-9][a-z0-9-]*$" }),
+      scope,
+      kind: jsonSchema.enumeration(["rules", "mcp", "skills"]),
+      path: jsonSchema.string({ minLength: 1 }),
+      locator: jsonSchema.enumeration(["file", "tree"]),
+      maxDepth: { type: "integer", minimum: 1, maximum: 64 },
+      maxEntries: { type: "integer", minimum: 1, maximum: 100000 },
+      maxBytes: { type: "integer", minimum: 1, maximum: 234881024 },
+      precedence: {
+        oneOf: [
+          dataObject(["policy", "evidence"], {
+            policy: jsonSchema.enumeration(["unknown", "cumulative"]),
+            rank: jsonSchema.integer(),
+            evidence: jsonSchema.string({ minLength: 1 }),
+          }),
+          dataObject(["policy", "rank", "evidence"], {
+            policy: { const: "ranked" },
+            rank: jsonSchema.integer(),
+            evidence: jsonSchema.string({ minLength: 1 }),
+          }),
+        ],
+      },
+    },
+  ),
+);
 const adapterPatchProperties: Record<string, JsonSchema> = {
+  discovery: adapterDiscovery,
   displayName: jsonSchema.string({ minLength: 1 }),
   detect: dataObject([], { global: stringArray, project: stringArray }),
   rules: adapterRules,
@@ -311,6 +391,7 @@ const configValidationAdapterDialect = dataObject([], {
   remoteType: jsonSchema.string({ minLength: 1 }),
 });
 const configValidationAdapterPatchProperties: Record<string, JsonSchema> = {
+  discovery: adapterDiscovery,
   displayName: jsonSchema.string({ minLength: 1 }),
   detect: dataObject([], {
     global: configValidationStringArray,

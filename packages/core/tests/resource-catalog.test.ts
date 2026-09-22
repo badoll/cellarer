@@ -251,6 +251,8 @@ describe("resource catalog", () => {
             adapters: [
               expect.objectContaining({ id: "agents-md" }),
               expect.objectContaining({ id: "codex" }),
+              expect.objectContaining({ id: "cursor" }),
+              expect.objectContaining({ id: "opencode" }),
             ],
           }),
         ],

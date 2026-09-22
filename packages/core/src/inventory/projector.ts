@@ -1,9 +1,11 @@
+import { relative, sep } from "node:path";
 import { loadRegistryFromConfig } from "../adapters/registry.js";
 import type { AgentAdapter } from "../adapters/types.js";
 import type { Env } from "../env.js";
 import { serverFromRaw, serverToRaw } from "../mcp/model.js";
 import { canonicalJson } from "../protocol/canonical.js";
 import type {
+  InventoryCoverage,
   InventoryFinding,
   InventoryFindingCode,
   InventoryRefreshResult,
@@ -21,7 +23,11 @@ import {
   type InventorySource,
   inspectInventorySourcesBounded,
 } from "./enumerator.js";
-import { groupInventoryCandidates, inventoryFinding } from "./grouper.js";
+import {
+  groupInventoryCandidates,
+  inventoryFinding,
+  projectEffectiveResources,
+} from "./grouper.js";
 import {
   inspectInventorySourceCaptured,
   normalizeInventoryName,
@@ -115,13 +121,88 @@ export async function captureInventoryRefresh(
         findings.push(inventoryFinding("STORE_PROJECTION_FAILED", "refresh"));
       }
 
-      const result = projectRefreshResult(
+      const projected = projectRefreshResult(
         env,
         inspected.candidates,
         managed,
         findings,
         enumeration.sources.length,
+        [
+          ...enumeration.sources.map(
+            (source): InventoryCoverage => ({
+              adapterId: source.adapterId,
+              sourceId: source.discovery?.sourceId,
+              ...(source.boundaryRoot
+                ? {
+                    location: `${source.scope === "global" ? "~" : "<project>"}/${relative(source.boundaryRoot, source.path).split(sep).join("/")}`,
+                  }
+                : {}),
+              ...(source.discovery
+                ? {
+                    bounds: {
+                      maxDepth: source.discovery.maxDepth,
+                      maxEntries: source.discovery.maxEntries,
+                      maxBytes: source.discovery.maxBytes,
+                    },
+                  }
+                : {}),
+              kind: source.kind,
+              scope: source.scope,
+              dimension: "source",
+              status: inspected.findings.some((finding) => finding.source.id === source.id)
+                ? "unavailable"
+                : "observed",
+              mode: source.discoveryMode ?? "placement-only",
+              reason:
+                source.discoveryMode === "declared"
+                  ? "Declared bounded source; absent paths are empty observations."
+                  : "Placement-only fallback; native discovery is unknown.",
+            }),
+          ),
+          ...enumeration.findings
+            .filter((finding) => finding.code !== "ADAPTER_DETECTION_FAILED")
+            .map(
+              (finding): InventoryCoverage => ({
+                adapterId: finding.adapterId,
+                scope: finding.scope,
+                ...(finding.kind ? { kind: finding.kind } : {}),
+                dimension: "source",
+                status: finding.code === "SOURCE_OUTSIDE_BOUNDARY" ? "excluded" : "unavailable",
+                mode: registry.get(finding.adapterId)?.discovery ? "declared" : "placement-only",
+                reason: finding.code,
+              }),
+            ),
+          ...registry
+            .list()
+            .filter((adapter) => !options.agentId || adapter.id === options.agentId)
+            .flatMap((adapter) =>
+              (
+                ["plugins", "managed", "ancestors", "nested-projects", "native-expansion"] as const
+              ).map(
+                (dimension): InventoryCoverage => ({
+                  adapterId: adapter.id,
+                  dimension,
+                  status: "excluded",
+                  mode: adapter.discovery ? "declared" : "placement-only",
+                  reason:
+                    "Outside the explicitly declared user and project boundary; not searched.",
+                }),
+              ),
+            ),
+        ],
       );
+      const incomplete = new Set(
+        inspected.findings.map((finding) => `${finding.source.adapterId}\0${finding.source.kind}`),
+      );
+      for (const finding of enumeration.findings) {
+        for (const kind of finding.kind ? [finding.kind] : ["rules", "mcp", "skills"])
+          incomplete.add(`${finding.adapterId}\0${kind}`);
+      }
+      const result = Object.freeze({
+        ...projected,
+        resolutionContext: enumeration.projectRoot ? ("project" as const) : ("user" as const),
+        effectiveResources: projectEffectiveResources(inspected.candidates, incomplete),
+      });
       return Object.freeze({
         result,
         candidates: inspected.candidates,
@@ -143,13 +224,20 @@ function projectRefreshResult(
   managed: readonly ManagedInventoryRevision[],
   inputFindings: readonly InventoryFinding[],
   observedSources: number,
+  coverage: readonly InventoryCoverage[] = [],
 ): InventoryRefreshResult {
   const candidates = groupInventoryCandidates(env, observations, managed);
   const findings = Object.freeze([...inputFindings]);
   const completeness =
-    findings.length === 0 ? "complete" : candidates.length > 0 ? "partial" : "failed";
+    findings.length === 0
+      ? "complete"
+      : candidates.length > 0 ||
+          findings.some((finding) => finding.code === "SOURCE_BUDGET_EXCEEDED")
+        ? "partial"
+        : "failed";
   return Object.freeze({
     generatedAt: env.now().toISOString(),
+    coverage: Object.freeze(coverage),
     candidates,
     findings,
     counts: Object.freeze({
@@ -165,6 +253,18 @@ function projectRefreshResult(
   });
 }
 
+function captureKey(source: InventorySource): string {
+  return JSON.stringify([
+    source.kind,
+    source.path,
+    source.boundaryRoot,
+    source.discovery?.maxDepth,
+    source.discovery?.maxEntries,
+    source.discovery?.maxBytes,
+    source.kind === "mcp" ? source.adapterId : null,
+  ]);
+}
+
 async function inspectSources(
   env: Env,
   sources: readonly InventorySource[],
@@ -176,7 +276,7 @@ async function inspectSources(
 }> {
   const work = new Map<string, InventorySource[]>();
   for (const source of sources) {
-    const key = `${source.kind}\0${source.path}${source.kind === "mcp" ? `\0${source.adapterId}` : ""}`;
+    const key = captureKey(source);
     const group = work.get(key) ?? [];
     group.push(source);
     work.set(key, group);
@@ -196,9 +296,7 @@ async function inspectSources(
   const candidates: CapturedInventoryCandidateObservation[] = [];
   const findings: InventorySourceFinding[] = [];
   for (const result of inspected) {
-    const key = `${result.source.kind}\0${result.source.path}${
-      result.source.kind === "mcp" ? `\0${result.source.adapterId}` : ""
-    }`;
+    const key = captureKey(result.source);
     const equivalentSources = work.get(key) ?? [result.source];
     if (!result.ok) {
       findings.push(

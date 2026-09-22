@@ -99,6 +99,30 @@ equivalent candidates, preserves redacted provenance and typed findings, marks
 Store matches, and declares complete, partial, or failed completeness. Refresh
 does not import, write targets, or access mutation authority or secret providers.
 
+Discovery sources are independent of placement paths. Seven built-in adapters declare
+bounded user/project sources; OpenCode and Cursor also declare documented compatible
+Skill roots. Changing a write path does not silently change discovery. Custom adapters
+without `discovery` retain a `placement-only` view. A discovery entry specifies `sourceId`,
+`scope`, `kind`, literal `path`, `locator` (`file` for Rules/MCP, `tree` for Skills),
+`maxDepth`, `maxEntries`, `maxBytes`, and `precedence` (`policy`, optional `rank`, `evidence`).
+Ranked policy requires a rank; higher wins. Cumulative policy is for Rules only.
+
+`coverage` reports observed, excluded, unavailable, or unknown dimensions. Complete means
+complete within declared bounds: plugins, managed/system locations, parent directories,
+arbitrary nested projects, rule imports/globs and other native expansion are not searched.
+The explicit project root is the trust boundary. Captures reject symlinks and enforce
+source budgets before reading content; an omitted source does not hide successful sources.
+Built-in bounds are depth 16, 10,000 entries (files and directories), and 16 MiB per source.
+Skill candidates are direct child directories; nested native discovery is outside this scope.
+
+`effectiveResources` explains effective, shadowed, ambiguous, or unknown relationships
+per adapter and logical candidate within the observed scope, with rule evidence.
+Claude personal Skills have higher declared priority than project Skills; its observed
+CLAUDE.md fragments accumulate. Unverified policies remain unknown or ambiguous.
+These are documentation-based explanations, not certification of a running native agent.
+Conflicting candidates remain unselected and require exact import selection regardless
+of effective status. Older v1 clients may omit the additive coverage/resolution fields.
+
 ### Collection
 
 A collection groups resource IDs for selection. `default` is created during

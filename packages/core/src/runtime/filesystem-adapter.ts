@@ -17,6 +17,7 @@ import type {
   FileTreeSnapshot,
   FileTreeSnapshotNode,
   FsLike,
+  SnapshotLimits,
   SymlinkType,
 } from "../env.js";
 
@@ -202,6 +203,7 @@ async function snapshotWorkerMain(): Promise<void> {
     expectedRoot: string;
     includeData: boolean;
     budget: {
+      maxDepth: number;
       maxNodes: number;
       maxSingleFileBytes: number;
       maxTotalFileBytes: number;
@@ -230,6 +232,7 @@ async function snapshotWorkerMain(): Promise<void> {
   if (
     !budget ||
     ![
+      budget.maxDepth,
       budget.maxNodes,
       budget.maxSingleFileBytes,
       budget.maxTotalFileBytes,
@@ -247,6 +250,7 @@ async function snapshotWorkerMain(): Promise<void> {
     const pathBytes = Buffer.byteLength(path, "utf8");
     totalPathBytes += pathBytes;
     if (
+      (path ? path.split("/").length : 0) > budget.maxDepth ||
       nodeCount > budget.maxNodes ||
       pathBytes > budget.maxRelativePathBytes ||
       totalPathBytes > budget.maxTotalPathBytes ||
@@ -387,6 +391,7 @@ async function anchoredSnapshotWorkerMain(): Promise<void> {
     includeData: boolean;
     expectedRootPath: string;
     budget: {
+      maxDepth: number;
       maxNodes: number;
       maxSingleFileBytes: number;
       maxTotalFileBytes: number;
@@ -432,6 +437,7 @@ async function anchoredSnapshotWorkerMain(): Promise<void> {
   if (
     !budget ||
     ![
+      budget.maxDepth,
       budget.maxNodes,
       budget.maxSingleFileBytes,
       budget.maxTotalFileBytes,
@@ -449,6 +455,7 @@ async function anchoredSnapshotWorkerMain(): Promise<void> {
     const pathBytes = Buffer.byteLength(path, "utf8");
     totalPathBytes += pathBytes;
     if (
+      (path ? path.split("/").length : 0) > budget.maxDepth ||
       nodeCount > budget.maxNodes ||
       pathBytes > budget.maxRelativePathBytes ||
       totalPathBytes > budget.maxTotalPathBytes ||
@@ -849,18 +856,36 @@ async function anchoredSnapshotWorkerMain(): Promise<void> {
 
 const ANCHORED_SNAPSHOT_WORKER_SOURCE = `${classifyWindowsSnapshotIdentity.toString()}\n(${anchoredSnapshotWorkerMain.toString()})()`;
 
-function snapshotTraversalBudget(): Pick<
-  typeof SNAPSHOT_WORKER_BUDGET,
-  | "maxNodes"
-  | "maxSingleFileBytes"
-  | "maxTotalFileBytes"
-  | "maxRelativePathBytes"
-  | "maxTotalPathBytes"
-> {
+function snapshotTraversalBudget(limits?: SnapshotLimits): {
+  maxDepth: number;
+  maxNodes: number;
+  maxSingleFileBytes: number;
+  maxTotalFileBytes: number;
+  maxRelativePathBytes: number;
+  maxTotalPathBytes: number;
+} {
+  if (
+    limits &&
+    ![limits.maxDepth, limits.maxEntries, limits.maxBytes].every(
+      (value) => Number.isSafeInteger(value) && value > 0,
+    )
+  ) {
+    throw snapshotFailure("CELLARER_SNAPSHOT_BUDGET_EXCEEDED", "<snapshot>");
+  }
   return {
-    maxNodes: SNAPSHOT_WORKER_BUDGET.maxNodes,
-    maxSingleFileBytes: SNAPSHOT_WORKER_BUDGET.maxSingleFileBytes,
-    maxTotalFileBytes: SNAPSHOT_WORKER_BUDGET.maxTotalFileBytes,
+    maxDepth: limits?.maxDepth ?? SNAPSHOT_WORKER_BUDGET.maxNodes,
+    maxNodes: Math.min(
+      limits?.maxEntries ?? SNAPSHOT_WORKER_BUDGET.maxNodes,
+      SNAPSHOT_WORKER_BUDGET.maxNodes,
+    ),
+    maxSingleFileBytes: Math.min(
+      limits?.maxBytes ?? SNAPSHOT_WORKER_BUDGET.maxSingleFileBytes,
+      SNAPSHOT_WORKER_BUDGET.maxSingleFileBytes,
+    ),
+    maxTotalFileBytes: Math.min(
+      limits?.maxBytes ?? SNAPSHOT_WORKER_BUDGET.maxTotalFileBytes,
+      SNAPSHOT_WORKER_BUDGET.maxTotalFileBytes,
+    ),
     maxRelativePathBytes: SNAPSHOT_WORKER_BUDGET.maxRelativePathBytes,
     maxTotalPathBytes: SNAPSHOT_WORKER_BUDGET.maxTotalPathBytes,
   };
@@ -910,6 +935,7 @@ function snapshotPathNoFollowSync(
   path: string,
   includeData: boolean,
   runner: SnapshotWorkerRunner = defaultSnapshotWorkerRunner,
+  limits?: SnapshotLimits,
 ): FileTreeSnapshot | null {
   snapshotRuntimeSupport(nodeProcess.platform, nodeProcess.arch, path);
   if (!isAbsolute(anchorRoot) || !isAbsolute(path)) {
@@ -936,7 +962,7 @@ function snapshotPathNoFollowSync(
       targetSegments: targetRelative.split(sep).filter(Boolean),
       includeData,
       expectedRootPath: pathRoot,
-      budget: snapshotTraversalBudget(),
+      budget: snapshotTraversalBudget(limits),
     },
     path,
   );
@@ -1183,8 +1209,9 @@ async function snapshotPathNoFollow(
   anchorRoot: string,
   path: string,
   runner: SnapshotWorkerRunner = defaultSnapshotWorkerRunner,
+  limits?: SnapshotLimits,
 ): Promise<FileTreeSnapshot | null> {
-  return snapshotPathNoFollowSync(anchorRoot, path, true, runner);
+  return snapshotPathNoFollowSync(anchorRoot, path, true, runner, limits);
 }
 
 async function verifyTreeSnapshot(
@@ -1249,8 +1276,8 @@ export function createRealFilesystemAdapter(
     },
     snapshotTreeNoFollow: (path) => snapshotTreeNoFollow(path, snapshotWorkerRunner),
     verifyTreeSnapshot: (snapshot) => verifyTreeSnapshot(snapshot, snapshotWorkerRunner),
-    snapshotPathNoFollow: (anchorRoot, path) =>
-      snapshotPathNoFollow(anchorRoot, path, snapshotWorkerRunner),
+    snapshotPathNoFollow: (anchorRoot, path, limits) =>
+      snapshotPathNoFollow(anchorRoot, path, snapshotWorkerRunner, limits),
     writeFile: (path, data, opts) =>
       nodeFs.writeFile(path, data, { encoding: "utf8", mode: opts?.mode }),
     writeFileBytes: (path, data, opts) => nodeFs.writeFile(path, data, { mode: opts?.mode }),

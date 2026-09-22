@@ -100,6 +100,11 @@ export function createInventoryRefreshCommandContract(
           `inventory: ${outcome.data.completeness} (${counts.total} candidates; ${counts.ready} ready, ${counts.needsAttention} need attention, ${counts.inStore} in Store)`,
         );
         output.log(`sources: ${counts.observedSources} observed, ${counts.failedSources} failed`);
+        for (const coverage of outcome.data.coverage ?? []) {
+          output.log(
+            `coverage=${coverage.adapterId}:${coverage.dimension}:${coverage.sourceId ?? "-"} ${coverage.status} (${coverage.mode}) ${coverage.location ?? ""} ${coverage.bounds ? JSON.stringify(coverage.bounds) : ""} ${coverage.reason}`,
+          );
+        }
         for (const candidate of outcome.data.candidates) {
           output.log(
             `${candidate.id} ${candidate.kind}/${candidate.name} state=${candidate.state} selected=${String(candidate.defaultSelected)}`,
@@ -110,6 +115,13 @@ export function createInventoryRefreshCommandContract(
           }
           if (candidate.relatedAdapters.length > 0) {
             output.log(`  adapters=${candidate.relatedAdapters.map(({ id }) => id).join(",")}`);
+          }
+          for (const effective of outcome.data.effectiveResources?.filter(
+            (row) => row.candidateId === candidate.id,
+          ) ?? []) {
+            output.log(
+              `  effective=${effective.adapterId}:${effective.scope}:${effective.sourceId} ${effective.state}: ${effective.reason} ${effective.evidence}`,
+            );
           }
           for (const finding of candidate.findings) {
             output.warn(

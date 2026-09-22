@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadRegistryFromConfig } from "../src/adapters/registry.js";
@@ -140,6 +141,110 @@ describe("unified Inventory source enumeration", () => {
     ]);
     expect(JSON.stringify(result)).not.toContain("secret detection detail");
     expect(JSON.stringify(result)).not.toContain("secret path detail");
+  });
+
+  it("keeps discovery independent from placement and includes documented compatible roots", async () => {
+    const configuration = parseConfig(
+      JSON.stringify({
+        adapterOverrides: {
+          opencode: { skills: { global: "~/.placement-only" } },
+        },
+      }),
+    );
+    const registry = await loadRegistryFromConfig(t.env, configuration);
+    const adapter = registry.get("opencode");
+    if (!adapter) throw new Error("missing opencode");
+    expect(adapter.paths(t.env, "global").skillsDir).toBe(t.path("home", ".placement-only"));
+    const result = await enumerateInventorySources(t.env, {
+      adapters: registry.list(),
+      configuration,
+      agentId: "opencode",
+    });
+    expect(
+      result.sources
+        .filter((source) => source.kind === "skills")
+        .map((source) => source.path)
+        .sort(),
+    ).toEqual(
+      [
+        t.path("home", ".agents/skills"),
+        t.path("home", ".claude/skills"),
+        t.path("home", ".config/opencode/skills"),
+      ].sort(),
+    );
+    expect(result.sources.every((source) => source.discoveryMode === "declared")).toBe(true);
+  });
+
+  it("uses placement-only fallback for custom adapters and rejects unbounded descriptors", async () => {
+    const { configuration, adapters } = await fixture();
+    const result = await enumerateInventorySources(t.env, {
+      adapters,
+      configuration,
+      agentId: "fixture-agent",
+    });
+    expect(result.sources.every((source) => source.discoveryMode === "placement-only")).toBe(true);
+    const descriptor = {
+      sourceId: "skills",
+      scope: "global",
+      kind: "skills",
+      path: "~/.pool",
+      locator: "tree",
+      maxDepth: 16,
+      maxEntries: 1000,
+      maxBytes: 10000,
+      precedence: { policy: "ranked", rank: 1, evidence: "test declaration" },
+    };
+    const config = (discovery: unknown) =>
+      JSON.stringify({
+        customAdapters: { fixture: { skills: { global: "~/.write" }, discovery } },
+      });
+    expect(() => parseConfig(config([descriptor]))).not.toThrow();
+    for (const invalid of [
+      { ...descriptor, maxDepth: 0 },
+      { ...descriptor, maxEntries: 100001 },
+      { ...descriptor, precedence: { policy: "ranked", evidence: "missing rank" } },
+    ]) {
+      expect(() => parseConfig(config([invalid]))).toThrow();
+    }
+    expect(() => parseConfig(config([descriptor, descriptor]))).toThrow();
+  });
+
+  it("isolates an escaping discovery source without inspecting ancestors outside the project", async () => {
+    const projectRoot = t.path("project");
+    await t.env.fs.mkdir(projectRoot, { recursive: true });
+    const base = {
+      scope: "project",
+      kind: "rules",
+      locator: "file",
+      maxDepth: 4,
+      maxEntries: 10,
+      maxBytes: 1000,
+      precedence: { policy: "unknown", evidence: "fixture" },
+    };
+    const configuration = parseConfig(
+      JSON.stringify({
+        customAdapters: {
+          fixture: {
+            rules: { project: "{dir}/WRITE.md" },
+            discovery: [
+              { ...base, sourceId: "safe", path: "{dir}/RULES.md" },
+              { ...base, sourceId: "ancestor", path: "{dir}/../RULES.md" },
+            ],
+          },
+        },
+      }),
+    );
+    const registry = await loadRegistryFromConfig(t.env, configuration);
+    const result = await enumerateInventorySources(t.env, {
+      adapters: registry.list(),
+      configuration,
+      projectRoot,
+      agentId: "fixture",
+    });
+    expect(result.sources.map((source) => source.path)).toEqual([join(projectRoot, "RULES.md")]);
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ code: "SOURCE_OUTSIDE_BOUNDARY" }),
+    );
   });
 
   it("settles bounded source work in deterministic source order", async () => {

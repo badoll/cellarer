@@ -1,5 +1,5 @@
 import { isAbsolute, join, normalize } from "node:path";
-import type { AgentAdapter, AgentPaths } from "../adapters/types.js";
+import type { AgentAdapter, AgentPaths, DiscoveryDescriptor } from "../adapters/types.js";
 import type { Env } from "../env.js";
 import { isWithinRoot } from "../fs/safety.js";
 import type { Capability, Scope } from "../model/index.js";
@@ -29,6 +29,8 @@ export interface InventorySource {
   readonly boundaryRoot?: string;
   readonly enabled: boolean;
   readonly detected: boolean;
+  readonly discovery?: DiscoveryDescriptor;
+  readonly discoveryMode?: "declared" | "placement-only";
 }
 
 export interface InventoryEnumeration {
@@ -89,21 +91,56 @@ export async function enumerateInventorySources(
     const enabled = options.configuration.adapterOverrides[adapter.id]?.enabled !== false;
     for (const { scope, root } of scopes) {
       const detected = await detectAdapter(env, adapter, scope, projectRoot, findings);
-      const paths = adapterPaths(env, adapter, scope, projectRoot, findings);
-      if (!paths) continue;
-
-      for (const kind of CAPABILITIES) {
-        if (!adapter.capabilities[kind].includes(scope)) continue;
-        const path = pathFor(paths, kind);
-        if (!path) continue;
+      let declarations: readonly DiscoveryDescriptor[];
+      try {
+        if (adapter.discovery) {
+          declarations = adapter.discovery(
+            env,
+            scope,
+            scope === "project" ? projectRoot : undefined,
+          );
+        } else {
+          const paths = adapterPaths(env, adapter, scope, projectRoot, findings);
+          if (!paths) continue;
+          declarations = CAPABILITIES.flatMap((kind) => {
+            const path = pathFor(paths, kind);
+            return path && adapter.capabilities[kind].includes(scope)
+              ? [
+                  {
+                    sourceId: `${scope}-${kind}`,
+                    scope,
+                    kind,
+                    path,
+                    locator: kind === "skills" ? ("tree" as const) : ("file" as const),
+                    maxDepth: 16,
+                    maxEntries: 10000,
+                    maxBytes: 16777216,
+                    precedence: {
+                      policy: "unknown" as const,
+                      evidence: "Placement-only fallback; native discovery is unknown.",
+                    },
+                  },
+                ]
+              : [];
+          });
+        }
+      } catch {
+        findings.push({ code: "ADAPTER_PATHS_FAILED", adapterId: adapter.id, scope });
+        continue;
+      }
+      for (const declaration of declarations) {
+        const { kind, path } = declaration;
+        if (declaration.scope !== scope) continue;
         const normalizedPath = normalize(path);
-        if (!isWithinRoot(root, normalizedPath)) {
+        if (normalizedPath === normalize(root) || !isWithinRoot(root, normalizedPath)) {
           findings.push({ code: "SOURCE_OUTSIDE_BOUNDARY", adapterId: adapter.id, scope, kind });
           continue;
         }
         sources.push(
           Object.freeze({
-            id: `${adapter.id}:${scope}:${kind}:${normalizedPath}`,
+            id: `${adapter.id}:${scope}:${kind}:${declaration.sourceId}:${normalizedPath}`,
+            discovery: declaration,
+            discoveryMode: adapter.discovery ? "declared" : "placement-only",
             adapterId: adapter.id,
             displayName: adapter.displayName,
             scope,

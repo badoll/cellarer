@@ -7,6 +7,7 @@ import { canonicalJson } from "../protocol/canonical.js";
 import type { InventoryFindingCode } from "../protocol/client-types.js";
 import { scanStructuredFileSecretFindings, scanTextForSecrets } from "../secrets/detector.js";
 import {
+  captureAnchoredSafeRecursiveSource,
   captureSafeRecursiveSource,
   type SafeRecursiveSnapshot,
   sliceSafeRecursiveSnapshot,
@@ -42,7 +43,16 @@ export async function inspectInventorySourceCaptured(
 
   let snapshot: SafeRecursiveSnapshot;
   try {
-    snapshot = await captureSafeRecursiveSource(env, source.path);
+    const captured = source.boundaryRoot
+      ? await captureAnchoredSafeRecursiveSource(
+          env,
+          source.boundaryRoot,
+          source.path,
+          source.discovery,
+        )
+      : await captureSafeRecursiveSource(env, source.path);
+    if (!captured) return frozenInspection([], []);
+    snapshot = captured;
   } catch (error) {
     return frozenInspection([], [{ code: snapshotFindingCode(error), source }]);
   }
@@ -273,6 +283,7 @@ function rawPublication(snapshot: SafeRecursiveSnapshot): CapturedInventoryPubli
 
 function snapshotFindingCode(error: unknown): InventoryFindingCode {
   if (!(error instanceof UnsafeRecursiveSourceError)) return "SOURCE_UNREADABLE";
+  if (error.reason === "budget-exceeded") return "SOURCE_BUDGET_EXCEEDED";
   if (error.reason === "symbolic-link") return "UNSAFE_LINK";
   if (error.reason === "unsupported") return "UNSUPPORTED_SNAPSHOT";
   if (error.reason === "stale") return "SNAPSHOT_STALE";

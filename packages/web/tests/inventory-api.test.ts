@@ -65,6 +65,13 @@ describe("Inventory local client API", () => {
     expect(targetedResponse.status).toBe(200);
     expect(targeted.data).toMatchObject({
       completeness: "complete",
+      resolutionContext: "project",
+      coverage: expect.arrayContaining([
+        expect.objectContaining({ adapterId: "codex", dimension: "plugins", status: "excluded" }),
+      ]),
+      effectiveResources: expect.arrayContaining([
+        expect.objectContaining({ adapterId: "codex", state: "unknown" }),
+      ]),
       candidates: [{ name: "inventory-demo", state: "ready" }],
     });
   });

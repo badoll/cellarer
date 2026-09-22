@@ -31,6 +31,12 @@ export interface FileTreeSnapshotNode {
   readonly data?: Uint8Array;
 }
 
+export interface SnapshotLimits {
+  readonly maxDepth: number;
+  readonly maxEntries: number;
+  readonly maxBytes: number;
+}
+
 export interface FileTreeSnapshot {
   readonly rootPath: string;
   readonly nodes: readonly FileTreeSnapshotNode[];
@@ -88,7 +94,11 @@ export interface FsLike {
   // Capture one descendant relative to a stable no-follow directory anchor. Implementations
   // validate every ancestor before reading bytes and revalidate every opened identity afterward.
   // A descendant proven stably absent returns null.
-  snapshotPathNoFollow(anchorRoot: string, path: string): Promise<FileTreeSnapshot | null>;
+  snapshotPathNoFollow(
+    anchorRoot: string,
+    path: string,
+    limits?: SnapshotLimits,
+  ): Promise<FileTreeSnapshot | null>;
   writeFile(path: string, data: string, opts?: { mode?: number }): Promise<void>;
   writeFileBytes(path: string, data: Uint8Array, opts?: { mode?: number }): Promise<void>;
   // Publish fully-written owner evidence only when path does not already exist.

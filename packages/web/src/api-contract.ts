@@ -1820,6 +1820,7 @@ const resourceInventoryFindingSchema = objectSchema(
       "ADAPTER_PATHS_FAILED",
       "SOURCE_OUTSIDE_BOUNDARY",
       "SOURCE_UNREADABLE",
+      "SOURCE_BUDGET_EXCEEDED",
       "UNSAFE_LINK",
       "UNSUPPORTED_SNAPSHOT",
       "SNAPSHOT_STALE",
@@ -2352,7 +2353,49 @@ const adapterCapabilitiesSchema = objectSchema({
   mcp: arraySchema(scopeSchema),
   skills: arraySchema(scopeSchema),
 });
+const adapterDiscoverySchema = arraySchema(
+  objectSchema(
+    {
+      sourceId: stringSchema({ pattern: "^[a-z0-9][a-z0-9-]*$" }),
+      scope: scopeSchema,
+      kind: capabilitySchema,
+      path: nonEmptyStringSchema,
+      locator: enumSchema(["file", "tree"]),
+      maxDepth: { type: "integer", minimum: 1, maximum: 64 },
+      maxEntries: { type: "integer", minimum: 1, maximum: 100000 },
+      maxBytes: { type: "integer", minimum: 1, maximum: 234881024 },
+      precedence: {
+        oneOf: [
+          objectSchema(
+            {
+              policy: enumSchema(["unknown", "cumulative"]),
+              rank: integerSchema(),
+              evidence: nonEmptyStringSchema,
+            },
+            ["policy", "evidence"],
+          ),
+          objectSchema(
+            { policy: { const: "ranked" }, rank: integerSchema(), evidence: nonEmptyStringSchema },
+            ["policy", "rank", "evidence"],
+          ),
+        ],
+      },
+    },
+    [
+      "sourceId",
+      "scope",
+      "kind",
+      "path",
+      "locator",
+      "maxDepth",
+      "maxEntries",
+      "maxBytes",
+      "precedence",
+    ],
+  ),
+);
 const adapterDefinitionProperties = {
+  discovery: adapterDiscoverySchema,
   displayName: nonEmptyStringSchema,
   detect: objectSchema({ global: stringArraySchema, project: stringArraySchema }),
   rules: adapterRulesSchema,
@@ -3109,6 +3152,7 @@ const inventoryFindingSchema = objectSchema(
       "ADAPTER_PATHS_FAILED",
       "SOURCE_OUTSIDE_BOUNDARY",
       "SOURCE_UNREADABLE",
+      "SOURCE_BUDGET_EXCEEDED",
       "UNSAFE_LINK",
       "UNSUPPORTED_SNAPSHOT",
       "SNAPSHOT_STALE",
@@ -3188,9 +3232,50 @@ const inventoryCandidateSchema = objectSchema(
     "findings",
   ],
 );
+const inventoryCoverageSchema = objectSchema(
+  {
+    adapterId: agentIdSchema,
+    sourceId: nonEmptyStringSchema,
+    scope: scopeSchema,
+    kind: capabilitySchema,
+    location: stringSchema(),
+    bounds: objectSchema(
+      { maxDepth: integerSchema(), maxEntries: integerSchema(), maxBytes: integerSchema() },
+      ["maxDepth", "maxEntries", "maxBytes"],
+    ),
+    dimension: enumSchema([
+      "source",
+      "plugins",
+      "managed",
+      "ancestors",
+      "nested-projects",
+      "native-expansion",
+    ]),
+    status: enumSchema(["observed", "excluded", "unavailable", "unknown"]),
+    mode: enumSchema(["declared", "placement-only"]),
+    reason: stringSchema(),
+  },
+  ["adapterId", "dimension", "status", "mode", "reason"],
+);
+const inventoryEffectiveResourceSchema = objectSchema(
+  {
+    candidateId: nonEmptyStringSchema,
+    adapterId: agentIdSchema,
+    sourceId: nonEmptyStringSchema,
+    scope: scopeSchema,
+    state: enumSchema(["effective", "shadowed", "ambiguous", "unknown"]),
+    policy: enumSchema(["unknown", "ranked", "cumulative"]),
+    reason: stringSchema(),
+    evidence: stringSchema(),
+  },
+  ["candidateId", "adapterId", "sourceId", "scope", "state", "policy", "reason", "evidence"],
+);
 const inventoryRefreshDataSchema = objectSchema(
   {
     generatedAt: nonEmptyStringSchema,
+    coverage: arraySchema(inventoryCoverageSchema),
+    effectiveResources: arraySchema(inventoryEffectiveResourceSchema),
+    resolutionContext: enumSchema(["user", "project"]),
     candidates: arraySchema(inventoryCandidateSchema),
     findings: arraySchema(inventoryFindingSchema),
     counts: objectSchema(

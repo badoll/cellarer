@@ -22,6 +22,71 @@ describe("unified Inventory read-only safety", () => {
     await t.cleanup();
   });
 
+  it("enforces descriptor depth, entry and byte bounds while retaining successful sources", async () => {
+    const safe = t.path("home", ".safe", "RULES.md");
+    await t.env.fs.mkdir(join(safe, ".."), { recursive: true });
+    await t.env.fs.writeFile(safe, "Safe rules\n");
+    const pool = t.path("home", ".bounded", "demo");
+    await t.env.fs.mkdir(pool, { recursive: true });
+    await t.env.fs.writeFile(join(pool, "SKILL.md"), "# Bounded Skill\n");
+    const base = {
+      sourceId: "pool",
+      scope: "global",
+      kind: "skills",
+      path: "~/.bounded",
+      locator: "tree",
+      maxDepth: 16,
+      maxEntries: 100,
+      maxBytes: 10000,
+      precedence: { policy: "unknown", evidence: "fixture" },
+    };
+    for (const bounds of [{ maxDepth: 1 }, { maxEntries: 2 }, { maxBytes: 4 }]) {
+      await t.env.fs.writeFile(
+        join(storeRoot, "config.json"),
+        JSON.stringify({
+          customAdapters: {
+            bounded: {
+              skills: { global: "~/.write" },
+              discovery: [
+                { ...base, ...bounds },
+                {
+                  ...base,
+                  sourceId: "safe",
+                  kind: "rules",
+                  locator: "file",
+                  path: "~/.safe/RULES.md",
+                },
+              ],
+            },
+          },
+        }),
+      );
+      const result = await refreshInventory(t.env, { storeRoot, agentId: "bounded" });
+      expect(result.completeness).toBe("partial");
+      expect(result.candidates.map((candidate) => candidate.name)).toEqual(["RULES"]);
+      expect(result.findings.some((finding) => finding.code === "SOURCE_BUDGET_EXCEEDED")).toBe(
+        true,
+      );
+      expect(result.coverage).toContainEqual(
+        expect.objectContaining({ sourceId: "pool", status: "unavailable" }),
+      );
+      expect(result.coverage).toContainEqual(
+        expect.objectContaining({ dimension: "plugins", status: "excluded" }),
+      );
+    }
+  });
+
+  it("does not follow an intermediate source symlink outside the trust boundary", async () => {
+    const outside = t.path("outside");
+    await t.env.fs.mkdir(outside, { recursive: true });
+    await t.env.fs.writeFile(join(outside, "AGENTS.md"), "outside secret sentinel\n");
+    await t.env.fs.symlink(outside, t.path("home", ".agents"), "dir");
+    const result = await refreshInventory(t.env, { storeRoot, agentId: "agents-md" });
+    expect(result.candidates).toEqual([]);
+    expect(result.findings.some((finding) => finding.code === "UNSAFE_LINK")).toBe(true);
+    expect(JSON.stringify(result)).not.toContain("outside secret sentinel");
+  });
+
   it("performs no write or protected-capability interaction and exposes no observed secret", async () => {
     const sourcePath = t.path("home", ".agents", "AGENTS.md");
     await t.env.fs.mkdir(join(sourcePath, ".."), { recursive: true });

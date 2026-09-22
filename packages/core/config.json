@@ -37,7 +37,65 @@
         "rules": ["global", "project"],
         "mcp": [],
         "skills": ["global", "project"]
-      }
+      },
+      "discovery": [
+        {
+          "sourceId": "global-rules",
+          "scope": "global",
+          "kind": "rules",
+          "path": "~/.agents/AGENTS.md",
+          "locator": "file",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "project-rules",
+          "scope": "project",
+          "kind": "rules",
+          "path": "{dir}/AGENTS.md",
+          "locator": "file",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "global-skills",
+          "scope": "global",
+          "kind": "skills",
+          "path": "~/.agents/skills",
+          "locator": "tree",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "project-skills",
+          "scope": "project",
+          "kind": "skills",
+          "path": "{dir}/.agents/skills",
+          "locator": "tree",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        }
+      ]
     },
     "claude-code": {
       "displayName": "Claude Code",
@@ -65,7 +123,95 @@
         "rules": ["global", "project"],
         "mcp": ["global", "project"],
         "skills": ["global", "project"]
-      }
+      },
+      "discovery": [
+        {
+          "sourceId": "global-rules",
+          "scope": "global",
+          "kind": "rules",
+          "path": "~/.claude/CLAUDE.md",
+          "locator": "file",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "cumulative",
+            "evidence": "https://code.claude.com/docs/en/memory (2026-09-22): discovered CLAUDE.md files concatenate; observed scope only."
+          }
+        },
+        {
+          "sourceId": "project-rules",
+          "scope": "project",
+          "kind": "rules",
+          "path": "{dir}/CLAUDE.md",
+          "locator": "file",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "cumulative",
+            "evidence": "https://code.claude.com/docs/en/memory (2026-09-22): discovered CLAUDE.md files concatenate; observed scope only."
+          }
+        },
+        {
+          "sourceId": "global-mcp",
+          "scope": "global",
+          "kind": "mcp",
+          "path": "~/.claude.json",
+          "locator": "file",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "project-mcp",
+          "scope": "project",
+          "kind": "mcp",
+          "path": "{dir}/.mcp.json",
+          "locator": "file",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "global-skills",
+          "scope": "global",
+          "kind": "skills",
+          "path": "~/.claude/skills",
+          "locator": "tree",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "ranked",
+            "rank": 20,
+            "evidence": "https://code.claude.com/docs/en/skills#resolve-skills-that-share-a-name (2026-09-22): personal over project, bounded local sources only."
+          }
+        },
+        {
+          "sourceId": "project-skills",
+          "scope": "project",
+          "kind": "skills",
+          "path": "{dir}/.claude/skills",
+          "locator": "tree",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "ranked",
+            "rank": 10,
+            "evidence": "https://code.claude.com/docs/en/skills#resolve-skills-that-share-a-name (2026-09-22): personal over project, bounded local sources only."
+          }
+        }
+      ]
     },
     "codex": {
       "displayName": "Codex",
@@ -93,7 +239,93 @@
         "rules": ["global", "project"],
         "mcp": ["global", "project"],
         "skills": ["global", "project"]
-      }
+      },
+      "discovery": [
+        {
+          "sourceId": "global-rules",
+          "scope": "global",
+          "kind": "rules",
+          "path": "~/.codex/AGENTS.md",
+          "locator": "file",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "project-rules",
+          "scope": "project",
+          "kind": "rules",
+          "path": "{dir}/AGENTS.md",
+          "locator": "file",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "global-mcp",
+          "scope": "global",
+          "kind": "mcp",
+          "path": "~/.codex/config.toml",
+          "locator": "file",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "project-mcp",
+          "scope": "project",
+          "kind": "mcp",
+          "path": "{dir}/.codex/config.toml",
+          "locator": "file",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "global-skills",
+          "scope": "global",
+          "kind": "skills",
+          "path": "~/.agents/skills",
+          "locator": "tree",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "project-skills",
+          "scope": "project",
+          "kind": "skills",
+          "path": "{dir}/.agents/skills",
+          "locator": "tree",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        }
+      ]
     },
     "cursor": {
       "displayName": "Cursor",
@@ -120,7 +352,163 @@
         "rules": ["project"],
         "mcp": ["global", "project"],
         "skills": ["global", "project"]
-      }
+      },
+      "discovery": [
+        {
+          "sourceId": "project-rules",
+          "scope": "project",
+          "kind": "rules",
+          "path": "{dir}/.cursor/rules/cellarer.mdc",
+          "locator": "file",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "global-mcp",
+          "scope": "global",
+          "kind": "mcp",
+          "path": "~/.cursor/mcp.json",
+          "locator": "file",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "project-mcp",
+          "scope": "project",
+          "kind": "mcp",
+          "path": "{dir}/.cursor/mcp.json",
+          "locator": "file",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "global-skills",
+          "scope": "global",
+          "kind": "skills",
+          "path": "~/.cursor/skills",
+          "locator": "tree",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "project-skills",
+          "scope": "project",
+          "kind": "skills",
+          "path": "{dir}/.agents/skills",
+          "locator": "tree",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "global-skills-compatible-0",
+          "scope": "global",
+          "kind": "skills",
+          "path": "~/.agents/skills",
+          "locator": "tree",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "https://cursor.com/docs/skills (2026-09-22); collision order unverified."
+          }
+        },
+        {
+          "sourceId": "global-skills-compatible-1",
+          "scope": "global",
+          "kind": "skills",
+          "path": "~/.claude/skills",
+          "locator": "tree",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "https://cursor.com/docs/skills (2026-09-22); collision order unverified."
+          }
+        },
+        {
+          "sourceId": "global-skills-compatible-2",
+          "scope": "global",
+          "kind": "skills",
+          "path": "~/.codex/skills",
+          "locator": "tree",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "https://cursor.com/docs/skills (2026-09-22); collision order unverified."
+          }
+        },
+        {
+          "sourceId": "project-skills-compatible-3",
+          "scope": "project",
+          "kind": "skills",
+          "path": "{dir}/.cursor/skills",
+          "locator": "tree",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "https://cursor.com/docs/skills (2026-09-22); collision order unverified."
+          }
+        },
+        {
+          "sourceId": "project-skills-compatible-4",
+          "scope": "project",
+          "kind": "skills",
+          "path": "{dir}/.claude/skills",
+          "locator": "tree",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "https://cursor.com/docs/skills (2026-09-22); collision order unverified."
+          }
+        },
+        {
+          "sourceId": "project-skills-compatible-5",
+          "scope": "project",
+          "kind": "skills",
+          "path": "{dir}/.codex/skills",
+          "locator": "tree",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "https://cursor.com/docs/skills (2026-09-22); collision order unverified."
+          }
+        }
+      ]
     },
     "gemini-cli": {
       "displayName": "Gemini CLI",
@@ -148,7 +536,93 @@
         "global": "~/.gemini/skills",
         "project": "{dir}/.gemini/skills",
         "format": "dir"
-      }
+      },
+      "discovery": [
+        {
+          "sourceId": "global-rules",
+          "scope": "global",
+          "kind": "rules",
+          "path": "~/.gemini/GEMINI.md",
+          "locator": "file",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "project-rules",
+          "scope": "project",
+          "kind": "rules",
+          "path": "{dir}/GEMINI.md",
+          "locator": "file",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "global-mcp",
+          "scope": "global",
+          "kind": "mcp",
+          "path": "~/.gemini/settings.json",
+          "locator": "file",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "project-mcp",
+          "scope": "project",
+          "kind": "mcp",
+          "path": "{dir}/.gemini/settings.json",
+          "locator": "file",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "global-skills",
+          "scope": "global",
+          "kind": "skills",
+          "path": "~/.gemini/skills",
+          "locator": "tree",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "project-skills",
+          "scope": "project",
+          "kind": "skills",
+          "path": "{dir}/.gemini/skills",
+          "locator": "tree",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        }
+      ]
     },
     "opencode": {
       "displayName": "opencode",
@@ -183,7 +657,149 @@
         "rules": ["global", "project"],
         "mcp": ["global", "project"],
         "skills": ["global", "project"]
-      }
+      },
+      "discovery": [
+        {
+          "sourceId": "global-rules",
+          "scope": "global",
+          "kind": "rules",
+          "path": "~/.config/opencode/AGENTS.md",
+          "locator": "file",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "project-rules",
+          "scope": "project",
+          "kind": "rules",
+          "path": "{dir}/AGENTS.md",
+          "locator": "file",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "global-mcp",
+          "scope": "global",
+          "kind": "mcp",
+          "path": "~/.config/opencode/opencode.json",
+          "locator": "file",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "project-mcp",
+          "scope": "project",
+          "kind": "mcp",
+          "path": "{dir}/opencode.json",
+          "locator": "file",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "global-skills",
+          "scope": "global",
+          "kind": "skills",
+          "path": "~/.config/opencode/skills",
+          "locator": "tree",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "project-skills",
+          "scope": "project",
+          "kind": "skills",
+          "path": "{dir}/.agents/skills",
+          "locator": "tree",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "global-skills-compatible-0",
+          "scope": "global",
+          "kind": "skills",
+          "path": "~/.claude/skills",
+          "locator": "tree",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "https://opencode.ai/docs/skills/ (2026-09-22); collision order unverified."
+          }
+        },
+        {
+          "sourceId": "global-skills-compatible-1",
+          "scope": "global",
+          "kind": "skills",
+          "path": "~/.agents/skills",
+          "locator": "tree",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "https://opencode.ai/docs/skills/ (2026-09-22); collision order unverified."
+          }
+        },
+        {
+          "sourceId": "project-skills-compatible-2",
+          "scope": "project",
+          "kind": "skills",
+          "path": "{dir}/.opencode/skills",
+          "locator": "tree",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "https://opencode.ai/docs/skills/ (2026-09-22); collision order unverified."
+          }
+        },
+        {
+          "sourceId": "project-skills-compatible-3",
+          "scope": "project",
+          "kind": "skills",
+          "path": "{dir}/.claude/skills",
+          "locator": "tree",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "https://opencode.ai/docs/skills/ (2026-09-22); collision order unverified."
+          }
+        }
+      ]
     },
     "windsurf": {
       "displayName": "Windsurf",
@@ -212,7 +828,65 @@
         "rules": ["project"],
         "mcp": ["global"],
         "skills": ["global", "project"]
-      }
+      },
+      "discovery": [
+        {
+          "sourceId": "project-rules",
+          "scope": "project",
+          "kind": "rules",
+          "path": "{dir}/AGENTS.md",
+          "locator": "file",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "global-mcp",
+          "scope": "global",
+          "kind": "mcp",
+          "path": "~/.codeium/windsurf/mcp_config.json",
+          "locator": "file",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "global-skills",
+          "scope": "global",
+          "kind": "skills",
+          "path": "~/.codeium/windsurf/skills",
+          "locator": "tree",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        },
+        {
+          "sourceId": "project-skills",
+          "scope": "project",
+          "kind": "skills",
+          "path": "{dir}/.windsurf/skills",
+          "locator": "tree",
+          "maxDepth": 16,
+          "maxEntries": 10000,
+          "maxBytes": 16777216,
+          "precedence": {
+            "policy": "unknown",
+            "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
+          }
+        }
+      ]
     }
   }
 }

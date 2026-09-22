@@ -124,7 +124,59 @@ const capabilitiesSchema = z
   })
   .strict();
 
+const discoverySchema = z
+  .array(
+    z
+      .object({
+        sourceId: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
+        scope: z.enum(["global", "project"]),
+        kind: z.enum(["rules", "mcp", "skills"]),
+        path: nonEmptyString,
+        locator: z.enum(["file", "tree"]),
+        maxDepth: z.number().int().min(1).max(64),
+        maxEntries: z.number().int().min(1).max(100_000),
+        maxBytes: z
+          .number()
+          .int()
+          .min(1)
+          .max(224 * 1024 * 1024),
+        precedence: z
+          .object({
+            policy: z.enum(["unknown", "ranked", "cumulative"]),
+            rank: z.number().int().optional(),
+            evidence: nonEmptyString,
+          })
+          .strict()
+          .refine((value) => value.policy !== "ranked" || value.rank !== undefined, {
+            message: "ranked discovery requires rank",
+          }),
+      })
+      .strict(),
+  )
+  .max(128)
+  .superRefine((sources, ctx) => {
+    const ids = new Set<string>();
+    for (const source of sources) {
+      if (ids.has(source.sourceId))
+        ctx.addIssue({ code: "custom", message: "duplicate discovery sourceId" });
+      ids.add(source.sourceId);
+      if ((source.kind === "skills") !== (source.locator === "tree")) {
+        ctx.addIssue({
+          code: "custom",
+          message: "skills require tree locators; rules and mcp require file locators",
+        });
+      }
+      if (source.kind !== "rules" && source.precedence.policy === "cumulative") {
+        ctx.addIssue({
+          code: "custom",
+          message: "cumulative discovery is only supported for rules",
+        });
+      }
+    }
+  });
+
 const adapterFields = {
+  discovery: discoverySchema.optional(),
   displayName: nonEmptyString.optional(),
   detect: z
     .object({
@@ -394,6 +446,7 @@ function adapterToSpec(id: string, a: AdapterBodyConfig): AgentSpec {
     id,
     displayName: a.displayName ?? id,
     detect: a.detect,
+    discovery: a.discovery,
     rules: a.rules,
     mcp: a.mcp
       ? {

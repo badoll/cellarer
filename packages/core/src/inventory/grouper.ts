@@ -3,6 +3,7 @@ import type { Env } from "../env.js";
 import { isWithinRoot } from "../fs/safety.js";
 import type {
   InventoryCandidate,
+  InventoryEffectiveResource,
   InventoryFinding,
   InventoryFindingCode,
   InventoryFindingRemediation,
@@ -216,4 +217,89 @@ function findingRemediation(code: InventoryFindingCode): InventoryFindingRemedia
     return "repair-store";
   }
   return "check-source-access";
+}
+
+/** Explain only observed, declared scope. This never changes candidate identity or import state. */
+export function projectEffectiveResources(
+  observations: readonly InventoryCandidateObservation[],
+  incomplete: ReadonlySet<string>,
+): readonly InventoryEffectiveResource[] {
+  const groups = new Map<string, InventoryCandidateObservation[]>();
+  for (const observation of observations) {
+    const key = `${observation.source.adapterId}\0${observation.kind}\0${observation.normalizedName}`;
+    const group = groups.get(key) ?? [];
+    group.push(observation);
+    groups.set(key, group);
+  }
+  const projected: InventoryEffectiveResource[] = [];
+  for (const items of groups.values()) {
+    const first = items[0];
+    if (!first) continue;
+    const missing = incomplete.has(`${first.source.adapterId}\0${first.kind}`);
+    const fingerprints = new Set(items.map((item) => item.contentFingerprint));
+    const ranked = items.every(
+      (item) =>
+        item.source.discovery?.precedence.policy === "ranked" &&
+        Number.isInteger(item.source.discovery.precedence.rank),
+    );
+    const cumulative =
+      first.kind === "rules" &&
+      items.every((item) => item.source.discovery?.precedence.policy === "cumulative");
+    const maxRank = ranked
+      ? Math.max(...items.map((item) => item.source.discovery?.precedence.rank ?? 0))
+      : 0;
+    const leaders = new Set(
+      items
+        .filter((item) => item.source.discovery?.precedence.rank === maxRank)
+        .map((item) => item.contentFingerprint),
+    );
+    for (const item of items) {
+      const precedence = item.source.discovery?.precedence;
+      let state: InventoryEffectiveResource["state"] = "unknown";
+      let reason = "Native loading policy is unknown in the observed scope.";
+      if (missing || items.some((entry) => entry.findings.length > 0)) {
+        reason = "Source evidence is incomplete or unsafe; no winner can be established.";
+      } else if (cumulative) {
+        state = "effective";
+        reason = "Declared rule fragments accumulate within the observed scope.";
+      } else if (ranked) {
+        state =
+          leaders.size > 1
+            ? "ambiguous"
+            : item.source.discovery?.precedence.rank === maxRank
+              ? "effective"
+              : "shadowed";
+        reason =
+          leaders.size > 1
+            ? "Different candidates tie at the highest declared rank."
+            : "Higher declared rank wins within the observed scope.";
+      } else if (fingerprints.size > 1) {
+        state = "ambiguous";
+        reason = "Conflicting candidates have no common declared precedence rule.";
+      }
+      projected.push(
+        Object.freeze({
+          candidateId: inventoryCandidateId(
+            item.kind,
+            item.normalizedName,
+            item.contentFingerprint,
+          ),
+          adapterId: item.source.adapterId,
+          sourceId: item.source.discovery?.sourceId ?? item.source.kind,
+          scope: item.source.scope,
+          state,
+          policy: precedence?.policy ?? "unknown",
+          reason,
+          evidence: precedence?.evidence ?? "Placement-only fallback.",
+        }),
+      );
+    }
+  }
+  return Object.freeze(
+    projected.sort((a, b) =>
+      `${a.adapterId}:${a.candidateId}:${a.sourceId}`.localeCompare(
+        `${b.adapterId}:${b.candidateId}:${b.sourceId}`,
+      ),
+    ),
+  );
 }

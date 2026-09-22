@@ -1,5 +1,5 @@
 import { basename, dirname, join } from "node:path";
-import type { Env, FileTreeSnapshot, FsLike } from "../env.js";
+import type { Env, FileTreeSnapshot, FsLike, SnapshotLimits } from "../env.js";
 import { lstatOrNull } from "../fs/probe.js";
 import { sha256 } from "../store/checksum.js";
 
@@ -99,10 +99,11 @@ export async function captureAnchoredSafeRecursiveSource(
   env: Env,
   anchorRoot: string,
   rootPath: string,
+  limits?: SnapshotLimits,
 ): Promise<SafeRecursiveSnapshot | null> {
   let tree: FileTreeSnapshot | null;
   try {
-    tree = await env.fs.snapshotPathNoFollow(anchorRoot, rootPath);
+    tree = await env.fs.snapshotPathNoFollow(anchorRoot, rootPath, limits);
   } catch (error) {
     throw normalizeSnapshotError(rootPath, error);
   }

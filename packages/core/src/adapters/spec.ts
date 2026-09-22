@@ -9,7 +9,13 @@ import type { MergeStrategy } from "../mcp/merge.js";
 import type { McpDialect } from "../mcp/model.js";
 import type { Capability, Scope } from "../model/index.js";
 import { markdownRulesCodec } from "./codec.js";
-import type { AdapterMcp, AgentAdapter, AgentPaths, DetectResult } from "./types.js";
+import type {
+  AdapterMcp,
+  AgentAdapter,
+  AgentPaths,
+  DetectResult,
+  DiscoveryDescriptor,
+} from "./types.js";
 
 // 路径模板:支持 ~(家目录)与 {dir}(工程根)占位符。
 export interface PathTemplate {
@@ -20,6 +26,7 @@ export interface PathTemplate {
 export interface AgentSpec {
   id: string;
   displayName: string;
+  discovery?: readonly DiscoveryDescriptor[];
   // 探测:命中任一目录即视为已安装(空则回退到 rules 路径父目录)。
   detect?: { global?: string[]; project?: string[] };
   rules?: PathTemplate & { format?: "markdown" };
@@ -133,6 +140,21 @@ export function specToAdapter(spec: AgentSpec): AgentAdapter {
     mcp: buildMcp(spec),
     skills: spec.skills ? { format: "dir" } : undefined,
     paths,
+    ...(spec.discovery
+      ? {
+          discovery: (env: Env, scope: Scope, dir?: string) =>
+            (spec.discovery ?? [])
+              .filter((source) => source.scope === scope)
+              .map((source) => ({
+                ...source,
+                path: resolveTemplate(
+                  env,
+                  source.path,
+                  scope === "project" ? (dir ?? env.cwd()) : env.homedir(),
+                ),
+              })),
+        }
+      : {}),
     detect,
   };
 }

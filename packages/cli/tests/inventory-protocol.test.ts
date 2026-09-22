@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createCliCommandCatalog } from "../src/commands/command-catalog.js";
 import { buildProgram } from "../src/program.js";
+import { commandSchemaFragments } from "../src/protocol/command-schema-fragments.js";
+import { validateJsonSchema } from "../src/protocol/input.js";
 
 describe("Inventory CLI protocol", () => {
   it("publishes prompt-free refresh and exact plan/apply contracts with closed schemas", () => {
@@ -37,9 +39,83 @@ describe("Inventory CLI protocol", () => {
           type: "object",
           additionalProperties: false,
           required: ["generatedAt", "candidates", "findings", "counts", "completeness"],
+          properties: {
+            coverage: { type: "array" },
+            effectiveResources: { type: "array" },
+            resolutionContext: { enum: ["user", "project"] },
+          },
         },
       },
     });
+    const dataSchema = contract.outputSchema.properties?.data;
+    if (!dataSchema) throw new Error("missing Inventory data schema");
+    expect(
+      validateJsonSchema(
+        {
+          generatedAt: "2026-09-22T00:00:00Z",
+          candidates: [],
+          findings: [],
+          counts: {
+            total: 0,
+            ready: 0,
+            needsAttention: 0,
+            inStore: 0,
+            observedSources: 1,
+            failedSources: 0,
+          },
+          completeness: "complete",
+          resolutionContext: "project",
+          coverage: [
+            {
+              adapterId: "codex",
+              sourceId: "project-skills",
+              scope: "project",
+              kind: "skills",
+              location: "<project>/.agents/skills",
+              bounds: { maxDepth: 16, maxEntries: 10000, maxBytes: 16777216 },
+              dimension: "source",
+              status: "observed",
+              mode: "declared",
+              reason: "Bounded source.",
+            },
+          ],
+          effectiveResources: [],
+        },
+        dataSchema,
+      ),
+    ).toEqual([]);
+    const discovery = (precedence: unknown) => ({
+      skills: { global: "~/.write" },
+      discovery: [
+        {
+          sourceId: "fixture",
+          scope: "global",
+          kind: "skills",
+          path: "~/.read",
+          locator: "tree",
+          maxDepth: 16,
+          maxEntries: 1000,
+          maxBytes: 10000,
+          precedence,
+        },
+      ],
+    });
+    for (const precedence of [
+      { policy: "unknown", evidence: "fixture" },
+      { policy: "ranked", rank: 1, evidence: "fixture" },
+    ]) {
+      expect(validateJsonSchema(discovery(precedence), commandSchemaFragments.adapterBody)).toEqual(
+        [],
+      );
+    }
+    for (const precedence of [
+      { policy: "ranked", evidence: "fixture" },
+      { policy: "unknown", evidence: "fixture", unexpected: true },
+    ]) {
+      expect(
+        validateJsonSchema(discovery(precedence), commandSchemaFragments.adapterBody),
+      ).not.toEqual([]);
+    }
     expect(plan).toMatchObject({
       command: "inventory.import.plan",
       mutability: "write",
