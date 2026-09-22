@@ -224,7 +224,19 @@ export async function verify(env: Env, opts: VerificationOptions): Promise<Verif
     (action) =>
       action.target.length > 0 && (action.op !== "skip" || action.ownership !== undefined),
   );
-  const appliedByKey = new Map(applied.map((owner) => [targetKey(owner), owner] as const));
+  const projectionKey = (owner: Pick<TargetOwner, "agent" | "scope" | "capability" | "target">) =>
+    targetKey(owner);
+  const appliedByKey = new Map<string, TargetOwner>();
+  for (const owner of applied) {
+    const key = projectionKey({
+      agent: owner.agent,
+      scope: owner.scope,
+      capability: owner.capability,
+      target: owner.target,
+    });
+    if (!appliedByKey.has(key) || owner.syncProfile?.profileId === opts.syncProfile?.profileId)
+      appliedByKey.set(key, owner);
+  }
   const desiredKeys = new Set<string>();
   const desiredItems: DesiredAppliedItem[] = [];
 
@@ -262,7 +274,17 @@ export async function verify(env: Env, opts: VerificationOptions): Promise<Verif
   }
 
   for (const owner of applied) {
-    if (desiredKeys.has(targetKey(owner))) continue;
+    if (
+      desiredKeys.has(
+        projectionKey({
+          agent: owner.agent,
+          scope: owner.scope,
+          capability: owner.capability,
+          target: owner.target,
+        }),
+      )
+    )
+      continue;
     desiredItems.push({
       agent: owner.agent,
       scope: owner.scope,

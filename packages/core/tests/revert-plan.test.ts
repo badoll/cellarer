@@ -9,7 +9,7 @@ import {
   revert,
 } from "../src/engine/revert.js";
 import { readStoreRevision } from "../src/protocol/store-revision.js";
-import { loadLedger, makeLedger, saveLedger } from "../src/store/ledger.js";
+import { loadLedger, makeLedger, saveLedger, serializeLedger } from "../src/store/ledger.js";
 import { importSkillArtifact, initStore, writeRuleArtifact } from "../src/store/store.js";
 import { fingerprintTarget } from "../src/target-ownership.js";
 import { createEncryptedTargetSnapshot } from "../src/target-snapshot.js";
@@ -111,10 +111,7 @@ describe("drift-aware revert", () => {
     await saveLedger(
       t.env,
       storeRoot,
-      makeLedger([
-        owner,
-        { ...owner, agent: "historical-alias", artifactIds: ["rules/historical-style"] },
-      ]),
+      makeLedger([owner, { ...owner, agent: "historical-alias" }]),
     );
     let targetRemovals = 0;
     const env = {
@@ -206,10 +203,15 @@ describe("drift-aware revert", () => {
     const ledger = await loadLedger(t.env, storeRoot);
     const owner = ledger.owners[0];
     if (!owner) throw new Error("expected project owner");
-    const { projectRoot: _removed, ...preReleaseOwner } = owner;
+    const {
+      projectRoot: _removed,
+      deploymentId: _id,
+      deploymentRoot: _root,
+      ...preReleaseOwner
+    } = owner;
     await t.env.fs.writeFile(
       join(storeRoot, "state.json"),
-      `${JSON.stringify({ ...ledger, owners: [preReleaseOwner] }, null, 2)}\n`,
+      `${JSON.stringify({ version: 2, owners: [preReleaseOwner] }, null, 2)}\n`,
     );
 
     await expect(planRevert(t.env, { storeRoot, scope: "project" })).rejects.toThrow(
@@ -225,30 +227,22 @@ describe("drift-aware revert", () => {
     const ledger = await loadLedger(t.env, storeRoot);
     const owner = ledger.owners[0];
     if (!owner) throw new Error("expected owner");
-    const duplicateState = JSON.stringify({
-      ...ledger,
-      owners: [owner, { ...owner, artifactIds: ["rules/duplicate"] }],
-    });
+    const duplicate = JSON.parse(serializeLedger(ledger));
+    duplicate.deployments.push({ ...duplicate.deployments[0] });
+    const duplicateState = JSON.stringify(duplicate);
     const statePath = t.path("home", ".cellarer", "state.json");
     await t.env.fs.writeFile(statePath, duplicateState);
-
-    const preview = await planRevert(t.env, { storeRoot, agents: ["claude-code"] });
-    expect(preview.targets).toHaveLength(1);
-    expect(preview.targets[0]).toMatchObject({
-      blocked: true,
-      ownership: { classification: "invalid-owner" },
-    });
-    expect(preview.conflicts[0]).toMatchObject({ code: "INVALID_TARGET_OWNER" });
-
-    const result = await revert(t.env, { storeRoot, agents: ["claude-code"] });
-    expect(result.reverted).toEqual([]);
-    expect(result.failures).toEqual([]);
-    expect(result.plan.conflicts[0]).toMatchObject({ code: "INVALID_TARGET_OWNER" });
+    await expect(planRevert(t.env, { storeRoot, agents: ["claude-code"] })).rejects.toThrow(
+      /duplicate physical deployment/,
+    );
+    await expect(revert(t.env, { storeRoot, agents: ["claude-code"] })).rejects.toThrow(
+      /duplicate physical deployment/,
+    );
     expect(await t.env.fs.readFile(target)).toBe(targetBefore);
     expect(await t.env.fs.readFile(statePath)).toBe(duplicateState);
   });
 
-  it("selectively reverts a valid target while preserving duplicate owner records verbatim", async () => {
+  it("keeps valid targets untouched when deployment state contains duplicate authority", async () => {
     await writeRuleArtifact(t.env, storeRoot, "style", "# managed rule");
     const source = t.path("source", "demo");
     await t.env.fs.mkdir(source, { recursive: true });
@@ -264,38 +258,24 @@ describe("drift-aware revert", () => {
     const ruleOwner = ledger.owners.find((owner) => owner.capability === "rules");
     const skillOwner = ledger.owners.find((owner) => owner.capability === "skills");
     if (!ruleOwner || !skillOwner) throw new Error("expected Rules and Skill owners");
-    const duplicateRule = { ...ruleOwner, artifactIds: ["rules/duplicate"] };
-    const duplicateState = JSON.stringify({
-      ...ledger,
-      owners: [ruleOwner, duplicateRule, skillOwner],
+    const duplicate = JSON.parse(serializeLedger(ledger));
+    duplicate.deployments.push({
+      ...duplicate.deployments.find(
+        (record: { capability: string }) => record.capability === "rules",
+      ),
     });
+    const duplicateState = JSON.stringify(duplicate);
     const statePath = join(storeRoot, "state.json");
     await t.env.fs.writeFile(statePath, duplicateState);
-
-    const preview = await planRevert(t.env, {
-      storeRoot,
-      artifactIds: ["skills/demo"],
-    });
-    expect(preview.targets).toEqual([
-      expect.objectContaining({ target: skillOwner.target, blocked: false }),
-    ]);
-    expect(preview.conflicts).toEqual([]);
-
-    const dryRun = await revert(t.env, {
-      storeRoot,
-      artifactIds: ["skills/demo"],
-      dryRun: true,
-    });
-    expect(dryRun.reverted).toEqual([skillOwner]);
+    await expect(planRevert(t.env, { storeRoot, artifactIds: ["skills/demo"] })).rejects.toThrow(
+      /duplicate physical deployment/,
+    );
+    await expect(revert(t.env, { storeRoot, artifactIds: ["skills/demo"] })).rejects.toThrow(
+      /duplicate physical deployment/,
+    );
     expect(await t.env.fs.readFile(statePath)).toBe(duplicateState);
-
-    const result = await revert(t.env, { storeRoot, artifactIds: ["skills/demo"] });
-    expect(result.failures).toEqual([]);
-    expect(result.reverted).toEqual([skillOwner]);
-    await expect(t.env.fs.lstat(skillOwner.target)).rejects.toThrow();
+    await expect(t.env.fs.lstat(skillOwner.target)).resolves.toBeDefined();
     await expect(t.env.fs.lstat(ruleOwner.target)).resolves.toBeDefined();
-    const remaining = JSON.parse(await t.env.fs.readFile(statePath));
-    expect(remaining.owners).toEqual([ruleOwner, duplicateRule]);
   });
 
   it("blocks drift by default and accepts only the acknowledgement for the exact target receipt", async () => {
@@ -765,7 +745,7 @@ describe("drift-aware revert", () => {
     if (!owner) throw new Error("expected owner");
     await t.env.fs.writeFile(
       t.path("home", ".cellarer", "state.json"),
-      JSON.stringify({
+      serializeLedger({
         ...ledger,
         owners: [{ ...owner, receipt: { ...owner.receipt, backup: external } }],
       }),
@@ -815,7 +795,7 @@ describe("drift-aware revert", () => {
     if (!owner) throw new Error("expected owner");
     await t.env.fs.writeFile(
       t.path("home", ".cellarer", "state.json"),
-      JSON.stringify({
+      serializeLedger({
         ...ledger,
         owners: [{ ...owner, receipt: { ...owner.receipt, backup: forged } }],
       }),

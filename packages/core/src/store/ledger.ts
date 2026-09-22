@@ -2,6 +2,11 @@
 // 台账是 revert 的权威来源(优于 ruler 靠 marker 反推),记录每次实际落地。
 import { isAbsolute, join, normalize } from "node:path";
 import { z } from "zod";
+import {
+  deploymentLedger,
+  deploymentState,
+  serializeDeploymentState,
+} from "../deployments/state.js";
 import type { Env } from "../env.js";
 import { readFileOrNull } from "../fs/probe.js";
 import { isPathInside } from "../fs/safety.js";
@@ -108,7 +113,11 @@ export class DuplicateTargetOwnerError extends Error {
   }
 }
 
-export function makeLedger(owners: TargetOwner[]): Ledger {
+export function makeLedger(
+  owners: TargetOwner[],
+  version: 2 | 3 = owners.some((owner) => owner.deploymentId) ? 3 : 2,
+): Ledger {
+  if (version === 3) return deploymentLedger(deploymentState(owners));
   const normalizedOwners = z.array(targetOwnerSchema).parse(owners.map(normalizeOwner));
   assertUniqueOwners(normalizedOwners);
   return { version: 2, owners: normalizedOwners };
@@ -118,11 +127,20 @@ export function emptyLedger(): Ledger {
   return makeLedger([]);
 }
 
-// owner 唯一键只描述物理目标；artifactIds 是 provenance，不参与身份。
+// v3 的 owner 是消费者查询投影；物理目标身份由 deploymentId 独立表示。
 export function targetKey(
-  owner: Pick<TargetOwner, "agent" | "scope" | "capability" | "target">,
+  owner: Pick<
+    TargetOwner,
+    "agent" | "scope" | "capability" | "target" | "deploymentId" | "syncProfile"
+  >,
 ): string {
-  return JSON.stringify([owner.agent, owner.scope, owner.capability, normalize(owner.target)]);
+  return JSON.stringify([
+    owner.agent,
+    owner.scope,
+    owner.capability,
+    normalize(owner.target),
+    ...(owner.deploymentId ? [owner.syncProfile?.profileId ?? null] : []),
+  ]);
 }
 
 export const entryKey = targetKey;
@@ -152,10 +170,34 @@ export function matchesFilter(entry: TargetOwner, filter: LedgerFilter): boolean
 
 // 合并 owner:同一物理目标由最新成功凭据替换，输入制品变化不会产生第二个 owner。
 export function addOwners(ledger: Ledger, incoming: TargetOwner[]): Ledger {
+  // Reject inconsistent receipts before projecting one materialization onto every consumer.
+  if (ledger.version === 3) deploymentState(incoming);
   const map = new Map<string, TargetOwner>();
   for (const owner of ledger.owners) map.set(targetKey(owner), owner);
   for (const owner of incoming) map.set(targetKey(owner), normalizeOwner(owner));
-  return makeLedger([...map.values()]);
+  if (ledger.version === 3) {
+    for (const target of new Set(incoming.map((owner) => owner.target))) {
+      const additions = incoming.filter((owner) => owner.target === target);
+      const materialization = additions[0];
+      if (!materialization) continue;
+      const remaining = ledger.owners.filter(
+        (owner) =>
+          owner.target === target &&
+          !additions.some((added) => targetKey(added) === targetKey(owner)),
+      );
+      const artifactIds = [
+        ...new Set([...remaining, ...additions].flatMap((owner) => owner.artifactIds)),
+      ];
+      const secretRefs = [
+        ...new Set([...remaining, ...additions].flatMap((owner) => owner.secretRefs ?? [])),
+      ];
+      for (const [key, owner] of map)
+        if (owner.target === target) {
+          map.set(key, { ...owner, receipt: materialization.receipt, artifactIds, secretRefs });
+        }
+    }
+  }
+  return makeLedger([...map.values()], ledger.version);
 }
 
 export const addEntries = addOwners;
@@ -188,9 +230,11 @@ export function collectLedgerSecretRefStats(ledger: Ledger): LedgerSecretRefStat
 export async function loadLedger(env: Env, storeRoot: string): Promise<Ledger> {
   const path = join(storeRoot, "state.json");
   const text = await readFileOrNull(env, path);
-  if (text === null) return emptyLedger();
+  if (text === null) return makeLedger([], 3);
   try {
     const json: unknown = JSON.parse(text);
+    if (typeof json === "object" && json !== null && "version" in json && json.version === 3)
+      return deploymentLedger(json);
     if (isLegacyLedger(json)) throw new LegacyLedgerVersionError(path);
     if (hasProjectOwnerWithoutCanonicalRoot(json)) {
       throw new PreReleaseProjectOwnerError(path);
@@ -212,9 +256,8 @@ export async function loadLedger(env: Env, storeRoot: string): Promise<Ledger> {
     ) {
       throw err;
     }
-    // 损坏的台账若直接抛原始栈,会连 revert(唯一恢复路径)都用不了 → 给可操作信息。
     const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`corrupt ledger at ${path}: ${msg}. Fix or remove the file to recover.`);
+    throw new Error(`corrupt ledger at ${path}: ${msg}. Preserve the file for manual recovery.`);
   }
 }
 
@@ -240,6 +283,8 @@ export async function saveLedger(env: Env, storeRoot: string, ledger: Ledger): P
 
 export function serializeLedger(ledger: Ledger, knownValues: readonly SecretValue[] = []): string {
   assertNoSecretValues(ledger, "state");
+  if (ledger.version === 3)
+    return serializeDeploymentState(deploymentState(ledger.owners), knownValues);
   const validated = makeLedger(ledgerSchema.parse(ledger).owners);
   return serializeExactLedgerState(validated, knownValues);
 }

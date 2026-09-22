@@ -1360,6 +1360,8 @@ const targetOwnershipEvidenceSchema = objectSchema(
 const targetConflictSchema = objectSchema(
   {
     code: enumSchema([
+      "SHARED_TARGET_CONFLICT",
+      "STATE_UPGRADE_REQUIRED",
       "UNOWNED_TARGET",
       "OWNED_TARGET_DRIFTED",
       "INVALID_TARGET_OWNER",
@@ -1393,6 +1395,7 @@ const storeInputEvidenceSchema = objectSchema(
 );
 const planActionSchema = objectSchema(
   {
+    consumerAgents: stringArraySchema,
     artifact: nonEmptyStringSchema,
     artifactIds: stringArraySchema,
     agent: nonEmptyStringSchema,
@@ -2134,6 +2137,8 @@ const syncProfileTargetEvidenceSchema = objectSchema(
 );
 const ledgerEntrySchema = objectSchema(
   {
+    deploymentId: nonEmptyStringSchema,
+    deploymentRoot: nonEmptyStringSchema,
     agent: nonEmptyStringSchema,
     scope: scopeSchema,
     capability: capabilitySchema,
@@ -2464,7 +2469,8 @@ const revertTargetDefinitionSchema = objectSchema(
       },
       ["path", "status", "encrypted"],
     ),
-    proposedAction: enumSchema(["remove-target", "restore-snapshot"]),
+    consumerSet: stringArraySchema,
+    proposedAction: enumSchema(["detach-consumer", "remove-target", "restore-snapshot"]),
     blocked: booleanSchema,
     blockReason: stringSchema(),
     acknowledgement: targetAcknowledgementSchema,
@@ -2593,6 +2599,8 @@ export type DashboardCoverageSchemaContract = AssertSchemaContract<
 >;
 const syncTargetUninstallTargetSchema = objectSchema(
   {
+    consumerSet: stringArraySchema,
+    proposedAction: enumSchema(["detach-consumer", "remove-target"]),
     key: nonEmptyStringSchema,
     target: nonEmptyStringSchema,
     agent: nonEmptyStringSchema,

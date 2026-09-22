@@ -30,6 +30,7 @@ import {
 } from "../protocol/canonical.js";
 import { invalidPlanResult } from "../protocol/execute.js";
 import type { MutationPlan } from "../protocol/models.js";
+import { sha256 } from "../store/checksum.js";
 import { targetKey } from "../store/ledger.js";
 import {
   type ResolvedSyncProfileResource,
@@ -170,7 +171,7 @@ export async function planSyncProfileUninstall(
   return withCurrentMutationAuthorityScope(env, async (authorityScope) => {
     const resolved = await resolveProfileInvocation(env, opts, authorityScope);
     const desiredPlan = await profileDistributionPlan(env, resolved.distributeOptions);
-    const targetKeys = exactTargetKeys(desiredPlan);
+    const targetKeys = exactTargetKeys(desiredPlan, resolved.syncProfile);
     const planned = await planSyncTargetUninstallWithinAuthorityScope(
       env,
       {
@@ -203,7 +204,7 @@ export async function applySyncProfileUninstallPlan(
     }
     const resolved = await resolveProfileInvocation(env, opts, authorityScope);
     const desiredPlan = await profileDistributionPlan(env, resolved.distributeOptions);
-    const expectedTargetKeys = exactTargetKeys(desiredPlan);
+    const expectedTargetKeys = exactTargetKeys(desiredPlan, resolved.syncProfile);
     if (
       expectedTargetKeys.length !== opts.targetKeys.length ||
       expectedTargetKeys.some((key, index) => key !== opts.targetKeys[index])
@@ -231,7 +232,8 @@ export async function applySyncProfileUninstallPlan(
         const lockedDesiredPlan = await profileDistributionPlan(env, locked.distributeOptions);
         return (
           canonicalJson(locked.syncProfile) === canonicalJson(resolved.syncProfile) &&
-          canonicalJson(exactTargetKeys(lockedDesiredPlan)) === canonicalJson(expectedTargetKeys)
+          canonicalJson(exactTargetKeys(lockedDesiredPlan, locked.syncProfile)) ===
+            canonicalJson(expectedTargetKeys)
         );
       },
     );
@@ -314,9 +316,22 @@ async function profileDistributionPlan(
   return planDistribution(env, options, { providerAccess: "forbidden" });
 }
 
-function exactTargetKeys(plan: DistributePlan): string[] {
+function exactTargetKeys(plan: DistributePlan, syncProfile: SyncProfileTargetEvidence): string[] {
   return [
-    ...new Set(plan.actions.filter((action) => action.target.length > 0).map(targetKey)),
+    ...new Set(
+      plan.actions
+        .filter((action) => action.target.length > 0)
+        .flatMap((action) =>
+          (action.consumerAgents ?? [action.agent]).map((agent) =>
+            targetKey({
+              ...action,
+              agent,
+              deploymentId: sha256(JSON.stringify([normalize(action.target)])),
+              syncProfile,
+            }),
+          ),
+        ),
+    ),
   ].sort((left, right) => left.localeCompare(right));
 }
 

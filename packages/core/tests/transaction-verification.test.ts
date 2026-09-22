@@ -196,18 +196,13 @@ describe("transaction verification axes", () => {
     };
     await apply(t.env, projectOptions);
     const ledger = await loadLedger(t.env, storeRoot);
-    await saveLedger(t.env, storeRoot, {
-      ...ledger,
-      owners: ledger.owners.map((owner) => ({ ...owner, projectRoot: otherProject })),
-    });
-
-    const report = await verify(t.env, projectOptions);
-
-    expect(report.desiredVsApplied).toMatchObject({
-      status: "diverged",
-      items: [{ status: "missing-applied" }],
-    });
-    expect(report.healthy).toBe(false);
+    await expect(
+      saveLedger(t.env, storeRoot, {
+        ...ledger,
+        owners: ledger.owners.map((owner) => ({ ...owner, projectRoot: otherProject })),
+      }),
+    ).rejects.toThrow(/consumer projection root is inconsistent/);
+    expect((await verify(t.env, projectOptions)).healthy).toBe(true);
   });
 
   it("fails closed when an applied Skill receipt lacks source evidence", async () => {

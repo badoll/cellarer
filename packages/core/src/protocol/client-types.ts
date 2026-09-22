@@ -91,6 +91,8 @@ export interface TargetAcknowledgement {
 }
 
 export type TargetConflictCode =
+  | "SHARED_TARGET_CONFLICT"
+  | "STATE_UPGRADE_REQUIRED"
   | "UNOWNED_TARGET"
   | "OWNED_TARGET_DRIFTED"
   | "INVALID_TARGET_OWNER"
@@ -112,6 +114,7 @@ export interface TargetReplacementApproval {
 }
 
 export interface PlanAction {
+  consumerAgents?: string[];
   artifact: string;
   artifactIds?: string[];
   agent: string;

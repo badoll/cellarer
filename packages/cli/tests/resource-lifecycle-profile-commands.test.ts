@@ -25,6 +25,7 @@ const COMMANDS = [
   "sync.apply",
   "sync.verify",
   "sync.uninstall",
+  "sync.upgrade-state",
 ] as const;
 
 const desired = JSON.stringify({
@@ -68,6 +69,29 @@ describe("resource lifecycle and sync-profile commands", () => {
     else process.env[HEADLESS_MUTATION_AUTHORITY_ENV] = previousAuthority;
     process.exitCode = previousExitCode;
     await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("previews and applies an explicit sealed deployment state upgrade", async () => {
+    const statePath = join(storeRoot, "state.json");
+    const old = JSON.stringify({ version: 2, owners: [] });
+    await fs.writeFile(statePath, old);
+    const preview = await invoke(["sync", "upgrade-state", "--dry-run"], "json");
+    expect(preview.status).toBe("success");
+    expect(await fs.readFile(statePath, "utf8")).toBe(old);
+    const approved = (preview.data as { plan: unknown }).plan;
+    const applied = await invoke(
+      ["sync", "upgrade-state", "--plan", JSON.stringify(approved)],
+      "json",
+    );
+    expect(applied.status).toBe("success");
+    expect(JSON.parse(await fs.readFile(statePath, "utf8"))).toEqual({
+      version: 3,
+      deployments: [],
+    });
+    expect(await invoke(["sync", "upgrade-state", "--dry-run"], "json")).toMatchObject({
+      status: "error",
+      error: { code: "DOMAIN_VALIDATION_FAILED" },
+    });
   });
 
   it("drives every lifecycle and sync leaf from one parity-preserving domain catalog", () => {
@@ -167,6 +191,15 @@ describe("resource lifecycle and sync-profile commands", () => {
       },
     });
     await expect(fs.readFile(target, "utf8")).resolves.toContain("# Style");
+    expect(
+      await invoke(
+        ["revert", "--dry-run", "--agent", "codex", "--dir", join(root, "project")],
+        "json",
+      ),
+    ).toMatchObject({
+      status: "success",
+      data: { plan: { targets: [{ owners: [{ syncProfile: { profileId: "daily" } }] }] } },
+    });
     expect(
       await invoke(["sync", "verify", "daily", "--workspace-root", join(root, "project")], "json"),
     ).toMatchObject({

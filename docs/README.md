@@ -156,9 +156,18 @@ receipts record operation outcomes. The ledger is not an activity-event log.
 
 ### Ownership, verification, and recovery
 
-Each normalized physical target has one current owner identified by agent,
-scope, capability, and path. Before mutation, Cellarer classifies it as absent,
-owned-current, owned-drifted, unowned-existing, or invalid-owner.
+Each canonical physical target has one Deployment in the v3 ledger, with one
+materialization receipt and explicit Agent/Profile consumers. Agent and profile
+views are projections of that state. Consumers share one physical action only
+when final content, placement method, and capability agree; incompatible
+expectations block the batch. A Skill symlink is identified by its target
+directory entry, so detaching it never removes its Store source.
+
+Before mutation, Cellarer classifies targets as absent, owned-current,
+owned-drifted, unowned-existing, or invalid-owner. Detaching one consumer preserves
+the target while other consumers remain. Removing the last consumer still
+requires ownership and drift checks; a recorded before-state is restored through
+reviewed revert. Snapshot-backed targets cannot be deleted by profile uninstall.
 
 Verification keeps three signals separate:
 
@@ -346,7 +355,28 @@ cellarer sync uninstall project-team --workspace-root /workspace/app --dry-run
 
 A project profile always receives the current absolute workspace root at
 invocation time. Apply and uninstall still use the common ownership,
-transaction, reference, and recovery rules.
+transaction, reference, and recovery rules. Multiple profiles or agents may
+consume an identical deployment. Uninstall detaches the selected profile
+consumers and keeps targets needed by the others.
+
+### Upgrade ownership state
+
+New Stores write v3 deployment state. Reading an existing v2 ledger does not
+upgrade it; target mutations require an explicit upgrade first. With mutation
+authority configured, preview the Store-only upgrade, review `data.plan`, then
+submit that complete plan unchanged:
+
+```bash
+cellarer --output json sync upgrade-state --dry-run
+cellarer --output json sync upgrade-state --plan '<exact-data.plan-json>'
+```
+
+The upgrade binds the old state bytes, Store revision, and observed target
+fingerprints. It preserves receipts and snapshot references without modifying
+targets. Missing item-level attribution remains `unknown`. Duplicate physical
+owners, unsupported formats, and pending recovery block the upgrade. Older
+binaries reject v3 state; there is no automatic downgrade. Preserve prior state
+and encrypted recovery evidence when planning any manual rollback.
 
 ### Migrate existing agent configuration
 
@@ -563,8 +593,9 @@ state is safe to mutate.
 - Automatic receipt or encrypted-snapshot deletion is currently unsupported
   where directory identity cannot be bound to a no-follow delete. Evidence is
   retained conservatively.
-- Ledger version 1 and ambiguous pre-release ownership records require explicit
-  reset or manual handling; they are not silently reinterpreted.
+- Valid v2 ownership state supports the explicit upgrade above. Ledger version 1
+  and ambiguous pre-release ownership records require manual handling; they are
+  not silently reinterpreted.
 
 If a secret value ever appeared in a generated file, argv, log, response, or
 backup, treat it as compromised: rotate it at the provider, remove retained

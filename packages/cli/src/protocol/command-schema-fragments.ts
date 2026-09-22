@@ -707,6 +707,7 @@ const targetAcknowledgement = dataObject(["kind", "token"], {
   token: jsonSchema.string({ pattern: "^sha256:[0-9a-f]{64}$" }),
 });
 const distributePlanActionProperties: Readonly<Record<string, JsonSchema>> = {
+  consumerAgents: stringArray,
   artifact: jsonSchema.string({ minLength: 1 }),
   artifactIds: stringArray,
   agent: jsonSchema.string({ minLength: 1 }),
@@ -753,6 +754,8 @@ const distributePlanAction: JsonSchema = {
 };
 const targetConflict = dataObject(["code", "target", "message", "ownership"], {
   code: jsonSchema.enumeration([
+    "SHARED_TARGET_CONFLICT",
+    "STATE_UPGRADE_REQUIRED",
     "UNOWNED_TARGET",
     "OWNED_TARGET_DRIFTED",
     "INVALID_TARGET_OWNER",
@@ -867,6 +870,22 @@ const capabilityRootProvenanceDescriptor = dataObject(["capability", "path", "ex
     ],
   },
 });
+const syncProfileTargetEvidence = dataObject(
+  ["profileId", "profileRevision", "resolvedResources"],
+  {
+    profileId: jsonSchema.string({ pattern: "^[A-Za-z0-9._-]+$" }),
+    profileRevision: jsonSchema.string({ pattern: "^sha256:[0-9a-f]{64}$" }),
+    resolvedResources: jsonSchema.array(
+      dataObject(["resourceId", "revision", "capability"], {
+        resourceId: jsonSchema.string({
+          pattern: "^(?:rules|mcp|skills)/[A-Za-z0-9._-]+$",
+        }),
+        revision: jsonSchema.string({ pattern: "^sha256:[0-9a-f]{64}$" }),
+        capability: jsonSchema.enumeration(["rules", "mcp", "skills"]),
+      }),
+    ),
+  },
+);
 const distributionNormalizedInputs = dataObject(
   [
     "storeRoot",
@@ -891,19 +910,7 @@ const distributionNormalizedInputs = dataObject(
     ),
     method: jsonSchema.enumeration(["symlink", "copy"]),
     mcpStrategy: jsonSchema.enumeration(["merge", "overwrite"]),
-    syncProfile: dataObject(["profileId", "profileRevision", "resolvedResources"], {
-      profileId: jsonSchema.string({ pattern: "^[A-Za-z0-9._-]+$" }),
-      profileRevision: jsonSchema.string({ pattern: "^sha256:[0-9a-f]{64}$" }),
-      resolvedResources: jsonSchema.array(
-        dataObject(["resourceId", "revision", "capability"], {
-          resourceId: jsonSchema.string({
-            pattern: "^(?:rules|mcp|skills)/[A-Za-z0-9._-]+$",
-          }),
-          revision: jsonSchema.string({ pattern: "^sha256:[0-9a-f]{64}$" }),
-          capability: jsonSchema.enumeration(["rules", "mcp", "skills"]),
-        }),
-      ),
-    }),
+    syncProfile: syncProfileTargetEvidence,
     distributePlan,
   },
 );
@@ -1416,6 +1423,9 @@ const controlPlaneOperationReceipt = dataObject(
 const ledgerEntry = dataObject(
   ["agent", "scope", "capability", "target", "artifactIds", "receipt"],
   {
+    deploymentId: jsonSchema.string({ minLength: 1 }),
+    deploymentRoot: jsonSchema.string({ minLength: 1 }),
+    syncProfile: syncProfileTargetEvidence,
     agent: jsonSchema.string({ minLength: 1 }),
     scope,
     projectRoot: jsonSchema.string({ minLength: 1 }),
@@ -1902,7 +1912,12 @@ const revertTarget = dataObject(
     expectedReceipt: appliedReceipt,
     ownership: targetOwnership,
     snapshot: revertSnapshot,
-    proposedAction: jsonSchema.enumeration(["remove-target", "restore-snapshot"]),
+    consumerSet: stringArray,
+    proposedAction: jsonSchema.enumeration([
+      "detach-consumer",
+      "remove-target",
+      "restore-snapshot",
+    ]),
     blocked: jsonSchema.boolean(),
     blockReason: jsonSchema.string(),
     acknowledgement: targetAcknowledgement,

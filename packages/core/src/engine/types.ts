@@ -110,7 +110,7 @@ export interface RevertOptions {
   dryRun?: boolean;
 }
 
-export type RevertProposedAction = "remove-target" | "restore-snapshot";
+export type RevertProposedAction = "remove-target" | "restore-snapshot" | "detach-consumer";
 export type RevertSnapshotStatus = "none" | "available" | "missing" | "invalid";
 
 export interface RevertSnapshotAvailability {
@@ -122,6 +122,7 @@ export interface RevertSnapshotAvailability {
 }
 
 export interface RevertPlanTarget {
+  consumerSet?: string[];
   target: string;
   // 同一物理 target 可能被多个历史选择命中；apply 只变更一次，成功后再释放这些 owners。
   owners: LedgerEntry[];

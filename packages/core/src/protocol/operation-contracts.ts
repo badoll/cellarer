@@ -53,6 +53,22 @@ const CONTROL_PLANE_MUTATION_KINDS = [
 const PROFILE_MUTATION_KINDS = ["profile-create", "profile-update", "profile-delete"] as const;
 
 const definitions: readonly ContractDefinition[] = [
+  contract(
+    "settings",
+    "deployment-upgrade",
+    false,
+    (plan) =>
+      hasExactKeys(plan.normalizedInputs, [
+        "changedFields",
+        "mutationKind",
+        "storeProvenance",
+        "targetEvidence",
+      ]) &&
+      isUniqueNonEmptyStringArray(plan.normalizedInputs.changedFields) &&
+      isStoreProvenance(plan.normalizedInputs.storeProvenance) &&
+      Array.isArray(plan.normalizedInputs.targetEvidence) &&
+      validatePublicationAction(plan, 0, { selfContained: true }),
+  ),
   contract("initialize", "initialize-store", false, (plan) => validateInitializePlan(plan)),
   fixedContract("apply", true, validateApplyPlan),
   fixedContract("revert", true, validateRevertPlan),
@@ -307,7 +323,11 @@ function validateRevertPlan(plan: MutationPlan): boolean {
     !Array.isArray(input.revertPlan.targets) ||
     !Array.isArray(input.revertPlan.conflicts) ||
     !isStringArray(input.revertPlan.warnings) ||
-    !suffixKinds(plan, new Set(["remove-target", "restore-snapshot"]), "sync-gitignore")
+    !suffixKinds(
+      plan,
+      new Set(["detach-consumer", "remove-target", "restore-snapshot"]),
+      "sync-gitignore",
+    )
   ) {
     return false;
   }
@@ -764,7 +784,7 @@ function validateSyncUninstallPlan(plan: MutationPlan): boolean {
     [...businessInput.targetKeys].sort().join("\0") !== businessInput.targetKeys.join("\0") ||
     !Array.isArray(input.capabilitySnapshot) ||
     !Array.isArray(input.targets) ||
-    !suffixKinds(plan, new Set(["remove-target"]), "sync-gitignore")
+    !suffixKinds(plan, new Set(["detach-consumer", "remove-target"]), "sync-gitignore")
   ) {
     return false;
   }
@@ -777,7 +797,9 @@ function validateSyncUninstallPlan(plan: MutationPlan): boolean {
   ) {
     return false;
   }
-  const productActions = plan.actions.filter(({ kind }) => kind === "remove-target");
+  const productActions = plan.actions.filter(
+    ({ kind }) => kind === "remove-target" || kind === "detach-consumer",
+  );
   const executableTargets = input.targets.filter(
     (target) => isPlainRecord(target) && target.blocked === false,
   );

@@ -1,24 +1,47 @@
-// 目标去冲突 pass(从 plan.ts 抽出;不变量 3:纯函数,原地改 actions + 追加 warnings)。
-// 多 agent 可能映射到同一物理文件(如 codex 与 agents-md 的 project AGENTS.md)。
-// 同一 (capability, target) 的写入只保留首个,其余转 skip + 告警 —— 否则两条台账指向一个文件,
-// 破坏 per-agent revert(先 revert 者删文件,后者变 missing)。
-// 注:仅对同一 capability 去冲突;不同 capability 即便偶然同路径也各自独立(实际不会撞)。
-import type { PlanAction } from "../../model/index.js";
+import { normalize } from "node:path";
+import { sameMaterialization } from "../../deployments/model.js";
+import type { PlanAction, TargetConflict } from "../../model/index.js";
+import { targetKey } from "../../store/ledger.js";
 
-export function dedupeCollisions(actions: PlanAction[], warnings: string[]): void {
-  const claimed = new Map<string, string>(); // "cap\0target" → 首个占用的 agent
-  for (const a of actions) {
-    if (a.op === "skip" || a.target === "") continue;
-    const key = `${a.capability} ${a.target}`;
-    const owner = claimed.get(key);
-    if (owner === undefined) {
-      claimed.set(key, a.agent);
+// Coalescing is valid only with matching final materialization evidence. A collision
+// never silently drops a consumer or lets the first action choose different bytes.
+export function dedupeCollisions(actions: PlanAction[], conflicts: TargetConflict[]): void {
+  const claimed = new Map<string, PlanAction>();
+  const removed = new Set<PlanAction>();
+  for (const action of actions) {
+    if (action.op === "skip" || action.target === "") continue;
+    action.target = normalize(action.target);
+    action.consumerAgents = [action.agent];
+    const prior = claimed.get(action.target);
+    if (!prior) {
+      claimed.set(action.target, action);
       continue;
     }
-    warnings.push(
-      `agent "${a.agent}" ${a.capability} target collides with "${owner}" at ${a.target} — skipped`,
-    );
-    a.op = "skip";
-    a.reason = `target already claimed by "${owner}"`;
+    if (
+      prior.capability !== action.capability ||
+      prior.scope !== action.scope ||
+      !prior.desiredEvidence ||
+      !action.desiredEvidence ||
+      !sameMaterialization(prior.desiredEvidence, action.desiredEvidence)
+    ) {
+      conflicts.push({
+        code: "SHARED_TARGET_CONFLICT",
+        target: action.target,
+        message:
+          "consumers require incompatible content, method, or capability at one physical target",
+        ownership: {
+          key: targetKey(action),
+          classification: "invalid-owner",
+          target: action.target,
+          currentFingerprint: null,
+          expectedReceipt: null,
+        },
+      });
+      continue;
+    }
+    prior.consumerAgents = [...new Set([...(prior.consumerAgents ?? [prior.agent]), action.agent])];
+    removed.add(action);
   }
+  const retained = actions.filter((action) => !removed.has(action));
+  actions.splice(0, actions.length, ...retained);
 }

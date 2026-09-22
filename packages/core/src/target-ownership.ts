@@ -71,9 +71,10 @@ export async function inspectTargetOwnership(
 
   const identityOwners = options.owners.filter(
     (owner) =>
-      owner.agent === options.agent &&
-      owner.scope === options.scope &&
-      owner.capability === options.capability,
+      owner.deploymentId !== undefined ||
+      (owner.agent === options.agent &&
+        owner.scope === options.scope &&
+        owner.capability === options.capability),
   );
   const matchingOwners: TargetOwner[] = [];
   for (const owner of identityOwners) {
@@ -88,7 +89,26 @@ export async function inspectTargetOwnership(
     if (ownerTarget.path === target) matchingOwners.push(owner);
   }
 
-  if (matchingOwners.length > 1) {
+  const shared =
+    matchingOwners.length > 0 &&
+    matchingOwners.every(
+      (owner) =>
+        owner.deploymentId !== undefined &&
+        owner.deploymentId === matchingOwners[0]?.deploymentId &&
+        owner.deploymentRoot === rootResult.path &&
+        owner.capability === options.capability &&
+        JSON.stringify(owner.receipt) === JSON.stringify(matchingOwners[0]?.receipt),
+    );
+  if (
+    matchingOwners.some(
+      (owner) =>
+        owner.deploymentId &&
+        (owner.deploymentRoot !== rootResult.path || owner.capability !== options.capability),
+    )
+  ) {
+    return invalid(target, "deployment root or capability does not match consumer authority");
+  }
+  if (matchingOwners.length > 1 && !shared) {
     return invalid(target, `duplicate current owners for adapter target "${target}"`);
   }
   const owner = matchingOwners[0] ?? null;

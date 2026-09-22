@@ -942,8 +942,10 @@ describe("safe target planning and placement", () => {
     await t.env.fs.writeFile(
       t.path("home", ".cellarer", "state.json"),
       JSON.stringify({
-        ...ledger,
-        owners: [owner, { ...owner, artifactIds: ["rules/duplicate"] }],
+        version: 2,
+        owners: [owner, { ...owner, artifactIds: ["rules/duplicate"] }].map(
+          ({ deploymentId: _id, deploymentRoot: _root, ...legacy }) => legacy,
+        ),
       }),
     );
 
@@ -974,8 +976,10 @@ describe("safe target planning and placement", () => {
     const owner = ledger.owners[0];
     if (!owner) throw new Error("expected owner");
     const duplicateState = JSON.stringify({
-      ...ledger,
-      owners: [owner, { ...owner, artifactIds: ["rules/duplicate"] }],
+      version: 2,
+      owners: [owner, { ...owner, artifactIds: ["rules/duplicate"] }].map(
+        ({ deploymentId: _id, deploymentRoot: _root, ...legacy }) => legacy,
+      ),
     });
     const statePath = t.path("home", ".cellarer", "state.json");
     await t.env.fs.writeFile(statePath, duplicateState);
@@ -1003,8 +1007,10 @@ describe("safe target planning and placement", () => {
     const ruleOwner = ledger.owners[0];
     if (!ruleOwner) throw new Error("expected Rules owner");
     const duplicateState = JSON.stringify({
-      ...ledger,
-      owners: [ruleOwner, { ...ruleOwner, artifactIds: ["rules/duplicate"] }],
+      version: 2,
+      owners: [ruleOwner, { ...ruleOwner, artifactIds: ["rules/duplicate"] }].map(
+        ({ deploymentId: _id, deploymentRoot: _root, ...legacy }) => legacy,
+      ),
     });
     const statePath = join(storeRoot, "state.json");
     await t.env.fs.writeFile(statePath, duplicateState);

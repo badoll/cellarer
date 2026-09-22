@@ -60,7 +60,7 @@ export interface MutationOperationRegistry {
 const recoveryActionKinds = {
   initialize: ["mkdir", "preserve-file", "publish-file"],
   apply: ["copy", "merge", "overwrite", "sync-gitignore", "symlink", "write"],
-  revert: ["remove-target", "restore-snapshot", "sync-gitignore"],
+  revert: ["detach-consumer", "remove-target", "restore-snapshot", "sync-gitignore"],
   settings: ["publish-file"],
   "secret-metadata": ["keychain-secret-delete", "keychain-secret-set", "publish-file"],
   "store-import": [
@@ -87,7 +87,7 @@ const recoveryActionKinds = {
     "rename-resource-content",
     "write-resource-bundle",
   ],
-  "sync-uninstall": ["remove-target", "sync-gitignore"],
+  "sync-uninstall": ["detach-consumer", "remove-target", "sync-gitignore"],
 } as const satisfies Readonly<Record<MutationOperation, readonly string[]>>;
 
 function defineAdapter<Operation extends MutationOperation>(

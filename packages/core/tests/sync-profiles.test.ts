@@ -662,7 +662,7 @@ describe("versioned sync profiles", () => {
     await expect(t.env.fs.readFile(target)).resolves.toBe("user drift\n");
   }, 20_000);
 
-  it("blocks uninstall when another profile most recently owns the shared exact target", async () => {
+  it("detaches one profile while another profile and ad-hoc consumer keep the shared target", async () => {
     await createSyncProfile(t.env, { storeRoot, profileId: "profile-a", desired });
     await createSyncProfile(t.env, { storeRoot, profileId: "profile-b", desired });
 
@@ -681,18 +681,16 @@ describe("versioned sync profiles", () => {
       storeRoot,
       profileId: "profile-a",
     });
-    expect(uninstallA.targets).toEqual([
-      expect.objectContaining({
-        blocked: true,
-        classification: "owned-current",
-        blockReason: "owned target belongs to a different sync profile selection",
-      }),
-    ]);
-    expect(uninstallA.conflicts).toEqual([
-      expect.objectContaining({ code: "UNINSTALL_PROFILE_OWNER_MISMATCH" }),
-    ]);
+    expect(uninstallA.conflicts).toEqual([]);
+    expect(uninstallA.targets[0]?.proposedAction).toBe("detach-consumer");
     const sharedTarget = uninstallA.targets[0];
     if (!sharedTarget) throw new Error("expected shared target");
+    const detached = await applySyncProfileUninstallPlan(t.env, uninstallA.mutationPlan, {
+      storeRoot,
+      profileId: "profile-a",
+      targetKeys: uninstallA.targetKeys,
+    });
+    expect(detached.operation.ok).toBe(true);
     await expect(t.env.fs.readFile(sharedTarget.target)).resolves.toContain("# Style");
 
     const direct = await apply(t.env, {
@@ -709,9 +707,15 @@ describe("versioned sync profiles", () => {
       storeRoot,
       profileId: "profile-b",
     });
-    expect(uninstallB.conflicts).toEqual([
-      expect.objectContaining({ code: "UNINSTALL_PROFILE_OWNER_MISMATCH" }),
-    ]);
+    expect(uninstallB.conflicts).toEqual([]);
+    expect(uninstallB.targets[0]?.proposedAction).toBe("detach-consumer");
+    const detachedB = await applySyncProfileUninstallPlan(t.env, uninstallB.mutationPlan, {
+      storeRoot,
+      profileId: "profile-b",
+      targetKeys: uninstallB.targetKeys,
+    });
+    expect(detachedB.operation.ok).toBe(true);
+    await expect(t.env.fs.readFile(sharedTarget.target)).resolves.toContain("# Style");
   }, 20_000);
 
   it("blocks profile update and delete while old exact profile owners remain uninstallable", async () => {

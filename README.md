@@ -166,7 +166,7 @@ cellarer ui
 | Library | Refresh Inventory; import, inspect, update, rename, remove, export, and bundle resources. |
 | Agents | Detect agents, configure adapters, and inspect supported targets. |
 | Distribution | Preview and sync rules, MCP servers, and skills by agent, scope, collection, or profile. |
-| Safety | Verify drift, preserve target ownership, recover interrupted operations, and revert receipts. |
+| Safety | Verify drift, preserve shared target consumers, recover interrupted operations, and revert receipts. |
 | Clients | Use the human CLI, versioned JSON/JSONL protocol, or authenticated local `/api/v1`. |
 
 Run `cellarer <command> --help` for exact options. Automated

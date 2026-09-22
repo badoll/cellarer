@@ -55,8 +55,8 @@ describe("store/ledger", () => {
 
   it("returns an empty ledger when state.json is absent", async () => {
     const led = await loadLedger(t.env, storeRoot);
-    expect(led).toEqual(emptyLedger());
-    expect(led.version).toBe(2);
+    expect(led).toEqual({ version: 3, owners: [] });
+    expect(led.version).toBe(3);
     expect(led.owners).toEqual([]);
   });
 

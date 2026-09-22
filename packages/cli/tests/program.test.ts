@@ -705,9 +705,21 @@ describe("cli program wiring", () => {
       expect(process.exitCode).toBeUndefined();
       const targetBefore = await fs.readFile(target, "utf8");
       const ledger = JSON.parse(await fs.readFile(statePath, "utf8"));
-      const owner = ledger.owners[0];
-      ledger.owners.push({ ...owner, artifactIds: ["rules/duplicate"] });
-      const duplicateState = JSON.stringify(ledger);
+      const deployment = ledger.deployments[0];
+      const consumer = deployment.consumers[0];
+      const owner = {
+        agent: consumer.agent,
+        scope: consumer.scope,
+        capability: consumer.capability,
+        target: deployment.target,
+        projectRoot: consumer.root,
+        artifactIds: deployment.artifactIds,
+        receipt: deployment.receipt,
+      };
+      const duplicateState = JSON.stringify({
+        version: 2,
+        owners: [owner, { ...owner, artifactIds: ["rules/duplicate"] }],
+      });
       await fs.writeFile(statePath, duplicateState, "utf8");
 
       logs = [];
@@ -808,16 +820,33 @@ describe("cli program wiring", () => {
         { from: "node" },
       );
       const ledger = JSON.parse(await fs.readFile(statePath, "utf8"));
-      const ruleOwner = ledger.owners.find(
+      const owners = ledger.deployments.flatMap(
+        (deployment: {
+          consumers: { agent: string; scope: string; capability: string; root: string }[];
+          target: string;
+          artifactIds: string[];
+          receipt: unknown;
+        }) =>
+          deployment.consumers.map((consumer) => ({
+            agent: consumer.agent,
+            scope: consumer.scope,
+            capability: consumer.capability,
+            target: deployment.target,
+            projectRoot: consumer.root,
+            artifactIds: deployment.artifactIds,
+            receipt: deployment.receipt,
+          })),
+      );
+      const ruleOwner = owners.find(
         (owner: { capability: string }) => owner.capability === "rules",
       );
-      const skillOwner = ledger.owners.find(
+      const skillOwner = owners.find(
         (owner: { capability: string }) => owner.capability === "skills",
       );
       if (!ruleOwner || !skillOwner) throw new Error("expected Rules and Skill owners");
       const duplicateRule = { ...ruleOwner, artifactIds: ["rules/duplicate"] };
       const duplicateState = JSON.stringify({
-        ...ledger,
+        version: 2,
         owners: [ruleOwner, duplicateRule, skillOwner],
       });
       await fs.writeFile(statePath, duplicateState, "utf8");
@@ -850,7 +879,7 @@ describe("cli program wiring", () => {
         { from: "node" },
       );
       const dryRun = machineData<RevertCallResult>();
-      expect(dryRun.reverted).toEqual([skillOwner]);
+      expect(dryRun.reverted).toEqual([]);
       expect(await fs.readFile(statePath, "utf8")).toBe(duplicateState);
 
       logs = [];
@@ -860,13 +889,11 @@ describe("cli program wiring", () => {
         ["node", "cellarer", "revert", "--agent", "codex", "--dir", project, "--json"],
         { from: "node" },
       );
-      expect(process.exitCode).toBeUndefined();
+      expect(process.exitCode).toBe(4);
       const reverted = machineData<RevertCallResult>();
-      expect(reverted.reverted).toEqual([skillOwner]);
-      expect(JSON.parse(await fs.readFile(statePath, "utf8")).owners).toEqual([
-        ruleOwner,
-        duplicateRule,
-      ]);
+      expect(reverted.reverted).toEqual([]);
+      expect(await fs.readFile(statePath, "utf8")).toBe(duplicateState);
+      expect(await fs.lstat(skillOwner.target)).toBeDefined();
     } finally {
       console.log = oldLog;
       console.error = oldError;

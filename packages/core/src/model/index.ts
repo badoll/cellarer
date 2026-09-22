@@ -51,6 +51,9 @@ export interface SyncProfileTargetEvidence {
 
 // state.json v2 以物理目标而非输入制品为 owner 身份。artifactIds 只记录该目标的来源集合。
 export interface TargetOwner {
+  // Present only on a consumer projection of authoritative v3 deployment state.
+  deploymentId?: string;
+  deploymentRoot?: string;
   agent: string;
   scope: Scope;
   capability: Capability;
@@ -68,6 +71,33 @@ export interface TargetOwner {
 export type LedgerEntry = TargetOwner;
 
 export interface Ledger {
-  version: 2;
+  version: 2 | 3;
   owners: TargetOwner[];
+}
+
+export interface DeploymentConsumer {
+  agent: string;
+  scope: Scope;
+  root: string;
+  capability: Capability;
+  kind: "ad-hoc" | "profile";
+  profile?: SyncProfileTargetEvidence;
+}
+
+export interface Deployment {
+  id: string;
+  key: string;
+  target: string;
+  root: string;
+  capability: Capability;
+  receipt: AppliedReceipt;
+  artifactIds: string[];
+  secretRefs?: string[];
+  itemAttribution: "unknown";
+  consumers: DeploymentConsumer[];
+}
+
+export interface DeploymentState {
+  version: 3;
+  deployments: Deployment[];
 }

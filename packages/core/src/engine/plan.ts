@@ -10,10 +10,11 @@
 //       · skills:op 由 method 推导(symlink→op=symlink,copy→op=copy),故 per-OS method 真正影响落地。
 //   - 实际落地方式(可能因 Windows 回退)记台账的 AppliedMethod,与计划 method 区分。
 
-import { join, normalize } from "node:path";
+import { dirname, isAbsolute, join, normalize } from "node:path";
 import { renderRulesForTarget } from "../adapters/codec.js";
 import { loadRegistry } from "../adapters/registry.js";
 import type { AgentAdapter, RuleFragment } from "../adapters/types.js";
+import { canonicalDeploymentTarget } from "../deployments/model.js";
 import type { Env } from "../env.js";
 import { readFileOrNull } from "../fs/probe.js";
 import type { McpServer } from "../mcp/model.js";
@@ -24,6 +25,7 @@ import type {
   LinkMethod,
   PlanAction,
   SecretReferenceFinding,
+  SyncProfileTargetEvidence,
   TargetAcknowledgement,
   TargetConflict,
   TargetOwner,
@@ -102,6 +104,7 @@ async function planImplementation(
     providerAccess?: "allowed" | "forbidden";
     onCoverage?: (outcome: VerificationCoverageOutcome) => void;
     capabilityRootCapture?: CapabilityRootCapture;
+    syncProfile?: SyncProfileTargetEvidence;
   } = {},
 ) {
   const warnings: string[] = [];
@@ -295,12 +298,65 @@ async function planImplementation(
   }
 
   // 目标去冲突:多 agent 可能映射到同一物理文件(pass 抽到 plan/collision.ts)。
-  dedupeCollisions(actions, warnings);
+  dedupeCollisions(actions, conflicts);
 
   // 所有 capability 共用同一 target ownership 判定与显式授权协议，避免 planner 各自漂移。
   const duplicateOwnerKeys = duplicateTargetOwnerKeys(ledger.owners);
   addDuplicateOwnerConflicts(ledger.owners, duplicateOwnerKeys, conflicts);
   await classifyPlannedTargets(operationEnv, opts, ledger.owners, actions, conflicts);
+  for (const action of actions) {
+    if (action.op === "skip") continue;
+    let message: string | undefined;
+    let code: TargetConflict["code"] = "SHARED_TARGET_CONFLICT";
+    if (ledger.version === 2) {
+      message = "ownership state requires explicit sync upgrade-state before target mutation";
+      code = "STATE_UPGRADE_REQUIRED";
+    } else {
+      try {
+        await canonicalDeploymentTarget(
+          env,
+          action.target,
+          opts.scope === "global" ? env.homedir() : (opts.dir ?? env.cwd()),
+        );
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+      const remaining = ledger.owners.filter(
+        (owner) =>
+          owner.target === action.target &&
+          (!(action.consumerAgents ?? [action.agent]).includes(owner.agent) ||
+            owner.syncProfile?.profileId !== execution.syncProfile?.profileId),
+      );
+      if (
+        remaining.length > 0 &&
+        remaining.some(
+          (owner) =>
+            owner.capability !== action.capability ||
+            (owner.receipt.method === "junction" ? "symlink" : owner.receipt.method) !==
+              action.desiredEvidence?.method ||
+            (action.desiredEvidence?.method === "write"
+              ? owner.receipt.fingerprint !== action.desiredEvidence.contentFingerprint
+              : owner.receipt.sourceFingerprint !== action.desiredEvidence?.sourceFingerprint),
+        )
+      ) {
+        message = "materialization change would invalidate a remaining deployment consumer";
+      }
+      if (remaining.length > 0 && action.desiredEvidence?.method === "symlink") {
+        const link = await env.fs.readlink(action.target).catch(() => null);
+        if (
+          !link ||
+          normalize(isAbsolute(link) ? link : join(dirname(action.target), link)) !==
+            normalize(action.source ?? "")
+        )
+          message =
+            "shared Skill source identity differs from the remaining consumers' materialization";
+      }
+    }
+    if (message && action.ownership) {
+      conflicts.push({ code, target: action.target, message, ownership: action.ownership });
+      blockAction(action, message);
+    }
+  }
   clearSkippedMcpSecretRefs(actions);
 
   const activeMcpActions = actions.filter(
@@ -359,6 +415,7 @@ export async function plan(
     providerAccess?: "allowed" | "forbidden";
     onCoverage?: (outcome: VerificationCoverageOutcome) => void;
     capabilityRootCapture?: CapabilityRootCapture;
+    syncProfile?: SyncProfileTargetEvidence;
   } = {},
 ): Promise<DistributePlan> {
   return planImplementation(env, opts, execution);

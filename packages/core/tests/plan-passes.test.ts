@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { dedupeCollisions } from "../src/engine/plan/collision.js";
 import { applySecretScanGuard } from "../src/engine/plan/secret-guard.js";
-import type { PlanAction } from "../src/model/index.js";
+import type { PlanAction, TargetConflict } from "../src/model/index.js";
 
 // 抽出的两个 plan pass 的单元测试(纯函数,不需 Env / 库房)。
 function writeAction(over: Partial<PlanAction>): PlanAction {
@@ -13,30 +13,33 @@ function writeAction(over: Partial<PlanAction>): PlanAction {
     target: "/home/x/CLAUDE.md",
     method: "symlink",
     op: "write",
+    desiredEvidence: { method: "write", contentFingerprint: "same" },
     ...over,
   };
 }
 
 describe("engine/plan collision dedupe", () => {
-  it("keeps the first writer to a target and skips the rest (same capability)", () => {
+  it("coalesces identical materializations and retains both consumers", () => {
     const actions = [
       writeAction({ agent: "codex", target: "/proj/AGENTS.md" }),
       writeAction({ agent: "agents-md", target: "/proj/AGENTS.md" }),
     ];
-    const warnings: string[] = [];
-    dedupeCollisions(actions, warnings);
+    const conflicts: TargetConflict[] = [];
+    dedupeCollisions(actions, conflicts);
     expect(actions[0]?.op).toBe("write");
-    expect(actions[1]?.op).toBe("skip");
-    expect(actions[1]?.reason).toMatch(/already claimed by "codex"/);
-    expect(warnings.some((w) => w.includes("collides"))).toBe(true);
+    expect(actions).toHaveLength(1);
+    expect(actions[0]?.consumerAgents).toEqual(["codex", "agents-md"]);
+    expect(conflicts).toEqual([]);
   });
 
-  it("does not dedupe across different capabilities", () => {
+  it("blocks a physical collision across different capabilities", () => {
     const actions = [
       writeAction({ capability: "rules", target: "/proj/X" }),
       writeAction({ capability: "mcp", target: "/proj/X", op: "merge" }),
     ];
-    dedupeCollisions(actions, []);
+    const conflicts: TargetConflict[] = [];
+    dedupeCollisions(actions, conflicts);
+    expect(conflicts[0]?.code).toBe("SHARED_TARGET_CONFLICT");
     expect(actions[0]?.op).toBe("write");
     expect(actions[1]?.op).toBe("merge");
   });

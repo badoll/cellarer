@@ -65,6 +65,7 @@ export const MUTATION_ACTION_KINDS = [
   "overwrite",
   "symlink",
   "copy",
+  "detach-consumer",
   "remove-target",
   "restore-snapshot",
   "sync-gitignore",

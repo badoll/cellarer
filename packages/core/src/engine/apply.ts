@@ -219,6 +219,10 @@ const recursiveSourceEvidenceSchema = (method: "symlink" | "copy") =>
     })
     .strict();
 const executableActionBase = {
+  consumerAgents: z
+    .array(z.string().min(1))
+    .min(1)
+    .refine((agents) => new Set(agents).size === agents.length),
   artifact: z.string().min(1),
   artifactIds: artifactIdsSchema,
   agent: z.string().min(1),
@@ -304,6 +308,10 @@ export async function apply(env: Env, opts: DistributeOptions): Promise<ApplyCal
     if (
       opts.dryRun ||
       distributePlan.invalidLedger ||
+      distributePlan.conflicts.some(
+        (conflict) =>
+          conflict.code === "SHARED_TARGET_CONFLICT" || conflict.code === "STATE_UPGRADE_REQUIRED",
+      ) ||
       distributePlan.secretFindings?.length ||
       distributePlan.secretReferenceFindings?.length
     ) {
@@ -413,6 +421,7 @@ async function planApplyMutationWithAuthorityLease(
     const distributePlan = await plan(operationEnv, opts, {
       ...execution,
       capabilityRootCapture: capabilityRootsBefore,
+      syncProfile,
     });
     const executable = distributePlan.actions.filter((action) => action.op !== "skip");
     const gitignore =
@@ -1074,7 +1083,12 @@ async function executeApplyPlan(
     };
     await recordAction(receipt);
     actionReceipts.push(receipt);
-    entries.push(appliedAction.entry);
+    const deploymentRoot = opts.scope === "global" ? env.homedir() : projectRoot;
+    if (!deploymentRoot) throw new TypeError("deployment root missing");
+    const deploymentId = sha256(JSON.stringify([normalize(action.target)]));
+    for (const agent of action.consumerAgents ?? [action.agent]) {
+      entries.push({ ...appliedAction.entry, agent, deploymentId, deploymentRoot });
+    }
     if (appliedAction.transientSnapshotPath) {
       transientSnapshots.add(appliedAction.transientSnapshotPath);
     }
@@ -1277,6 +1291,13 @@ function decodeApplyMutation(
   ) {
     throw new TypeError("apply mutation plan has invalid normalized inputs");
   }
+  if (
+    (input.distributePlan as DistributePlan).conflicts.some(
+      (conflict) =>
+        conflict.code === "SHARED_TARGET_CONFLICT" || conflict.code === "STATE_UPGRADE_REQUIRED",
+    )
+  )
+    throw new TypeError("distribution batch has a deployment conflict");
   const syncProfile = isSyncProfileTargetEvidence(input.syncProfile)
     ? input.syncProfile
     : undefined;
@@ -1547,6 +1568,8 @@ function isExecutableApplyActionSemanticallyValid(
   if (
     !isAbsolute(managedRoot) ||
     !opts.agents.includes(action.agent) ||
+    !action.consumerAgents?.includes(action.agent) ||
+    action.consumerAgents.some((agent) => !opts.agents.includes(agent)) ||
     action.scope !== opts.scope ||
     !requestedCapabilities.includes(action.capability) ||
     normalize(action.target) !== action.target ||
@@ -1767,10 +1790,9 @@ async function assertApplyPostcondition(
   }
 }
 
-// 按台账唯一键查既有条目(供幂等复用 backup/appliedAt)。复用 entryKey,与 addEntries 合并口径一致。
+// 共享消费者投影使用同一物理 receipt，幂等应用复用其 backup/appliedAt。
 function findEntry(ledger: Ledger, action: PlanAction): LedgerEntry | undefined {
-  const key = entryKey(action);
-  return ledger.owners.find((owner) => entryKey(owner) === key);
+  return ledger.owners.find((owner) => normalize(owner.target) === normalize(action.target));
 }
 
 // 内容写入(rules render / mcp merge|overwrite):plan 已算好最终文本,这里只做备份 + 原子写。

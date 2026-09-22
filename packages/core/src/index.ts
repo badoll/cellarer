@@ -119,6 +119,7 @@ export {
   dashboardSummary,
   statusIdentityKey,
 } from "./dashboard.js";
+export { applyDeploymentUpgradePlan, planDeploymentUpgrade } from "./deployments/upgrade.js";
 export {
   type AgentDoctorReport,
   type AgentInspection,
@@ -267,6 +268,9 @@ export type {
   ArtifactKind,
   Capability,
   Collection,
+  Deployment,
+  DeploymentConsumer,
+  DeploymentState,
   DesiredPlacementMethod,
   DesiredTargetEvidence,
   DistributePlan,

@@ -50,6 +50,8 @@ export interface SyncTargetUninstallOptions {
 }
 
 export interface SyncTargetUninstallTarget {
+  readonly consumerSet?: readonly string[];
+  readonly proposedAction?: "remove-target" | "detach-consumer";
   readonly key: string;
   readonly target: string;
   readonly agent: string;
@@ -203,7 +205,11 @@ export async function applySyncTargetUninstallPlanWithinAuthorityScope(
         const successfulOwnerKeys = new Set<string>();
         for (const [index, owner] of expected.selectedOwners.entries()) {
           const action = mutationPlan.actions[index];
-          if (!action || action.target !== owner.target || action.kind !== "remove-target") {
+          if (
+            !action ||
+            action.target !== owner.target ||
+            (action.kind !== "remove-target" && action.kind !== "detach-consumer")
+          ) {
             throw new TypeError("sync uninstall action is not bound to its owner");
           }
           const authorized = await authorize(action.actionId);
@@ -214,9 +220,14 @@ export async function applySyncTargetUninstallPlanWithinAuthorityScope(
           }
           let failure: { code: string; message: string } | undefined;
           try {
-            await env.fs.rm(owner.target, { recursive: true, force: true });
+            if (action.kind === "remove-target")
+              await env.fs.rm(owner.target, { recursive: true, force: true });
             const after = await targetState(env, owner.target);
-            if (after.state !== "absent") {
+            if (
+              action.kind === "remove-target"
+                ? after.state !== "absent"
+                : !sameTargetReceipt(authorized.before, after)
+            ) {
               throw Object.assign(new Error("sync uninstall postcondition failed"), {
                 code: "ACTION_POSTCONDITION_FAILED",
               });
@@ -249,7 +260,10 @@ export async function applySyncTargetUninstallPlanWithinAuthorityScope(
         if (failedActionIds.length === 0) {
           for (const action of mutationPlan.actions.slice(expected.productActionCount)) {
             assertExecutableGitignoreMutation(action);
-            assertGitignoreMutationMatchesLedger(action, makeLedger([...expected.remainingOwners]));
+            assertGitignoreMutationMatchesLedger(
+              action,
+              makeLedger([...expected.remainingOwners], 3),
+            );
             const authorized = await authorize(action.actionId);
             if (!authorized.ok) {
               actionReceipts.push(authorized.receipt);
@@ -296,7 +310,7 @@ export async function applySyncTargetUninstallPlanWithinAuthorityScope(
                 statePublications: [
                   {
                     path: join(options.storeRoot, "state.json"),
-                    data: serializeLedger(makeLedger([...expected.remainingOwners])),
+                    data: serializeLedger(makeLedger([...expected.remainingOwners], 3)),
                     mode: 0o600,
                   },
                 ],
@@ -379,6 +393,16 @@ async function buildUninstall(
       }
       const owner = owners[0];
       if (!owner) continue;
+      const physicalConsumers = ledger.owners.filter(
+        (candidate) => candidate.target === owner.target,
+      );
+      const remainingConsumers = physicalConsumers.filter(
+        (candidate) => !opts.targetKeys.includes(entryKey(candidate)),
+      );
+      const laterSelected = physicalConsumers.some(
+        (candidate) => opts.targetKeys.indexOf(entryKey(candidate)) > opts.targetKeys.indexOf(key),
+      );
+      const detach = ledger.version === 3 && (remainingConsumers.length > 0 || laterSelected);
       const inspection = await inspectTargetOwnership(env, {
         agent: owner.agent,
         scope: owner.scope,
@@ -392,7 +416,7 @@ async function buildUninstall(
           ? "owned-drifted"
           : inspection.classification;
       const acknowledgement =
-        classification === "owned-drifted"
+        !detach && classification === "owned-drifted"
           ? uninstallAcknowledgement(owner, classification, inspection.fingerprint)
           : undefined;
       const driftOverridden =
@@ -412,7 +436,7 @@ async function buildUninstall(
           target: owner.target,
           message: blockReason,
         });
-      } else if (classification === "owned-drifted" && !driftOverridden) {
+      } else if (!detach && classification === "owned-drifted" && !driftOverridden) {
         blocked = true;
         blockReason = "owned target has drifted; exact uninstall acknowledgement required";
         conflicts.push({
@@ -422,9 +446,20 @@ async function buildUninstall(
           message: blockReason,
           acknowledgement,
         });
-      } else if (classification !== "owned-current" && !driftOverridden) {
+      } else if (
+        classification === "invalid-owner" ||
+        ledger.version !== 3 ||
+        (!detach && classification !== "owned-current" && !driftOverridden) ||
+        (!detach && owner.receipt.backup !== null)
+      ) {
         blocked = true;
-        blockReason = inspection.reason ?? "target ownership is invalid";
+        blockReason =
+          inspection.reason ??
+          (ledger.version !== 3
+            ? "explicit deployment upgrade required before uninstall"
+            : owner.receipt.backup
+              ? "snapshot-backed target requires reviewed revert to restore before-state"
+              : "target ownership is invalid");
         conflicts.push({
           code: "UNINSTALL_TARGET_INVALID_OWNER",
           key,
@@ -433,6 +468,8 @@ async function buildUninstall(
         });
       }
       targets.push({
+        consumerSet: physicalConsumers.map(entryKey).sort(),
+        proposedAction: detach ? "detach-consumer" : "remove-target",
         key,
         target: owner.target,
         agent: owner.agent,
@@ -461,7 +498,9 @@ async function buildUninstall(
 
   const productActions = observed.value.selectedOwners.map((owner, index) => ({
     actionId: uninstallActionId(owner, index),
-    kind: "remove-target",
+    kind:
+      observed.value.targets.find((target) => target.key === entryKey(owner))?.proposedAction ??
+      "remove-target",
     target: owner.target,
     payload: jsonObject({
       ownerKey: entryKey(owner),
@@ -469,9 +508,12 @@ async function buildUninstall(
       receiptFingerprint: owner.receipt.fingerprint,
       ...(owner.syncProfile ? { syncProfile: owner.syncProfile } : {}),
     }),
-    postcondition: { state: "absent" as const },
+    ...(observed.value.targets.find((target) => target.key === entryKey(owner))?.proposedAction ===
+    "detach-consumer"
+      ? {}
+      : { postcondition: { state: "absent" as const } }),
   }));
-  const remainingLedger = makeLedger([...observed.value.remainingOwners]);
+  const remainingLedger = makeLedger([...observed.value.remainingOwners], 3);
   const projectDirs = [
     ...new Set(
       observed.value.selectedOwners.flatMap((owner) =>

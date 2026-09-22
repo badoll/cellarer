@@ -129,9 +129,15 @@ cellarer --output json apply --plan '<exact-plan-json>'
 
 ### 所有权、验证与恢复
 
-每个规范化物理目标只有一个当前 owner，由 agent、scope、capability 与路径标识。
+每个规范物理目标在 v3 ledger 中只有一个 Deployment，记录一份物化 receipt 和明确的
+Agent/Profile 消费者。Agent 与 Profile 视图都是该状态的查询投影。只有最终内容、落地方式
+与 capability 一致时，消费者才共享一次物理操作；期望不一致会阻断整批应用。Skill 软链以
+目标目录项作为身份，解绑不会删除 Store 源目录。
+
 Mutation 前，cellarer 将目标分类为 absent、owned-current、owned-drifted、
-unowned-existing 或 invalid-owner。
+unowned-existing 或 invalid-owner。解绑一个消费者时，只要还有其他消费者，目标就会保留。
+最后消费者退出仍需通过所有权和漂移检查；有 before-state 时通过已审查的 revert 恢复。
+Profile uninstall 不会直接删除带 snapshot 的目标。
 
 验证分别报告三类信号：
 
@@ -297,7 +303,24 @@ cellarer sync uninstall project-team --workspace-root /workspace/app --dry-run
 ```
 
 Project profile 每次调用都需要当前绝对 workspace root。Apply 与 uninstall 仍遵守相同的
-所有权、事务、引用和恢复规则。
+所有权、事务、引用和恢复规则。多个 Profile 或 Agent 可以消费相同的 Deployment；
+uninstall 解绑选定 Profile 的消费者，并保留其他消费者仍需使用的目标。
+
+### 升级所有权状态
+
+新 Store 写入 v3 Deployment 状态。读取现有 v2 ledger 不会自动升级；目标 mutation 前
+需要先显式升级。配置 mutation authority 后，预览这项仅修改 Store 的升级，审查
+`data.plan`，再原样提交完整计划：
+
+```bash
+cellarer --output json sync upgrade-state --dry-run
+cellarer --output json sync upgrade-state --plan '<exact-data.plan-json>'
+```
+
+升级绑定旧状态字节、Store revision 和观察到的目标 fingerprint。它保留 receipt 与 snapshot
+引用，不修改目标；缺失的子项归属仍标记为 `unknown`。重复物理 owner、不支持的格式或待恢复
+状态都会阻断升级。旧 binary 会拒绝 v3 状态，不会自动降级；计划人工回退时应保留升级前状态
+及加密恢复证据。
 
 ### 迁移已有 Agent 配置
 
@@ -490,8 +513,8 @@ state 可以安全 mutation。
   traversal。不支持的平台会在读取或复制目录前失败；Windows 仍支持安全的普通 Rule/MCP 文件。
 - 在无法把目录 identity 绑定到 no-follow delete 的环境中，自动删除 receipt 或加密 snapshot
   目前不受支持，证据会保守保留。
-- Ledger version 1 与含糊的 pre-release ownership record 需要明确 reset 或人工处理，不会
-  被静默解释为当前所有权。
+- 合法 v2 ownership state 支持上述显式升级；ledger version 1 与含糊的 pre-release
+  ownership record 需要人工处理，不会被静默解释为当前所有权。
 
 如果密钥真值曾出现在生成文件、argv、日志、响应或 backup 中，应视为已泄露：先在 provider
 轮换，再移除保留的明文，替换为受支持引用，然后 preview、apply 并运行独立 secret scan。

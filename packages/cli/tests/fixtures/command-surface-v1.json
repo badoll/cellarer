@@ -155,7 +155,8 @@
     "inventory.import.plan",
     "inventory.import.apply",
     "inventory.adopt.plan",
-    "inventory.adopt.apply"
+    "inventory.adopt.apply",
+    "sync.upgrade-state"
   ],
   "commands": [
     {
@@ -5313,6 +5314,64 @@
           {
             "field": "acknowledgements",
             "option": "acknowledge",
+            "positional": null,
+            "encoded": true
+          },
+          {
+            "field": "dryRun",
+            "option": "dryRun",
+            "positional": null,
+            "encoded": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "sync.upgrade-state",
+      "aliases": [],
+      "description": "显式升级 v2 所有权为共享 Deployment 状态",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "--dry-run",
+          "attributeName": "dryRun",
+          "description": "预览 sealed Store-only upgrade plan",
+          "short": null,
+          "long": "--dry-run",
+          "required": false,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        },
+        {
+          "flags": "--plan <json>",
+          "attributeName": "plan",
+          "description": "应用已审查的 upgrade plan JSON",
+          "short": null,
+          "long": "--plan",
+          "required": true,
+          "optional": false,
+          "variadic": false,
+          "mandatory": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null
+        }
+      ],
+      "protocol": {
+        "mutability": "write",
+        "streaming": false,
+        "requiredFeatures": ["mutation-authority", "plan-apply"],
+        "inputSchemaId": "urn:cellarer:cli:protocol:1.0:command:sync.upgrade-state:input",
+        "outputSchemaId": "urn:cellarer:cli:protocol:1.0:command:sync.upgrade-state:output",
+        "eventSchemaId": null,
+        "inputBindings": [
+          {
+            "field": "plan",
+            "option": "plan",
             "positional": null,
             "encoded": true
           },

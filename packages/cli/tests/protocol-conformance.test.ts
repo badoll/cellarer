@@ -319,6 +319,7 @@ const commandCases = {
     "vault",
   ],
   "inventory.adopt.apply": () => ["inventory", "adopt", "apply", "--plan", "{}", "--confirm"],
+  "sync.upgrade-state": () => ["sync", "upgrade-state", "--dry-run"],
 } satisfies Record<RegisteredCommand, CommandCase>;
 
 function profileDesired(): string {

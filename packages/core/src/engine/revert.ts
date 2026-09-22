@@ -157,7 +157,7 @@ async function planRevertMutationWithAuthorityLease(
     const reverted = eligible.flatMap((target) => target.owners);
     const revertedKeys = new Set(reverted.map(entryKey));
     const remaining: Ledger = {
-      version: 2,
+      version: built.ledger.version,
       owners: built.ledger.owners.filter((owner) => !revertedKeys.has(entryKey(owner))),
     };
     const gitignores = await Promise.all(
@@ -540,7 +540,10 @@ async function executeRevertPlan(
       remaining = prepared.ledger;
       serializedRemaining = prepared.serialized;
     } else {
-      remaining = makeLedger(ledger.owners.filter((owner) => !successfulKeys.has(entryKey(owner))));
+      remaining = makeLedger(
+        ledger.owners.filter((owner) => !successfulKeys.has(entryKey(owner))),
+        ledger.version,
+      );
       serializedRemaining = serializeLedger(remaining);
     }
   }
@@ -721,6 +724,7 @@ function decodeRevertMutation(planReceipt: MutationPlan): {
       "target",
     ];
     if (typeof target === "object" && target !== null) {
+      if ("consumerSet" in target) targetKeys.push("consumerSet");
       if ("blockReason" in target) targetKeys.push("blockReason");
       if ("acknowledgement" in target) targetKeys.push("acknowledgement");
     }
@@ -728,7 +732,9 @@ function decodeRevertMutation(planReceipt: MutationPlan): {
     if (
       !hasExactKeys(target, targetKeys) ||
       typeof candidate.target !== "string" ||
-      !["remove-target", "restore-snapshot"].includes(candidate.proposedAction) ||
+      !["detach-consumer", "remove-target", "restore-snapshot"].includes(
+        candidate.proposedAction,
+      ) ||
       candidate.blocked !== false ||
       !Array.isArray(candidate.owners) ||
       candidate.owners.length === 0 ||
@@ -829,7 +835,21 @@ function assertRevertExecutionAuthorization(
     ) {
       throw new TypeError("revert mutation target authorization is invalid");
     }
-    if (normalizedTarget.ownership.classification !== "owned-drifted") {
+    const currentConsumers = ledger.owners.filter((owner) => owner.target === target.target);
+    if (ledger.version === 3) {
+      const exactKeys = currentConsumers.map(entryKey).sort();
+      if (
+        canonicalJson(target.consumerSet ?? []) !== canonicalJson(exactKeys) ||
+        (target.proposedAction === "detach-consumer") !==
+          currentConsumers.length > target.owners.length
+      ) {
+        throw new TypeError("revert consumer set changed after planning");
+      }
+    } else throw new TypeError("explicit deployment upgrade required before revert");
+    if (
+      target.proposedAction === "detach-consumer" ||
+      normalizedTarget.ownership.classification !== "owned-drifted"
+    ) {
       if (target.acknowledgement !== undefined || target.driftOverridden) {
         throw new TypeError("revert mutation acknowledgement is unexpected");
       }
@@ -846,7 +866,7 @@ function assertRevertExecutionAuthorization(
   const reverted = executionPlan.targets.flatMap((target) => target.owners);
   const revertedKeys = new Set(reverted.map(entryKey));
   const remaining: Ledger = {
-    version: 2,
+    version: ledger.version,
     owners: ledger.owners.filter((owner) => !revertedKeys.has(entryKey(owner))),
   };
   const helpers = mutationPlan.actions.slice(productActions.length);
@@ -897,7 +917,10 @@ async function buildRevertPlan(env: Env, opts: RevertOptions): Promise<BuiltReve
     if (!primary) continue;
     const allOwners = allByPhysicalTarget.get(target) ?? owners;
     let invalidReason: string | undefined;
-    if (allOwners.length !== owners.length) {
+    const detach = ledger.version === 3 && allOwners.length > owners.length;
+    if (ledger.version === 2) {
+      invalidReason = "explicit deployment upgrade required before revert";
+    } else if (allOwners.length !== owners.length && !detach) {
       invalidReason = "the physical target also has an owner outside the revert selection";
     } else if (!owners.every((owner) => sameReceipt(primary.receipt, owner.receipt))) {
       invalidReason = "the physical target has owners with conflicting applied receipts";
@@ -933,11 +956,18 @@ async function buildRevertPlan(env: Env, opts: RevertOptions): Promise<BuiltReve
       invalidReason = inspected.reason;
     }
 
-    const snapshot = await snapshotAvailability(env, opts.storeRoot, primary.receipt.backup);
-    const proposedAction: RevertProposedAction =
-      snapshot.status === "none" ? "remove-target" : "restore-snapshot";
+    const snapshot = await snapshotAvailability(
+      env,
+      opts.storeRoot,
+      detach ? null : primary.receipt.backup,
+    );
+    const proposedAction: RevertProposedAction = detach
+      ? "detach-consumer"
+      : snapshot.status === "none"
+        ? "remove-target"
+        : "restore-snapshot";
     const acknowledgement =
-      ownership.classification === "owned-drifted"
+      !detach && ownership.classification === "owned-drifted"
         ? revertAcknowledgement(owners, ownership, proposedAction)
         : undefined;
     const driftOverridden =
@@ -946,7 +976,7 @@ async function buildRevertPlan(env: Env, opts: RevertOptions): Promise<BuiltReve
 
     let blocked = false;
     let blockReason: string | undefined;
-    if (ownership.classification === "owned-drifted" && !driftOverridden) {
+    if (!detach && ownership.classification === "owned-drifted" && !driftOverridden) {
       blocked = true;
       blockReason = "owned target has drifted; exact revert acknowledgement required";
     } else if (
@@ -964,6 +994,7 @@ async function buildRevertPlan(env: Env, opts: RevertOptions): Promise<BuiltReve
     }
 
     const item: RevertPlanTarget = {
+      ...(ledger.version === 3 ? { consumerSet: allOwners.map(entryKey).sort() } : {}),
       target,
       owners,
       expectedReceipt: primary.receipt,
@@ -1116,6 +1147,18 @@ async function revertOne(
     throw new Error(`target "${target.target}" changed after revert planning`);
   }
 
+  if (target.proposedAction === "detach-consumer") {
+    return {
+      backup: null,
+      expectedAfter: {
+        kind: "target-state",
+        receipt:
+          currentFingerprint === null
+            ? { state: "absent" }
+            : { state: "present", fingerprint: currentFingerprint },
+      },
+    };
+  }
   if (target.snapshot.status === "none") {
     await env.fs.rm(target.target, { recursive: true, force: true });
     return {

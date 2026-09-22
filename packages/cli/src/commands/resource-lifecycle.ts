@@ -1,4 +1,5 @@
 import {
+  applyDeploymentUpgradePlan,
   applyResourceBundleImportPlan,
   applyResourceExportPlan,
   applyResourceRemovePlan,
@@ -12,6 +13,7 @@ import {
   listSyncProfiles,
   type MutationPlan,
   planAvailableResourceUpdate,
+  planDeploymentUpgrade,
   planResourceBundleImport,
   planResourceExport,
   planResourceRemove,
@@ -673,4 +675,47 @@ function presentPlan(data: unknown): void {
 function presentOperation(data: unknown): void {
   const value = data as { operation?: { ok?: boolean } };
   createSafeConsole(data).log(value.operation?.ok ? "applied" : "not applied");
+}
+
+export function createDeploymentUpgradeCommandContract(
+  definition: CommandContractMetadata<"sync.upgrade-state">,
+) {
+  return defineCommandContract<"sync.upgrade-state", PlanOpts, unknown>(definition, {
+    createCommand: () =>
+      new Command("upgrade-state")
+        .description("显式升级 v2 所有权为共享 Deployment 状态")
+        .option("--dry-run", "预览 sealed Store-only upgrade plan")
+        .option("--plan <json>", "应用已审查的 upgrade plan JSON"),
+    normalize: ({ command }) => command.opts<PlanOpts>(),
+    execute: (input, { invocation }) =>
+      executeDomain<unknown>(async () => {
+        const { env, storeRoot } = await resolveContext({}, "required");
+        if (input.plan !== undefined) {
+          if (input.dryRun)
+            throw new CliInputError(
+              "INVALID_INPUT",
+              "--plan and --dry-run cannot be combined",
+              { fields: ["plan", "dryRun"] },
+              invocation,
+            );
+          const result = await applyDeploymentUpgradePlan(env, parsePlan(input.plan, invocation), {
+            storeRoot,
+          });
+          return operationOutcome(result, result.operation);
+        }
+        if (!input.dryRun)
+          throw new CliInputError(
+            "INPUT_REQUIRED",
+            "use --dry-run to preview or --plan to apply an approved upgrade",
+            { fields: ["plan"] },
+            invocation,
+          );
+        return planDeploymentUpgrade(env, { storeRoot });
+      }),
+    presentText: (outcome) => presentOutcome(outcome, presentPlan),
+    mapError: (error) =>
+      error instanceof Error && !(error instanceof CliInputError)
+        ? { code: "DOMAIN_VALIDATION_FAILED", message: error.message }
+        : undefined,
+  });
 }

@@ -149,7 +149,7 @@ cellarer ui
 | Library | 刷新 Inventory；导入、检查、更新、重命名、删除、导出与 bundle 导入资源。 |
 | Agents | 探测 agent、配置 adapter，并检查受支持的目标。 |
 | 下发 | 按 agent、scope、collection 或 profile 预览和同步 rules、MCP servers 与 skills。 |
-| 安全 | 验证漂移、保护目标所有权、恢复中断 operation，并按 receipt 回滚。 |
+| 安全 | 验证漂移、保留共享目标消费者、恢复中断 operation，并按 receipt 回滚。 |
 | Clients | 使用人类 CLI、版本化 JSON/JSONL 协议或经过认证的本地 `/api/v1`。 |
 
 使用 `cellarer <command> --help` 查看精确选项。自动化调用方可通过
