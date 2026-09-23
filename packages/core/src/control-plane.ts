@@ -604,3 +604,16 @@ function zodIssues(error: ZodError): ControlPlaneValidationIssue[] {
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+export type ClientSyncProfileContract = AssertExact<
+  ExactContract<
+    import("./sync/profiles.js").SyncProfile,
+    import("./protocol/client-types.js").ClientSyncProfile
+  >
+>;
+export type ClientSyncProfileDesiredContract = AssertExact<
+  ExactContract<
+    import("./sync/profiles.js").SyncProfileDesiredState,
+    import("./protocol/client-types.js").ClientSyncProfileDesiredState
+  >
+>;

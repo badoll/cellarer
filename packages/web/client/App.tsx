@@ -20,6 +20,7 @@ import {
   type ResourceState,
   resourceKindLabel,
 } from "./product-model.js";
+import { ProfilesPage } from "./profiles-page.js";
 import { ResourcePage } from "./resource-pages.js";
 import { SettingsPage } from "./settings-page.js";
 
@@ -42,11 +43,16 @@ const NAV_ITEMS: NavItem[] = [
   { page: "skills", label: "Skills", detail: "Library", icon: "artifacts" },
   { page: "mcp", label: "MCP", detail: "Servers", icon: "database" },
   { page: "rules", label: "Rules", detail: "Instructions", icon: "rules" },
+  { page: "profiles", label: "Profiles", detail: "Deployments", icon: "apply" },
   { page: "agents", label: "Agents", detail: "Targets", icon: "agent" },
   { page: "settings", label: "Settings", detail: "Defaults", icon: "settings" },
 ];
 
 const PAGE_META: Record<Page, { title: string; subtitle: string }> = {
+  profiles: {
+    title: "Profiles",
+    subtitle: "Desired selections, reviewed reconciliation and consumer uninstall.",
+  },
   dashboard: {
     title: "Dashboard",
     subtitle: "Local-first overview of resources, collections, and agent targets.",
@@ -140,6 +146,7 @@ export function App() {
           {page === "skills" && <ResourcePage kind="skills" />}
           {page === "mcp" && <ResourcePage kind="mcp" />}
           {page === "rules" && <ResourcePage kind="rules" />}
+          {page === "profiles" && <ProfilesPage />}
           {page === "agents" && <AgentsPage />}
           {page === "settings" && <SettingsPage />}
         </div>

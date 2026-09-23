@@ -527,11 +527,27 @@ passphrases are not accepted as option values and are never printed by `ls`.
 
 ### Web UI and local API
 
-The Library Collection filter is carried into **Sync to Agents**. With no filter,
-sync uses Store defaults, not every Collection. Only matching Store resources are
-synced; discovered resources must be imported first. Changing the selection or
-closing the dialog discards the preview. Apply submits the reviewed plan unchanged;
-a stale-plan rejection requires a fresh preview and is never retried automatically.
+Library provides resource details and explicit row multiselection. **Selection mode** distinguishes
+exact resource IDs from Collection / Store defaults; filtering does not silently expand selected rows.
+Collection mode passes the filter to **Sync to Agents**, using Store defaults when no filter is set.
+Discovered resources must be imported first. The target picker shows Core detection and compatibility
+evidence; native unknown does not mean successfully loaded.
+
+Resource details offer source update checks, Store update previews, dependency inspection and
+non-cascading removal. Collections can be created and their exact membership replaced. Store and
+Collection updates never sync targets automatically; referenced dependencies block ordinary removal.
+
+**Profiles** creates or edits exact resources/Collections, Agents, scope and placement. Saving changes
+only desired state. **Preview reconciliation** separately reviews additions, removals and retained user
+content. **Verify deployment** separates configuration health, pending state, disk receipts and native
+observation. **Preview uninstall** detaches that Profile's consumers while preserving other consumers
+and user content. Historical revert is a separate action: explicitly select its resources, then review its scope and receipt.
+
+Each new mutation requires Preview followed by Confirm and submits the unchanged plan. Selection
+changes, closing or reloading discard preview authority. Stale, drift and recovery blockers show Core
+remediation without automatic force or retry. Profiles never persist force or drift acknowledgements.
+Source coverage and conversion limitations remain distinct in Inventory, compatibility and resource
+evidence; converged configuration does not prove native Agent loading.
 
 ```bash
 cellarer ui

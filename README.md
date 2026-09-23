@@ -161,6 +161,8 @@ Start the loopback-only Web console:
 cellarer ui
 ```
 
+The Web Library supports exact row selection, resource details, Collection membership and reviewed Store updates/removal. Profiles separate saving desired state from target reconciliation, verification, consumer uninstall and historical revert. See the [Web workflow guide](docs/README.md#web-ui-and-local-api).
+
 ## What it manages
 
 | Area | Main operations |

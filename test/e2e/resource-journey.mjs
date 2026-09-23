@@ -434,20 +434,42 @@ export async function runResourceJourney({
       fullVerification.envelope.data.coverage.items
         .filter(({ outcome }) => outcome !== "covered")
         .map(({ agent, capability, outcome }) => ({ agent, capability, outcome })),
-      [
-        { agent: "agents-md", capability: "rules", outcome: "blocked" },
-        { agent: "agents-md", capability: "mcp", outcome: "unsupported" },
-        { agent: "agents-md", capability: "skills", outcome: "blocked" },
-      ],
+      [{ agent: "agents-md", capability: "mcp", outcome: "unsupported" }],
     );
-    const verificationAgents = [...new Set(distributed.data.entries.map(({ agent }) => agent))];
+    assert.deepEqual(
+      fullVerification.envelope.data.coverage.items
+        .filter(({ agent, outcome }) => agent === "agents-md" && outcome === "covered")
+        .map(({ capability }) => capability)
+        .sort(),
+      ["rules", "skills"],
+    );
+    assert.deepEqual(
+      [
+        ...new Set(
+          JSON.parse(ownershipAfterDistribution)
+            .deployments.flatMap((deployment) => deployment.consumers)
+            .filter(({ agent }) => agent === "agents-md")
+            .map(({ capability }) => capability),
+        ),
+      ].sort(),
+      ["rules", "skills"],
+      "shared physical targets must retain agents-md consumer ownership",
+    );
+    const unsupportedAgents = new Set(
+      fullVerification.envelope.data.coverage.items
+        .filter(({ outcome }) => outcome === "unsupported")
+        .map(({ agent }) => agent),
+    );
+    const verificationAgents = [
+      ...new Set(distributed.data.entries.map(({ agent }) => agent)),
+    ].filter((agent) => !unsupportedAgents.has(agent));
     const ownerSelection = [...distributionSelection];
     ownerSelection[ownerSelection.indexOf("--agent") + 1] = verificationAgents.join(",");
     const verification = requireSuccess(
       await client.invoke("verify", ["verify", ...ownerSelection]),
       "healthy actual-owner verification",
     );
-    assertions.push({ id: "unsupported-and-unowned-requests-remain-incomplete", passed: true });
+    assertions.push({ id: "unsupported-requests-remain-incomplete", passed: true });
     assert.equal(verification.data.healthy, true);
     assert.equal(verification.data.desiredVsApplied.status, "converged");
     assert.equal(verification.data.appliedVsDisk.status, "converged");
@@ -868,17 +890,23 @@ async function runReferenceCanaryScenario({ layout, clientOptions, env }) {
     "reference distribution plan",
   );
   assert.equal(
-    plan.data.preview.actions.every(({ op }) => op !== "skip"),
+    plan.data.preview.actions.some(({ agent, op }) => agent === "claude-code" && op !== "skip"),
     true,
+  );
+  assert.equal(
+    plan.data.preview.actions.some(
+      ({ agent, op, reason }) =>
+        agent === "codebuddy-e2e" && op === "skip" && /MCP_ENV_REFERENCE/.test(reason),
+    ),
+    true,
+    "generic adapter must not claim native environment expansion",
   );
   requireSuccess(
     await client.invoke("apply", ["apply", "--plan", JSON.stringify(plan.data.plan)]),
     "reference distribution apply",
   );
-  for (const target of [
-    join(scenarioRoot, ".mcp.json"),
-    join(scenarioRoot, ".codebuddy", "mcp.json"),
-  ]) {
+  assert.equal(await exists(join(scenarioRoot, ".codebuddy", "mcp.json")), false);
+  for (const target of [join(scenarioRoot, ".mcp.json")]) {
     const content = await fs.readFile(target, "utf8");
     assert.match(content, /\$\{CELLARER_E2E_TOKEN\}/);
     assert.equal(content.includes(secretCanary), false);
@@ -907,7 +935,7 @@ async function runReferenceCanaryScenario({ layout, clientOptions, env }) {
         agent === "codex" &&
         capability === "mcp" &&
         op === "skip" &&
-        /incompatible.*plaintext materialization/i.test(reason),
+        /MCP_ENV_REFERENCE/.test(reason),
     ),
     true,
   );

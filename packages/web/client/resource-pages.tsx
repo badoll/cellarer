@@ -13,6 +13,7 @@ import {
   resourceKindLabel,
   summarizeResourceCounts,
 } from "./product-model.js";
+import { CollectionEditor, ResourceWorkflows } from "./resource-workflows.js";
 import { SyncDialog } from "./sync-dialog.js";
 import { collectionFilterSelection } from "./sync-selection.js";
 
@@ -51,13 +52,20 @@ export function ResourcePage(props: { kind: Capability }) {
     error: null,
     loading: true,
   });
+  const [selected, setSelected] = useState<string[]>([]);
+  const [detail, setDetail] = useState<ControlPlaneResourceDto | null>(null);
+  const [selectionMode, setSelectionMode] = useState<"collection" | "ids">("collection");
   const [collection, setCollection] = useState("");
   const [syncOpen, setSyncOpen] = useState(false);
+  const [workflowNotice, setWorkflowNotice] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
   const title = resourceKindLabel(props.kind);
 
   useEffect(() => {
     let alive = true;
+    setSelected([]);
+    setDetail(null);
+    setSyncOpen(false);
     const params = new URLSearchParams();
     if (collection.trim()) params.set("collections", collection.trim());
 
@@ -115,7 +123,23 @@ export function ResourcePage(props: { kind: Capability }) {
                 ))}
               </datalist>
             </label>
-            <button type="button" className="action" onClick={() => setSyncOpen(true)}>
+            <label className="field-row stacked">
+              <span>Selection mode</span>
+              <select
+                aria-label="Selection mode"
+                value={selectionMode}
+                onChange={(event) => setSelectionMode(event.target.value as "collection" | "ids")}
+              >
+                <option value="collection">Collection / Store defaults</option>
+                <option value="ids">Explicit rows ({selected.length})</option>
+              </select>
+            </label>
+            <button
+              type="button"
+              className="action"
+              disabled={selectionMode === "ids" && selected.length === 0}
+              onClick={() => setSyncOpen(true)}
+            >
               <DashboardIcon name="apply" />
               Sync to Agents
             </button>
@@ -135,16 +159,63 @@ export function ResourcePage(props: { kind: Capability }) {
       ) : state.data?.resources.length === 0 ? (
         <p className="empty-state">No resources in this view.</p>
       ) : state.data ? (
-        <ResourceTable resources={state.data.resources} />
+        <ResourceTable
+          resources={state.data.resources}
+          selected={selected}
+          onDetail={setDetail}
+          onSelect={(id) => {
+            setSelectionMode("ids");
+            setSelected((items) =>
+              items.includes(id) ? items.filter((item) => item !== id) : [...items, id],
+            );
+          }}
+        />
       ) : null}
       {state.data && state.data.warnings.length > 0 && (
         <WarningList warnings={state.data.warnings} />
       )}
 
+      {workflowNotice && <p role="status">{workflowNotice}</p>}
+      <CollectionEditor />
+      {detail && (
+        <section className="panel" aria-label="Resource details">
+          <div className="panel-header">
+            <h3>{detail.name}</h3>
+            <button type="button" onClick={() => setDetail(null)}>
+              Close details
+            </button>
+          </div>
+          <p className="mono">{detail.id}</p>
+          <p>Source: {detail.source}</p>
+          <p>Revision: {detail.currentRevision?.id ?? "Not imported"}</p>
+          <p>Validation: {detail.validation.status}</p>
+          {detail.validation.issues.map((issue) => (
+            <p className="warn" key={`${issue.path}:${issue.message}`}>
+              {issue.message}
+            </p>
+          ))}
+          <p>Native loading: unverified — filesystem observation does not prove agent loading.</p>
+          <ResourceWorkflows
+            key={detail.id}
+            resource={detail}
+            onChanged={(message) => {
+              setWorkflowNotice(message);
+              setReloadKey((value) => value + 1);
+            }}
+          />
+          <details>
+            <summary>Resource evidence</summary>
+            <pre>{JSON.stringify(detail, null, 2)}</pre>
+          </details>
+        </section>
+      )}
       <SyncDialog
         open={syncOpen}
         kinds={[props.kind]}
-        collections={collectionFilterSelection(collection)}
+        collections={
+          selectionMode === "collection" ? collectionFilterSelection(collection) : undefined
+        }
+        resourceIds={selectionMode === "ids" ? selected : undefined}
         onClose={() => setSyncOpen(false)}
         onApplied={() => {
           setSyncOpen(false);
@@ -155,12 +226,18 @@ export function ResourcePage(props: { kind: Capability }) {
   );
 }
 
-function ResourceTable(props: { resources: readonly ControlPlaneResourceDto[] }) {
+function ResourceTable(props: {
+  resources: readonly ControlPlaneResourceDto[];
+  selected: string[];
+  onSelect(id: string): void;
+  onDetail(resource: ControlPlaneResourceDto): void;
+}) {
   return (
     <div className="table-wrap resource-table-wrap">
       <table className="resource-table">
         <thead>
           <tr>
+            <th>Select</th>
             <th>Name</th>
             <th>State</th>
             <th>Collections</th>
@@ -172,7 +249,13 @@ function ResourceTable(props: { resources: readonly ControlPlaneResourceDto[] })
         </thead>
         <tbody>
           {props.resources.map((resource) => (
-            <ResourceRow resource={resource} key={resource.id} />
+            <ResourceRow
+              resource={resource}
+              key={resource.id}
+              selected={props.selected.includes(resource.id)}
+              onSelect={() => props.onSelect(resource.id)}
+              onDetail={() => props.onDetail(resource)}
+            />
           ))}
         </tbody>
       </table>
@@ -180,11 +263,27 @@ function ResourceTable(props: { resources: readonly ControlPlaneResourceDto[] })
   );
 }
 
-function ResourceRow(props: { resource: ControlPlaneResourceDto }) {
+function ResourceRow(props: {
+  resource: ControlPlaneResourceDto;
+  selected: boolean;
+  onSelect(): void;
+  onDetail(): void;
+}) {
   return (
     <tr>
       <td>
-        <strong>{props.resource.name}</strong>
+        <input
+          type="checkbox"
+          aria-label={`Select ${props.resource.id}`}
+          disabled={!!props.resource.discovered}
+          checked={props.selected}
+          onChange={props.onSelect}
+        />
+      </td>
+      <td>
+        <button type="button" className="link-button" onClick={props.onDetail}>
+          {props.resource.name}
+        </button>
         <span className="muted-row mono">
           {props.resource.discovered
             ? `${props.resource.discovered.agent} · not imported`

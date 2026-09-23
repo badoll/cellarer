@@ -6,6 +6,8 @@ export type {
   ActivityEvent,
   Capability,
   ClientErrorCode,
+  ClientSyncProfile,
+  ClientSyncProfileDesiredState,
   ConfigurationOutcome,
   ControlPlaneAgentDto,
   ControlPlaneAgentListDto,

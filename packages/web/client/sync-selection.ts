@@ -6,6 +6,7 @@ export interface SyncRequest {
   destination: Destination;
   dir?: string;
   resources?: {
+    ids?: string[];
     kinds?: Capability[];
     collections?: string[];
   };
@@ -17,6 +18,7 @@ interface SyncRequestInput {
   dir: string;
   kinds?: Capability[];
   collections?: string[];
+  resourceIds?: string[];
 }
 
 function nonEmptyArray<T>(items: T[] | undefined): T[] | undefined {
@@ -30,7 +32,12 @@ export function isProjectDirMissing(destination: Destination, dir: string): bool
 export function buildSyncRequest(input: SyncRequestInput): SyncRequest {
   const kinds = nonEmptyArray(input.kinds);
   const collections = nonEmptyArray(input.collections);
-  const resources = kinds || collections ? { kinds, collections } : undefined;
+  const ids = input.resourceIds;
+  const resources = ids
+    ? { ids, kinds }
+    : kinds || collections
+      ? { kinds, collections }
+      : undefined;
   return {
     agents: input.agents
       .split(",")
@@ -47,6 +54,7 @@ export function syncRequestKey(request: SyncRequest): string {
     agents: request.agents,
     destination: request.destination,
     dir: request.dir ?? "",
+    ids: request.resources?.ids ?? null,
     kinds: request.resources?.kinds ?? [],
     collections: request.resources?.collections ?? [],
   });
@@ -64,6 +72,8 @@ export function buildSyncSelection(input: SyncRequestInput) {
     key: syncRequestKey(request),
     resourceSummary:
       request.resources?.kinds?.map(resourceKindLabel).join(", ") ?? "All resource kinds",
-    collectionSummary: request.resources?.collections?.join(", ") ?? "Store defaults",
+    collectionSummary: request.resources?.ids
+      ? `Exact resources: ${request.resources.ids.join(", ")}`
+      : (request.resources?.collections?.join(", ") ?? "Store defaults"),
   };
 }

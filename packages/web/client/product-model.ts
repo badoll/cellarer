@@ -7,7 +7,15 @@ import type {
 
 export type { Destination, ResourceState } from "@cellarer/core/client-api";
 
-export type Page = "dashboard" | "inventory" | "skills" | "mcp" | "rules" | "agents" | "settings";
+export type Page =
+  | "profiles"
+  | "dashboard"
+  | "inventory"
+  | "skills"
+  | "mcp"
+  | "rules"
+  | "agents"
+  | "settings";
 
 export interface ResourceCountLike {
   state: ResourceState;

@@ -143,6 +143,7 @@ interface SyncBody {
   destination?: Destination;
   dir?: string;
   resources?: {
+    ids?: string[];
     kinds?: Capability[];
     collections?: string[];
   };
@@ -521,6 +522,23 @@ function revertOpts(deps: AppDeps, body: RevertBody) {
 }
 
 function syncOpts(deps: AppDeps, body: SyncBody) {
+  if (
+    body.resources?.ids !== undefined &&
+    (!Array.isArray(body.resources.ids) ||
+      body.resources.ids.length === 0 ||
+      body.resources.ids.some(
+        (id) => typeof id !== "string" || !/^(rules|mcp|skills)\/[A-Za-z0-9._-]+$/.test(id),
+      ))
+  ) {
+    throw new ClientApiInputError("Exact resource selection requires non-empty resource IDs", {
+      fields: ["resources.ids"],
+    });
+  }
+  if (body.resources?.ids && body.resources.collections !== undefined) {
+    throw new ClientApiInputError("Exact IDs and Collection selection are separate modes", {
+      fields: ["resources"],
+    });
+  }
   requireDirForDestination(body.destination, body.dir);
   return {
     storeRoot: deps.storeRoot,
@@ -528,6 +546,7 @@ function syncOpts(deps: AppDeps, body: SyncBody) {
     dir: body.dir,
     agents: body.agents ?? [],
     collections: body.resources?.collections,
+    resourceIds: body.resources?.ids,
     capabilities: body.resources?.kinds,
     method: body.method,
     mcpStrategy: body.mcpStrategy,

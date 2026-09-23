@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { apiFetch } from "../client/api.js";
 
 vi.mock("../client/api.js", () => ({ apiFetch: vi.fn() }));
+// This suite isolates sealed sync-plan races; the Core-backed picker is covered by browser journeys.
+vi.mock("../client/agent-picker.js", () => ({ AgentPicker: () => null }));
 
 import { SyncDialog } from "../client/sync-dialog.js";
 import { buildSyncSelection, collectionFilterSelection } from "../client/sync-selection.js";

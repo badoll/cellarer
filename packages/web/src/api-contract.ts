@@ -977,6 +977,7 @@ const syncBodySchema = objectSchema({
   destination: destinationSchema,
   dir: nonEmptyStringSchema,
   resources: objectSchema({
+    ids: { ...stringArraySchema, not: { const: [] } },
     kinds: capabilityArraySchema,
     collections: stringArraySchema,
   }),

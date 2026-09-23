@@ -1,5 +1,6 @@
 import type { Capability, DistributePlan, MutationPlan } from "@cellarer/core/client-api";
 import { useLayoutEffect, useRef, useState } from "react";
+import { AgentPicker } from "./agent-picker.js";
 import { apiFetch } from "./api.js";
 import { ClientApiError, isClientReplanRequired, readApiJson } from "./api-state.js";
 import { type Destination, destinationLabel, resourceKindLabel } from "./product-model.js";
@@ -21,6 +22,7 @@ export function SyncDialog(props: {
   open: boolean;
   kinds?: Capability[];
   collections?: string[];
+  resourceIds?: string[];
   onClose(): void;
   onApplied(): void;
 }) {
@@ -42,6 +44,7 @@ export function SyncDialog(props: {
     dir,
     kinds: props.kinds,
     collections: props.collections,
+    resourceIds: props.resourceIds,
   });
   const { request, key: currentRequestKey } = selection;
   // Bind authority to committed normalized input and a dialog session, not array identity.
@@ -65,7 +68,8 @@ export function SyncDialog(props: {
     mutationPlan !== null &&
     plannedRequest !== null &&
     syncRequestKey(plannedRequest) === currentRequestKey;
-  const canPreview = hasAgents && !dirMissing && !previewing && !applying;
+  const canPreview =
+    props.resourceIds?.length !== 0 && hasAgents && !dirMissing && !previewing && !applying;
   const canApply = canPreview && hasCurrentPreview;
 
   function resetPlan() {
@@ -205,6 +209,14 @@ export function SyncDialog(props: {
           </label>
         )}
 
+        <AgentPicker
+          value={request.agents}
+          onChange={(ids) => setAgents(ids.join(", "))}
+          scope={destination === "project" ? "project" : "global"}
+          dir={dir}
+          kinds={props.kinds ?? ["rules", "mcp", "skills"]}
+          disabled={applying}
+        />
         <div className="button-row">
           <button
             type="button"

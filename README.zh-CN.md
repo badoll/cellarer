@@ -144,6 +144,8 @@ rmdir .cellarer-demo
 cellarer ui
 ```
 
+Web Library 支持精确行选择、资源详情、集合成员编辑与 Store 更新/删除预览。Profiles 将保存期望状态与目标协调、验证、消费者解绑及历史回滚分开，详见 [Web 工作流指南](docs/README.zh-CN.md#web-ui-与本地-api)。
+
 ## 管理范围
 
 | 领域 | 主要操作 |

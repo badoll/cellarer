@@ -453,10 +453,23 @@ vault passphrase。密钥真值和 passphrase 不作为 option value，也不会
 
 ### Web UI 与本地 API
 
-Library 的 Collection 筛选会传入 **Sync to Agents**。无筛选时，同步使用 Store
-默认集合，并非全部集合。仅同步匹配的 Store 资源；discovered 资源需要先导入。
-修改选择或关闭弹窗会作废预览。Apply 原样提交已审查的计划；计划过期被拒绝后，
-需要重新预览，不会自动重试。
+Library 提供资源详情和显式行多选。**Selection mode** 区分精确资源 ID 与 Collection /
+Store defaults；筛选不会暗中扩大已选行。Collection 模式将筛选传入 **Sync to Agents**，
+无筛选时使用 Store 默认集合。Discovered 资源需要先导入。目标选择器展示 Core 的探测和
+兼容性信息；native unknown 不代表已加载成功。
+
+资源详情提供来源更新检查、Store 更新预览、依赖查看和非级联删除；Collections 可创建并
+精确替换成员。更新 Store 或集合后不会自动同步目标，引用依赖会阻止普通删除。
+
+**Profiles** 可创建或编辑精确资源/集合、Agent、scope 与 placement。保存只修改期望状态；
+**Preview reconciliation** 单独审查增减和用户保留项，**Verify deployment** 分开显示配置
+健康、pending、磁盘与 native observation。**Preview uninstall** 解绑当前 Profile 消费者，
+保留其他消费者与用户内容；历史 revert 是另一个操作，须显式选择资源并审查其 scope 和 receipt。
+
+每项新操作都先 Preview 再 Confirm，Apply 提交未经改写的计划。修改选择、关闭或刷新页面
+会作废预览。Stale、drift 或 recovery 阻断会显示 Core 指引，不会自动强制或重试。Profile 不
+保存 force 或漂移确认。来源 coverage 与 conversion 限制分别保留在 Inventory、兼容性和
+资源证据中；配置收敛不等于原生 Agent 加载成功。
 
 ```bash
 cellarer ui

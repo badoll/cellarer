@@ -881,3 +881,22 @@ export type ConfigurationOutcome = "healthy" | "unhealthy" | "no-op" | "incomple
 export interface VerificationRuntimeEvidence {
   readonly observation: "unknown";
 }
+
+export interface ClientSyncProfileDesiredState {
+  agentIds: string[];
+  scope: Scope;
+  resourceIds: string[];
+  collectionIds: string[];
+  capabilities: Capability[];
+  method: "symlink" | "copy";
+  mergePolicy: "merge";
+}
+
+export interface ClientSyncProfile {
+  schemaVersion: 1;
+  profileId: string;
+  revision: string;
+  createdAt: string;
+  updatedAt: string;
+  desired: ClientSyncProfileDesiredState;
+}
