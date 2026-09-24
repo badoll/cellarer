@@ -399,7 +399,8 @@ describe("local client route registry", () => {
   it("publishes an explicit closed success DTO for every implemented operation", () => {
     for (const route of CLIENT_API_ROUTES) {
       const success = route.outputSchema.oneOf?.[0];
-      const data = success?.properties?.data;
+      const data =
+        route.operationId === "streamInventory" ? route.outputSchema : success?.properties?.data;
 
       expect(data, `${route.operationId} success data`).toBeDefined();
       const variants = data?.oneOf ?? (data ? [data] : []);

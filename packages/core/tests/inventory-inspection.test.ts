@@ -86,6 +86,136 @@ describe("unified Inventory candidate inspection", () => {
     expect(result.findings.map((finding) => finding.code)).toEqual(["UNSAFE_LINK"]);
   });
 
+  it("discovers a bounded linked Skill and an ordinary sibling independently", async () => {
+    const skills = t.path("home", ".fixture", "skills");
+    const target = t.path("home", "shared", "linked-skill");
+    await t.env.fs.mkdir(target, { recursive: true });
+    await t.env.fs.mkdir(join(skills, "ordinary"), { recursive: true });
+    await t.env.fs.writeFile(
+      join(target, "SKILL.md"),
+      "---\nname: linked-skill\ndescription: Linked skill\n---\n# Linked\n",
+    );
+    await t.env.fs.writeFile(
+      join(skills, "ordinary", "SKILL.md"),
+      "---\nname: ordinary\ndescription: Ordinary skill\n---\n# Ordinary\n",
+    );
+    await t.env.fs.symlink(target, join(skills, "linked-skill"), "dir");
+
+    const result = await inspectInventorySource(
+      t.env,
+      { ...source("skills", skills), boundaryRoot: t.env.homedir() },
+      adapter(),
+    );
+
+    expect(result.findings).toEqual([]);
+    expect(result.candidates.map((candidate) => candidate.name)).toEqual([
+      "linked-skill",
+      "ordinary",
+    ]);
+    expect(result.candidates.every((candidate) => candidate.findings.length === 0)).toBe(true);
+  });
+
+  it("retains safe siblings when one linked Skill escapes the declared boundary", async () => {
+    const skills = t.path("home", ".fixture", "skills");
+    const outside = t.path("external-skill");
+    await t.env.fs.mkdir(outside, { recursive: true });
+    await t.env.fs.mkdir(join(skills, "ordinary"), { recursive: true });
+    await t.env.fs.writeFile(
+      join(skills, "ordinary", "SKILL.md"),
+      "---\nname: ordinary\ndescription: Ordinary skill\n---\n# Ordinary\n",
+    );
+    await t.env.fs.symlink(outside, join(skills, "escaped"), "dir");
+
+    const result = await inspectInventorySource(
+      t.env,
+      { ...source("skills", skills), boundaryRoot: t.env.homedir() },
+      adapter(),
+    );
+
+    expect(result.candidates.map((candidate) => candidate.name)).toEqual(["ordinary"]);
+    expect(result.findings.map((finding) => finding.code)).toEqual(["UNSAFE_LINK"]);
+  });
+
+  it("never follows a nested link in an otherwise bounded linked Skill", async () => {
+    const skills = t.path("home", ".fixture", "skills");
+    const target = t.path("home", "shared", "linked");
+    const outside = t.path("outside-secret");
+    await t.env.fs.mkdir(target, { recursive: true });
+    await t.env.fs.mkdir(skills, { recursive: true });
+    await t.env.fs.writeFile(
+      join(target, "SKILL.md"),
+      "---\nname: linked\ndescription: Linked skill\n---\n# Linked\n",
+    );
+    await t.env.fs.writeFile(outside, SECRET_CANARY);
+    await t.env.fs.symlink(outside, join(target, "credentials"), "file");
+    await t.env.fs.symlink(target, join(skills, "linked"), "dir");
+
+    const result = await inspectInventorySource(
+      t.env,
+      { ...source("skills", skills), boundaryRoot: t.env.homedir() },
+      adapter(),
+    );
+
+    expect(result.candidates).toEqual([]);
+    expect(result.findings.map((finding) => finding.code)).toEqual(["UNSAFE_LINK"]);
+    expect(JSON.stringify(result)).not.toContain(SECRET_CANARY);
+  });
+
+  it("falls back to child isolation when an ordinary Skill has a nested link", async () => {
+    const skills = t.path("home", ".fixture", "skills");
+    const blocked = join(skills, "blocked");
+    const ordinary = join(skills, "ordinary");
+    const outside = t.path("outside-secret");
+    await t.env.fs.mkdir(blocked, { recursive: true });
+    await t.env.fs.mkdir(ordinary, { recursive: true });
+    await t.env.fs.writeFile(
+      join(ordinary, "SKILL.md"),
+      "---\nname: ordinary\ndescription: Ordinary skill\n---\n# Ordinary\n",
+    );
+    await t.env.fs.writeFile(outside, SECRET_CANARY);
+    await t.env.fs.symlink(outside, join(blocked, "credentials"), "file");
+
+    const result = await inspectInventorySource(t.env, source("skills", skills), adapter());
+
+    expect(result.candidates.map(({ name }) => name)).toEqual(["ordinary"]);
+    expect(result.findings.map(({ code }) => code)).toEqual(["UNSAFE_LINK"]);
+    expect(JSON.stringify(result)).not.toContain(SECRET_CANARY);
+  });
+
+  it("enforces one aggregate entry budget across linked and ordinary Skills", async () => {
+    const skills = t.path("home", ".fixture", "skills");
+    const target = t.path("home", "shared", "linked");
+    await t.env.fs.mkdir(target, { recursive: true });
+    await t.env.fs.mkdir(join(skills, "ordinary"), { recursive: true });
+    for (const directory of [target, join(skills, "ordinary")]) {
+      await t.env.fs.writeFile(
+        join(directory, "SKILL.md"),
+        "---\nname: valid\ndescription: Valid skill\n---\n# Skill\n",
+      );
+    }
+    await t.env.fs.symlink(target, join(skills, "linked"), "dir");
+    const declaration = {
+      sourceId: "skills",
+      scope: "global" as const,
+      kind: "skills" as const,
+      path: skills,
+      locator: "tree" as const,
+      maxDepth: 16,
+      maxEntries: 4,
+      maxBytes: 16777216,
+      precedence: { policy: "unknown" as const, evidence: "fixture" },
+    };
+
+    const result = await inspectInventorySource(
+      t.env,
+      { ...source("skills", skills), boundaryRoot: t.env.homedir(), discovery: declaration },
+      adapter(),
+    );
+
+    expect(result.findings.map((finding) => finding.code)).toEqual(["SOURCE_BUDGET_EXCEEDED"]);
+    expect(result.candidates).toHaveLength(1);
+  });
+
   it("normalizes Skills, merges equivalent observations, and retains redacted provenance", async () => {
     const first = t.path("home", ".one", "skills", "Alpha");
     const second = t.path("home", ".two", "skills", "alpha");

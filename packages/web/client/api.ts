@@ -5,6 +5,7 @@ import {
   type InventorySecretAdoptionOrphanEvidence,
   type InventorySecretAdoptionProvider,
   type InventorySecretFieldSelector,
+  type InventoryStreamEvent,
   type MutationPlan,
   type PostCommitInventoryRefresh,
 } from "@cellarer/core/client-api";
@@ -123,6 +124,62 @@ export async function fetchInventory(
   const suffix = query.size > 0 ? `?${query.toString()}` : "";
   const requestPath = `${path}${suffix}` as VersionedClientApiPath;
   return readApiJson<InventoryRefreshResult>(await apiFetch(requestPath));
+}
+
+export async function streamInventory(
+  onEvent: (event: InventoryStreamEvent) => void,
+  signal?: AbortSignal,
+  options: { readonly agentId?: string; readonly dir?: string } = {},
+): Promise<InventoryRefreshResult> {
+  const query = new URLSearchParams();
+  if (options.agentId) query.set("agentId", options.agentId);
+  if (options.dir) query.set("dir", options.dir);
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
+  const response = await apiFetch(`/api/v1/inventory/stream${suffix}`, { signal });
+  if (!response.ok) return readApiJson<InventoryRefreshResult>(response);
+  if (!response.body) throw new Error("Inventory stream has no body");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let pending = "";
+  let terminal: InventoryRefreshResult | undefined;
+  let attempt = 0;
+  let sequence = -1;
+  const processLine = (line: string) => {
+    if (!line) return;
+    const event = JSON.parse(line) as InventoryStreamEvent;
+    if (
+      terminal ||
+      event.attempt < attempt ||
+      (event.attempt === attempt && event.sequence <= sequence) ||
+      (event.attempt > attempt && (event.type !== "started" || event.sequence !== 1))
+    ) {
+      throw new Error("Inventory stream event order is invalid");
+    }
+    attempt = event.attempt;
+    sequence = event.sequence;
+    onEvent(event);
+    if (event.type === "completed") terminal = event.result;
+    if (event.type === "failed") throw new Error(`Inventory stream failed: ${event.code}`);
+  };
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      pending += decoder.decode(chunk.value, { stream: true });
+      let newline = pending.indexOf("\n");
+      while (newline >= 0) {
+        processLine(pending.slice(0, newline));
+        pending = pending.slice(newline + 1);
+        newline = pending.indexOf("\n");
+      }
+    }
+    pending += decoder.decode();
+    processLine(pending.trim());
+    if (!terminal) throw new Error("Inventory stream ended before the final result");
+    return terminal;
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 export interface InventoryStoreImportPlanInput {

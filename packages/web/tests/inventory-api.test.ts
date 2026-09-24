@@ -76,6 +76,93 @@ describe("Inventory local client API", () => {
     });
   });
 
+  it("streams redacted progress before the same authoritative result", async () => {
+    const app = createApp({ env, storeRoot, auth: { mode: "trusted-embedded" } });
+    const streamResponse = await app.request(
+      `/api/v1/inventory/stream?agentId=codex&dir=${encodeURIComponent(projectRoot)}`,
+    );
+    expect(streamResponse.status).toBe(200);
+    expect(streamResponse.headers.get("content-type")).toContain("application/x-ndjson");
+    const events = (await streamResponse.text())
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const finalResponse = await app.request(
+      `/api/v1/inventory/codex?dir=${encodeURIComponent(projectRoot)}`,
+    );
+    const final = (await finalResponse.json()) as { data: unknown };
+    expect(events[0]).toMatchObject({ type: "started", attempt: 1, sequence: 1 });
+    expect(
+      events.some(
+        (event) =>
+          event.type === "progress" &&
+          Array.isArray(event.candidates) &&
+          event.candidates.length > 0,
+      ),
+    ).toBe(true);
+    expect(events.filter((event) => event.type === "progress")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          candidates: expect.arrayContaining([
+            expect.objectContaining({
+              sources: expect.arrayContaining([
+                expect.objectContaining({ location: "~/.agents/skills/inventory-demo" }),
+              ]),
+            }),
+          ]),
+        }),
+      ]),
+    );
+    expect(events.at(-1)).toMatchObject({ type: "completed", result: final.data });
+    const preview = JSON.stringify(events.slice(0, -1));
+    expect(preview).not.toContain(root);
+    expect(preview).not.toContain("inventory fixture");
+    expect(preview).not.toContain("defaultSelected");
+    expect(preview).not.toContain("provider");
+  });
+
+  it("keeps a typed failed final result when the Store snapshot is unsafe", async () => {
+    await env.fs.writeFile(join(root, "outside-config.json"), '{"secret":"never expose"}');
+    await env.fs.rm(join(storeRoot, "config.json"));
+    await env.fs.symlink(join(root, "outside-config.json"), join(storeRoot, "config.json"));
+    const response = await createApp({
+      env,
+      storeRoot,
+      auth: { mode: "trusted-embedded" },
+    }).request("/api/v1/inventory/stream");
+    const events = (await response.text())
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(events).toMatchObject([
+      { type: "started", attempt: 1, sequence: 1 },
+      {
+        type: "completed",
+        result: { completeness: "failed", findings: [{ code: "STORE_SNAPSHOT_UNSAFE" }] },
+      },
+    ]);
+    expect(JSON.stringify(events)).not.toContain("never expose");
+  });
+
+  it("does not access the secret provider while streaming progress", async () => {
+    const forbidden = () => {
+      throw new Error("secret provider was accessed");
+    };
+    const isolated: Env = {
+      ...env,
+      secretStore: { get: forbidden, set: forbidden, delete: forbidden },
+    };
+    const response = await createApp({
+      env: isolated,
+      storeRoot,
+      auth: { mode: "trusted-embedded" },
+    }).request("/api/v1/inventory/stream");
+    const text = await response.text();
+    expect(text).toContain('"type":"progress"');
+    expect(text).toContain('"type":"completed"');
+    expect(text).not.toContain("secret provider was accessed");
+  });
+
   it("keeps route registry, OpenAPI, schemas, and authentication in parity", () => {
     expect(
       CLIENT_API_ROUTES.filter(({ operationId }) => operationId.startsWith("refreshInventory")),
@@ -97,6 +184,13 @@ describe("Inventory local client API", () => {
       paths: Record<string, { get: { operationId: string; parameters: unknown[] } }>;
     };
     expect(openApi.paths["/api/v1/inventory"]?.get.operationId).toBe("refreshInventory");
+    expect(openApi.paths["/api/v1/inventory/stream"]?.get).toMatchObject({
+      operationId: "streamInventory",
+      parameters: expect.arrayContaining([
+        expect.objectContaining({ in: "query", name: "agentId" }),
+      ]),
+      responses: { "200": { content: { "application/x-ndjson": expect.any(Object) } } },
+    });
     expect(openApi.paths["/api/v1/inventory/{agentId}"]?.get).toMatchObject({
       operationId: "refreshInventoryByAgent",
       parameters: expect.arrayContaining([
@@ -129,6 +223,12 @@ describe("Inventory local client API", () => {
       auth: { mode: "bearer", token: "inventory-token" },
     }).request("/api/v1/inventory");
     expect(unauthenticated.status).toBe(401);
+    const unauthenticatedStream = await createApp({
+      env,
+      storeRoot,
+      auth: { mode: "bearer", token: "inventory-token" },
+    }).request("/api/v1/inventory/stream");
+    expect(unauthenticatedStream.status).toBe(401);
 
     await env.fs.mkdir(join(root, "home", ".codex"), { recursive: true });
     await env.fs.symlink(join(root, "outside-rules.md"), join(root, "home", ".codex", "AGENTS.md"));

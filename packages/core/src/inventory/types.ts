@@ -1,3 +1,4 @@
+import type { SnapshotLimits } from "../env.js";
 import type {
   InventoryFindingCode,
   InventorySecretAdoptionOffer,
@@ -21,6 +22,7 @@ export type CapturedInventoryPublication =
             readonly kind: "file";
             readonly mode: number;
             readonly data: string;
+            readonly encoding?: "base64";
             readonly digest: string;
           }
       )[];
@@ -42,6 +44,11 @@ export interface InventoryCandidateObservation {
 export interface CapturedInventoryCandidateObservation extends InventoryCandidateObservation {
   readonly snapshot: SafeRecursiveSnapshot;
   readonly publication: CapturedInventoryPublication;
+  readonly sourceLink?: {
+    readonly text: string;
+    readonly boundaryRoot: string;
+    readonly limits: SnapshotLimits;
+  };
 }
 
 export interface InventorySourceFinding {

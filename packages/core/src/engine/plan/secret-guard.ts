@@ -198,17 +198,24 @@ async function referencedSecretsForActions(
   storeRoot: string,
   stagedSources?: ReadonlyMap<string, SafeRecursiveSnapshot>,
 ): Promise<ReturnType<typeof discoverSecretReferences>> {
-  const texts: string[] = [];
+  const references = new Map<string, ReturnType<typeof discoverSecretReferences>[number]>();
   for (const action of actions) {
-    if (action.op === "skip") continue;
+    if (action.op === "skip" || action.capability !== "mcp") continue;
+    const texts: string[] = [];
     if (action.preview?.after) texts.push(action.preview.after);
     for (const artifact of action.artifactIds ?? []) {
+      if (parseArtifactId(artifact)?.kind !== "mcp") continue;
       for (const file of await artifactSourceFiles(env, storeRoot, artifact, stagedSources)) {
         texts.push(file.content);
       }
     }
+    const activeNames = new Set(action.secretRefs ?? []);
+    for (const reference of discoverSecretReferences(texts)) {
+      if (activeNames.has(reference.name))
+        references.set(reference.kind + reference.name, reference);
+    }
   }
-  return discoverSecretReferences(texts);
+  return [...references.values()];
 }
 
 async function artifactSourceFiles(

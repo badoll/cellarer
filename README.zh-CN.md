@@ -75,6 +75,8 @@ cellarer inventory refresh --agent codex
 
 Inventory 返回安全候选、provenance、findings、Store 匹配、计数与完整度，不会导入资源或
 写入 agent target。
+随包 Web Inventory 页面会显示已扫描来源数和待确认候选。待确认行及标记为过期的上次结果
+不能用于选择、导入或密钥引用接入；只有最终完整结果可以用于这些操作。
 
 Custom Agent 定义通过 add 或 update 提交后，cellarer 会尝试一次 targeted Inventory
 refresh。partial 或 failed 会单独报告，不会撤销已提交的 mutation。使用
@@ -89,6 +91,10 @@ cellarer --output json inventory import plan \
 cellarer inventory import apply \
   --plan '<plan 返回的 mutationPlan JSON>'
 ```
+
+只有别名的链接 Skill 也可生成导入 plan。原样提交 plan 后，Store 中保存普通 Skill 文件，
+并保留别名来源信息。Skill 文档中的 `${BUILD_ID}` 等示例文本保持原样；只有活动 agent 配置
+实际解释的引用才要求可用值。
 
 对于只有一个 `secret-adoption-required` finding 的受阻 MCP candidate，可把 finding 中的
 精确 selector 原样用于 reference-only adoption plan。支持 stdio 环境变量与 flag 参数，

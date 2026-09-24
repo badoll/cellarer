@@ -89,6 +89,49 @@ describe("init Inventory onboarding", () => {
     ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("does not offer a malformed structured Skill while preserving a safe sibling", async () => {
+    await createReadySkill(root, "broken-yaml", "Broken asset");
+    await fs.writeFile(
+      join(root, ".agents", "skills", "broken-yaml", "example.yml"),
+      "foo: [unterminated\n",
+    );
+    await createReadySkill(root, "safe-skill", "Safe skill");
+    let selected: readonly string[] = [];
+    const captured = await invoke(["init"], {
+      stdinIsTTY: true,
+      confirmImport: async (plan) => {
+        selected = (plan as { candidateIds: readonly string[] }).candidateIds;
+        return false;
+      },
+    });
+
+    expect(captured.stdout).toContain("inventory: complete");
+    expect(captured.stdout).toContain("inventory import declined");
+    expect(selected).toHaveLength(1);
+    expect(captured.stdout).toContain("1 need attention");
+    expect(captured.stderr).not.toContain("FinalSecretByteGuardError");
+  });
+
+  it("reports an oversized default import plan without calling it incomplete Inventory", async () => {
+    await createReadySkill(root, "large-skill", "Large asset");
+    await fs.writeFile(
+      join(root, ".agents", "skills", "large-skill", "large.txt"),
+      "A".repeat(1_100_000),
+    );
+    const captured = await invoke(["init"], {
+      stdinIsTTY: true,
+      confirmImport: async () => {
+        throw new Error("oversized plan must not be confirmed");
+      },
+    });
+
+    expect(captured.stdout).toContain("inventory: complete");
+    expect(captured.stderr).toContain("PLAN_BODY_BUDGET_EXCEEDED");
+    expect(captured.stderr).toContain("smaller");
+    expect(captured.stderr).not.toContain("Inventory is incomplete");
+    await expect(fs.stat(join(storeRoot, "config.json"))).resolves.toBeDefined();
+  });
+
   it("does not reconfirm an equal candidate already imported by a prior init", async () => {
     await createReadySkill(root, "inventory-demo", "repeat");
     await invoke(["init"], { stdinIsTTY: true, confirmImport: async () => true });

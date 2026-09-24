@@ -93,9 +93,14 @@ Ranked 策略必须有 rank，较大者优先；cumulative 策略仅用于 Rules
 
 `coverage` 报告 observed、excluded、unavailable 或 unknown 维度。Complete 仅指声明
 边界内完整：不搜索插件、托管/系统位置、父目录、任意嵌套工程、Rules import/glob 或其他
-原生扩展。明确提供的 project 根就是信任边界。捕获拒绝软链接，并在读取内容前执行预算；
-遗漏一个来源不会隐藏其他成功来源。内置每来源限制为深度 16、10,000 个文件及目录节点、
-16 MiB。Skill 候选仍是直接子目录，原生嵌套发现不在当前范围内。
+原生扩展。明确提供的 project 根就是信任边界。Rules 与 MCP 来源仍拒绝软链。
+声明的 Skills 目录逐个检查直接子项：目录软链仅在解析目标仍位于同一用户或 project
+边界内时才接受；目标通过 anchored no-follow 捕获，Store 导入会重新核对链接与内容。
+图片等 Skill 资源会保留原始字节。
+嵌套、失效或越界链接不会被跟随；失败子项不隐藏已成功捕获的同目录 Skill，但会使来源
+标记为 incomplete。内置每来源总限制仍为深度 16、10,000 个文件及目录节点；Skills
+来源为 32 MiB，Rules/MCP 来源为 16 MiB。
+Skill 候选仍是直接子目录，原生嵌套发现不在当前范围内。
 
 `effectiveResources` 按 adapter 和逻辑候选解释已观察范围内的 effective、shadowed、
 ambiguous 或 unknown，并附规则证据。Claude 个人 Skill 的声明优先级高于项目 Skill；
@@ -181,7 +186,10 @@ Profile uninstall 不会直接删除带 snapshot 的目标。
 交互式文本初始化会创建或验证 Store，刷新完整的有界 Inventory，展示完整度与候选状态，
 并在导入 Core 默认选中的精确 ready candidate ID 前确认一次。拒绝确认会保留已完成的
 Store 初始化且不导入资源。Refresh 为 partial 或 failed 时会单独保留候选与 findings，
-在显式重试成功前不提供导入确认：
+在显式重试成功前不提供导入确认。结构化文件无法安全解析的候选仍显示为
+`needs-attention`；最终导入护栏也会再次检查所选内容。若所有 ready 候选的计划超过
+1 MiB 请求上限，初始化仍完成，并报告 `PLAN_BODY_BUDGET_EXCEEDED`。可以改为分批精确
+选择；单个 Skill 自身超过该上限时，目前仍无法通过此 Store 导入路径处理：
 
 ```bash
 # 交互式 Inventory 审查与一次精确 Store-import 确认
@@ -243,6 +251,9 @@ authority-sealed、可跨进程使用的 `mutationPlan`。`inventory import appl
 重新验证绑定，并发布一个 Store revision。两个命令都不会写入 agent target。规划时可用
 `--into-collection <id>`，在同一个 Store operation 中把全部导入资源加入一个现有
 collection。
+只通过别名发现的链接 Skill，在目标仍位于声明边界内时也可以导入。Plan 绑定别名与目标；
+apply 在 Store 发布普通 Skill 文件并记录别名来源。Skill 文档里的 `${BUILD_ID}` 等示例
+保持原样。仅活动目标配置实际解释的引用要求可用值；明文和最终发布字节的密钥防护仍生效。
 
 Inventory 只为恰好有一个无歧义受支持明文字段的 MCP candidate 提供 reference-only secret
 adoption。支持的 selector 包括 stdio 环境变量、stdio flag assignment 或 value、remote
@@ -635,6 +646,7 @@ GET /api/v1/capabilities
 GET /api/v1/readiness
 GET /api/v1/openapi.json
 GET /api/v1/inventory?dir=/absolute/project
+GET /api/v1/inventory/stream?agentId=codex&dir=/absolute/project
 GET /api/v1/inventory/{agentId}?dir=/absolute/project
 POST /api/v1/inventory/import/plan
 POST /api/v1/inventory/import/apply
@@ -650,9 +662,13 @@ POST /api/v1/inventory/adoption/apply
 query token 或 unauthenticated fallback。随包 React client 使用同一个 typed `/api/v1`
 边界，不重建 Core 决策。
 
-两个 Inventory route 都返回 browser-safe Core Inventory DTO。完整 route 刷新所有已注册的
+两个 JSON Inventory route 都返回 browser-safe Core Inventory DTO。完整 route 刷新所有已注册的
 有界来源，targeted route 接收一个精确的已注册 adapter ID。来源失败会作为成功 transport
 envelope 内的 typed partial 或 failed 结果保留，而不会转换为原始 exception。
+认证后的 stream 使用 NDJSON `started`、`progress`、`reset` 及最终 `completed` 或
+`failed` 事件。进度只展示已完成/总来源数，以及候选 ID、类型、来源数和脱敏的相对来源信息；不能据此导入或接入
+密钥引用。Store revision 重试会清空旧的待确认行。随包 Web 页面刷新期间将上次结果标为过期，
+仅最终完整结果允许操作；流断开后需要重试。JSON GET route 仍可用于只需最终结果的客户端。
 
 Inventory import plan route 接收 `candidateIds`，以及可选的 `agentId`、`dir` 和
 `intoCollection`。Apply route 只接收规划返回且未经修改的 `mutationPlan`。随包 client 在

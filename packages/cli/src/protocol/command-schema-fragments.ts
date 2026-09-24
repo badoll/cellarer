@@ -1178,6 +1178,14 @@ const inventoryImportDirectoryNode: JsonSchema = {
       data: jsonSchema.string(),
       digest: contentFingerprint,
     }),
+    dataObject(["path", "kind", "mode", "data", "encoding", "digest"], {
+      path: jsonSchema.string(),
+      kind: { const: "file" },
+      mode: jsonSchema.integer(),
+      data: jsonSchema.string(),
+      encoding: { const: "base64" },
+      digest: contentFingerprint,
+    }),
   ],
 };
 const inventoryImportPublication: JsonSchema = {
@@ -1199,6 +1207,15 @@ const inventoryImportSourceBinding = dataObject(["path", "fingerprint", "physica
   path: jsonSchema.string({ minLength: 1 }),
   fingerprint: contentFingerprint,
   physicalIdentity: jsonSchema.string({ minLength: 1 }),
+  link: dataObject(["text", "boundaryRoot", "limits"], {
+    text: jsonSchema.string(),
+    boundaryRoot: jsonSchema.string({ minLength: 1 }),
+    limits: dataObject(["maxDepth", "maxEntries", "maxBytes"], {
+      maxDepth: jsonSchema.integer(),
+      maxEntries: jsonSchema.integer(1),
+      maxBytes: jsonSchema.integer(),
+    }),
+  }),
 });
 const inventoryImportContentPayload = dataObject(
   ["candidateId", "resourceId", "publication", "provenance", "source"],

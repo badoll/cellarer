@@ -8,7 +8,9 @@ import type {
   InventoryCoverage,
   InventoryFinding,
   InventoryFindingCode,
+  InventoryProvisionalCandidate,
   InventoryRefreshResult,
+  InventoryStreamEvent,
 } from "../protocol/client-types.js";
 import { observeAtStableStoreRevision } from "../protocol/store-revision.js";
 import { loadResourceRecord } from "../resources/model.js";
@@ -18,6 +20,7 @@ import type { CellarerConfig } from "../store/config.js";
 import { observeStoreConfigSnapshot } from "../store/snapshot.js";
 import { listMcpArtifacts, listRuleArtifacts, listSkillArtifacts } from "../store/store.js";
 import {
+  type InventorySourceInspection as BoundedSourceInspection,
   enumerateInventorySources,
   type InventoryEnumerationFinding,
   type InventorySource,
@@ -25,14 +28,17 @@ import {
 } from "./enumerator.js";
 import {
   groupInventoryCandidates,
+  inventoryCandidateId,
   inventoryFinding,
   projectEffectiveResources,
+  projectInventorySourceProvenance,
 } from "./grouper.js";
 import {
   inspectInventorySourceCaptured,
   normalizeInventoryName,
   normalizeRuleContent,
 } from "./inspector.js";
+import { createSkillTargetCaptureCache } from "./linked-skills.js";
 import type {
   CapturedInventoryCandidateObservation,
   InventoryCandidateObservation,
@@ -48,6 +54,8 @@ export interface InventoryRefreshOptions {
   readonly projectRoot?: string;
   readonly agentId?: string;
   readonly concurrency?: number;
+  readonly onProgress?: (event: InventoryStreamEvent) => void;
+  readonly signal?: AbortSignal;
 }
 
 export interface InventoryRefreshCapture {
@@ -70,19 +78,32 @@ export async function captureInventoryRefresh(
   env: Env,
   options: InventoryRefreshOptions,
 ): Promise<InventoryRefreshCapture> {
+  let lastAttempt = 0;
+  let sequence = 0;
+  const emit = (event: InventoryStreamEvent) => options.onProgress?.(event);
+  const terminal = (capture: InventoryRefreshCapture): InventoryRefreshCapture => {
+    emit({ type: "completed", attempt: lastAttempt, sequence: ++sequence, result: capture.result });
+    return capture;
+  };
   for (let attempt = 0; attempt < MAX_REFRESH_ATTEMPTS; attempt += 1) {
+    if (options.signal?.aborted) throw new Error("Inventory refresh cancelled");
+    lastAttempt = attempt + 1;
+    sequence = 0;
+    emit({ type: "started", attempt: lastAttempt, sequence: ++sequence, totalSources: 0 });
     let snapshotObservation: Awaited<ReturnType<typeof observeStoreConfigSnapshot>>;
     try {
       snapshotObservation = await observeStoreConfigSnapshot(env, options.storeRoot);
     } catch {
-      return failedCapture(env, "STORE_PROJECTION_FAILED");
+      return terminal(failedCapture(env, "STORE_PROJECTION_FAILED"));
     }
     if (!snapshotObservation.ok) {
-      return failedCapture(
-        env,
-        snapshotObservation.error.code === "STALE_STORE_SNAPSHOT"
-          ? "STORE_SNAPSHOT_STALE"
-          : "STORE_SNAPSHOT_UNSAFE",
+      return terminal(
+        failedCapture(
+          env,
+          snapshotObservation.error.code === "STALE_STORE_SNAPSHOT"
+            ? "STORE_SNAPSHOT_STALE"
+            : "STORE_SNAPSHOT_UNSAFE",
+        ),
       );
     }
     const snapshot = snapshotObservation.snapshot;
@@ -100,6 +121,8 @@ export async function captureInventoryRefresh(
         enumeration.sources,
         registry.get,
         options.concurrency ?? DEFAULT_CONCURRENCY,
+        (progress) => emit({ ...progress, attempt: lastAttempt, sequence: ++sequence }),
+        options.signal,
       );
       let managed: readonly ManagedInventoryRevision[] = [];
       const findings: InventoryFinding[] = [
@@ -112,10 +135,14 @@ export async function captureInventoryRefresh(
           snapshot.canonicalStoreRoot,
           () => loadManagedInventory(env, snapshot.canonicalStoreRoot),
         );
-        if (stableManaged.revision !== snapshot.revision) continue;
+        if (stableManaged.revision !== snapshot.revision) {
+          emit({ type: "reset", attempt: lastAttempt, sequence: ++sequence });
+          continue;
+        }
         managed = stableManaged.value;
       } catch (error) {
         if ((error as { code?: unknown } | null)?.code === "REVISION_CHANGED_DURING_PLANNING") {
+          emit({ type: "reset", attempt: lastAttempt, sequence: ++sequence });
           continue;
         }
         findings.push(inventoryFinding("STORE_PROJECTION_FAILED", "refresh"));
@@ -203,19 +230,22 @@ export async function captureInventoryRefresh(
         resolutionContext: enumeration.projectRoot ? ("project" as const) : ("user" as const),
         effectiveResources: projectEffectiveResources(inspected.candidates, incomplete),
       });
-      return Object.freeze({
-        result,
-        candidates: inspected.candidates,
-        canonicalStoreRoot: snapshot.canonicalStoreRoot,
-        storeRevision: snapshot.revision,
-        configuration: snapshot.configuration,
-        ...(enumeration.projectRoot ? { projectRoot: enumeration.projectRoot } : {}),
-      });
+      return terminal(
+        Object.freeze({
+          result,
+          candidates: inspected.candidates,
+          canonicalStoreRoot: snapshot.canonicalStoreRoot,
+          storeRevision: snapshot.revision,
+          configuration: snapshot.configuration,
+          ...(enumeration.projectRoot ? { projectRoot: enumeration.projectRoot } : {}),
+        }),
+      );
     } catch {
-      return failedCapture(env, "STORE_PROJECTION_FAILED");
+      if (options.signal?.aborted) throw new Error("Inventory refresh cancelled");
+      return terminal(failedCapture(env, "STORE_PROJECTION_FAILED"));
     }
   }
-  return failedCapture(env, "STORE_SNAPSHOT_STALE");
+  return terminal(failedCapture(env, "STORE_SNAPSHOT_STALE"));
 }
 
 function projectRefreshResult(
@@ -270,10 +300,15 @@ async function inspectSources(
   sources: readonly InventorySource[],
   getAdapter: (id: string) => AgentAdapter | undefined,
   concurrency: number,
+  onProgress?: (
+    event: Omit<Extract<InventoryStreamEvent, { type: "progress" }>, "attempt" | "sequence">,
+  ) => void,
+  signal?: AbortSignal,
 ): Promise<{
   readonly candidates: readonly CapturedInventoryCandidateObservation[];
   readonly findings: readonly InventorySourceFinding[];
 }> {
+  const skillCaptureCache = createSkillTargetCaptureCache();
   const work = new Map<string, InventorySource[]>();
   for (const source of sources) {
     const key = captureKey(source);
@@ -284,14 +319,70 @@ async function inspectSources(
   const primarySources = [...work.values()]
     .map((group) => group[0])
     .filter(Boolean) as InventorySource[];
+  let completedSources = 0;
+  const provisional = new Map<string, InventoryProvisionalCandidate>();
   const inspected = await inspectInventorySourcesBounded(
     primarySources,
     concurrency,
     async (source) => {
       const adapter = getAdapter(source.adapterId);
       if (!adapter) throw new Error("registered Inventory adapter disappeared");
-      return inspectInventorySourceCaptured(env, source, adapter);
+      return inspectInventorySourceCaptured(env, source, adapter, skillCaptureCache);
     },
+    (
+      result: BoundedSourceInspection<Awaited<ReturnType<typeof inspectInventorySourceCaptured>>>,
+    ) => {
+      const equivalentSources = work.get(captureKey(result.source)) ?? [result.source];
+      completedSources += equivalentSources.length;
+      const findingCodes = result.ok
+        ? result.value.findings.map(({ code }) => code)
+        : ["SOURCE_UNREADABLE" as const];
+      if (result.ok) {
+        for (const candidate of result.value.candidates) {
+          const id = inventoryCandidateId(
+            candidate.kind,
+            candidate.normalizedName,
+            candidate.contentFingerprint,
+          );
+          const previous = provisional.get(id);
+          const sources = new Map(previous?.sources.map((source) => [source.id, source]));
+          for (const source of equivalentSources) {
+            const projected = projectInventorySourceProvenance(env, { ...candidate, source });
+            const existing = sources.get(projected.id);
+            sources.set(
+              projected.id,
+              existing
+                ? {
+                    ...existing,
+                    adapters: [
+                      ...new Map(
+                        [...existing.adapters, ...projected.adapters].map((adapter) => [
+                          adapter.id,
+                          adapter,
+                        ]),
+                      ).values(),
+                    ].sort((left, right) => left.id.localeCompare(right.id)),
+                  }
+                : projected,
+            );
+          }
+          provisional.set(id, {
+            id,
+            kind: candidate.kind,
+            sourceCount: sources.size,
+            sources: [...sources.values()],
+          });
+        }
+      }
+      onProgress?.({
+        type: "progress",
+        completedSources,
+        totalSources: sources.length,
+        candidates: [...provisional.values()],
+        findingCodes,
+      });
+    },
+    signal,
   );
   const candidates: CapturedInventoryCandidateObservation[] = [];
   const findings: InventorySourceFinding[] = [];

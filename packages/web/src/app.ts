@@ -83,6 +83,7 @@ import {
   type Scope,
   StoreMutationConflictError,
   type SyncProfileDesiredState,
+  serializeSafeObservable,
   serializeSafeWebObservable,
   settingsSummary,
   showControlPlaneAgent,
@@ -99,6 +100,7 @@ import {
   verifyControlPlane,
   verifySyncProfile,
 } from "@cellarer/core";
+import type { InventoryStreamEvent } from "@cellarer/core/client-api";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
@@ -1501,6 +1503,63 @@ export function createApp(inputDeps: AppDeps) {
           }),
         ),
       );
+    })
+    .get("/api/v1/inventory/stream", (c) => {
+      const projectRoot = parseInventoryDir(c.req.query("dir"));
+      const rawAgentId = c.req.query("agentId");
+      const agentId = rawAgentId === undefined ? undefined : parseInventoryAgentId(rawAgentId);
+      const abort = new AbortController();
+      const requestSignal = c.req.raw.signal;
+      const stop = () => abort.abort();
+      requestSignal.addEventListener("abort", stop, { once: true });
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          let lastAttempt = 0;
+          let lastSequence = 0;
+          const emit = (event: InventoryStreamEvent) => {
+            lastAttempt = event.attempt;
+            lastSequence = event.sequence;
+            if (!abort.signal.aborted) {
+              const safe = serializeSafeObservable("web", event, {
+                knownValueSources: authenticationKnownValueSource
+                  ? [authenticationKnownValueSource]
+                  : [],
+              });
+              controller.enqueue(encoder.encode(`${safe}\n`));
+            }
+          };
+          void refreshInventory(deps.env, {
+            storeRoot: deps.storeRoot,
+            ...(projectRoot ? { projectRoot } : {}),
+            ...(agentId ? { agentId } : {}),
+            signal: abort.signal,
+            onProgress: emit,
+          })
+            .catch(() => {
+              emit({
+                type: "failed",
+                attempt: lastAttempt,
+                sequence: lastSequence + 1,
+                code: "INTERNAL_ERROR",
+              });
+            })
+            .finally(() => {
+              requestSignal.removeEventListener("abort", stop);
+              if (!abort.signal.aborted) controller.close();
+            });
+        },
+        cancel() {
+          abort.abort();
+        },
+      });
+      return new Response(stream, {
+        headers: {
+          "content-type": "application/x-ndjson; charset=utf-8",
+          "cache-control": "no-store",
+          "x-content-type-options": "nosniff",
+        },
+      });
     })
     .get("/api/v1/inventory/:agentId", async (c) => {
       const projectRoot = parseInventoryDir(c.req.query("dir"));

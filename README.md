@@ -83,6 +83,9 @@ cellarer inventory refresh --agent codex
 
 Inventory reports safe candidates, provenance, findings, Store matches, counts,
 and completeness; it does not import or write agent targets.
+The bundled Web Inventory page shows completed source counts and pending candidate
+identities as it scans. Pending rows and a labeled prior result cannot be selected
+or used for import or secret adoption; only the final complete result can be used.
 
 After a Custom Agent definition is committed by add or update, cellarer makes
 one targeted Inventory refresh attempt. A partial or failed refresh is reported
@@ -100,6 +103,11 @@ cellarer --output json inventory import plan \
 cellarer inventory import apply \
   --plan '<mutationPlan JSON returned by plan>'
 ```
+
+Linked Skill candidates can be planned from an alias alone. The unchanged plan
+publishes regular Skill files to the Store and preserves the alias provenance.
+Text such as `${BUILD_ID}` in Skill documentation stays literal; only references
+interpreted in active agent configuration require an available value.
 
 For a blocked MCP candidate with one `secret-adoption-required` finding, copy
 the finding's exact selector into a reference-only adoption plan. Supported

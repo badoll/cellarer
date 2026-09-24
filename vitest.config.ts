@@ -18,6 +18,7 @@ export default defineConfig({
           name: "cli",
           root: "./packages/cli",
           include: ["tests/**/*.test.ts"],
+          setupFiles: ["tests/setup.ts"],
           environment: "node",
         },
       },

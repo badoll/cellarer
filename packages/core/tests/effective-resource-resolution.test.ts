@@ -130,7 +130,7 @@ describe("bounded effective resource projection", () => {
     expect(result.coverage).toContainEqual(
       expect.objectContaining({
         location: "<project>/.claude/skills",
-        bounds: { maxDepth: 16, maxEntries: 10000, maxBytes: 16777216 },
+        bounds: { maxDepth: 16, maxEntries: 10000, maxBytes: 33554432 },
       }),
     );
   });

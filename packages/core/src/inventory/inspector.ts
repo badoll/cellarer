@@ -1,11 +1,16 @@
-import { basename } from "node:path";
+import { basename, join, resolve } from "node:path";
 import type { AgentAdapter } from "../adapters/types.js";
 import type { Env } from "../env.js";
 import { lstatOrNull } from "../fs/probe.js";
+import { isWithinRoot } from "../fs/safety.js";
 import { serverToRaw } from "../mcp/model.js";
 import { canonicalJson } from "../protocol/canonical.js";
 import type { InventoryFindingCode } from "../protocol/client-types.js";
 import { scanStructuredFileSecretFindings, scanTextForSecrets } from "../secrets/detector.js";
+import {
+  assertFinalSerializedSecretBytes,
+  FinalSecretByteGuardError,
+} from "../secrets/final-bytes.js";
 import {
   captureAnchoredSafeRecursiveSource,
   captureSafeRecursiveSource,
@@ -17,6 +22,7 @@ import { parseSkillManifest } from "../skills/manifest.js";
 import { sha256 } from "../store/checksum.js";
 import { inventorySecretAdoptionOffers } from "./adoption-fields.js";
 import type { InventorySource } from "./enumerator.js";
+import { captureInventorySkillChild, type SkillTargetCaptureCache } from "./linked-skills.js";
 import type {
   CapturedInventoryCandidateObservation,
   CapturedInventoryPublication,
@@ -25,6 +31,8 @@ import type {
   InventorySourceFinding,
   InventorySourceInspection,
 } from "./types.js";
+
+const DEFAULT_SKILL_LIMITS = { maxDepth: 16, maxEntries: 10000, maxBytes: 16 * 1024 * 1024 };
 
 export async function inspectInventorySource(
   env: Env,
@@ -39,8 +47,11 @@ export async function inspectInventorySourceCaptured(
   env: Env,
   source: InventorySource,
   adapter: AgentAdapter,
+  skillCaptureCache?: SkillTargetCaptureCache,
 ): Promise<CapturedInventorySourceInspection> {
   if ((await lstatOrNull(env, source.path)) === null) return frozenInspection([], []);
+
+  if (source.kind === "skills") return inspectSkillSource(env, source, skillCaptureCache);
 
   let snapshot: SafeRecursiveSnapshot;
   try {
@@ -59,8 +70,113 @@ export async function inspectInventorySourceCaptured(
   }
 
   if (source.kind === "rules") return inspectRules(source, snapshot);
-  if (source.kind === "mcp") return inspectMcp(source, snapshot, adapter);
-  return inspectSkills(source, snapshot);
+  return inspectMcp(source, snapshot, adapter);
+}
+
+async function inspectSkillSource(
+  env: Env,
+  source: InventorySource,
+  skillCaptureCache?: SkillTargetCaptureCache,
+): Promise<CapturedInventorySourceInspection> {
+  const boundaryRoot = source.boundaryRoot ?? env.homedir();
+  const limits = source.discovery ?? DEFAULT_SKILL_LIMITS;
+  try {
+    const root = await env.fs.lstat(source.path);
+    if (
+      !root.isDirectory() ||
+      !isWithinRoot(boundaryRoot, source.path) ||
+      (await env.fs.realpath(source.path)) !== resolve(env.cwd(), source.path)
+    ) {
+      throw new UnsafeRecursiveSourceError(source.path, "symbolic-link");
+    }
+    if (!env.fs.supportsSafeRecursiveSnapshots()) {
+      throw new UnsafeRecursiveSourceError(source.path, "unsupported");
+    }
+    const names = (await env.fs.readdir(source.path)).sort((left, right) =>
+      left.localeCompare(right),
+    );
+    if (names.length + 1 > limits.maxEntries) {
+      throw new UnsafeRecursiveSourceError(source.path, "budget-exceeded");
+    }
+    const directEntries = await Promise.all(
+      names.map(async (name) => ({ name, stat: await env.fs.lstat(join(source.path, name)) })),
+    );
+    if (directEntries.every(({ stat }) => !stat.isSymbolicLink())) {
+      try {
+        const whole = await captureAnchoredSafeRecursiveSource(
+          env,
+          boundaryRoot,
+          source.path,
+          limits,
+        );
+        if (whole?.kind === "directory") {
+          return frozenInspection(
+            directEntries
+              .filter(({ stat }) => stat.isDirectory())
+              .map(({ name }) =>
+                inspectSkillCandidate(source, sliceSafeRecursiveSnapshot(whole, name), name),
+              ),
+            [],
+          );
+        }
+      } catch {
+        // A nested unsafe child must not hide independently readable siblings.
+      }
+    }
+    const candidates: CapturedInventoryCandidateObservation[] = [];
+    const findings: InventorySourceFinding[] = [];
+    let entries = names.length + 1;
+    let bytes = 0;
+    for (const { name } of directEntries) {
+      const path = join(source.path, name);
+      try {
+        const stat = await env.fs.lstat(path);
+        if (!stat.isDirectory() && !stat.isSymbolicLink()) continue;
+        if (limits.maxDepth < 1 || entries > limits.maxEntries || bytes > limits.maxBytes) {
+          throw new UnsafeRecursiveSourceError(path, "budget-exceeded");
+        }
+        const childLimits = {
+          maxDepth: limits.maxDepth - 1,
+          maxEntries: limits.maxEntries - entries + 1,
+          maxBytes: limits.maxBytes - bytes,
+        };
+        const captured = await captureInventorySkillChild(
+          env,
+          boundaryRoot,
+          path,
+          childLimits,
+          undefined,
+          skillCaptureCache,
+        );
+        entries += captured.snapshot.tree.nodes.length - 1;
+        bytes += captured.snapshot.files.reduce((sum, file) => sum + file.data.byteLength, 0);
+        candidates.push(
+          inspectSkillCandidate(
+            source,
+            captured.snapshot,
+            name,
+            captured.linkText === undefined
+              ? undefined
+              : { text: captured.linkText, boundaryRoot, limits: childLimits },
+          ),
+        );
+      } catch (error) {
+        findings.push({ code: snapshotFindingCode(error), source });
+      }
+    }
+    const currentNames = (await env.fs.readdir(source.path)).sort((left, right) =>
+      left.localeCompare(right),
+    );
+    if (
+      (await env.fs.realpath(source.path)) !== resolve(env.cwd(), source.path) ||
+      JSON.stringify(currentNames) !== JSON.stringify(names)
+    ) {
+      throw new UnsafeRecursiveSourceError(source.path, "stale");
+    }
+    return frozenInspection(candidates, findings);
+  } catch (error) {
+    return frozenInspection([], [{ code: snapshotFindingCode(error), source }]);
+  }
 }
 
 function inspectRules(
@@ -156,55 +272,41 @@ function inspectMcp(
   }
 }
 
-function inspectSkills(
+function inspectSkillCandidate(
   source: InventorySource,
   snapshot: SafeRecursiveSnapshot,
-): CapturedInventorySourceInspection {
+  name: string,
+  sourceLink?: CapturedInventoryCandidateObservation["sourceLink"],
+): CapturedInventoryCandidateObservation {
   if (snapshot.kind !== "directory") {
-    return frozenInspection(
-      [
-        observation(
-          source,
-          snapshot,
-          basename(source.path),
-          ["INVALID_STRUCTURE"],
-          rawPublication(snapshot),
-        ),
-      ],
-      [],
-    );
+    throw new UnsafeRecursiveSourceError(snapshot.rootPath, "non-regular");
   }
-  const childNames = snapshot.directories
-    .map((directory) => directory.relativePath)
-    .filter((path) => path.length > 0 && !path.includes("/"))
-    .sort((left, right) => left.localeCompare(right));
-  const candidates = childNames.map((name) => {
-    const child = sliceSafeRecursiveSnapshot(snapshot, name);
-    const manifest = child.files.find((file) => file.relativePath === "SKILL.md");
-    let manifestValid = false;
-    let resourceName = name;
-    if (manifest) {
-      try {
-        resourceName = parseSkillManifest(manifest.content).name;
-        manifestValid = true;
-      } catch {
-        /* Invalid candidates stay visible and cannot publish. */
-      }
+  const manifest = snapshot.files.find((file) => file.relativePath === "SKILL.md");
+  let manifestValid = false;
+  let resourceName = name;
+  if (manifest) {
+    try {
+      resourceName = parseSkillManifest(manifest.content).name;
+      manifestValid = true;
+    } catch {
+      /* Invalid candidates stay visible and cannot publish. */
     }
-    const hasSecret = child.files.some(
-      (file) =>
-        scanTextForSecrets(file.content).length > 0 ||
-        scanStructuredFileSecretFindings(file.relativePath, file.content).some(
-          (finding) => finding.rule !== "structured-parse-error",
-        ),
-    );
-    const findings: InventoryFindingCode[] = [
-      ...(!manifestValid ? ([manifest ? "INVALID_MANIFEST" : "INVALID_STRUCTURE"] as const) : []),
-      ...(hasSecret ? (["PROBABLE_SECRET"] as const) : []),
-    ];
-    return observation(source, child, resourceName, findings, directoryPublication(child), name);
+  }
+  const hasSecret = snapshot.files.some(
+    (file) =>
+      scanTextForSecrets(file.content).length > 0 ||
+      scanStructuredFileSecretFindings(file.relativePath, file.content).some(
+        (finding) => finding.rule !== "structured-parse-error",
+      ),
+  );
+  const findings: InventoryFindingCode[] = [
+    ...(!manifestValid ? ([manifest ? "INVALID_MANIFEST" : "INVALID_STRUCTURE"] as const) : []),
+    ...(hasSecret ? (["PROBABLE_SECRET"] as const) : []),
+  ];
+  return Object.freeze({
+    ...observation(source, snapshot, resourceName, findings, directoryPublication(snapshot), name),
+    ...(sourceLink ? { sourceLink } : {}),
   });
-  return frozenInspection(candidates, []);
 }
 
 function observation(
@@ -227,9 +329,51 @@ function observation(
     snapshot,
     publication,
     ...(relativePath ? { relativePath } : {}),
-    findings: Object.freeze([...new Set(findings)].sort()),
+    findings: Object.freeze(
+      [
+        ...new Set([...findings, ...publicationSafetyFindings(source.kind, name, publication)]),
+      ].sort(),
+    ),
     secretAdoptions: Object.freeze([...secretAdoptions]),
   });
+}
+
+function publicationSafetyFindings(
+  kind: InventorySource["kind"],
+  name: string,
+  publication: CapturedInventoryPublication,
+): readonly InventoryFindingCode[] {
+  const files =
+    publication.kind === "file"
+      ? [{ path: kind === "mcp" ? `${name}.json` : name, data: publication.data }]
+      : publication.nodes.flatMap((node) =>
+          node.kind === "file"
+            ? [
+                {
+                  path: node.path,
+                  data:
+                    node.encoding === "base64"
+                      ? Buffer.from(node.data, "base64").toString("utf8")
+                      : node.data,
+                },
+              ]
+            : [],
+        );
+  const findings: InventoryFindingCode[] = [];
+  for (const file of files) {
+    try {
+      assertFinalSerializedSecretBytes(file.data, [], file.path);
+    } catch (error) {
+      if (!(error instanceof FinalSecretByteGuardError)) throw error;
+      const structured = scanStructuredFileSecretFindings(file.path, file.data);
+      findings.push(
+        structured.some(({ rule }) => rule === "duplicate-key" || rule === "structured-parse-error")
+          ? "PARSE_FAILED"
+          : "PROBABLE_SECRET",
+      );
+    }
+  }
+  return findings;
 }
 
 function frozenInspection<Candidate extends InventoryCandidateObservation>(
@@ -248,7 +392,12 @@ function frozenInspection<Candidate extends InventoryCandidateObservation>(
 function stripCapturedPublication(
   candidate: CapturedInventoryCandidateObservation,
 ): InventoryCandidateObservation {
-  const { snapshot: _snapshot, publication: _publication, ...observation } = candidate;
+  const {
+    snapshot: _snapshot,
+    publication: _publication,
+    sourceLink: _sourceLink,
+    ...observation
+  } = candidate;
   return Object.freeze(observation);
 }
 
@@ -277,13 +426,21 @@ function directoryPublication(snapshot: SafeRecursiveSnapshot): CapturedInventor
               path: node.relativePath,
               kind: "file" as const,
               mode: node.mode,
-              data: new TextDecoder("utf-8", { fatal: true }).decode(node.data ?? new Uint8Array()),
+              ...publicationFileData(node.data ?? new Uint8Array()),
               digest: sha256(node.data ?? new Uint8Array()),
             }),
       ),
     ),
     fingerprint: snapshot.fingerprint,
   });
+}
+
+function publicationFileData(data: Uint8Array): { data: string; encoding?: "base64" } {
+  try {
+    return { data: new TextDecoder("utf-8", { fatal: true }).decode(data) };
+  } catch {
+    return { data: Buffer.from(data).toString("base64"), encoding: "base64" };
+  }
 }
 
 function rawPublication(snapshot: SafeRecursiveSnapshot): CapturedInventoryPublication {

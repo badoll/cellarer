@@ -6,7 +6,7 @@ import { plan } from "../src/engine/plan.js";
 import { readFileOrNull } from "../src/fs/probe.js";
 import type { Capability, PlanAction, SecretGuardFinding } from "../src/model/index.js";
 import { initialConfigText, parseConfig } from "../src/store/config.js";
-import { writeRuleArtifact } from "../src/store/store.js";
+import { initStore, writeMcpArtifact } from "../src/store/store.js";
 import { ensureBaseDirs, makeTmpEnv, type TmpEnv } from "./helpers/env.js";
 
 const KNOWN_SECRET = "known credential value 9f4c2!";
@@ -86,6 +86,57 @@ describe("recursive staged-tree secret guard", () => {
   });
 
   afterEach(() => t.cleanup());
+
+  it("keeps an unavailable documentation placeholder literal through Skill deployment", async () => {
+    const storeRoot = t.path("home", ".cellarer");
+    await initStore(t.env, storeRoot);
+    const skillRoot = join(storeRoot, "store", "skills", "literal-example");
+    const content = `---\nname: literal-example\ndescription: Literal example\n---\n# Example\nBuild build-\${BUILD_ID}.json\n`;
+    await t.env.fs.mkdir(skillRoot, { recursive: true });
+    await t.env.fs.writeFile(join(skillRoot, "SKILL.md"), content);
+    let providerReads = 0;
+    t.env.secretStore = {
+      async get() {
+        providerReads += 1;
+        return { found: false };
+      },
+      async set() {},
+      async delete() {
+        return false;
+      },
+    };
+    const opts = { ...options(storeRoot, "skills"), method: "copy" as const };
+    const prepared = await planApplyMutation(t.env, opts);
+    expect(prepared.plan.secretFindings).toBeUndefined();
+    const applied = await applyMutationPlan(t.env, prepared.mutationPlan, {
+      storeRoot,
+      options: opts,
+    });
+    expect(applied.operation).toMatchObject({ ok: true });
+    expect(providerReads).toBe(0);
+    expect(
+      await t.env.fs.readFile(t.path("home", ".claude", "skills", "literal-example", "SKILL.md")),
+    ).toBe(content);
+  });
+
+  it("blocks an unavailable active MCP reference before target publication", async () => {
+    const storeRoot = t.path("home", ".cellarer");
+    await initStore(t.env, storeRoot);
+    await writeMcpArtifact(t.env, storeRoot, "active-reference", {
+      kind: "stdio",
+      command: "fixture-command",
+      env: { API_KEY: `\${MISSING_ACTIVE}` },
+    });
+    const opts = { ...options(storeRoot, "mcp"), method: "copy" as const };
+    const prepared = await planApplyMutation(t.env, opts);
+    expect(prepared.plan.secretReferenceFindings).toContainEqual({
+      reference: `\${MISSING_ACTIVE}`,
+      provider: "environment",
+      status: "missing",
+    });
+    expect(prepared.plan.actions.every(({ op }) => op === "skip")).toBe(true);
+    await expect(readFileOrNull(t.env, t.path("home", ".claude.json"))).resolves.toBeNull();
+  });
 
   for (const fixture of FIXTURES) {
     it(`blocks a configured known value in staged ${fixture.capability} content`, async () => {
@@ -455,40 +506,29 @@ describe("recursive staged-tree secret guard", () => {
 
   it("fails before journal or target creation when the apply provider scope becomes unavailable", async () => {
     const storeRoot = t.path("home", ".cellarer");
-    const target = t.path("home", ".claude", "CLAUDE.md");
-    let providerAvailable = true;
-    t.env.secretStore = {
-      async get() {
-        return providerAvailable
-          ? { found: true as const, value: "tiny" }
-          : { error: "locked" as const };
-      },
-      async set() {},
-      async delete() {
-        return false;
-      },
-    };
-    await writeRuleArtifact(
-      t.env,
-      storeRoot,
-      "scoped",
-      "# Scoped provider\n${CELLARER_SECRET:SCOPED}\n",
-    );
+    const target = t.path("home", ".claude.json");
+    const environment = t.env.env as Record<string, string | undefined>;
+    environment.SCOPED = "tiny";
+    await writeMcpArtifact(t.env, storeRoot, "scoped", {
+      kind: "stdio",
+      command: "fixture-command",
+      env: { API_KEY: `\${SCOPED}` },
+    });
     const opts = {
       storeRoot,
       scope: "global" as const,
       agents: ["claude-code"],
-      capabilities: ["rules" as const],
-      secretMode: "keychain" as const,
+      capabilities: ["mcp" as const],
+      secretMode: "env" as const,
     };
     const prepared = await planApplyMutation(t.env, opts);
-    providerAvailable = false;
+    delete environment.SCOPED;
 
     await expect(
       applyMutationPlan(t.env, prepared.mutationPlan, {
         storeRoot,
         options: opts,
-        secretMode: "keychain",
+        secretMode: "env",
       }),
     ).rejects.toMatchObject({ code: "SECRET_PROVIDER_SCOPE_UNAVAILABLE" });
     await expect(readFileOrNull(t.env, target)).resolves.toBeNull();

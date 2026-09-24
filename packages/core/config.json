@@ -75,7 +75,7 @@
           "locator": "tree",
           "maxDepth": 16,
           "maxEntries": 10000,
-          "maxBytes": 16777216,
+          "maxBytes": 33554432,
           "precedence": {
             "policy": "unknown",
             "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
@@ -89,7 +89,7 @@
           "locator": "tree",
           "maxDepth": 16,
           "maxEntries": 10000,
-          "maxBytes": 16777216,
+          "maxBytes": 33554432,
           "precedence": {
             "policy": "unknown",
             "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
@@ -192,7 +192,7 @@
           "locator": "tree",
           "maxDepth": 16,
           "maxEntries": 10000,
-          "maxBytes": 16777216,
+          "maxBytes": 33554432,
           "precedence": {
             "policy": "ranked",
             "rank": 20,
@@ -207,7 +207,7 @@
           "locator": "tree",
           "maxDepth": 16,
           "maxEntries": 10000,
-          "maxBytes": 16777216,
+          "maxBytes": 33554432,
           "precedence": {
             "policy": "ranked",
             "rank": 10,
@@ -311,7 +311,7 @@
           "locator": "tree",
           "maxDepth": 16,
           "maxEntries": 10000,
-          "maxBytes": 16777216,
+          "maxBytes": 33554432,
           "precedence": {
             "policy": "unknown",
             "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
@@ -325,7 +325,7 @@
           "locator": "tree",
           "maxDepth": 16,
           "maxEntries": 10000,
-          "maxBytes": 16777216,
+          "maxBytes": 33554432,
           "precedence": {
             "policy": "unknown",
             "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
@@ -413,7 +413,7 @@
           "locator": "tree",
           "maxDepth": 16,
           "maxEntries": 10000,
-          "maxBytes": 16777216,
+          "maxBytes": 33554432,
           "precedence": {
             "policy": "unknown",
             "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
@@ -427,7 +427,7 @@
           "locator": "tree",
           "maxDepth": 16,
           "maxEntries": 10000,
-          "maxBytes": 16777216,
+          "maxBytes": 33554432,
           "precedence": {
             "policy": "unknown",
             "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
@@ -441,7 +441,7 @@
           "locator": "tree",
           "maxDepth": 16,
           "maxEntries": 10000,
-          "maxBytes": 16777216,
+          "maxBytes": 33554432,
           "precedence": {
             "policy": "unknown",
             "evidence": "https://cursor.com/docs/skills (2026-09-22); collision order unverified."
@@ -455,7 +455,7 @@
           "locator": "tree",
           "maxDepth": 16,
           "maxEntries": 10000,
-          "maxBytes": 16777216,
+          "maxBytes": 33554432,
           "precedence": {
             "policy": "unknown",
             "evidence": "https://cursor.com/docs/skills (2026-09-22); collision order unverified."
@@ -469,7 +469,7 @@
           "locator": "tree",
           "maxDepth": 16,
           "maxEntries": 10000,
-          "maxBytes": 16777216,
+          "maxBytes": 33554432,
           "precedence": {
             "policy": "unknown",
             "evidence": "https://cursor.com/docs/skills (2026-09-22); collision order unverified."
@@ -483,7 +483,7 @@
           "locator": "tree",
           "maxDepth": 16,
           "maxEntries": 10000,
-          "maxBytes": 16777216,
+          "maxBytes": 33554432,
           "precedence": {
             "policy": "unknown",
             "evidence": "https://cursor.com/docs/skills (2026-09-22); collision order unverified."
@@ -497,7 +497,7 @@
           "locator": "tree",
           "maxDepth": 16,
           "maxEntries": 10000,
-          "maxBytes": 16777216,
+          "maxBytes": 33554432,
           "precedence": {
             "policy": "unknown",
             "evidence": "https://cursor.com/docs/skills (2026-09-22); collision order unverified."
@@ -511,7 +511,7 @@
           "locator": "tree",
           "maxDepth": 16,
           "maxEntries": 10000,
-          "maxBytes": 16777216,
+          "maxBytes": 33554432,
           "precedence": {
             "policy": "unknown",
             "evidence": "https://cursor.com/docs/skills (2026-09-22); collision order unverified."
@@ -614,7 +614,7 @@
           "locator": "tree",
           "maxDepth": 16,
           "maxEntries": 10000,
-          "maxBytes": 16777216,
+          "maxBytes": 33554432,
           "precedence": {
             "policy": "unknown",
             "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
@@ -628,7 +628,7 @@
           "locator": "tree",
           "maxDepth": 16,
           "maxEntries": 10000,
-          "maxBytes": 16777216,
+          "maxBytes": 33554432,
           "precedence": {
             "policy": "unknown",
             "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
@@ -736,7 +736,7 @@
           "locator": "tree",
           "maxDepth": 16,
           "maxEntries": 10000,
-          "maxBytes": 16777216,
+          "maxBytes": 33554432,
           "precedence": {
             "policy": "unknown",
             "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
@@ -750,7 +750,7 @@
           "locator": "tree",
           "maxDepth": 16,
           "maxEntries": 10000,
-          "maxBytes": 16777216,
+          "maxBytes": 33554432,
           "precedence": {
             "policy": "unknown",
             "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
@@ -764,7 +764,7 @@
           "locator": "tree",
           "maxDepth": 16,
           "maxEntries": 10000,
-          "maxBytes": 16777216,
+          "maxBytes": 33554432,
           "precedence": {
             "policy": "unknown",
             "evidence": "https://opencode.ai/docs/skills/ (2026-09-22); collision order unverified."
@@ -778,7 +778,7 @@
           "locator": "tree",
           "maxDepth": 16,
           "maxEntries": 10000,
-          "maxBytes": 16777216,
+          "maxBytes": 33554432,
           "precedence": {
             "policy": "unknown",
             "evidence": "https://opencode.ai/docs/skills/ (2026-09-22); collision order unverified."
@@ -792,7 +792,7 @@
           "locator": "tree",
           "maxDepth": 16,
           "maxEntries": 10000,
-          "maxBytes": 16777216,
+          "maxBytes": 33554432,
           "precedence": {
             "policy": "unknown",
             "evidence": "https://opencode.ai/docs/skills/ (2026-09-22); collision order unverified."
@@ -806,7 +806,7 @@
           "locator": "tree",
           "maxDepth": 16,
           "maxEntries": 10000,
-          "maxBytes": 16777216,
+          "maxBytes": 33554432,
           "precedence": {
             "policy": "unknown",
             "evidence": "https://opencode.ai/docs/skills/ (2026-09-22); collision order unverified."
@@ -880,7 +880,7 @@
           "locator": "tree",
           "maxDepth": 16,
           "maxEntries": 10000,
-          "maxBytes": 16777216,
+          "maxBytes": 33554432,
           "precedence": {
             "policy": "unknown",
             "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."
@@ -894,7 +894,7 @@
           "locator": "tree",
           "maxDepth": 16,
           "maxEntries": 10000,
-          "maxBytes": 16777216,
+          "maxBytes": 33554432,
           "precedence": {
             "policy": "unknown",
             "evidence": "Packaged compatibility matrix 2026-09-07.1; native loading order unverified."

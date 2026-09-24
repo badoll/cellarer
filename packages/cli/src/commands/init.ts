@@ -29,7 +29,12 @@ type InitConfirmationPhase =
   | {
       readonly status: "not-offered";
       readonly candidateIds: readonly string[];
-      readonly reason: "inventory-incomplete" | "no-ready-candidates" | "non-interactive";
+      readonly reason:
+        | "inventory-incomplete"
+        | "no-ready-candidates"
+        | "non-interactive"
+        | "plan-too-large"
+        | "plan-unavailable";
     }
   | { readonly status: "declined"; readonly candidateIds: readonly string[] }
   | { readonly status: "confirmed"; readonly candidateIds: readonly string[] };
@@ -169,7 +174,8 @@ async function executeInventoryInit(
       confirmation: {
         status: "not-offered",
         candidateIds,
-        reason: "inventory-incomplete",
+        reason:
+          error.reason === "PLAN_BODY_BUDGET_EXCEEDED" ? "plan-too-large" : "plan-unavailable",
       },
       import: {
         status: "failed",
@@ -243,6 +249,14 @@ function presentInteractiveInventoryInit(data: InteractiveInitCommandData): void
       output.warn(
         "Inventory is incomplete; no import was offered. Retry: cellarer inventory refresh",
       );
+    } else if (data.confirmation.reason === "plan-too-large") {
+      output.warn(
+        "Inventory import plan exceeds the 1 MiB request limit; no import was offered. Select smaller exact batches with cellarer inventory import plan. Individual oversized Skills remain unsupported by this import path.",
+      );
+    } else if (data.confirmation.reason === "plan-unavailable") {
+      output.warn(
+        "Inventory import plan is unavailable; no import was offered. Review the typed planning error.",
+      );
     } else if (data.confirmation.reason === "non-interactive") {
       output.log("inventory import not offered in non-interactive mode");
     } else {
@@ -251,7 +265,7 @@ function presentInteractiveInventoryInit(data: InteractiveInitCommandData): void
   }
   if (data.import.status === "failed") {
     output.warn(
-      `inventory import plan failed: ${data.import.error.code}/${data.import.error.reason}. Retry: cellarer inventory refresh`,
+      `inventory import plan failed: ${data.import.error.code}/${data.import.error.reason}`,
     );
   } else if (data.import.status === "applied") {
     if (data.import.operation.ok) {

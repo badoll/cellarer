@@ -51,6 +51,98 @@ describe("bundled versioned API client", () => {
     );
   });
 
+  it("parses split NDJSON progress and requires an authoritative terminal event", async () => {
+    const result = {
+      generatedAt: "2026-09-24T00:00:00.000Z",
+      candidates: [],
+      findings: [],
+      counts: {
+        total: 0,
+        ready: 0,
+        needsAttention: 0,
+        inStore: 0,
+        observedSources: 0,
+        failedSources: 0,
+      },
+      completeness: "complete",
+    };
+    const lines = [
+      { type: "started", attempt: 1, sequence: 1, totalSources: 1 },
+      {
+        type: "progress",
+        attempt: 1,
+        sequence: 2,
+        completedSources: 1,
+        totalSources: 1,
+        candidates: [],
+        findingCodes: [],
+      },
+      { type: "completed", attempt: 1, sequence: 3, result },
+    ]
+      .map((event) => `${JSON.stringify(event)}\n`)
+      .join("");
+    const bytes = new TextEncoder().encode(lines);
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes.slice(0, 19));
+        controller.enqueue(bytes.slice(19));
+        controller.close();
+      },
+    });
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(successResponse("bootstrap", { authenticated: true }))
+      .mockResolvedValueOnce(
+        successResponse("version", {
+          apiVersion: "1.0",
+          contractId: "cellarer-local-client-api-v1",
+        }),
+      )
+      .mockResolvedValueOnce(
+        successResponse("capabilities", {
+          apiVersion: "1.0",
+          contractId: "cellarer-local-client-api-v1",
+          operations: ["streamInventory"],
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(body, { headers: { "content-type": "application/x-ndjson" } }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const { streamInventory } = await import("../client/api.js");
+    const seen: string[] = [];
+    await expect(streamInventory((event) => seen.push(event.type))).resolves.toEqual(result);
+    expect(seen).toEqual(["started", "progress", "completed"]);
+    expect(fetchMock.mock.calls[3]?.[0]).toBe("/api/v1/inventory/stream");
+  });
+
+  it("rejects an interrupted Inventory stream without treating previews as final", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(successResponse("bootstrap", { authenticated: true }))
+      .mockResolvedValueOnce(
+        successResponse("version", {
+          apiVersion: "1.0",
+          contractId: "cellarer-local-client-api-v1",
+        }),
+      )
+      .mockResolvedValueOnce(
+        successResponse("capabilities", {
+          apiVersion: "1.0",
+          contractId: "cellarer-local-client-api-v1",
+          operations: ["streamInventory"],
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response('{"type":"started","attempt":1,"sequence":1,"totalSources":2}\n', {
+          headers: { "content-type": "application/x-ndjson" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const { streamInventory } = await import("../client/api.js");
+    await expect(streamInventory(() => {})).rejects.toThrow("before the final result");
+  });
+
   it("rejects legacy API paths at the single client boundary", async () => {
     vi.stubGlobal("fetch", vi.fn<typeof fetch>());
     const { apiFetch } = await import("../client/api.js");

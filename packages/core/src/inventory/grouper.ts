@@ -136,6 +136,16 @@ function projectSources(
   );
 }
 
+/** Provisional evidence carries only the same redacted provenance shape as final Inventory. */
+export function projectInventorySourceProvenance(
+  env: Env,
+  observation: InventoryCandidateObservation,
+): InventorySourceProvenance {
+  const source = projectSources(env, [observation])[0];
+  if (!source) throw new TypeError("Inventory observation has no source");
+  return source;
+}
+
 function mergeAdapters(
   adapters: readonly InventoryRelatedAdapter[],
 ): readonly InventoryRelatedAdapter[] {

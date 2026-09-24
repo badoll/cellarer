@@ -3,15 +3,16 @@ import type {
   InventoryCandidateState,
   InventoryRefreshResult,
   InventorySecretAdoptionOffer,
+  InventoryStreamEvent,
 } from "@cellarer/core/client-api";
 import { useEffect, useState } from "react";
 import {
   applyInventorySecretAdoption,
   applyInventoryStoreImport,
-  fetchInventory,
   type InventorySecretAdoptionPlanResult,
   planInventorySecretAdoption,
   planInventoryStoreImport,
+  streamInventory,
 } from "./api.js";
 import { DashboardIcon } from "./dashboard-icons.js";
 import {
@@ -56,6 +57,12 @@ export function InventoryPage(props: { readonly onNavigate?: (page: Page) => voi
   );
   const [filters, setFilters] = useState<InventoryFilters>(EMPTY_INVENTORY_FILTERS);
   const [reloadKey, setReloadKey] = useState(0);
+  const [scan, setScan] = useState<{
+    readonly completed: number;
+    readonly total: number;
+    readonly candidates: Extract<InventoryStreamEvent, { type: "progress" }>["candidates"];
+    readonly findingCodes: readonly string[];
+  } | null>(null);
   const [adoptionProvider, setAdoptionProvider] = useState<"vault" | "keychain">("vault");
   const [adoption, setAdoption] = useState<{
     readonly candidateId: string | null;
@@ -66,16 +73,36 @@ export function InventoryPage(props: { readonly onNavigate?: (page: Page) => voi
 
   useEffect(() => {
     let alive = true;
+    const abort = new AbortController();
+    setScan(null);
     setOnboarding((current) => inventoryLoading(current));
-    fetchInventory()
+    setAdoption({ candidateId: null, state: "idle", plan: null });
+    streamInventory((event) => {
+      if (!alive) return;
+      if (event.type === "started")
+        setScan({ completed: 0, total: event.totalSources, candidates: [], findingCodes: [] });
+      if (event.type === "progress")
+        setScan({
+          completed: event.completedSources,
+          total: event.totalSources,
+          candidates: event.candidates,
+          findingCodes: event.findingCodes,
+        });
+      if (event.type === "reset" || event.type === "completed" || event.type === "failed")
+        setScan(null);
+    }, abort.signal)
       .then((result) => {
         if (alive) setOnboarding((current) => inventoryLoaded(current, result));
       })
       .catch(() => {
-        if (alive) setOnboarding((current) => inventoryLoadFailed(current));
+        if (alive) {
+          setScan(null);
+          setOnboarding((current) => inventoryLoadFailed(current));
+        }
       });
     return () => {
       alive = false;
+      abort.abort();
     };
   }, [reloadKey]);
 
@@ -175,6 +202,8 @@ export function InventoryPage(props: { readonly onNavigate?: (page: Page) => voi
     onboarding.phase === "loading" ||
     onboarding.phase === "planning" ||
     onboarding.phase === "applying";
+  const stale =
+    onboarding.result !== null && (onboarding.phase === "loading" || onboarding.phase === "failed");
 
   return (
     <div className="page-stack">
@@ -208,6 +237,36 @@ export function InventoryPage(props: { readonly onNavigate?: (page: Page) => voi
         </p>
       ) : null}
 
+      {scan ? (
+        <section className="panel" aria-label="Inventory scan progress" aria-live="polite">
+          <h3>
+            Scanning sources · {scan.completed}/{scan.total}
+          </h3>
+          <p>
+            Pending candidates are provisional. Review and import are available after the final
+            result.
+          </p>
+          {scan.findingCodes.length > 0 ? (
+            <p className="warning-banner">Source findings: {scan.findingCodes.join(", ")}</p>
+          ) : null}
+          <ul>
+            {scan.candidates.map((candidate) => (
+              <li key={candidate.id}>
+                {candidate.kind} · {candidate.id.slice(-12)} · {candidate.sourceCount} source(s) ·
+                Pending
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {stale ? (
+        <p className="warning-banner">
+          Previous Inventory result is stale while refresh is incomplete. Review it only; refresh
+          again before taking action.
+        </p>
+      ) : null}
+
       {result?.completeness !== "complete" && result ? (
         <p className="warning-banner">
           Inventory is {result.completeness}. Review the preserved candidates and findings, then
@@ -222,7 +281,18 @@ export function InventoryPage(props: { readonly onNavigate?: (page: Page) => voi
             result={result}
             candidates={visibleCandidates}
             selectedCandidateIds={onboarding.selectedCandidateIds}
-            selectionDisabled={busy || onboarding.phase === "confirmation"}
+            selectionDisabled={
+              busy ||
+              onboarding.phase === "failed" ||
+              onboarding.phase === "confirmation" ||
+              result.completeness !== "complete"
+            }
+            adoptionDisabled={
+              busy ||
+              onboarding.phase === "failed" ||
+              onboarding.phase === "confirmation" ||
+              result.completeness !== "complete"
+            }
             onSelectionChange={(candidateId, selected) =>
               setOnboarding((current) => inventorySelectionChanged(current, candidateId, selected))
             }
@@ -377,6 +447,7 @@ export function InventoryResultView(props: {
   readonly candidates?: readonly InventoryCandidate[];
   readonly selectedCandidateIds?: readonly string[];
   readonly selectionDisabled?: boolean;
+  readonly adoptionDisabled?: boolean;
   readonly onSelectionChange?: (candidateId: string, selected: boolean) => void;
   readonly adoptionProvider?: "vault" | "keychain";
   readonly adoptionCandidateId?: string | null;
@@ -511,6 +582,7 @@ export function InventoryResultView(props: {
                                 }
                               }}
                               onApply={props.onApplyAdoption}
+                              disabled={props.adoptionDisabled}
                             />
                           ) : null}
                         </div>
@@ -561,6 +633,7 @@ export function InventorySecretAdoptionView(props: {
   readonly onProviderChange?: (provider: "vault" | "keychain") => void;
   readonly onPlan?: () => void;
   readonly onApply?: () => void;
+  readonly disabled?: boolean;
 }) {
   const offer =
     props.offer ?? props.candidate.findings.find((finding) => finding.adoption)?.adoption;
@@ -580,7 +653,7 @@ export function InventorySecretAdoptionView(props: {
         <select
           aria-label={`Provider for ${props.candidate.name}`}
           value={props.provider}
-          disabled={busy || props.state === "review"}
+          disabled={props.disabled || busy || props.state === "review"}
           onChange={(event) =>
             props.onProviderChange?.(event.currentTarget.value as "vault" | "keychain")
           }
@@ -590,11 +663,16 @@ export function InventorySecretAdoptionView(props: {
         </select>
       </label>
       {props.state === "review" ? (
-        <button type="button" className="action" onClick={props.onApply}>
+        <button type="button" className="action" disabled={props.disabled} onClick={props.onApply}>
           Confirm exact adoption
         </button>
       ) : (
-        <button type="button" className="action secondary" disabled={busy} onClick={props.onPlan}>
+        <button
+          type="button"
+          className="action secondary"
+          disabled={props.disabled || busy}
+          onClick={props.onPlan}
+        >
           {props.state === "planning" ? "Planning..." : "Review adoption plan"}
         </button>
       )}

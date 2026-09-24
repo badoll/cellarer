@@ -1,6 +1,6 @@
 import { dirname, join } from "node:path";
 import { appendActivity } from "../activity.js";
-import type { Env, FileTreeSnapshot } from "../env.js";
+import type { Env, FileTreeSnapshot, SnapshotLimits } from "../env.js";
 import { assertSafeAtomicPublicationPath } from "../fs/safety.js";
 import { acquireCurrentMutationAuthorityLease, canonicalJson } from "../protocol/canonical.js";
 import { CLIENT_API_MAX_REQUEST_BODY_BYTES } from "../protocol/client.js";
@@ -38,6 +38,7 @@ import { CONFIG_FILENAME, parseConfigValue } from "../store/config.js";
 import { observeStoreConfigSnapshot } from "../store/snapshot.js";
 import { isSafeArtifactName } from "../store/store.js";
 import { inventoryCandidateId } from "./grouper.js";
+import { captureInventorySkillChild } from "./linked-skills.js";
 import { captureInventoryRefresh, type InventoryRefreshOptions } from "./projector.js";
 import type {
   CapturedInventoryCandidateObservation,
@@ -467,6 +468,7 @@ function resourceActions(
     path: captured.snapshot.rootPath,
     fingerprint: captured.snapshot.fingerprint,
     physicalIdentity: captured.physicalIdentity,
+    ...(captured.sourceLink ? { link: captured.sourceLink } : {}),
   };
   const contentPayload = {
     candidateId: candidate.id,
@@ -560,7 +562,11 @@ function assertPublicationSafe(
     return;
   }
   for (const node of publication.nodes) {
-    if (node.kind === "file") assertFinalSerializedSecretBytes(node.data, [], node.path);
+    if (node.kind === "file") {
+      const data =
+        node.encoding === "base64" ? Buffer.from(node.data, "base64").toString("utf8") : node.data;
+      assertFinalSerializedSecretBytes(data, [], node.path);
+    }
   }
 }
 
@@ -591,6 +597,11 @@ interface DecodedInventorySourceBinding {
   readonly path: string;
   readonly fingerprint: string;
   readonly physicalIdentity: string;
+  readonly link?: {
+    readonly text: string;
+    readonly boundaryRoot: string;
+    readonly limits: SnapshotLimits;
+  };
 }
 
 interface DecodedInventoryContentAction {
@@ -886,8 +897,14 @@ function decodeCollectionAction(
 }
 
 function decodeSourceBinding(value: unknown): DecodedInventorySourceBinding | null {
+  const hasLink = isPlainRecord(value) && Object.hasOwn(value, "link");
   if (
-    !hasExactKeys(value, ["fingerprint", "path", "physicalIdentity"]) ||
+    !hasExactKeys(
+      value,
+      hasLink
+        ? ["fingerprint", "link", "path", "physicalIdentity"]
+        : ["fingerprint", "path", "physicalIdentity"],
+    ) ||
     typeof value.path !== "string" ||
     value.path.length === 0 ||
     typeof value.fingerprint !== "string" ||
@@ -895,10 +912,41 @@ function decodeSourceBinding(value: unknown): DecodedInventorySourceBinding | nu
   ) {
     return null;
   }
+  let link: DecodedInventorySourceBinding["link"];
+  if (hasLink) {
+    const candidate = value.link;
+    const limits = isPlainRecord(candidate) ? candidate.limits : null;
+    if (
+      !hasExactKeys(candidate, ["boundaryRoot", "limits", "text"]) ||
+      typeof candidate.boundaryRoot !== "string" ||
+      typeof candidate.text !== "string" ||
+      !hasExactKeys(limits, ["maxBytes", "maxDepth", "maxEntries"]) ||
+      typeof limits.maxDepth !== "number" ||
+      typeof limits.maxEntries !== "number" ||
+      typeof limits.maxBytes !== "number" ||
+      !Number.isSafeInteger(limits.maxDepth) ||
+      !Number.isSafeInteger(limits.maxEntries) ||
+      !Number.isSafeInteger(limits.maxBytes) ||
+      limits.maxDepth < 0 ||
+      limits.maxEntries < 1 ||
+      limits.maxBytes < 0
+    )
+      return null;
+    link = {
+      text: candidate.text,
+      boundaryRoot: candidate.boundaryRoot,
+      limits: {
+        maxDepth: limits.maxDepth,
+        maxEntries: limits.maxEntries,
+        maxBytes: limits.maxBytes,
+      },
+    };
+  }
   return Object.freeze({
     path: value.path,
     fingerprint: value.fingerprint,
     physicalIdentity: value.physicalIdentity,
+    ...(link ? { link } : {}),
   });
 }
 
@@ -941,16 +989,22 @@ function decodePublication(value: unknown): CapturedInventoryPublication | null 
       nodes.push({ path: node.path, kind: "directory", mode: node.mode as number });
     } else if (
       node.kind === "file" &&
-      hasExactKeys(node, ["data", "digest", "kind", "mode", "path"]) &&
+      (hasExactKeys(node, ["data", "digest", "kind", "mode", "path"]) ||
+        hasExactKeys(node, ["data", "digest", "encoding", "kind", "mode", "path"])) &&
+      (node.encoding === undefined || node.encoding === "base64") &&
       typeof node.data === "string" &&
       typeof node.digest === "string" &&
-      sha256(node.data) === node.digest
+      (node.encoding === "base64"
+        ? Buffer.from(node.data, "base64").toString("base64") === node.data &&
+          sha256(Buffer.from(node.data, "base64")) === node.digest
+        : sha256(node.data) === node.digest)
     ) {
       nodes.push({
         path: node.path,
         kind: "file",
         mode: node.mode as number,
         data: node.data,
+        ...(node.encoding === "base64" ? { encoding: "base64" as const } : {}),
         digest: node.digest,
       });
     } else {
@@ -1025,7 +1079,8 @@ async function validateInventoryImportSources(
     if (
       current &&
       (current.fingerprint !== action.source.fingerprint ||
-        current.physicalIdentity !== action.source.physicalIdentity)
+        current.physicalIdentity !== action.source.physicalIdentity ||
+        canonicalJson(current.link ?? null) !== canonicalJson(action.source.link ?? null))
     ) {
       return invalidPlanResult();
     }
@@ -1034,7 +1089,17 @@ async function validateInventoryImportSources(
   for (const source of sources.values()) {
     let actual: TargetStateReceipt = { state: "absent" };
     try {
-      const snapshot = await captureSafeRecursiveSource(env, source.path);
+      const snapshot = source.link
+        ? (
+            await captureInventorySkillChild(
+              env,
+              source.link.boundaryRoot,
+              source.path,
+              source.link.limits,
+              source.link.text,
+            )
+          ).snapshot
+        : await captureSafeRecursiveSource(env, source.path);
       actual = { state: "present", fingerprint: snapshot.fingerprint };
       if (
         snapshot.fingerprint === source.fingerprint &&
@@ -1102,7 +1167,6 @@ function publicationSnapshot(
   publication: Extract<CapturedInventoryPublication, { kind: "directory" }>,
   target: string,
 ): SafeRecursiveSnapshot {
-  const encoder = new TextEncoder();
   const tree: FileTreeSnapshot = {
     rootPath: target,
     nodes: publication.nodes.map((node) => ({
@@ -1110,7 +1174,7 @@ function publicationSnapshot(
       kind: node.kind,
       mode: node.mode,
       identity: `inventory-import:${node.path}:${node.kind === "file" ? node.digest : node.mode}`,
-      ...(node.kind === "file" ? { data: encoder.encode(node.data) } : {}),
+      ...(node.kind === "file" ? { data: publicationNodeBytes(node) } : {}),
     })),
   };
   return {
@@ -1123,8 +1187,8 @@ function publicationSnapshot(
               absolutePath: join(target, ...node.path.split("/")),
               relativePath: node.path,
               mode: node.mode,
-              content: node.data,
-              data: encoder.encode(node.data),
+              content: new TextDecoder().decode(publicationNodeBytes(node)),
+              data: publicationNodeBytes(node),
             },
           ]
         : [],
@@ -1136,6 +1200,16 @@ function publicationSnapshot(
     identity: sha256(canonicalJson(publication)),
     tree,
   };
+}
+
+function publicationNodeBytes(
+  node: Extract<CapturedInventoryPublication, { kind: "directory" }>["nodes"][number] & {
+    kind: "file";
+  },
+): Uint8Array {
+  return node.encoding === "base64"
+    ? Buffer.from(node.data, "base64")
+    : new TextEncoder().encode(node.data);
 }
 
 async function compensateInventoryImport(

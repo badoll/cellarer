@@ -208,6 +208,8 @@ export async function inspectInventorySourcesBounded<T>(
   sources: readonly InventorySource[],
   concurrency: number,
   inspect: (source: InventorySource) => Promise<T>,
+  onCompleted?: (result: InventorySourceInspection<T>) => void,
+  signal?: AbortSignal,
 ): Promise<readonly InventorySourceInspection<T>[]> {
   if (!Number.isInteger(concurrency) || concurrency < 1) {
     throw new TypeError("Inventory inspection concurrency must be a positive integer");
@@ -217,6 +219,7 @@ export async function inspectInventorySourcesBounded<T>(
 
   async function worker(): Promise<void> {
     while (nextIndex < sources.length) {
+      if (signal?.aborted) return;
       const index = nextIndex;
       nextIndex += 1;
       const source = sources[index];
@@ -226,10 +229,14 @@ export async function inspectInventorySourcesBounded<T>(
       } catch {
         results[index] = Object.freeze({ source, ok: false });
       }
+      if (signal?.aborted) return;
+      const result = results[index];
+      if (result) onCompleted?.(result);
     }
   }
 
   const workerCount = Math.min(concurrency, sources.length);
   await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  if (signal?.aborted) throw new Error("Inventory refresh cancelled");
   return Object.freeze(results);
 }

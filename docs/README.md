@@ -110,10 +110,15 @@ Ranked policy requires a rank; higher wins. Cumulative policy is for Rules only.
 `coverage` reports observed, excluded, unavailable, or unknown dimensions. Complete means
 complete within declared bounds: plugins, managed/system locations, parent directories,
 arbitrary nested projects, rule imports/globs and other native expansion are not searched.
-The explicit project root is the trust boundary. Captures reject symlinks and enforce
-source budgets before reading content; an omitted source does not hide successful sources.
-Built-in bounds are depth 16, 10,000 entries (files and directories), and 16 MiB per source.
-Skill candidates are direct child directories; nested native discovery is outside this scope.
+The explicit project root is the trust boundary. Rules and MCP sources still reject symlinks.
+Each direct child of a declared Skills directory is inspected independently: a directory
+symlink is accepted only when its resolved target stays inside that user or project boundary.
+The target is captured with anchored no-follow traversal, and Store import rechecks the link
+and captured bytes. Skill assets such as images retain their original bytes. Nested, broken, and out-of-boundary links are not followed; failed
+children leave successful siblings visible but make that source incomplete. Source-wide
+bounds remain depth 16 and 10,000 entries (files and directories); built-in Skills sources
+allow 32 MiB, while built-in Rules/MCP sources allow 16 MiB. Nested native
+Skill discovery is outside this scope.
 
 `effectiveResources` explains effective, shadowed, ambiguous, or unknown relationships
 per adapter and logical candidate within the observed scope, with rule evidence.
@@ -223,7 +228,12 @@ the complete bounded Inventory, shows completeness and candidate state, and
 asks once before importing the exact Core-default-selected ready candidate IDs.
 Declining leaves Store initialization complete and imports nothing. Partial or
 failed refresh remains separate, preserves its candidates and findings, and
-offers no import confirmation until an explicit retry succeeds:
+offers no import confirmation until an explicit retry succeeds. A candidate with
+an unsafe structured file remains visible as `needs-attention`; the final
+publication guard still checks every selected import. If the all-ready plan
+exceeds the 1 MiB request limit, initialization remains complete and reports
+`PLAN_BODY_BUDGET_EXCEEDED`. Select smaller exact batches; individual Skills
+above that limit cannot yet use this Store import path:
 
 ```bash
 # Interactive Inventory review and one exact Store-import confirmation
@@ -291,6 +301,11 @@ cross-process `mutationPlan`. `inventory import apply` accepts only that plan,
 revalidates its bindings, and publishes one Store revision. Neither command
 writes agent targets. Use `--into-collection <id>` on planning to add every
 imported resource to one existing collection in the same Store operation.
+An alias-only linked Skill is eligible when its target stays inside the declared
+boundary. The plan binds the alias and target; apply publishes regular Skill
+bytes and records alias provenance. Documentation examples such as `${BUILD_ID}`
+stay literal. Availability checks apply to references interpreted in active
+target configuration, while plaintext and final-byte secret guards still apply.
 
 Inventory offers reference-only secret adoption only for an MCP candidate with
 one unambiguous supported plaintext field. Supported selectors are stdio
@@ -737,6 +752,7 @@ GET /api/v1/capabilities
 GET /api/v1/readiness
 GET /api/v1/openapi.json
 GET /api/v1/inventory?dir=/absolute/project
+GET /api/v1/inventory/stream?agentId=codex&dir=/absolute/project
 GET /api/v1/inventory/{agentId}?dir=/absolute/project
 POST /api/v1/inventory/import/plan
 POST /api/v1/inventory/import/apply
@@ -754,10 +770,17 @@ explicit startup modes; there is no query token or unauthenticated fallback.
 The bundled React client uses the same typed `/api/v1` boundary and does not
 reconstruct Core decisions.
 
-Both Inventory routes return the browser-safe Core Inventory DTO. The full route
+Both JSON Inventory routes return the browser-safe Core Inventory DTO. The full route
 refreshes every registered bounded source; the targeted route accepts one exact
 registered adapter ID. A source failure remains a typed partial or failed result
 inside the successful transport envelope rather than becoming a raw exception.
+The authenticated stream uses NDJSON `started`, `progress`, `reset`, and terminal
+`completed` or `failed` events. Progress reports completed/total source counts
+and pending candidate IDs, types, counts, and redacted relative provenance. It cannot authorize import
+or adoption. A Store revision retry resets pending rows. The bundled Web page
+labels the previous result stale while refreshing and enables actions only after
+a complete final result; a disconnected stream requires a retry. The JSON GET
+routes remain available for clients that need only the final result.
 
 The Inventory import plan route accepts `candidateIds` plus optional `agentId`,
 `dir`, and `intoCollection`. The apply route accepts only the unchanged

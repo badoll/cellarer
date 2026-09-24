@@ -6,6 +6,11 @@ import { handleCliBoundaryError } from "../src/protocol/execution.js";
 import { CliInputError, validateJsonSchema } from "../src/protocol/input.js";
 import { runCli } from "../src/runner.js";
 
+vi.mock("../src/mutation-authority.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/mutation-authority.js")>()),
+  attachMutationAuthority: async () => undefined,
+}));
+
 const originalStdoutWrite = process.stdout.write;
 const originalStderrWrite = process.stderr.write;
 const originalExitCode = process.exitCode;

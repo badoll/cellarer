@@ -2,9 +2,11 @@ import { promises as fs, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createCliCommandCatalog } from "../src/commands/command-catalog.js";
 import { HEADLESS_MUTATION_AUTHORITY_ENV } from "../src/mutation-authority.js";
 import { buildProgram } from "../src/program.js";
 import { handleCliBoundaryError } from "../src/protocol/execution.js";
+import { validateJsonSchema } from "../src/protocol/input.js";
 
 describe("inventory import plan/apply commands", () => {
   let root: string;
@@ -93,9 +95,80 @@ describe("inventory import plan/apply commands", () => {
       fs.readFile(join(root, "store", "store", "skills", "inventory-demo", "SKILL.md"), "utf8"),
     ).resolves.toContain("name: inventory-demo");
   });
+
+  it("keeps an alias-only Skill plan valid across JSON and JSONL while rejecting unknown link evidence", async () => {
+    const alias = join(root, "home", ".agents", "skills", "inventory-demo");
+    const target = join(root, "home", "shared", "inventory-demo");
+    await fs.mkdir(target, { recursive: true });
+    await fs.copyFile(join(alias, "SKILL.md"), join(target, "SKILL.md"));
+    const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]);
+    await fs.writeFile(join(target, "image.png"), imageBytes);
+    await fs.rm(alias, { recursive: true });
+    await fs.symlink(target, alias, "dir");
+
+    const refreshed = await invokeJson(["inventory", "refresh", "--agent", "agents-md"]);
+    const candidateId = (refreshed.data as { candidates: { id: string }[] }).candidates[0]?.id;
+    expect(candidateId).toBeDefined();
+    const args = [
+      "inventory",
+      "import",
+      "plan",
+      "--candidate",
+      candidateId ?? "",
+      "--agent",
+      "agents-md",
+    ];
+    const json = await invokeJson(args);
+    const jsonl = await invokeJson(args, "jsonl");
+    expect(json).toMatchObject({ status: "success", data: { candidateIds: [candidateId] } });
+    expect(jsonl).toMatchObject({ status: "success", data: { candidateIds: [candidateId] } });
+    const jsonPlan = (
+      json.data as { mutationPlan: { actions: { kind: string; payload: unknown }[] } }
+    ).mutationPlan;
+    const jsonlPlan = (
+      jsonl.data as { mutationPlan: { actions: { kind: string; payload: unknown }[] } }
+    ).mutationPlan;
+    const contentPayload = (plan: typeof jsonPlan) =>
+      plan.actions.find(({ kind }) => kind === "inventory-resource-content")?.payload;
+    expect(contentPayload(jsonlPlan)).toEqual(contentPayload(jsonPlan));
+
+    const contract = createCliCommandCatalog().requireContract("inventory.import.plan");
+    const dataSchema = contract.outputSchema.properties?.data;
+    if (!dataSchema) throw new Error("missing Inventory import plan data schema");
+    expect(validateJsonSchema(json.data, dataSchema)).toEqual([]);
+    const invalid = structuredClone(json.data) as {
+      mutationPlan: { actions: { kind: string; payload: { source?: { link?: object } } }[] };
+    };
+    const content = invalid.mutationPlan.actions.find(
+      ({ kind }) => kind === "inventory-resource-content",
+    );
+    if (!content?.payload.source?.link) throw new Error("missing linked-source evidence");
+    content.payload.source.link = { ...content.payload.source.link, unexpected: true };
+    expect(validateJsonSchema(invalid, dataSchema)).not.toEqual([]);
+
+    const applied = await invokeJson([
+      "inventory",
+      "import",
+      "apply",
+      "--plan",
+      JSON.stringify(jsonPlan),
+    ]);
+    expect(applied).toMatchObject({ status: "success", data: { operation: { ok: true } } });
+    expect(
+      await fs.readFile(join(root, "store", "store", "skills", "inventory-demo", "image.png")),
+    ).toEqual(imageBytes);
+    const metadata = await fs.readFile(
+      join(root, "store", "store", "metadata", "skills", "inventory-demo.json"),
+      "utf8",
+    );
+    expect(metadata).toContain("~/.agents/skills/inventory-demo");
+  });
 });
 
-async function invokeJson(args: readonly string[]): Promise<Record<string, unknown>> {
+async function invokeJson(
+  args: readonly string[],
+  output: "json" | "jsonl" = "json",
+): Promise<Record<string, unknown>> {
   const stdout: string[] = [];
   const stderr: string[] = [];
   const oldStdoutWrite = process.stdout.write;
@@ -112,7 +185,7 @@ async function invokeJson(args: readonly string[]): Promise<Record<string, unkno
   try {
     try {
       await buildProgram().parseAsync(
-        ["node", "cellarer", "--output", "json", "--non-interactive", ...args],
+        ["node", "cellarer", "--output", output, "--non-interactive", ...args],
         { from: "node" },
       );
     } catch (error) {

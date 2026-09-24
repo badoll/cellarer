@@ -18,6 +18,7 @@ import type {
   DashboardSummaryResult,
   DistributePlan,
   InventoryRefreshResult,
+  InventoryStreamEvent,
   MutationPlan,
   SettingsSummary,
   StatusItem,
@@ -370,6 +371,13 @@ const CLIENT_API_ROUTE_BASES = [
     path: "/api/v1/inventory",
     authentication: "authenticated",
     summary: "Refresh all bounded registered Inventory sources",
+  },
+  {
+    operationId: "streamInventory",
+    method: "get",
+    path: "/api/v1/inventory/stream",
+    authentication: "authenticated",
+    summary: "Stream bounded Inventory progress and the authoritative result as NDJSON",
   },
   {
     operationId: "refreshInventoryByAgent",
@@ -1071,6 +1079,8 @@ function querySchemaFor(operationId: string): ClientJsonSchema {
     case "refreshInventory":
     case "refreshInventoryByAgent":
       return objectSchema({ dir: nonEmptyStringSchema });
+    case "streamInventory":
+      return objectSchema({ dir: nonEmptyStringSchema, agentId: agentIdSchema });
     case "getStatus":
       return objectSchema({ scope: scopeSchema, dir: nonEmptyStringSchema });
     case "getSummary":
@@ -3298,6 +3308,67 @@ const inventoryRefreshDataSchema = objectSchema(
   },
   ["generatedAt", "candidates", "findings", "counts", "completeness"],
 );
+const inventoryStreamBase = {
+  attempt: integerSchema(),
+  sequence: integerSchema(),
+};
+const inventoryStreamEventSchema = {
+  oneOf: [
+    objectSchema(
+      { type: { const: "started" }, ...inventoryStreamBase, totalSources: integerSchema() },
+      ["type", "attempt", "sequence", "totalSources"],
+    ),
+    objectSchema(
+      {
+        type: { const: "progress" },
+        ...inventoryStreamBase,
+        completedSources: integerSchema(),
+        totalSources: integerSchema(),
+        candidates: arraySchema(
+          objectSchema(
+            {
+              id: nonEmptyStringSchema,
+              kind: capabilitySchema,
+              sourceCount: integerSchema(),
+              sources: arraySchema(inventorySourceSchema),
+            },
+            ["id", "kind", "sourceCount", "sources"],
+          ),
+        ),
+        findingCodes: arraySchema(inventoryFindingSchema.properties?.code ?? stringSchema()),
+      },
+      [
+        "type",
+        "attempt",
+        "sequence",
+        "completedSources",
+        "totalSources",
+        "candidates",
+        "findingCodes",
+      ],
+    ),
+    objectSchema({ type: { const: "reset" }, ...inventoryStreamBase }, [
+      "type",
+      "attempt",
+      "sequence",
+    ]),
+    objectSchema(
+      { type: { const: "completed" }, ...inventoryStreamBase, result: inventoryRefreshDataSchema },
+      ["type", "attempt", "sequence", "result"],
+    ),
+    objectSchema(
+      {
+        type: { const: "failed" },
+        ...inventoryStreamBase,
+        code: enumSchema(["INTERNAL_ERROR", "CANCELLED"]),
+      },
+      ["type", "attempt", "sequence", "code"],
+    ),
+  ],
+} as const satisfies ClientJsonSchema;
+export type InventoryStreamSchemaContract = AssertSchemaContract<
+  ExactSchemaContract<typeof inventoryStreamEventSchema, InventoryStreamEvent>
+>;
 const inventoryRefreshWithCompletenessSchema = <
   const Completeness extends "complete" | "partial" | "failed",
 >(
@@ -3599,6 +3670,8 @@ function successDataSchemaFor(operationId: string): ClientJsonSchema {
     case "refreshInventory":
     case "refreshInventoryByAgent":
       return inventoryRefreshDataSchema;
+    case "streamInventory":
+      return inventoryStreamEventSchema;
     case "planInventoryStoreImport":
       return inventoryStoreImportPlanDataSchema;
     case "applyInventoryStoreImport":
@@ -3783,7 +3856,8 @@ export const CLIENT_API_ROUTES: readonly ClientApiRouteDefinition[] = CLIENT_API
     return {
       ...route,
       inputSchema: inputSchemaFor(route),
-      outputSchema: resultEnvelopeSchema(dataSchema),
+      outputSchema:
+        route.operationId === "streamInventory" ? dataSchema : resultEnvelopeSchema(dataSchema),
       httpStatusMappings: statusMappingsFor(route),
     };
   },
@@ -3969,10 +4043,14 @@ export function createClientOpenApiDocument(
             description:
               mapping.outcome === "success" ? "Versioned client success" : "Typed client error",
             content: {
-              "application/json": {
+              [route.operationId === "streamInventory" && mapping.outcome === "success"
+                ? "application/x-ndjson"
+                : "application/json"]: {
                 schema:
                   mapping.outcome === "success"
-                    ? successSchemaFromResult(route.outputSchema)
+                    ? route.operationId === "streamInventory"
+                      ? route.outputSchema
+                      : successSchemaFromResult(route.outputSchema)
                     : errorEnvelopeSchema,
               },
             },

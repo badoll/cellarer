@@ -58,6 +58,8 @@ export function createInitializationDiscoveryDomain(
                         "inventory-incomplete",
                         "no-ready-candidates",
                         "non-interactive",
+                        "plan-too-large",
+                        "plan-unavailable",
                       ]),
                     }),
                     s.dataObject(["status", "candidateIds"], {

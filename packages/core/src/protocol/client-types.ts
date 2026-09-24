@@ -596,6 +596,43 @@ export interface InventoryRefreshResult {
   readonly completeness: InventoryCompleteness;
 }
 
+export interface InventoryProvisionalCandidate {
+  readonly id: string;
+  readonly kind: Capability;
+  readonly sourceCount: number;
+  readonly sources: readonly InventorySourceProvenance[];
+}
+
+export type InventoryStreamEvent =
+  | {
+      readonly type: "started";
+      readonly attempt: number;
+      readonly sequence: number;
+      readonly totalSources: number;
+    }
+  | {
+      readonly type: "progress";
+      readonly attempt: number;
+      readonly sequence: number;
+      readonly completedSources: number;
+      readonly totalSources: number;
+      readonly candidates: readonly InventoryProvisionalCandidate[];
+      readonly findingCodes: readonly InventoryFindingCode[];
+    }
+  | { readonly type: "reset"; readonly attempt: number; readonly sequence: number }
+  | {
+      readonly type: "completed";
+      readonly attempt: number;
+      readonly sequence: number;
+      readonly result: InventoryRefreshResult;
+    }
+  | {
+      readonly type: "failed";
+      readonly attempt: number;
+      readonly sequence: number;
+      readonly code: "INTERNAL_ERROR" | "CANCELLED";
+    };
+
 export type PostCommitInventoryRefresh =
   | {
       readonly agentId: string;

@@ -51,6 +51,30 @@ describe("Inventory Store import planning", () => {
     ).rejects.toBeInstanceOf(InventoryStoreImportPlanningError);
   });
 
+  it("blocks a Skill whose structured asset fails the final publication guard", async () => {
+    const root = t.path("home", ".agents", "skills", "broken-yaml");
+    await t.env.fs.mkdir(root, { recursive: true });
+    await t.env.fs.writeFile(
+      join(root, "SKILL.md"),
+      "---\nname: broken-yaml\ndescription: Broken asset\n---\n# Skill\n",
+    );
+    await t.env.fs.writeFile(join(root, "example.yml"), "foo: [unterminated\n");
+
+    const inventory = await refreshInventory(t.env, { storeRoot, agentId: "agents-md" });
+    const candidate = inventory.candidates.find(({ kind }) => kind === "skills");
+    expect(candidate).toMatchObject({ state: "needs-attention", defaultSelected: false });
+    expect(candidate?.findings).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: "PARSE_FAILED" })]),
+    );
+    await expect(
+      planInventoryStoreImport(t.env, {
+        storeRoot,
+        candidateIds: [candidate?.id ?? "missing"],
+        refresh: { agentId: "agents-md" },
+      }),
+    ).rejects.toMatchObject({ reason: "CANDIDATE_NOT_READY" });
+  });
+
   it("seals one exact current candidate against the coherent Store revision", async () => {
     await publishStoreRevision(t.env, storeRoot, 7);
     const reviewed = await refreshInventory(t.env, { storeRoot, agentId: "agents-md" });
@@ -89,6 +113,103 @@ describe("Inventory Store import planning", () => {
       1024 * 1024,
     );
     expect(await t.env.fs.snapshotTreeNoFollow(storeRoot)).toEqual(before);
+  });
+
+  it("imports captured bytes from a bounded linked Skill", async () => {
+    const target = t.path("home", "shared", "linked");
+    const alias = t.path("home", ".agents", "skills", "linked");
+    await t.env.fs.mkdir(target, { recursive: true });
+    await t.env.fs.mkdir(join(alias, ".."), { recursive: true });
+    await t.env.fs.writeFile(
+      join(target, "SKILL.md"),
+      "---\nname: linked\ndescription: Linked skill\n---\n# Linked\n",
+    );
+    await t.env.fs.symlink(target, alias, "dir");
+    const reviewed = await refreshInventory(t.env, { storeRoot, agentId: "agents-md" });
+    expect(reviewed.completeness).toBe("complete");
+    const candidate = reviewed.candidates.find(({ kind }) => kind === "skills");
+    if (!candidate) throw new Error("missing linked Skill");
+    const planned = await planInventoryStoreImport(t.env, {
+      storeRoot,
+      candidateIds: [candidate.id],
+      refresh: { agentId: "agents-md" },
+    });
+
+    const replacementEnv = { ...t.env, processId: () => t.env.processId() + 10 };
+    const transportedPlan = JSON.parse(
+      JSON.stringify(planned.mutationPlan),
+    ) as typeof planned.mutationPlan;
+    const applied = await applyInventoryStoreImportPlan(replacementEnv, transportedPlan, {
+      storeRoot,
+    });
+    expect(applied.operation.ok).toBe(true);
+    const stored = join(storeRoot, "store", "skills", "linked");
+    expect((await t.env.fs.lstat(stored)).isDirectory()).toBe(true);
+    expect(await t.env.fs.readFile(join(stored, "SKILL.md"))).toContain("# Linked");
+  });
+
+  it("preserves a linked Skill's binary asset during Inventory import", async () => {
+    const target = t.path("home", "shared", "with-image");
+    const alias = t.path("home", ".agents", "skills", "with-image");
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff]);
+    await t.env.fs.mkdir(target, { recursive: true });
+    await t.env.fs.mkdir(join(alias, ".."), { recursive: true });
+    await t.env.fs.writeFile(
+      join(target, "SKILL.md"),
+      "---\nname: with-image\ndescription: Skill with image\n---\n# Image\n",
+    );
+    await t.env.fs.writeFileBytes(join(target, "image.png"), bytes);
+    await t.env.fs.symlink(target, alias, "dir");
+
+    const reviewed = await refreshInventory(t.env, { storeRoot, agentId: "agents-md" });
+    expect(reviewed.completeness).toBe("complete");
+    const candidate = reviewed.candidates.find(({ kind }) => kind === "skills");
+    expect(candidate).toMatchObject({ state: "ready" });
+    if (!candidate) throw new Error("missing linked Skill");
+    const planned = await planInventoryStoreImport(t.env, {
+      storeRoot,
+      candidateIds: [candidate.id],
+      refresh: { agentId: "agents-md" },
+    });
+    const applied = await applyInventoryStoreImportPlan(t.env, planned.mutationPlan, { storeRoot });
+    expect(applied.operation.ok).toBe(true);
+    const stored = await t.env.fs.readFileBytes(
+      join(storeRoot, "store", "skills", "with-image", "image.png"),
+    );
+    expect([...stored]).toEqual([...bytes]);
+  });
+
+  it("rejects a linked Skill whose alias changes after planning", async () => {
+    const first = t.path("home", "shared", "first");
+    const second = t.path("home", "shared", "second");
+    const alias = t.path("home", ".agents", "skills", "linked");
+    for (const target of [first, second]) {
+      await t.env.fs.mkdir(target, { recursive: true });
+      await t.env.fs.writeFile(
+        join(target, "SKILL.md"),
+        "---\nname: linked\ndescription: Linked skill\n---\n# Linked\n",
+      );
+    }
+    await t.env.fs.mkdir(join(alias, ".."), { recursive: true });
+    await t.env.fs.symlink(first, alias, "dir");
+    const reviewed = await refreshInventory(t.env, { storeRoot, agentId: "agents-md" });
+    const candidate = reviewed.candidates.find(({ kind }) => kind === "skills");
+    if (!candidate) throw new Error("missing linked Skill");
+    const planned = await planInventoryStoreImport(t.env, {
+      storeRoot,
+      candidateIds: [candidate.id],
+      refresh: { agentId: "agents-md" },
+    });
+    await t.env.fs.rm(alias);
+    await t.env.fs.symlink(second, alias, "dir");
+
+    const applied = await applyInventoryStoreImportPlan(t.env, planned.mutationPlan, { storeRoot });
+    expect(applied.operation.ok).toBe(false);
+    await expect(
+      t.env.fs.lstat(join(storeRoot, "store", "skills", "linked")),
+    ).rejects.toMatchObject({
+      code: "ENOENT",
+    });
   });
 
   it("plans collection membership when valid custom MCP metadata is already configured", async () => {
