@@ -7,10 +7,11 @@ import { defaultInventorySelection } from "../client/inventory-onboarding.js";
 import { InventoryResultView } from "../client/inventory-page.js";
 
 describe("Inventory bundled client view", () => {
-  it("starts the bundled first-run client on Inventory onboarding", () => {
+  it("starts in the library and keeps Inventory discovery reachable", () => {
     const html = renderToStaticMarkup(createElement(App));
-    expect(html).toContain("<h2>Inventory</h2>");
-    expect(html).toContain("Loading bounded registered sources...");
+    expect(html).toContain("<h2>Agent Config Library</h2>");
+    expect(html).toContain("Find existing configuration");
+    expect(html).toContain("Loading stored configuration...");
   });
 
   it("renders shared DTO states, provenance, findings, and only Core-default selection", () => {

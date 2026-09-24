@@ -351,13 +351,13 @@ export function InventoryPage(props: { readonly onNavigate?: (page: Page) => voi
             </div>
           </div>
           <div className="button-row">
-            <button type="button" className="action" onClick={() => props.onNavigate?.("skills")}>
+            <button type="button" className="action" onClick={() => props.onNavigate?.("library")}>
               Open Library
             </button>
             <button
               type="button"
               className="action secondary"
-              onClick={() => props.onNavigate?.("agents")}
+              onClick={() => props.onNavigate?.("sync")}
             >
               Review Sync targets
             </button>

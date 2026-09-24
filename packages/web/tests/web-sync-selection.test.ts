@@ -10,24 +10,26 @@ vi.mock("../client/api.js", () => ({ apiFetch: vi.fn() }));
 vi.mock("../client/agent-picker.js", () => ({ AgentPicker: () => null }));
 
 import { SyncDialog } from "../client/sync-dialog.js";
-import { buildSyncSelection, collectionFilterSelection } from "../client/sync-selection.js";
+import { buildSyncSelection } from "../client/sync-selection.js";
 
 const input = { agents: "codex", destination: "user" as const, dir: "", kinds: ["rules" as const] };
 
 describe("Web sync selection", () => {
-  it.each(["work", "personal"])("binds the %s filter to request and summary", (collection) => {
+  it.each([
+    "work",
+    "personal",
+  ])("binds an explicit %s group to request and summary", (collection) => {
     const selection = buildSyncSelection({
       ...input,
-      collections: collectionFilterSelection(` ${collection} `),
+      collections: [collection],
     });
     expect(selection.request.resources?.collections).toEqual([collection]);
     expect(selection.collectionSummary).toBe(collection);
   });
 
-  it("keeps an empty filter on Store defaults, without claiming all collections", () => {
+  it("uses Store defaults only when explicitly selected without a group", () => {
     const selection = buildSyncSelection({
       ...input,
-      collections: collectionFilterSelection("  "),
     });
     expect(selection.request.resources?.collections).toBeUndefined();
     expect(selection.collectionSummary).toBe("Store defaults");
@@ -240,5 +242,43 @@ describe("mounted sync lifecycle", () => {
     expect(button("Apply").disabled).toBe(true);
     expect(apiFetch).toHaveBeenCalledTimes(2);
     expect(onApplied).not.toHaveBeenCalled();
+  });
+
+  it("shows shared consumers and blocks apply for a Core target conflict", async () => {
+    vi.mocked(apiFetch).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: "success",
+          data: {
+            plan: {
+              actions: [
+                {
+                  agent: "codex",
+                  capability: "rules",
+                  artifact: "rules/a",
+                  target: "/target",
+                  op: "skip",
+                  consumerAgents: ["codex", "claude-code"],
+                },
+              ],
+              warnings: [],
+              conflicts: [
+                {
+                  code: "SHARED_TARGET_CONFLICT",
+                  target: "/target",
+                  message: "Another consumer remains",
+                },
+              ],
+            },
+            mutationPlan: { planId: "blocked" },
+          },
+        }),
+      ),
+    );
+    await render();
+    await click("Preview");
+    expect(container.textContent).toContain("Shared target /target: consumers codex, claude-code");
+    expect(container.textContent).toContain("SHARED_TARGET_CONFLICT");
+    expect(button("Apply").disabled).toBe(true);
   });
 });

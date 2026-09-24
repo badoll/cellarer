@@ -2,15 +2,35 @@ import type {
   ControlPlaneResourceDto,
   ControlPlaneResourceListDto,
 } from "@cellarer/core/client-api";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "./api.js";
 import { readApiJson } from "./api-state.js";
+import { browserWorkbenchLocale } from "./workbench-labels.js";
 import {
   type WorkflowAction,
   WorkflowDialog,
   workflowError,
   workflowPost,
 } from "./workflow-dialog.js";
+
+type ResourceInspection =
+  | {
+      kind: "dependencies";
+      report: {
+        collections: readonly { collectionId: string }[];
+        profiles: readonly { profileId: string }[];
+        desiredSelections: readonly { collectionId: string }[];
+        ownedTargets: readonly { agent: string; scope: string; target: string }[];
+      };
+    }
+  | {
+      kind: "update";
+      check: {
+        status: "uncheckable" | "current" | "update-available";
+        currentRevisionId: string;
+        checkedAt?: string;
+      };
+    };
 
 export function ResourceWorkflows({
   resource,
@@ -19,61 +39,90 @@ export function ResourceWorkflows({
   resource: ControlPlaneResourceDto;
   onChanged(message: string): void;
 }) {
+  const zh = browserWorkbenchLocale() === "zh-CN";
   const [action, setAction] = useState<WorkflowAction | null>(null);
-  const [evidence, setEvidence] = useState<unknown>(null);
+  const [evidence, setEvidence] = useState<ResourceInspection | null>(null);
+  const inspectionGeneration = useRef(0);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const resourceId = resource.id;
   const input = { resourceId };
   async function inspect(kind: "dependencies" | "update/check") {
+    const token = ++inspectionGeneration.current;
     setError("");
+    setEvidence(null);
     try {
-      setEvidence(await workflowPost(`/api/v1/resources/${kind}`, input));
+      if (kind === "dependencies") {
+        const report = await workflowPost<
+          Extract<ResourceInspection, { kind: "dependencies" }>["report"]
+        >("/api/v1/resources/dependencies", input);
+        if (token === inspectionGeneration.current) setEvidence({ kind: "dependencies", report });
+      } else {
+        const check = await workflowPost<Extract<ResourceInspection, { kind: "update" }>["check"]>(
+          "/api/v1/resources/update/check",
+          input,
+        );
+        if (token === inspectionGeneration.current) setEvidence({ kind: "update", check });
+      }
     } catch (error) {
-      setError(workflowError(error));
+      if (token === inspectionGeneration.current) setError(workflowError(error));
     }
   }
-  if (resource.discovered) return <p>Import from Inventory before managing this resource.</p>;
+  if (resource.discovered)
+    return (
+      <p>
+        {zh
+          ? "先从 Inventory 导入，再管理该资源。"
+          : "Import from Inventory before managing this resource."}
+      </p>
+    );
   return (
     <section>
       <div className="button-row">
         <button type="button" onClick={() => inspect("dependencies")}>
-          Show dependencies
+          {zh ? "查看依赖" : "Show dependencies"}
         </button>
         <button type="button" onClick={() => inspect("update/check")}>
-          Check source update
+          {zh ? "检查来源更新" : "Check source update"}
         </button>
         <button
           type="button"
           onClick={() =>
             setAction({
-              title: "Update Store resource",
-              description: `Stage and review a source update for ${resourceId}. Agent targets stay unchanged.`,
+              title: zh ? "更新 Store 资源" : "Update Store resource",
+              description: zh
+                ? `暂存并审阅 ${resourceId} 的来源更新；Agent 目标保持不变。`
+                : `Stage and review a source update for ${resourceId}. Agent targets stay unchanged.`,
               planPath: "/api/v1/resources/update/plan",
               applyPath: "/api/v1/resources/update/apply",
               input,
-              success:
-                "Store update completed. Deployments may be pending; preview reconciliation separately.",
+              success: zh
+                ? "Store 更新完成。目标可能待同步，请单独预览协调。"
+                : "Store update completed. Deployments may be pending; preview reconciliation separately.",
             })
           }
         >
-          Preview source update
+          {zh ? "预览来源更新" : "Preview source update"}
         </button>
         <button
           type="button"
           onClick={() =>
             setAction({
-              title: "Remove from Store",
-              description: `Remove only ${resourceId}. Referenced resources are blocked. No cascade, target uninstall or historical revert.`,
+              title: zh ? "从 Store 移除" : "Remove from Store",
+              description: zh
+                ? `仅移除 ${resourceId}。被引用资源会阻断；不会级联删除、卸载目标或回滚历史。`
+                : `Remove only ${resourceId}. Referenced resources are blocked. No cascade, target uninstall or historical revert.`,
               planPath: "/api/v1/resources/remove/plan",
               applyPath: "/api/v1/resources/remove/apply",
               input: { ...input, cascade: false },
               applyInput: { ...input, cascade: false },
-              success: "Resource removed from Store. No target was uninstalled.",
+              success: zh
+                ? "已从 Store 移除资源；未卸载任何目标。"
+                : "Resource removed from Store. No target was uninstalled.",
             })
           }
         >
-          Remove from Store
+          {zh ? "从 Store 移除" : "Remove from Store"}
         </button>
       </div>
       {message && <p role="status">{message}</p>}
@@ -82,11 +131,63 @@ export function ResourceWorkflows({
           {error}
         </p>
       )}
-      {evidence !== null && (
-        <details open>
-          <summary>Source / dependency evidence</summary>
-          <pre>{JSON.stringify(evidence, null, 2)}</pre>
-        </details>
+      {evidence?.kind === "update" && (
+        <section role="status" className="panel">
+          <strong>
+            {evidence.check.status === "update-available"
+              ? zh
+                ? "可更新"
+                : "Update available"
+              : evidence.check.status === "current"
+                ? zh
+                  ? "来源版本未变化"
+                  : "Source is current"
+                : zh
+                  ? "无法检查来源更新"
+                  : "Source update cannot be checked"}
+          </strong>
+          <p>
+            {zh ? "当前 Store 版本" : "Current Store revision"}: {evidence.check.currentRevisionId}
+          </p>
+          {evidence.check.checkedAt && (
+            <p>
+              {zh ? "检查时间" : "Checked at"}: {evidence.check.checkedAt}
+            </p>
+          )}
+          <p>
+            {zh
+              ? "来源更新与目标同步是不同操作。"
+              : "A source update is separate from target sync."}
+          </p>
+        </section>
+      )}
+      {evidence?.kind === "dependencies" && (
+        <section role="status" className="panel">
+          <strong>{zh ? "依赖证据" : "Dependency evidence"}</strong>
+          <p>
+            {zh ? "分组" : "Groups"}:{" "}
+            {evidence.report.collections.map((item) => item.collectionId).join(", ") ||
+              (zh ? "无" : "None")}
+          </p>
+          <p>
+            {zh ? "配置方案" : "Profiles"}:{" "}
+            {evidence.report.profiles.map((item) => item.profileId).join(", ") ||
+              (zh ? "无" : "None")}
+          </p>
+          <p>
+            {zh ? "默认选择" : "Default selections"}:{" "}
+            {evidence.report.desiredSelections.map((item) => item.collectionId).join(", ") ||
+              (zh ? "无" : "None")}
+          </p>
+          <p>
+            {zh ? "受管目标" : "Owned targets"}: {evidence.report.ownedTargets.length}
+          </p>
+          {evidence.report.ownedTargets.map((item) => (
+            <p key={`${item.agent}:${item.scope}:${item.target}`}>
+              {item.agent}/{item.scope} · {item.target}
+            </p>
+          ))}
+        </section>
       )}
       {action && (
         <WorkflowDialog
@@ -108,7 +209,8 @@ interface Collection {
   resourceIds: string[];
   description?: string;
 }
-export function CollectionEditor() {
+export function CollectionEditor({ onChanged }: { onChanged?: () => void } = {}) {
+  const zh = browserWorkbenchLocale() === "zh-CN";
   const [loading, setLoading] = useState(true);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [resources, setResources] = useState<readonly ControlPlaneResourceDto[]>([]);
@@ -148,25 +250,40 @@ export function CollectionEditor() {
   const existing = collections.find((collection) => collection.name === name);
   function plan() {
     setAction({
-      title: existing ? "Edit Collection members" : "Create Collection",
+      title: existing
+        ? zh
+          ? "编辑分组成员"
+          : "Edit Collection members"
+        : zh
+          ? "创建分组"
+          : "Create Collection",
       description: existing
-        ? `Replace ${name} membership with exactly ${members.join(", ") || "no resources"}. Targets stay unchanged.`
-        : `Create the empty Collection ${name}; edit its members separately.`,
+        ? zh
+          ? `将 ${name} 的成员精确替换为 ${members.join(", ") || "无资源"}；目标保持不变。`
+          : `Replace ${name} membership with exactly ${members.join(", ") || "no resources"}. Targets stay unchanged.`
+        : zh
+          ? `创建空分组 ${name}；再单独编辑成员。`
+          : `Create the empty Collection ${name}; edit its members separately.`,
       planPath: "/api/v1/collections/plan",
       applyPath: "/api/v1/mutations/apply",
       input: existing
         ? { action: "set-members", collectionName: name, resourceIds: members }
         : { action: "create", collectionName: name, resourceIds: [] },
-      success:
-        "Collection saved. Existing deployments may be pending; preview Profile reconciliation separately.",
+      success: zh
+        ? "分组已保存。既有目标可能待同步；请单独预览配置方案协调。"
+        : "Collection saved. Existing deployments may be pending; preview Profile reconciliation separately.",
     });
   }
   return (
     <section className="panel workflow-panel">
-      <h3>Collections</h3>
-      <p>Store membership changes do not sync or uninstall targets.</p>
+      <h3>{zh ? "分组" : "Collections"}</h3>
+      <p>
+        {zh
+          ? "修改 Store 成员不会同步或卸载目标。"
+          : "Store membership changes do not sync or uninstall targets."}
+      </p>
       <label className="field-row stacked">
-        <span>Collection name</span>
+        <span>{zh ? "分组名称" : "Collection name"}</span>
         <input
           type="text"
           disabled={loading}
@@ -188,7 +305,7 @@ export function CollectionEditor() {
       </label>
       {existing && (
         <fieldset>
-          <legend>Exact members</legend>
+          <legend>{zh ? "精确成员" : "Exact members"}</legend>
           {resources.map((resource) => (
             <label className="field-row" key={resource.id}>
               <input
@@ -208,7 +325,13 @@ export function CollectionEditor() {
         </fieldset>
       )}
       <button className="action secondary" type="button" disabled={!name.trim()} onClick={plan}>
-        {existing ? "Review membership" : "Review new Collection"}
+        {existing
+          ? zh
+            ? "审阅成员变更"
+            : "Review membership"
+          : zh
+            ? "审阅新分组"
+            : "Review new Collection"}
       </button>
       {message && <p role="status">{message}</p>}
       {error && <p role="alert">{error}</p>}
@@ -221,6 +344,7 @@ export function CollectionEditor() {
             setAction(null);
             setLoading(true);
             setReload((value) => value + 1);
+            onChanged?.();
           }}
         />
       )}

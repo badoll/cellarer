@@ -21,8 +21,10 @@ interface SyncRequestInput {
   resourceIds?: string[];
 }
 
-function nonEmptyArray<T>(items: T[] | undefined): T[] | undefined {
-  return items && items.length > 0 ? [...items] : undefined;
+function nonEmptyArray<T extends string>(items: T[] | undefined): T[] | undefined {
+  return items && items.length > 0
+    ? [...new Set(items.map((item) => item.trim() as T))].sort()
+    : undefined;
 }
 
 export function isProjectDirMissing(destination: Destination, dir: string): boolean {
@@ -32,17 +34,23 @@ export function isProjectDirMissing(destination: Destination, dir: string): bool
 export function buildSyncRequest(input: SyncRequestInput): SyncRequest {
   const kinds = nonEmptyArray(input.kinds);
   const collections = nonEmptyArray(input.collections);
-  const ids = input.resourceIds;
+  const ids = input.resourceIds
+    ? [...new Set(input.resourceIds.map((id) => id.trim()))].sort()
+    : undefined;
   const resources = ids
     ? { ids, kinds }
     : kinds || collections
       ? { kinds, collections }
       : undefined;
   return {
-    agents: input.agents
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean),
+    agents: [
+      ...new Set(
+        input.agents
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean),
+      ),
+    ].sort(),
     destination: input.destination,
     dir: input.destination === "project" ? input.dir.trim() : undefined,
     resources,
@@ -58,11 +66,6 @@ export function syncRequestKey(request: SyncRequest): string {
     kinds: request.resources?.kinds ?? [],
     collections: request.resources?.collections ?? [],
   });
-}
-
-export function collectionFilterSelection(collection: string): string[] | undefined {
-  const name = collection.trim();
-  return name ? [name] : undefined;
 }
 
 export function buildSyncSelection(input: SyncRequestInput) {

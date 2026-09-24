@@ -8,12 +8,12 @@ import type {
 export type { Destination, ResourceState } from "@cellarer/core/client-api";
 
 export type Page =
+  | "library"
+  | "sync"
+  | "history"
   | "profiles"
   | "dashboard"
   | "inventory"
-  | "skills"
-  | "mcp"
-  | "rules"
   | "agents"
   | "settings";
 

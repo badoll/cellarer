@@ -47,7 +47,7 @@ describe("SyncDialog", () => {
     });
 
     expect(previewed).toEqual({
-      agents: ["codex", "claude-code"],
+      agents: ["claude-code", "codex"],
       destination: "project",
       dir: "/workspace/app",
       resources: { kinds: ["rules"], collections: ["default"] },

@@ -150,13 +150,13 @@ rmdir .cellarer-demo
 cellarer ui
 ```
 
-Web Library 支持精确行选择、资源详情、集合成员编辑与 Store 更新/删除预览。Profiles 将保存期望状态与目标协调、验证、消费者解绑及历史回滚分开，详见 [Web 工作流指南](docs/README.zh-CN.md#web-ui-与本地-api)。
+Web 默认打开 Agent 配置库，六个主入口是概览、Agent 配置库、同步、Agent、操作记录和设置。“查找已有配置”打开只读 Inventory；将精确候选导入 Store 后，再单独预览并应用目标同步，最后验证结果。配置库还支持精确行选择、资源详情、分组成员编辑及 Store 更新/删除预览。Agent 与同步入口可进入配置方案；操作记录提供验证、恢复和历史回滚。详见 [Web 工作流指南](docs/README.zh-CN.md#web-ui-与本地-api)。
 
 ## 管理范围
 
 | 领域 | 主要操作 |
 | --- | --- |
-| Library | 刷新 Inventory；导入、检查、更新、重命名、删除、导出与 bundle 导入资源。 |
+| Agent 配置库 | 在 Inventory 查找已有配置；导入、检查、更新、重命名、删除、导出与 bundle 导入资源。 |
 | Agents | 探测 agent、配置 adapter，并检查受支持的目标。 |
 | 下发 | 按 agent、scope、collection 或 profile 预览和同步 rules、MCP servers 与 skills；协调有归属的 Profile 增减并保留无关内容。 |
 | 安全 | 验证漂移、保留共享目标消费者、恢复中断 operation，并按 receipt 回滚。 |

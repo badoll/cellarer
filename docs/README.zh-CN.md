@@ -464,18 +464,21 @@ vault passphrase。密钥真值和 passphrase 不作为 option value，也不会
 
 ### Web UI 与本地 API
 
-Library 提供资源详情和显式行多选。**Selection mode** 区分精确资源 ID 与 Collection /
-Store defaults；筛选不会暗中扩大已选行。Collection 模式将筛选传入 **Sync to Agents**，
-无筛选时使用 Store 默认集合。Discovered 资源需要先导入。目标选择器展示 Core 的探测和
-兼容性信息；native unknown 不代表已加载成功。
+Web 默认打开 **Agent 配置库**。主入口为概览、Agent 配置库、同步、Agent、操作记录和设置。
+配置库统一列出 Store 中的 Skills、MCP 服务器和 Rules，支持按类型、名称、来源、ID 与分组
+筛选，查看详情并显式多选。筛选不会扩大或丢弃已勾选的精确 ID；已选与被筛选隐藏的数量始终可见。
+**查找已有配置** 打开只读 Inventory。审查最终候选后以精确 Core 计划导入 Store，再到独立的
+同步入口选择 Agent、scope 与资源意图。**添加配置** 会验证本地资源 bundle 并预览 Store 导入，
+不会同步 Agent 目标。同步区分精确 ID、一个分组、一个配置方案和 Store 默认选择。目标选择器
+展示 Core 的探测与兼容性证据；native unknown 不代表已加载成功。
 
 资源详情提供来源更新检查、Store 更新预览、依赖查看和非级联删除；Collections 可创建并
 精确替换成员。更新 Store 或集合后不会自动同步目标，引用依赖会阻止普通删除。
 
-**Profiles** 可创建或编辑精确资源/集合、Agent、scope 与 placement。保存只修改期望状态；
+**Agent** 页面可进入配置方案，同步页面也提供方案协调。**配置方案** 可创建或编辑精确资源/分组、Agent、scope 与 placement。保存只修改期望状态；
 **Preview reconciliation** 单独审查增减和用户保留项，**Verify deployment** 分开显示配置
 健康、pending、磁盘与 native observation。**Preview uninstall** 解绑当前 Profile 消费者，
-保留其他消费者与用户内容；历史 revert 是另一个操作，须显式选择资源并审查其 scope 和 receipt。
+保留其他消费者与用户内容。**操作记录** 展示活动、回执、验证、类型化恢复，以及需要重新预览的历史回滚；历史 revert 须显式选择资源并审查其 scope 和 receipt。
 
 每项新操作都先 Preview 再 Confirm，Apply 提交未经改写的计划。修改选择、关闭或刷新页面
 会作废预览。Stale、drift 或 recovery 阻断会显示 Core 指引，不会自动强制或重试。Profile 不
@@ -673,7 +676,7 @@ envelope 内的 typed partial 或 failed 结果保留，而不会转换为原始
 Inventory import plan route 接收 `candidateIds`，以及可选的 `agentId`、`dir` 和
 `intoCollection`。Apply route 只接收规划返回且未经修改的 `mutationPlan`。随包 client 在
 两个 route 之间传递该精确 plan，不会重新 refresh、重新选择或重建 action。随包 UI 从
-Inventory-first onboarding 开始，支持按 kind、source、adapter 与 state 过滤合并后的
+Agent 配置库开始；Inventory 页面支持按 kind、source、adapter 与 state 过滤合并后的
 provenance，并只采用 Core defaults。Inventory 不完整时禁用导入；导入需要一次精确确认；
 plan 过期时只展示 refresh/replan 指引，不会静默重试。导入成功后，Library 与 Sync 作为
 独立 next action 展示；Inventory 审查和导入都不会写入 agent target。

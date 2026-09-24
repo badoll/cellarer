@@ -169,13 +169,13 @@ Start the loopback-only Web console:
 cellarer ui
 ```
 
-The Web Library supports exact row selection, resource details, Collection membership and reviewed Store updates/removal. Profiles separate saving desired state from target reconciliation, verification, consumer uninstall and historical revert. See the [Web workflow guide](docs/README.md#web-ui-and-local-api).
+The Web opens in the Agent Config Library. Its six primary destinations are Overview, Agent Config Library, Sync, Agents, Operation History, and Settings. Find existing configuration opens read-only Inventory; import an exact candidate into the Store, then separately preview and apply target Sync and verify the result. The library also supports exact row selection, resource details, Group membership, and reviewed Store updates/removal. Agents and Sync lead to Profiles; Operation History leads to verification, recovery, and historical revert. See the [Web workflow guide](docs/README.md#web-ui-and-local-api).
 
 ## What it manages
 
 | Area | Main operations |
 | --- | --- |
-| Library | Refresh Inventory; import, inspect, update, rename, remove, export, and bundle resources. |
+| Agent Config Library | Find existing configuration in Inventory; import, inspect, update, rename, remove, export, and bundle resources. |
 | Agents | Detect agents, configure adapters, and inspect supported targets. |
 | Distribution | Preview and sync rules, MCP servers, and skills by agent, scope, collection, or profile; reconcile attributed profile changes without removing unrelated content. |
 | Safety | Verify drift, preserve shared target consumers, recover interrupted operations, and revert receipts. |

@@ -13,6 +13,9 @@ import { apiFetch } from "./api.js";
 import { readApiJson } from "./api-state.js";
 import { DashboardIcon, type DashboardIconName } from "./dashboard-icons.js";
 import { InventoryPage } from "./inventory-page.js";
+import { LibraryPage } from "./library-page.js";
+import { OperationHistoryPage } from "./operation-history-page.js";
+import { OverviewPage } from "./overview-page.js";
 import {
   configurationLabel,
   type Page,
@@ -21,13 +24,12 @@ import {
   resourceKindLabel,
 } from "./product-model.js";
 import { ProfilesPage } from "./profiles-page.js";
-import { ResourcePage } from "./resource-pages.js";
 import { SettingsPage } from "./settings-page.js";
+import { SyncWorkspace } from "./sync-workspace.js";
+import { browserWorkbenchLocale, type PrimaryPage, workbenchLabels } from "./workbench-labels.js";
 
 interface NavItem {
-  page: Page;
-  label: string;
-  detail: string;
+  page: PrimaryPage;
   icon: DashboardIconName;
 }
 
@@ -38,17 +40,27 @@ interface ApiState<T> {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { page: "dashboard", label: "Dashboard", detail: "Overview", icon: "dashboard" },
-  { page: "inventory", label: "Inventory", detail: "Live sources", icon: "scan" },
-  { page: "skills", label: "Skills", detail: "Library", icon: "artifacts" },
-  { page: "mcp", label: "MCP", detail: "Servers", icon: "database" },
-  { page: "rules", label: "Rules", detail: "Instructions", icon: "rules" },
-  { page: "profiles", label: "Profiles", detail: "Deployments", icon: "apply" },
-  { page: "agents", label: "Agents", detail: "Targets", icon: "agent" },
-  { page: "settings", label: "Settings", detail: "Defaults", icon: "settings" },
+  { page: "dashboard", icon: "dashboard" },
+  { page: "library", icon: "artifacts" },
+  { page: "sync", icon: "apply" },
+  { page: "agents", icon: "agent" },
+  { page: "history", icon: "activity" },
+  { page: "settings", icon: "settings" },
 ];
 
 const PAGE_META: Record<Page, { title: string; subtitle: string }> = {
+  library: {
+    title: "Agent Config Library",
+    subtitle: "Review stored Skills, MCP servers, and Rules before selecting an action.",
+  },
+  sync: {
+    title: "Sync",
+    subtitle: "Choose the target and configuration, then review the Core plan.",
+  },
+  history: {
+    title: "Operation History",
+    subtitle: "Inspect recorded operations and follow-up actions.",
+  },
   profiles: {
     title: "Profiles",
     subtitle: "Desired selections, reviewed reconciliation and consumer uninstall.",
@@ -60,18 +72,6 @@ const PAGE_META: Record<Page, { title: string; subtitle: string }> = {
   inventory: {
     title: "Inventory",
     subtitle: "Read-only candidates across bounded registered user and project sources.",
-  },
-  skills: {
-    title: "Skills",
-    subtitle: "Managed and discovered skill resources for agent runtimes.",
-  },
-  mcp: {
-    title: "MCP",
-    subtitle: "MCP server resources and their sync status across agents.",
-  },
-  rules: {
-    title: "Rules",
-    subtitle: "Instruction resources, collection membership, and target status.",
   },
   agents: {
     title: "Agents",
@@ -100,10 +100,16 @@ const RESOURCE_STATE_LABELS: Record<ResourceState, string> = {
 };
 
 export function App() {
-  const [page, setPage] = useState<Page>("inventory");
+  const [page, setPage] = useState<Page>("library");
+  const [libraryFocusId, setLibraryFocusId] = useState<string | undefined>();
+  const labels = workbenchLabels(browserWorkbenchLocale());
+  const navigate = (nextPage: Page) => {
+    if (nextPage === "library") setLibraryFocusId(undefined);
+    setPage(nextPage);
+  };
   return (
     <div className="app">
-      <MobileChrome page={page} onNavigate={setPage} />
+      <MobileChrome page={page} onNavigate={navigate} labels={labels.navigation} />
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark" aria-hidden="true">
@@ -111,7 +117,11 @@ export function App() {
           </div>
           <div>
             <h1>cellarer</h1>
-            <p>Unified agent config store</p>
+            <p>
+              {browserWorkbenchLocale() === "zh-CN"
+                ? "统一 Agent 配置 Store"
+                : "Unified agent config store"}
+            </p>
           </div>
         </div>
         <nav className="nav" aria-label="Primary navigation">
@@ -120,12 +130,13 @@ export function App() {
               type="button"
               key={item.page}
               className={page === item.page ? "active" : ""}
-              onClick={() => setPage(item.page)}
+              aria-current={page === item.page ? "page" : undefined}
+              onClick={() => navigate(item.page)}
             >
               <DashboardIcon name={item.icon} />
               <span>
-                <span className="nav-label">{item.label}</span>
-                <span className="nav-detail">{item.detail}</span>
+                <span className="nav-label">{labels.navigation[item.page]}</span>
+                <span className="nav-detail">{labels.details[item.page]}</span>
               </span>
             </button>
           ))}
@@ -133,21 +144,57 @@ export function App() {
         <div className="local-card">
           <span className="status-dot" />
           <div>
-            <strong>Local mode</strong>
-            <p>Loopback API · masked secrets</p>
+            <strong>{browserWorkbenchLocale() === "zh-CN" ? "本地模式" : "Local mode"}</strong>
+            <p>
+              {browserWorkbenchLocale() === "zh-CN"
+                ? "本机 API · 密钥已遮蔽"
+                : "Loopback API · masked secrets"}
+            </p>
           </div>
         </div>
       </aside>
       <main className="main">
-        <AppHeader page={page} onNavigate={setPage} />
+        <AppHeader
+          page={page}
+          onNavigate={navigate}
+          title={labels.navigation[page]}
+          subtitle={
+            page in labels.subtitles
+              ? labels.subtitles[page as keyof typeof labels.subtitles]
+              : PAGE_META[page].subtitle
+          }
+        />
         <div className="content">
-          {page === "dashboard" && <DashboardPage onNavigate={setPage} />}
-          {page === "inventory" && <InventoryPage onNavigate={setPage} />}
-          {page === "skills" && <ResourcePage kind="skills" />}
-          {page === "mcp" && <ResourcePage kind="mcp" />}
-          {page === "rules" && <ResourcePage kind="rules" />}
+          {page === "library" && (
+            <LibraryPage onNavigate={navigate} initialDetailId={libraryFocusId} />
+          )}
+          {page === "sync" && <SyncWorkspace onApplied={() => setPage("history")} />}
+          {page === "history" && <OperationHistoryPage />}
+          {page === "dashboard" && (
+            <OverviewPage
+              onDiscover={() => setPage("inventory")}
+              onOpenResource={(id) => {
+                setLibraryFocusId(id);
+                setPage("library");
+              }}
+              onSync={() => setPage("sync")}
+              onHistory={() => setPage("history")}
+            />
+          )}
+          {page === "inventory" && <InventoryPage onNavigate={navigate} />}
           {page === "profiles" && <ProfilesPage />}
-          {page === "agents" && <AgentsPage />}
+          {page === "agents" && (
+            <div className="page-stack">
+              <button
+                type="button"
+                className="action secondary"
+                onClick={() => setPage("profiles")}
+              >
+                Profiles
+              </button>
+              <AgentsPage />
+            </div>
+          )}
           {page === "settings" && <SettingsPage />}
         </div>
       </main>
@@ -155,7 +202,11 @@ export function App() {
   );
 }
 
-function MobileChrome(props: { page: Page; onNavigate: (page: Page) => void }) {
+function MobileChrome(props: {
+  page: Page;
+  onNavigate: (page: Page) => void;
+  labels: Record<Page, string>;
+}) {
   return (
     <div className="mobile-chrome">
       <div className="mobile-brand-row">
@@ -165,13 +216,13 @@ function MobileChrome(props: { page: Page; onNavigate: (page: Page) => void }) {
           </div>
           <div>
             <h1>cellarer</h1>
-            <p>Local control plane</p>
+            <p>{browserWorkbenchLocale() === "zh-CN" ? "本地控制台" : "Local control plane"}</p>
           </div>
         </div>
         <button
           type="button"
           className="icon-button"
-          aria-label="Open settings"
+          aria-label={browserWorkbenchLocale() === "zh-CN" ? "打开设置" : "Open settings"}
           onClick={() => props.onNavigate("settings")}
         >
           <DashboardIcon name="settings" />
@@ -183,10 +234,11 @@ function MobileChrome(props: { page: Page; onNavigate: (page: Page) => void }) {
             type="button"
             key={item.page}
             className={props.page === item.page ? "active" : ""}
+            aria-current={props.page === item.page ? "page" : undefined}
             onClick={() => props.onNavigate(item.page)}
           >
             <DashboardIcon name={item.icon} />
-            <span>{item.label}</span>
+            <span>{props.labels[item.page]}</span>
           </button>
         ))}
       </nav>
@@ -194,21 +246,35 @@ function MobileChrome(props: { page: Page; onNavigate: (page: Page) => void }) {
   );
 }
 
-function AppHeader(props: { page: Page; onNavigate: (page: Page) => void }) {
-  const meta = PAGE_META[props.page];
+function AppHeader(props: {
+  page: Page;
+  onNavigate: (page: Page) => void;
+  title: string;
+  subtitle: string;
+}) {
+  const zh = browserWorkbenchLocale() === "zh-CN";
   return (
     <header className="topbar">
       <div className="topbar-title">
-        <p className="eyebrow">Local control plane</p>
-        <h2>{meta.title}</h2>
-        <p>{meta.subtitle}</p>
+        <p className="eyebrow">{zh ? "本地控制台" : "Local control plane"}</p>
+        <h2>{props.title}</h2>
+        <p>{props.subtitle}</p>
       </div>
       <div className="topbar-right">
         <div className="status-row">
           {SAFETY_ITEMS.map((item) => (
             <span className="status-pill" key={item.label}>
               <DashboardIcon name={item.icon} />
-              {item.label}
+              {zh
+                ? (
+                    {
+                      "Local only": "仅本地",
+                      "127.0.0.1": "127.0.0.1",
+                      "No database": "无需数据库",
+                      "Secrets masked": "密钥已遮蔽",
+                    } as Record<string, string>
+                  )[item.label]
+                : item.label}
             </span>
           ))}
         </div>
@@ -220,7 +286,7 @@ function AppHeader(props: { page: Page; onNavigate: (page: Page) => void }) {
               onClick={() => props.onNavigate("settings")}
             >
               <DashboardIcon name="settings" />
-              Settings
+              {zh ? "设置" : "Settings"}
             </button>
           )}
         </div>
@@ -261,11 +327,7 @@ function useApi<T>(fetcher: () => Promise<Response>, deps: unknown[] = []): ApiS
   return state;
 }
 
-function DashboardPage(props: { onNavigate: (page: Page) => void }) {
-  return <DashboardShell onNavigate={props.onNavigate} />;
-}
-
-function DashboardShell(props: { onNavigate: (page: Page) => void }) {
+export function DashboardShell(props: { onNavigate: (page: Page) => void }) {
   const summaryState = useApi<DashboardSummaryResult>(() => apiFetch("/api/v1/summary"), []);
   const resourcesState = useApi<ControlPlaneResourceListDto>(
     () => apiFetch("/api/v1/resources"),
@@ -341,7 +403,7 @@ function DashboardShell(props: { onNavigate: (page: Page) => void }) {
         <button
           type="button"
           className="resource-shortcut"
-          onClick={() => props.onNavigate("skills")}
+          onClick={() => props.onNavigate("library")}
         >
           <DashboardIcon name="apply" />
           <span>
@@ -352,7 +414,7 @@ function DashboardShell(props: { onNavigate: (page: Page) => void }) {
         <button
           type="button"
           className="resource-shortcut"
-          onClick={() => props.onNavigate("rules")}
+          onClick={() => props.onNavigate("library")}
         >
           <DashboardIcon name="warning" />
           <span>
@@ -379,7 +441,7 @@ function DashboardShell(props: { onNavigate: (page: Page) => void }) {
             type="button"
             className="resource-shortcut"
             key={kind}
-            onClick={() => props.onNavigate(kind)}
+            onClick={() => props.onNavigate("library")}
           >
             <DashboardIcon name={resourceIcon(kind)} />
             <span>

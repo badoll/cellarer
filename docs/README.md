@@ -542,21 +542,25 @@ passphrases are not accepted as option values and are never printed by `ls`.
 
 ### Web UI and local API
 
-Library provides resource details and explicit row multiselection. **Selection mode** distinguishes
-exact resource IDs from Collection / Store defaults; filtering does not silently expand selected rows.
-Collection mode passes the filter to **Sync to Agents**, using Store defaults when no filter is set.
-Discovered resources must be imported first. The target picker shows Core detection and compatibility
-evidence; native unknown does not mean successfully loaded.
+The Web opens in **Agent Config Library**. Its primary destinations are Overview, Agent Config Library,
+Sync, Agents, Operation History, and Settings. The library lists stored Skills, MCP servers, and Rules
+together, with type/name/source/ID search, Group filtering, resource details, and explicit row selection.
+Filtering never expands or discards checked IDs; the selected and hidden counts remain visible.
+**Find existing configuration** opens read-only Inventory. Review a final candidate, import its exact
+Core plan into Store, then use the separate Sync destination to choose an Agent, scope, and resource
+intent. **Add configuration** validates a local resource bundle and previews Store import; it does not
+sync an Agent target. Sync distinguishes exact IDs, one Group, one Profile, and Store defaults. The
+target picker shows Core detection and compatibility evidence; native unknown does not mean loaded.
 
 Resource details offer source update checks, Store update previews, dependency inspection and
 non-cascading removal. Collections can be created and their exact membership replaced. Store and
 Collection updates never sync targets automatically; referenced dependencies block ordinary removal.
 
-**Profiles** creates or edits exact resources/Collections, Agents, scope and placement. Saving changes
+**Agents** links to Profiles, and Sync offers Profile reconciliation. **Profiles** creates or edits exact resources/Groups, Agents, scope and placement. Saving changes
 only desired state. **Preview reconciliation** separately reviews additions, removals and retained user
 content. **Verify deployment** separates configuration health, pending state, disk receipts and native
 observation. **Preview uninstall** detaches that Profile's consumers while preserving other consumers
-and user content. Historical revert is a separate action: explicitly select its resources, then review its scope and receipt.
+and user content. **Operation History** shows activity, receipts, verification, typed recovery, and fresh historical revert preview. Historical revert is a separate action: explicitly select its resources, then review its scope and receipt.
 
 Each new mutation requires Preview followed by Confirm and submits the unchanged plan. Selection
 changes, closing or reloading discard preview authority. Stale, drift and recovery blockers show Core
@@ -786,7 +790,7 @@ The Inventory import plan route accepts `candidateIds` plus optional `agentId`,
 `dir`, and `intoCollection`. The apply route accepts only the unchanged
 `mutationPlan` returned by planning. The bundled client passes that exact plan
 between the two routes; it does not refresh, reselect, or reconstruct actions.
-The bundled UI starts with Inventory-first onboarding, supports kind, source,
+The bundled UI opens in the Agent Config Library; its Inventory destination supports kind, source,
 adapter, and state filters over merged provenance, and uses only Core defaults.
 It disables import for incomplete Inventory, requires one exact confirmation,
 and surfaces stale-plan refresh/replan guidance without a silent retry. A
