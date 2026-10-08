@@ -56,6 +56,8 @@ export type {
 export const CLIENT_API_VERSION = "1.0" as const;
 export const CLIENT_API_CONTRACT_ID = "cellarer-local-client-api-v1" as const;
 export const CLIENT_API_MAX_REQUEST_BODY_BYTES = 1024 * 1024;
+// Inventory apply transports the exact reviewed file bytes, including binary assets.
+export const CLIENT_API_MAX_INVENTORY_IMPORT_BODY_BYTES = 64 * 1024 * 1024;
 
 export type ClientApiVersion = typeof CLIENT_API_VERSION;
 

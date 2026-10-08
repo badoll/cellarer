@@ -324,6 +324,7 @@ export {
 } from "./protocol/cli.js";
 export {
   CLIENT_API_CONTRACT_ID,
+  CLIENT_API_MAX_INVENTORY_IMPORT_BODY_BYTES,
   CLIENT_API_MAX_REQUEST_BODY_BYTES,
   CLIENT_API_VERSION,
   type ClientApiVersion,

@@ -69,6 +69,50 @@ describe("Inventory Store import apply", () => {
     });
   });
 
+  it("imports mixed Skill assets byte-for-byte and rejects BOM removal from a sealed plan", async () => {
+    const skillRoot = t.path("home", ".agents", "skills", "bom-demo");
+    await t.env.fs.mkdir(skillRoot, { recursive: true });
+    await t.env.fs.writeFile(
+      join(skillRoot, "SKILL.md"),
+      "---\nname: bom-demo\ndescription: BOM fixture\n---\n",
+    );
+    const assets = new Map([
+      ["single.md", Buffer.from("\uFEFF# Text\n")],
+      ["double.md", Buffer.from("\uFEFF\uFEFF# Text\n")],
+      ["binary.bin", Buffer.from([0xef, 0xbb, 0xbf, 0xff, 0x00])],
+    ]);
+    for (const [name, bytes] of assets) await t.env.fs.writeFileBytes(join(skillRoot, name), bytes);
+    const inventory = await refreshInventory(t.env, { storeRoot, agentId: "agents-md" });
+    const planned = await planInventoryStoreImport(t.env, {
+      storeRoot,
+      candidateIds: inventory.candidates
+        .filter(({ state }) => state === "ready")
+        .map(({ id }) => id),
+      refresh: { agentId: "agents-md" },
+    });
+    const transported = JSON.parse(JSON.stringify(planned.mutationPlan));
+    const altered = structuredClone(transported);
+    const publication = altered.actions.find(
+      (action: { payload: { resourceId: string } }) =>
+        action.payload.resourceId === "skills/bom-demo",
+    ).payload.publication;
+    publication.nodes.find((node: { path: string }) => node.path === "single.md").data = "# Text\n";
+    const before = await t.env.fs.snapshotTreeNoFollow(storeRoot);
+    expect(
+      (await applyInventoryStoreImportPlan(t.env, altered, { storeRoot })).operation,
+    ).toMatchObject({ ok: false, conflict: { code: "INVALID_PLAN" } });
+    expect(await t.env.fs.snapshotTreeNoFollow(storeRoot)).toEqual(before);
+    const result = await applyInventoryStoreImportPlan(t.env, transported, { storeRoot });
+    expect(result.operation).toMatchObject({ ok: true, receipt: { outcome: "committed" } });
+    expect(result.resourceIds).toEqual(expect.arrayContaining(["rules/AGENTS", "skills/bom-demo"]));
+    for (const [name, bytes] of assets) {
+      expect(
+        await t.env.fs.readFileBytes(join(storeRoot, "store", "skills", "bom-demo", name)),
+      ).toEqual(bytes);
+      expect(await t.env.fs.readFileBytes(join(skillRoot, name))).toEqual(bytes);
+    }
+  });
+
   it("rejects altered or resealed injected actions without applying Store content", async () => {
     const planned = await plan();
     const altered = structuredClone(planned.mutationPlan);

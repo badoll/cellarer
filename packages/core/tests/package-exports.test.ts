@@ -83,6 +83,7 @@ const baselineTouchedRootValues = [
   "verifyDurableMutationPlanDigest",
   "CLI_PROTOCOL_VERSION",
   "CLIENT_API_CONTRACT_ID",
+  "CLIENT_API_MAX_INVENTORY_IMPORT_BODY_BYTES",
   "CLIENT_API_MAX_REQUEST_BODY_BYTES",
   "CLIENT_API_VERSION",
   "clientErrorFromMutationConflict",
@@ -890,6 +891,7 @@ console.log(JSON.stringify({
     expect(JSON.parse(stdout)).toEqual({
       portableKeys: [
         "CLIENT_API_CONTRACT_ID",
+        "CLIENT_API_MAX_INVENTORY_IMPORT_BODY_BYTES",
         "CLIENT_API_MAX_REQUEST_BODY_BYTES",
         "CLIENT_API_VERSION",
         "clientErrorFromMutationConflict",

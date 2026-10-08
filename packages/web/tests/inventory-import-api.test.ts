@@ -40,6 +40,109 @@ describe("Inventory Store import local client API", () => {
 
   afterEach(async () => fs.rm(root, { recursive: true, force: true }));
 
+  it("preserves UTF-8 BOM bytes through Skill plan and apply transport", async () => {
+    const skillRoot = join(root, "home", ".agents", "skills", "inventory-demo");
+    const bytes = Buffer.from("\uFEFF# Reviewed asset\n", "utf8");
+    await env.fs.writeFileBytes(join(skillRoot, "asset.md"), bytes);
+    const app = createApp({ env, storeRoot, auth: { mode: "trusted-embedded" } });
+    const inventory = await app.request("/api/v1/inventory/codex");
+    const inventoryBody = (await inventory.json()) as { data: { candidates: { id: string }[] } };
+    const candidateId = inventoryBody.data.candidates[0]?.id;
+    if (!candidateId) throw new Error("missing Inventory candidate");
+    const response = await app.request("/api/v1/inventory/import/plan", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ candidateIds: [candidateId], agentId: "codex" }),
+    });
+    expect(response.status).toBe(200);
+    const planned = (await response.json()) as { data: { mutationPlan: unknown } };
+    const applied = await app.request("/api/v1/inventory/import/apply", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mutationPlan: planned.data.mutationPlan }),
+    });
+    expect(applied.status).toBe(200);
+    expect(await applied.json()).toMatchObject({
+      status: "success",
+      data: { operation: { ok: true } },
+    });
+    expect(
+      await env.fs.readFileBytes(join(storeRoot, "store", "skills", "inventory-demo", "asset.md")),
+    ).toEqual(bytes);
+    expect(await env.fs.readFileBytes(join(skillRoot, "asset.md"))).toEqual(bytes);
+  });
+
+  it("reviews and applies a binary Skill above 1 MiB through a replacement app", async () => {
+    const skillRoot = join(root, "home", ".agents", "skills", "inventory-demo");
+    const bytes = Buffer.alloc(900_000, 0xff);
+    await env.fs.writeFileBytes(join(skillRoot, "asset.bin"), bytes);
+    const app = createApp({ env, storeRoot, auth: { mode: "trusted-embedded" } });
+    const inventory = await app.request("/api/v1/inventory/codex");
+    const inventoryBody = (await inventory.json()) as { data: { candidates: { id: string }[] } };
+    const candidateId = inventoryBody.data.candidates[0]?.id;
+    if (!candidateId) throw new Error("missing Inventory candidate");
+    const response = await app.request("/api/v1/inventory/import/plan", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ candidateIds: [candidateId], agentId: "codex" }),
+    });
+    const planned = (await response.json()) as { data: { mutationPlan: unknown } };
+    expect(response.status, JSON.stringify(planned)).toBe(200);
+    const body = JSON.stringify({ mutationPlan: planned.data.mutationPlan });
+    expect(new TextEncoder().encode(body).byteLength).toBeGreaterThan(1024 * 1024);
+    const replacementApp = createApp({
+      env: { ...env, processId: () => env.processId() + 1 },
+      storeRoot,
+      auth: { mode: "trusted-embedded" },
+    });
+    const applied = await replacementApp.request("/api/v1/inventory/import/apply", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+    });
+    expect(applied.status).toBe(200);
+    expect(await applied.json()).toMatchObject({
+      status: "success",
+      data: { resourceIds: ["skills/inventory-demo"], operation: { ok: true } },
+    });
+    expect(
+      await env.fs.readFileBytes(join(storeRoot, "store", "skills", "inventory-demo", "asset.bin")),
+    ).toEqual(bytes);
+    expect(await env.fs.readFileBytes(join(skillRoot, "asset.bin"))).toEqual(bytes);
+  }, 15_000);
+
+  it("rejects over-budget bodies before observing Core and keeps other routes at 1 MiB", async () => {
+    let observations = 0;
+    const protectedEnv: Env = {
+      ...env,
+      fs: {
+        ...env.fs,
+        lstat: async () => {
+          observations += 1;
+          throw new Error("Core must not observe an over-budget request");
+        },
+      },
+    };
+    const app = createApp({ env: protectedEnv, storeRoot, auth: { mode: "trusted-embedded" } });
+    for (const [path, maxBytes] of [
+      ["/api/v1/inventory/import/apply", 64 * 1024 * 1024],
+      ["/api/v1/inventory/import/plan", 1024 * 1024],
+      ["/api/v1/mutations/apply", 1024 * 1024],
+    ] as const) {
+      const response = await app.request(path, {
+        method: "POST",
+        headers: { "content-type": "application/json", "content-length": String(maxBytes + 1) },
+        body: "{}",
+      });
+      expect(response.status).toBe(413);
+      expect(await response.json()).toMatchObject({
+        status: "error",
+        error: { code: "DOMAIN_VALIDATION_FAILED", details: { maxBytes } },
+      });
+    }
+    expect(observations).toBe(0);
+  });
+
   it("plans exact candidate IDs and applies only the unchanged receipt", async () => {
     const forbiddenCalls: string[] = [];
     const guardedEnv: Env = {

@@ -112,24 +112,34 @@ describe("init Inventory onboarding", () => {
     expect(captured.stderr).not.toContain("FinalSecretByteGuardError");
   });
 
-  it("reports an oversized default import plan without calling it incomplete Inventory", async () => {
+  it("offers review for a default import plan above the generic API body budget", async () => {
     await createReadySkill(root, "large-skill", "Large asset");
     await fs.writeFile(
       join(root, ".agents", "skills", "large-skill", "large.txt"),
       "A".repeat(1_100_000),
     );
+    let reviewed = false;
     const captured = await invoke(["init"], {
       stdinIsTTY: true,
-      confirmImport: async () => {
-        throw new Error("oversized plan must not be confirmed");
+      confirmImport: async (plan) => {
+        const receipt = plan as { candidateIds: readonly string[]; mutationPlan: unknown };
+        expect(receipt.candidateIds).toHaveLength(1);
+        expect(
+          Buffer.byteLength(JSON.stringify({ mutationPlan: receipt.mutationPlan })),
+        ).toBeGreaterThan(1024 * 1024);
+        reviewed = true;
+        return false;
       },
     });
 
+    expect(reviewed).toBe(true);
     expect(captured.stdout).toContain("inventory: complete");
-    expect(captured.stderr).toContain("PLAN_BODY_BUDGET_EXCEEDED");
-    expect(captured.stderr).toContain("smaller");
-    expect(captured.stderr).not.toContain("Inventory is incomplete");
+    expect(captured.stdout).toContain("inventory import declined");
+    expect(captured.stderr).toBe("");
     await expect(fs.stat(join(storeRoot, "config.json"))).resolves.toBeDefined();
+    await expect(fs.stat(join(storeRoot, "store", "skills", "large-skill"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
   });
 
   it("does not reconfirm an equal candidate already imported by a prior init", async () => {

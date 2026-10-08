@@ -4,6 +4,7 @@
 export const baselineRootRuntimeKeys = [
   "AGENT_ID_PATTERN",
   "CLIENT_API_CONTRACT_ID",
+  "CLIENT_API_MAX_INVENTORY_IMPORT_BODY_BYTES",
   "CLIENT_API_MAX_REQUEST_BODY_BYTES",
   "CLIENT_API_VERSION",
   "CLI_PROTOCOL_VERSION",
@@ -641,6 +642,7 @@ export const baselineTouchedPublicSignatures = {
   verifyDurableMutationPlanDigest: "(plan: DurableMutationPlan) => boolean",
   CLI_PROTOCOL_VERSION: '"1.0"',
   CLIENT_API_CONTRACT_ID: '"cellarer-local-client-api-v1"',
+  CLIENT_API_MAX_INVENTORY_IMPORT_BODY_BYTES: "number",
   CLIENT_API_MAX_REQUEST_BODY_BYTES: "number",
   CLIENT_API_VERSION: '"1.0"',
   clientErrorFromMutationConflict: "(conflict: MutationConflict) => ClientError",

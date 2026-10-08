@@ -2908,6 +2908,63 @@ input[type="checkbox"] {
 .inventory-confirmation {
   border-color: var(--blue);
 }
+.inventory-pagination {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 14px;
+}
+.inventory-page-summary {
+  display: grid;
+  gap: 4px;
+  margin-right: auto;
+}
+.inventory-pagination label {
+  gap: 8px;
+}
+.inventory-pagination select {
+  width: auto;
+}
+.inventory-pagination .button-row {
+  align-items: center;
+}
+.inventory-result-table {
+  max-height: min(520px, 70vh);
+  overflow: auto;
+}
+.inventory-result-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+  white-space: nowrap;
+}
+.inventory-result-table .tag {
+  white-space: nowrap;
+}
+.inventory-review-resources {
+  max-height: 220px;
+  overflow-y: auto;
+  margin: 0 0 16px;
+}
+.inventory-review-resources ul {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.inventory-review-resources li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  overflow-wrap: anywhere;
+}
+.inventory-review-resources .tag {
+  flex-shrink: 0;
+}
 .sync-review-page {
   min-width: 0;
 }

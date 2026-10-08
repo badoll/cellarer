@@ -3,7 +3,7 @@ import { appendActivity } from "../activity.js";
 import type { Env, FileTreeSnapshot, SnapshotLimits } from "../env.js";
 import { assertSafeAtomicPublicationPath } from "../fs/safety.js";
 import { acquireCurrentMutationAuthorityLease, canonicalJson } from "../protocol/canonical.js";
-import { CLIENT_API_MAX_REQUEST_BODY_BYTES } from "../protocol/client.js";
+import { CLIENT_API_MAX_INVENTORY_IMPORT_BODY_BYTES } from "../protocol/client.js";
 import type {
   CanonicalJsonObject,
   ClientErrorCode,
@@ -65,7 +65,13 @@ export class InventoryStoreImportPlanningError extends Error {
     >,
     readonly reason: InventoryStoreImportPlanningReason,
   ) {
-    super(`Inventory Store import planning failed: ${reason}`);
+    super(
+      `Inventory Store import planning failed: ${reason}${
+        reason === "PLAN_BODY_BUDGET_EXCEEDED"
+          ? `; the apply request exceeds ${CLIENT_API_MAX_INVENTORY_IMPORT_BODY_BYTES / (1024 * 1024)} MiB. Select fewer items and review again.`
+          : ""
+      }`,
+    );
     this.name = "InventoryStoreImportPlanningError";
   }
 }
@@ -214,7 +220,8 @@ export async function planInventoryStoreImport(
     mutationPlan: planned.plan,
   });
   if (
-    new TextEncoder().encode(JSON.stringify(result)).byteLength > CLIENT_API_MAX_REQUEST_BODY_BYTES
+    new TextEncoder().encode(JSON.stringify({ mutationPlan: result.mutationPlan })).byteLength >
+    CLIENT_API_MAX_INVENTORY_IMPORT_BODY_BYTES
   ) {
     throw new InventoryStoreImportPlanningError(
       "DOMAIN_VALIDATION_FAILED",

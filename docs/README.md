@@ -231,9 +231,13 @@ failed refresh remains separate, preserves its candidates and findings, and
 offers no import confirmation until an explicit retry succeeds. A candidate with
 an unsafe structured file remains visible as `needs-attention`; the final
 publication guard still checks every selected import. If the all-ready plan
-exceeds the 1 MiB request limit, initialization remains complete and reports
-`PLAN_BODY_BUDGET_EXCEEDED`. Select smaller exact batches; individual Skills
-above that limit cannot yet use this Store import path:
+exceeds the 64 MiB serialized apply-body limit, initialization remains complete
+and reports `PLAN_BODY_BUDGET_EXCEEDED` with guidance to select fewer items.
+Inventory import keeps the entire reviewed selection in one atomic batch. Its
+Web apply endpoint accepts up to 64 MiB; other API requests retain the 1 MiB
+limit. Skill assets retain their original bytes, including UTF-8 byte order
+marks. This budget includes JSON escaping and Base64-encoded binary assets,
+so source file size alone does not determine whether a plan fits:
 
 ```bash
 # Interactive Inventory review and one exact Store-import confirmation
@@ -554,7 +558,13 @@ target picker shows Core detection and compatibility evidence; native unknown do
 
 Inventory can scan an explicit project root as well as registered user sources. Changing that root
 invalidates the visible import selection until a new complete refresh; provisional and partial results
-remain view-only. The full-page Sync review shows the selected resources, Agent and scope, project
+remain view-only. Final discovery results use 20 rows per page, with 10/20/50 choices and a bounded scrollable
+table. Pagination controls appear below the table. Paging preserves checked IDs and does not rescan; filters, page-size changes, and new scan
+results return to page one. Import review includes the full selection across pages.
+**Review import** brings the completed confirmation above discovery results into view, with resource
+names in a scrollable list. Confirm explicitly to write the unchanged plan to
+Store, or cancel to preserve the selection without importing.
+The full-page Sync review shows the selected resources, Agent and scope, project
 root, Store revision, file actions, conflicts, available before/after previews, and shared consumers.
 Confirm applies that exact reviewed plan. On a narrow screen, review facts and file actions stack,
 and wide file tables scroll within their panels.

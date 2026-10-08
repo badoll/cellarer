@@ -29,6 +29,36 @@ describe("Inventory Store import planning", () => {
 
   afterEach(() => t.cleanup());
 
+  it("keeps an 83-item selection above the generic request budget in one exact plan", async () => {
+    const servers = Object.fromEntries(
+      Array.from({ length: 83 }, (_, index) => [
+        `budget-demo-${index}`,
+        { command: "node", args: ["Example tool argument.\n".repeat(800)] },
+      ]),
+    );
+    await t.env.fs.writeFile(
+      t.path("home", ".claude.json"),
+      JSON.stringify({ mcpServers: servers }),
+    );
+    const inventory = await refreshInventory(t.env, { storeRoot, agentId: "claude-code" });
+    const candidates = inventory.candidates.filter(({ kind }) => kind === "mcp");
+    expect(candidates).toHaveLength(83);
+    expect(candidates.every(({ state }) => state === "ready")).toBe(true);
+    const before = await t.env.fs.snapshotTreeNoFollow(storeRoot);
+    const candidateIds = candidates.map(({ id }) => id);
+    const planned = await planInventoryStoreImport(t.env, {
+      storeRoot,
+      candidateIds,
+      refresh: { agentId: "claude-code" },
+    });
+    expect(planned.candidateIds).toEqual([...candidateIds].sort());
+    expect(planned.mutationPlan.actions).toHaveLength(166);
+    expect(
+      new TextEncoder().encode(JSON.stringify({ mutationPlan: planned.mutationPlan })).byteLength,
+    ).toBeGreaterThan(1024 * 1024);
+    expect(await t.env.fs.snapshotTreeNoFollow(storeRoot)).toEqual(before);
+  }, 30_000);
+
   it("keeps invalid manifests visible and blocks the Inventory import path", async () => {
     const root = t.path("home", ".agents", "skills", "invalid");
     await t.env.fs.mkdir(root, { recursive: true });

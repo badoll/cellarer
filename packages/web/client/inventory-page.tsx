@@ -5,7 +5,7 @@ import type {
   InventorySecretAdoptionOffer,
   InventoryStreamEvent,
 } from "@cellarer/core/client-api";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   applyInventorySecretAdoption,
   applyInventoryStoreImport,
@@ -57,6 +57,13 @@ export function InventoryPage(props: { readonly onNavigate?: (page: Page) => voi
   const [onboarding, setOnboarding] = useState<InventoryOnboardingState>(() =>
     createInventoryOnboardingState(),
   );
+  const importReviewRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (onboarding.phase !== "confirmation") return;
+    importReviewRef.current?.focus({ preventScroll: true });
+    importReviewRef.current?.scrollIntoView({ block: "nearest" });
+  }, [onboarding.phase]);
+
   const [filters, setFilters] = useState<InventoryFilters>(EMPTY_INVENTORY_FILTERS);
   const [reloadKey, setReloadKey] = useState(0);
   const [projectRoot, setProjectRoot] = useState("");
@@ -211,7 +218,10 @@ export function InventoryPage(props: { readonly onNavigate?: (page: Page) => voi
   }
 
   const result = onboarding.result;
-  const visibleCandidates = result ? filterInventoryCandidates(result.candidates, filters) : [];
+  const visibleCandidates = useMemo(
+    () => (result ? filterInventoryCandidates(result.candidates, filters) : []),
+    [result, filters],
+  );
   const busy =
     onboarding.phase === "loading" ||
     onboarding.phase === "planning" ||
@@ -266,6 +276,72 @@ export function InventoryPage(props: { readonly onNavigate?: (page: Page) => voi
           </button>
         ) : null}
       </div>
+
+      {(onboarding.phase === "confirmation" || onboarding.phase === "applying") &&
+      onboarding.pendingPlan ? (
+        <section
+          ref={importReviewRef}
+          className="panel inventory-confirmation"
+          aria-label={zh ? "审查 Store 导入" : "Confirm Inventory import"}
+          aria-busy={onboarding.phase === "applying"}
+          tabIndex={-1}
+        >
+          <div className="panel-header">
+            <div>
+              <h3>{zh ? "确认导入 Store" : "Confirm exact Store import"}</h3>
+              <p>
+                {zh
+                  ? `已生成 ${onboarding.pendingPlan.candidateIds.length} 项配置的导入计划。确认后仅写入 Store，不会同步到 Agent。`
+                  : `Review ${onboarding.pendingPlan.candidateIds.length} configurations. Confirmation applies the unchanged Store plan without syncing any agent target.`}
+              </p>
+            </div>
+          </div>
+          <section
+            className="receipt-list inventory-review-resources"
+            aria-label={zh ? "本次导入配置" : "Reviewed configurations"}
+            // biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard users must be able to scroll the reviewed resources.
+            tabIndex={0}
+          >
+            <ul>
+              {onboarding.pendingPlan.candidateIds.map((candidateId) => {
+                const candidate = onboarding.pendingPlan?.inventory.candidates.find(
+                  ({ id }) => id === candidateId,
+                );
+                return (
+                  <li key={candidateId}>
+                    <span>{candidate?.name ?? candidateId}</span>
+                    {candidate ? <span className="tag blue">{candidate.kind}</span> : null}
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+          <div className="button-row">
+            <button
+              type="button"
+              className="action"
+              disabled={onboarding.phase === "applying"}
+              onClick={confirmImport}
+            >
+              {onboarding.phase === "applying"
+                ? zh
+                  ? "正在导入…"
+                  : "Importing..."
+                : zh
+                  ? "确认导入 Store"
+                  : "Confirm Store import"}
+            </button>
+            <button
+              type="button"
+              className="action secondary"
+              disabled={onboarding.phase === "applying"}
+              onClick={() => setOnboarding((current) => inventoryImportDeclined(current))}
+            >
+              {zh ? "取消" : "Decline"}
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       {onboarding.message ? (
         <p className={onboarding.phase === "imported" ? "ok-state" : "warning-banner"}>
@@ -434,37 +510,6 @@ export function InventoryPage(props: { readonly onNavigate?: (page: Page) => voi
         <p className="empty-state">Loading bounded registered sources...</p>
       )}
 
-      {onboarding.phase === "confirmation" && onboarding.pendingPlan ? (
-        <section className="panel inventory-confirmation" aria-label="Confirm Inventory import">
-          <div className="panel-header">
-            <div>
-              <h3>Confirm exact Store import</h3>
-              <p>
-                Apply the unchanged plan for {onboarding.pendingPlan.candidateIds.length} reviewed
-                candidate(s). This does not sync any agent target.
-              </p>
-            </div>
-          </div>
-          <div className="receipt-list">
-            {onboarding.pendingPlan.candidateIds.map((candidateId) => (
-              <code key={candidateId}>{candidateId}</code>
-            ))}
-          </div>
-          <div className="button-row">
-            <button type="button" className="action" onClick={confirmImport}>
-              Confirm Store import
-            </button>
-            <button
-              type="button"
-              className="action secondary"
-              onClick={() => setOnboarding((current) => inventoryImportDeclined(current))}
-            >
-              Decline
-            </button>
-          </div>
-        </section>
-      ) : null}
-
       {onboarding.phase === "imported" ? (
         <section className="panel" aria-label="Inventory import next actions">
           <div className="panel-header">
@@ -589,6 +634,18 @@ export function InventoryResultView(props: {
   const { result } = props;
   const candidates = props.candidates ?? result.candidates;
   const selected = new Set(props.selectedCandidateIds ?? []);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const tableRef = useRef<HTMLElement>(null);
+  const pageCount = Math.max(1, Math.ceil(candidates.length / pageSize));
+  const currentPage = Math.min(page, pageCount);
+  const start = (currentPage - 1) * pageSize;
+  const pageCandidates = candidates.slice(start, start + pageSize);
+  const selectedOnPage = pageCandidates.filter(({ id }) => selected.has(id)).length;
+  useEffect(() => setPage(1), [candidates]);
+  useEffect(() => {
+    if (tableRef.current) tableRef.current.scrollTop = 0;
+  }, [currentPage, pageSize, candidates]);
   return (
     <>
       <section className="stat-grid" aria-label="Inventory summary">
@@ -613,7 +670,13 @@ export function InventoryResultView(props: {
             </p>
           </div>
         </div>
-        <div className="table-wrap">
+        <section
+          ref={tableRef}
+          className="table-wrap inventory-result-table"
+          aria-label={zh ? "本页发现结果" : "Inventory page results"}
+          // biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard users must be able to scroll the bounded results table.
+          tabIndex={0}
+        >
           <table>
             <thead>
               <tr>
@@ -626,7 +689,7 @@ export function InventoryResultView(props: {
               </tr>
             </thead>
             <tbody>
-              {candidates.map((candidate) => (
+              {pageCandidates.map((candidate) => (
                 <tr key={candidate.id}>
                   <td>
                     <input
@@ -739,9 +802,69 @@ export function InventoryResultView(props: {
                   </td>
                 </tr>
               ))}
+              {pageCandidates.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="empty-state">
+                    {zh ? "没有匹配的配置。" : "No matching configurations."}
+                  </td>
+                </tr>
+              ) : null}
             </tbody>
           </table>
-        </div>
+        </section>
+        <nav
+          className="inventory-pagination"
+          aria-label={zh ? "发现结果分页" : "Inventory pagination"}
+        >
+          <div className="inventory-page-summary" role="status">
+            <span>
+              {candidates.length === 0 ? 0 : start + 1}–
+              {Math.min(start + pageSize, candidates.length)} / {candidates.length}
+            </span>
+            <span className="muted">
+              {zh
+                ? `已选 ${selected.size} 项（本页 ${selectedOnPage} 项）`
+                : `${selected.size} selected (${selectedOnPage} on this page)`}
+            </span>
+          </div>
+          <label>
+            {zh ? "每页" : "Rows per page"}
+            <select
+              value={pageSize}
+              onChange={(event) => {
+                setPageSize(Number(event.currentTarget.value));
+                setPage(1);
+              }}
+            >
+              {[10, 20, 50].map((size) => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="button-row">
+            <button
+              type="button"
+              className="action secondary"
+              disabled={currentPage === 1}
+              onClick={() => setPage(currentPage - 1)}
+            >
+              {zh ? "上一页" : "Previous"}
+            </button>
+            <span>
+              {zh ? `第 ${currentPage} / ${pageCount} 页` : `Page ${currentPage} of ${pageCount}`}
+            </span>
+            <button
+              type="button"
+              className="action secondary"
+              disabled={currentPage === pageCount}
+              onClick={() => setPage(currentPage + 1)}
+            >
+              {zh ? "下一页" : "Next"}
+            </button>
+          </div>
+        </nav>
         {result.coverage ? (
           <details>
             <summary>

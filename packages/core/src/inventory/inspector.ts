@@ -437,7 +437,8 @@ function directoryPublication(snapshot: SafeRecursiveSnapshot): CapturedInventor
 
 function publicationFileData(data: Uint8Array): { data: string; encoding?: "base64" } {
   try {
-    return { data: new TextDecoder("utf-8", { fatal: true }).decode(data) };
+    // Keep the BOM as text so re-encoding matches the captured raw-byte digest.
+    return { data: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(data) };
   } catch {
     return { data: Buffer.from(data).toString("base64"), encoding: "base64" };
   }

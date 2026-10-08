@@ -24,6 +24,7 @@ import {
   applySyncProfileUninstallPlan,
   type Capability,
   CLIENT_API_CONTRACT_ID,
+  CLIENT_API_MAX_INVENTORY_IMPORT_BODY_BYTES,
   CLIENT_API_MAX_REQUEST_BODY_BYTES,
   CLIENT_API_VERSION,
   ControlPlaneValidationError,
@@ -843,21 +844,24 @@ export function createApp(inputDeps: AppDeps) {
     return next();
   });
 
-  app.use(
-    "/api/v1/*",
-    bodyLimit({
-      maxSize: CLIENT_API_MAX_REQUEST_BODY_BYTES,
+  app.use("/api/v1/*", (c, next) => {
+    const maxBytes =
+      c.req.method === "POST" && c.req.path === "/api/v1/inventory/import/apply"
+        ? CLIENT_API_MAX_INVENTORY_IMPORT_BODY_BYTES
+        : CLIENT_API_MAX_REQUEST_BODY_BYTES;
+    return bodyLimit({
+      maxSize: maxBytes,
       onError: (c) =>
         c.json(
           clientFailure(requestId(c), {
             code: "DOMAIN_VALIDATION_FAILED",
             message: "Request body exceeds the local client API budget",
-            details: { maxBytes: CLIENT_API_MAX_REQUEST_BODY_BYTES },
+            details: { maxBytes },
           }),
           413,
         ),
-    }),
-  );
+    })(c, next);
+  });
 
   const api = app
     .get("/api/v1/version", (c) =>
