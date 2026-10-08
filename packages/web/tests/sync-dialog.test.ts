@@ -7,6 +7,7 @@ import {
   SyncDialog,
   syncRequestKey,
 } from "../client/sync-dialog.js";
+import { syncKindsForIntent } from "../client/sync-selection.js";
 
 describe("SyncDialog", () => {
   it("requires a preview before applying a sync", () => {
@@ -53,5 +54,14 @@ describe("SyncDialog", () => {
       resources: { kinds: ["rules"], collections: ["default"] },
     });
     expect(syncRequestKey(previewed)).not.toBe(syncRequestKey(changed));
+  });
+
+  it("includes the exact selected resource capabilities in the Core request", () => {
+    expect(syncKindsForIntent(["skills/review-workflow"])).toEqual(["skills"]);
+    expect(syncKindsForIntent(["mcp/search", "rules/style", "mcp/other"])).toEqual([
+      "mcp",
+      "rules",
+    ]);
+    expect(syncKindsForIntent()).toBeUndefined();
   });
 });

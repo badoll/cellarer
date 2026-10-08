@@ -11,6 +11,7 @@ import { AgentPicker } from "./agent-picker.js";
 import { apiFetch } from "./api.js";
 import { readApiJson } from "./api-state.js";
 import { configurationLabel } from "./product-model.js";
+import { browserWorkbenchLocale } from "./workbench-labels.js";
 import {
   type WorkflowAction,
   WorkflowDialog,
@@ -36,6 +37,7 @@ interface Verification {
   coverage: unknown;
 }
 export function ProfilesPage() {
+  const zh = browserWorkbenchLocale() === "zh-CN";
   const [profiles, setProfiles] = useState<ClientSyncProfile[]>([]);
   const [library, setLibrary] = useState<ControlPlaneResourceListDto | null>(null);
   const [collections, setCollections] = useState<{ name: string }[]>([]);
@@ -146,256 +148,281 @@ export function ProfilesPage() {
   }
   const changed = !!saved && profileSelectionKey(saved.desired) !== profileSelectionKey(desired);
   return (
-    <div className="page-stack">
-      <section className="panel workflow-panel">
-        <h3>Profiles and deployments</h3>
-        <p>Save a reusable selection, then separately preview its target changes.</p>
-        <div className="button-row">
-          <button type="button" onClick={() => choose()}>
-            New Profile
-          </button>
-          {profiles.map((profile) => (
-            <button type="button" key={profile.profileId} onClick={() => choose(profile)}>
-              {profile.profileId}
+    <div className="page-stack profiles-page">
+      <section className="profiles-workbench">
+        <aside className="panel profiles-browser">
+          <div className="panel-header">
+            <h3>配置方案</h3>
+            <button type="button" className="action" onClick={() => choose()}>
+              {zh ? "新建方案" : "New Profile"}
             </button>
-          ))}
-        </div>
-        <label className="field-row stacked">
-          <span>Profile ID</span>
-          <input
-            type="text"
-            value={profileId}
-            disabled={editing}
-            onChange={(event) => setProfileId(event.target.value)}
-          />
-        </label>
-        <label className="field-row stacked">
-          <span>Profile scope</span>
-          <select
-            value={desired.scope}
-            onChange={(event) => {
-              setDesired({ ...desired, scope: event.target.value as "global" | "project" });
-              setVerification(null);
-            }}
-          >
-            <option value="project">Project</option>
-            <option value="global">User</option>
-          </select>
-        </label>
-        {(desired.scope === "project" || saved?.desired.scope === "project") && (
+          </div>
+          {profiles.length === 0 ? (
+            <p className="empty-state">尚无配置方案。</p>
+          ) : (
+            profiles.map((profile) => (
+              <div
+                className={`profile-list-item ${profileId === profile.profileId ? "selected" : ""}`}
+                key={profile.profileId}
+              >
+                <button type="button" onClick={() => choose(profile)}>
+                  {profile.profileId}
+                </button>
+                <small>
+                  {profile.desired.agentIds.join(", ") || "未选 Agent"} ·{" "}
+                  {profile.desired.scope === "project" ? "项目范围" : "用户范围"}
+                </small>
+                <span>
+                  {profile.desired.resourceIds.length} 个精确资源 ·{" "}
+                  {profile.desired.collectionIds.length} 个分组
+                </span>
+              </div>
+            ))
+          )}
+        </aside>
+        <div className="panel workflow-panel profiles-editor">
+          <h3>基本信息</h3>
+          <p>按使用场景组织资源，保存后单独审查下发计划。</p>
           <label className="field-row stacked">
-            <span>Workspace root</span>
+            <span>方案 ID</span>
             <input
               type="text"
-              value={workspaceRoot}
-              onChange={(event) => {
-                setWorkspaceRoot(event.target.value);
-                setVerification(null);
-              }}
-              placeholder="Absolute project path (not saved in Profile)"
+              value={profileId}
+              disabled={editing}
+              onChange={(event) => setProfileId(event.target.value)}
             />
           </label>
-        )}
-        <fieldset>
-          <legend>Resource kinds</legend>
-          {(["rules", "mcp", "skills"] as Capability[]).map((kind) => (
-            <label className="field-row" key={kind}>
+          <label className="field-row stacked">
+            <span>目标范围</span>
+            <select
+              value={desired.scope}
+              onChange={(event) => {
+                setDesired({ ...desired, scope: event.target.value as "global" | "project" });
+                setVerification(null);
+              }}
+            >
+              <option value="project">项目</option>
+              <option value="global">用户</option>
+            </select>
+          </label>
+          {(desired.scope === "project" || saved?.desired.scope === "project") && (
+            <label className="field-row stacked">
+              <span>工程目录（仅用于当前审查，不保存到方案）</span>
               <input
-                type="checkbox"
-                checked={desired.capabilities.includes(kind)}
-                onChange={() =>
-                  setDesired({ ...desired, capabilities: toggle(desired.capabilities, kind) })
-                }
+                type="text"
+                value={workspaceRoot}
+                onChange={(event) => {
+                  setWorkspaceRoot(event.target.value);
+                  setVerification(null);
+                }}
+                placeholder="Absolute project path (not saved in Profile)"
               />
-              {kind}
             </label>
-          ))}
-        </fieldset>
-        <AgentPicker
-          scope={desired.scope}
-          dir={workspaceRoot}
-          kinds={desired.capabilities}
-          value={desired.agentIds}
-          onChange={(agentIds) => setDesired({ ...desired, agentIds })}
-        />
-        <label className="field-row stacked">
-          <span>Profile selection mode</span>
-          <select
-            value={selection}
-            onChange={(event) => {
-              setSelection(event.target.value as "ids" | "collections");
-              setDesired({ ...desired, resourceIds: [], collectionIds: [] });
-            }}
-          >
-            <option value="ids">Exact resources</option>
-            <option value="collections">Collections</option>
-            {selection === "mixed" && (
-              <option value="mixed">Exact resources and Collections</option>
-            )}
-          </select>
-        </label>
-        <fieldset>
-          <legend>{selection === "ids" ? "Exact resources" : "Collections"}</legend>
-          {selection !== "collections" &&
-            library?.resources
-              .filter(
-                (resource) =>
-                  desired.capabilities.includes(resource.kind) ||
-                  desired.resourceIds.includes(resource.id),
-              )
-              .map((resource) => (
-                <label className="field-row" key={resource.id}>
+          )}
+          <fieldset>
+            <legend>资源类型</legend>
+            {(["rules", "mcp", "skills"] as Capability[]).map((kind) => (
+              <label className="field-row" key={kind}>
+                <input
+                  type="checkbox"
+                  checked={desired.capabilities.includes(kind)}
+                  onChange={() =>
+                    setDesired({ ...desired, capabilities: toggle(desired.capabilities, kind) })
+                  }
+                />
+                {kind}
+              </label>
+            ))}
+          </fieldset>
+          <AgentPicker
+            scope={desired.scope}
+            dir={workspaceRoot}
+            kinds={desired.capabilities}
+            value={desired.agentIds}
+            onChange={(agentIds) => setDesired({ ...desired, agentIds })}
+          />
+          <label className="field-row stacked">
+            <span>资源选择方式</span>
+            <select
+              value={selection}
+              onChange={(event) => {
+                setSelection(event.target.value as "ids" | "collections");
+                setDesired({ ...desired, resourceIds: [], collectionIds: [] });
+              }}
+            >
+              <option value="ids">精确资源</option>
+              <option value="collections">分组</option>
+              {selection === "mixed" && (
+                <option value="mixed">Exact resources and Collections</option>
+              )}
+            </select>
+          </label>
+          <fieldset>
+            <legend>{selection === "ids" ? "资源意图 · 精确 ID" : "资源意图 · 分组"}</legend>
+            {selection !== "collections" &&
+              library?.resources
+                .filter(
+                  (resource) =>
+                    desired.capabilities.includes(resource.kind) ||
+                    desired.resourceIds.includes(resource.id),
+                )
+                .map((resource) => (
+                  <label className="field-row" key={resource.id}>
+                    <input
+                      type="checkbox"
+                      checked={desired.resourceIds.includes(resource.id)}
+                      onChange={() =>
+                        setDesired({
+                          ...desired,
+                          resourceIds: toggle(desired.resourceIds, resource.id),
+                        })
+                      }
+                    />
+                    {resource.id}
+                  </label>
+                ))}
+            {selection !== "ids" &&
+              collections.map((collection) => (
+                <label className="field-row" key={collection.name}>
                   <input
                     type="checkbox"
-                    checked={desired.resourceIds.includes(resource.id)}
+                    checked={desired.collectionIds.includes(collection.name)}
                     onChange={() =>
                       setDesired({
                         ...desired,
-                        resourceIds: toggle(desired.resourceIds, resource.id),
+                        collectionIds: toggle(desired.collectionIds, collection.name),
                       })
                     }
                   />
-                  {resource.id}
+                  {collection.name}
                 </label>
               ))}
-          {selection !== "ids" &&
-            collections.map((collection) => (
-              <label className="field-row" key={collection.name}>
-                <input
-                  type="checkbox"
-                  checked={desired.collectionIds.includes(collection.name)}
-                  onChange={() =>
-                    setDesired({
-                      ...desired,
-                      collectionIds: toggle(desired.collectionIds, collection.name),
+          </fieldset>
+          <label className="field-row stacked">
+            <span>落点方式</span>
+            <select
+              value={desired.method}
+              onChange={(event) =>
+                setDesired({ ...desired, method: event.target.value as "copy" | "symlink" })
+              }
+            >
+              <option value="copy">Copy</option>
+              <option value="symlink">Symlink</option>
+            </select>
+          </label>
+          <button
+            className="action"
+            type="button"
+            disabled={
+              !profileId.trim() ||
+              !desired.agentIds.length ||
+              !desired.capabilities.length ||
+              (!desired.resourceIds.length && !desired.collectionIds.length)
+            }
+            onClick={define}
+          >
+            {zh ? "审查并保存方案" : "Review Profile"}
+          </button>
+          <p className="profiles-save-note">
+            保存只更新期望状态，不写入 Agent 目标。下发与验证分别进行。
+          </p>
+          {saved && (
+            <section>
+              <h4>期望状态 vs 已应用状态</h4>
+              <p>
+                {changed
+                  ? "Unsaved edits: save the Profile before reconciling."
+                  : `Desired revision: ${saved.revision}`}
+              </p>
+              <div className="button-row">
+                <button
+                  type="button"
+                  disabled={!invocationReady || changed}
+                  onClick={() => target("sync")}
+                >
+                  {zh ? "预览协调" : "Preview reconciliation"}
+                </button>
+                <button type="button" disabled={!invocationReady || changed} onClick={verify}>
+                  {zh ? "验证部署" : "Verify deployment"}
+                </button>
+                <button
+                  type="button"
+                  disabled={!invocationReady || changed}
+                  onClick={() => target("uninstall")}
+                >
+                  {zh ? "预览卸载" : "Preview uninstall"}
+                </button>
+                <button
+                  type="button"
+                  disabled={!invocationReady || changed || !historicalIds.length}
+                  onClick={() =>
+                    setAction({
+                      title: "Historical revert",
+                      description:
+                        "Restore receipt-backed history for this scope and selected resources. This is distinct from Store removal and consumer uninstall.",
+                      planPath: "/api/v1/revert/plan",
+                      applyPath: "/api/v1/revert/apply",
+                      input: {
+                        scope: saved.desired.scope,
+                        ...(saved.desired.scope === "project"
+                          ? { dir: invocation.workspaceRoot }
+                          : {}),
+                        agents: saved.desired.agentIds,
+                        artifactIds: historicalIds,
+                      },
+                      applyInput: {
+                        scope: saved.desired.scope,
+                        ...(saved.desired.scope === "project"
+                          ? { dir: invocation.workspaceRoot }
+                          : {}),
+                        agents: saved.desired.agentIds,
+                        artifactIds: historicalIds,
+                      },
+                      success: "Historical revert completed according to the reviewed receipt.",
                     })
                   }
-                />
-                {collection.name}
-              </label>
-            ))}
-        </fieldset>
-        <label className="field-row stacked">
-          <span>Placement</span>
-          <select
-            value={desired.method}
-            onChange={(event) =>
-              setDesired({ ...desired, method: event.target.value as "copy" | "symlink" })
-            }
-          >
-            <option value="copy">Copy</option>
-            <option value="symlink">Symlink</option>
-          </select>
-        </label>
-        <button
-          className="action"
-          type="button"
-          disabled={
-            !profileId.trim() ||
-            !desired.agentIds.length ||
-            !desired.capabilities.length ||
-            (!desired.resourceIds.length && !desired.collectionIds.length)
-          }
-          onClick={define}
-        >
-          Review Profile
-        </button>
-        {saved && (
-          <section>
-            <h4>Saved deployment</h4>
-            <p>
-              {changed
-                ? "Unsaved edits: save the Profile before reconciling."
-                : `Desired revision: ${saved.revision}`}
+                >
+                  {zh ? "预览历史回滚" : "Preview historical revert"}
+                </button>
+              </div>
+              <details>
+                <summary>Historical revert resources</summary>
+                <p>Choose exact resources before previewing receipt-backed history.</p>
+                {library?.resources.map((resource) => (
+                  <label className="field-row" key={resource.id}>
+                    <input
+                      type="checkbox"
+                      checked={historicalIds.includes(resource.id)}
+                      onChange={() => setHistoricalIds(toggle(historicalIds, resource.id))}
+                    />
+                    Revert {resource.id}
+                  </label>
+                ))}
+              </details>
+            </section>
+          )}
+          {verification && (
+            <section aria-label="Deployment verification">
+              <h4>{configurationLabel(verification.configuration)}</h4>
+              <p>
+                Pending deployment:{" "}
+                {verification.desiredVsApplied.status === "diverged" ? "Yes" : "No"}
+              </p>
+              <p>Disk receipts: {verification.appliedVsDisk.status}</p>
+              <p>Native loading: {verification.runtime.observation}</p>
+              <details>
+                <summary>Coverage and recovery evidence</summary>
+                <pre>{JSON.stringify(verification, null, 2)}</pre>
+              </details>
+            </section>
+          )}
+          {message && <p role="status">{message}</p>}
+          {error && (
+            <p role="alert" className="api-error">
+              {error}
             </p>
-            <div className="button-row">
-              <button
-                type="button"
-                disabled={!invocationReady || changed}
-                onClick={() => target("sync")}
-              >
-                Preview reconciliation
-              </button>
-              <button type="button" disabled={!invocationReady || changed} onClick={verify}>
-                Verify deployment
-              </button>
-              <button
-                type="button"
-                disabled={!invocationReady || changed}
-                onClick={() => target("uninstall")}
-              >
-                Preview uninstall
-              </button>
-              <button
-                type="button"
-                disabled={!invocationReady || changed || !historicalIds.length}
-                onClick={() =>
-                  setAction({
-                    title: "Historical revert",
-                    description:
-                      "Restore receipt-backed history for this scope and selected resources. This is distinct from Store removal and consumer uninstall.",
-                    planPath: "/api/v1/revert/plan",
-                    applyPath: "/api/v1/revert/apply",
-                    input: {
-                      scope: saved.desired.scope,
-                      ...(saved.desired.scope === "project"
-                        ? { dir: invocation.workspaceRoot }
-                        : {}),
-                      agents: saved.desired.agentIds,
-                      artifactIds: historicalIds,
-                    },
-                    applyInput: {
-                      scope: saved.desired.scope,
-                      ...(saved.desired.scope === "project"
-                        ? { dir: invocation.workspaceRoot }
-                        : {}),
-                      agents: saved.desired.agentIds,
-                      artifactIds: historicalIds,
-                    },
-                    success: "Historical revert completed according to the reviewed receipt.",
-                  })
-                }
-              >
-                Preview historical revert
-              </button>
-            </div>
-            <details>
-              <summary>Historical revert resources</summary>
-              <p>Choose exact resources before previewing receipt-backed history.</p>
-              {library?.resources.map((resource) => (
-                <label className="field-row" key={resource.id}>
-                  <input
-                    type="checkbox"
-                    checked={historicalIds.includes(resource.id)}
-                    onChange={() => setHistoricalIds(toggle(historicalIds, resource.id))}
-                  />
-                  Revert {resource.id}
-                </label>
-              ))}
-            </details>
-          </section>
-        )}
-        {verification && (
-          <section aria-label="Deployment verification">
-            <h4>{configurationLabel(verification.configuration)}</h4>
-            <p>
-              Pending deployment:{" "}
-              {verification.desiredVsApplied.status === "diverged" ? "Yes" : "No"}
-            </p>
-            <p>Disk receipts: {verification.appliedVsDisk.status}</p>
-            <p>Native loading: {verification.runtime.observation}</p>
-            <details>
-              <summary>Coverage and recovery evidence</summary>
-              <pre>{JSON.stringify(verification, null, 2)}</pre>
-            </details>
-          </section>
-        )}
-        {message && <p role="status">{message}</p>}
-        {error && (
-          <p role="alert" className="api-error">
-            {error}
-          </p>
-        )}
+          )}
+        </div>
       </section>
       {action && (
         <WorkflowDialog

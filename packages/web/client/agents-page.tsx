@@ -45,8 +45,9 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export function AgentsPage() {
+export function AgentsPage({ onSync }: { onSync?: () => void } = {}) {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [pendingAgentId, setPendingAgentId] = useState<string | null>(null);
@@ -55,6 +56,7 @@ export function AgentsPage() {
   const [postCommitInventoryRefresh, setPostCommitInventoryRefresh] =
     useState<PostCommitInventoryRefresh | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const selected = agents.find((agent) => agent.id === selectedId) ?? agents[0] ?? null;
 
   async function load() {
     setLoading(true);
@@ -139,70 +141,145 @@ export function AgentsPage() {
 
   return (
     <div className="page-stack">
-      <section className="panel agents-panel">
-        <div className="panel-header">
-          <h3>Registered agents</h3>
-          <span className="tag neutral">{loading ? "Loading" : `${agents.length} agents`}</span>
-        </div>
-        {error && (
-          <section className="api-error compact">
-            <strong>Local API error</strong>
-            <p>{error}</p>
-          </section>
-        )}
-        {loading && agents.length === 0 ? (
-          <p className="empty-state">Loading agents...</p>
-        ) : agents.length === 0 ? (
-          <p className="empty-state">No agents registered.</p>
-        ) : (
-          <div className="table-wrap agents-table-wrap">
-            <table className="agents-table">
-              <thead>
-                <tr>
-                  <th>Agent</th>
-                  <th>Status</th>
-                  <th>Root</th>
-                  <th>Capabilities</th>
-                  <th>Enabled</th>
-                </tr>
-              </thead>
-              <tbody>
-                {agents.map((agent) => (
-                  <tr key={agent.id}>
-                    <td>
-                      <strong>{agent.displayName}</strong>
-                      <span className="muted-row mono">{agent.id}</span>
-                    </td>
-                    <td>
-                      <span className={`tag ${agent.detected ? "green" : "amber"}`}>
-                        {agent.detected ? "configuration found" : "not found"}
-                      </span>
-                    </td>
-                    <td className="path-cell mono">
-                      {agent.detectionEvidence.root ?? "not detected"}
-                    </td>
-                    <td>
-                      <div className="capability-strip">{capabilityTags(agent)}</div>
-                      <CompatibilityEvidence evidence={agent.compatibility} />
-                    </td>
-                    <td>
-                      <label className="switch-row">
-                        <input
-                          type="checkbox"
-                          checked={agent.enabled !== false}
-                          disabled={pendingAgentId === agent.id}
-                          onChange={(event) => void setEnabled(agent.id, event.target.checked)}
-                        />
-                        <span>{agent.enabled === false ? "Disabled" : "Enabled"}</span>
-                      </label>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      <div className="agents-workbench">
+        <section className="panel agents-panel">
+          <div className="panel-header">
+            <h3>已注册的 Agent</h3>
+            <span className="tag neutral">{loading ? "加载中" : `${agents.length} 个`}</span>
           </div>
-        )}
-      </section>
+          {error && (
+            <section className="api-error compact">
+              <strong>Local API error</strong>
+              <p>{error}</p>
+            </section>
+          )}
+          {loading && agents.length === 0 ? (
+            <p className="empty-state">Loading agents...</p>
+          ) : agents.length === 0 ? (
+            <p className="empty-state">No agents registered.</p>
+          ) : (
+            <div className="agent-list">
+              {agents.map((agent) => (
+                <button
+                  type="button"
+                  className={`agent-list-item ${selected?.id === agent.id ? "selected" : ""}`}
+                  key={agent.id}
+                  onClick={() => setSelectedId(agent.id)}
+                >
+                  <span className="agent-list-mark">{agent.displayName.slice(0, 1)}</span>
+                  <span>
+                    <strong>{agent.displayName}</strong>
+                    <small>
+                      {agent.id} ·{" "}
+                      {agent.adapterKind === "built-in" ? "内置适配器" : "自定义适配器"}
+                    </small>
+                    <span className="capability-strip">{capabilityTags(agent)}</span>
+                  </span>
+                  <span className={`tag ${agent.detected ? "green" : "neutral"}`}>
+                    {agent.detected ? "已探测" : "未探测"}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+        <section className="panel agent-detail-panel" aria-label="Agent 详情">
+          {selected ? (
+            <>
+              <div className="panel-header">
+                <div>
+                  <h3>{selected.displayName}</h3>
+                  <p>
+                    {selected.id} ·{" "}
+                    {selected.adapterKind === "built-in" ? "内置适配器" : "自定义适配器"}
+                  </p>
+                </div>
+                <span className={`tag ${selected.detected ? "green" : "neutral"}`}>
+                  {selected.detected ? "已探测配置" : "未探测配置"}
+                </span>
+              </div>
+              <p>已注册目标的落点与兼容性证据；配置文件存在不等于 Agent 原生加载。</p>
+              <h4>安装与配置位置</h4>
+              <dl className="agent-facts">
+                <dt>探测根目录</dt>
+                <dd className="mono">{selected.detectionEvidence.root ?? "未探测"}</dd>
+                <dt>目标路径</dt>
+                <dd>
+                  {selected.targets.length
+                    ? selected.targets.map((target) => (
+                        <p
+                          className="mono"
+                          key={`${target.scope}:${target.capability}:${target.path}`}
+                        >
+                          {target.scope} · {target.capability} · {target.path}
+                        </p>
+                      ))
+                    : "未返回目标路径"}
+                </dd>
+                <dt>状态</dt>
+                <dd>
+                  <label className="switch-row">
+                    <input
+                      type="checkbox"
+                      checked={selected.enabled !== false}
+                      disabled={pendingAgentId === selected.id}
+                      onChange={(event) => void setEnabled(selected.id, event.target.checked)}
+                    />
+                    {selected.enabled === false ? "已禁用" : "已启用"}
+                  </label>
+                </dd>
+              </dl>
+              <h4>能力与兼容性</h4>
+              <div className="table-wrap">
+                <table className="agent-compatibility-table">
+                  <thead>
+                    <tr>
+                      <th>能力</th>
+                      <th>范围</th>
+                      <th>支持证据</th>
+                      <th>原生加载</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selected.compatibility.map((item) => (
+                      <tr key={`${item.capability}:${item.scope}`}>
+                        <td>{resourceKindLabel(item.capability)}</td>
+                        <td>{item.scope}</td>
+                        <td>
+                          {item.evidence} · {item.location ?? "未提供位置"}
+                        </td>
+                        <td>未验证</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <h4>探测与原生加载对比</h4>
+              <div className="agent-evidence-pair">
+                <div>
+                  <strong>探测到配置文件</strong>
+                  <p>
+                    {selected.detected
+                      ? "已探测到配置路径，可继续预览下发。"
+                      : "尚未探测到配置路径。"}
+                  </p>
+                </div>
+                <div>
+                  <strong>原生加载已验证</strong>
+                  <p>未验证；需要 Agent 运行时证据。</p>
+                </div>
+              </div>
+              {onSync && (
+                <button type="button" className="action" onClick={onSync}>
+                  预览同步
+                </button>
+              )}
+            </>
+          ) : (
+            <p className="empty-state">没有已注册的 Agent。</p>
+          )}
+        </section>
+      </div>
 
       <section className="panel adapter-config-panel">
         <div className="panel-header">

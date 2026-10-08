@@ -171,6 +171,8 @@ cellarer ui
 
 The Web opens in the Agent Config Library. Its six primary destinations are Overview, Agent Config Library, Sync, Agents, Operation History, and Settings. Find existing configuration opens read-only Inventory; import an exact candidate into the Store, then separately preview and apply target Sync and verify the result. The library also supports exact row selection, resource details, Group membership, and reviewed Store updates/removal. Agents and Sync lead to Profiles; Operation History leads to verification, recovery, and historical revert. See the [Web workflow guide](docs/README.md#web-ui-and-local-api).
 
+Inventory accepts an optional project root for bounded discovery. The first visit scans automatically; subsequent Discover clicks reuse the current result and project scope until you click Refresh Inventory. Reloading the browser starts a new session. Its provisional or partial results cannot be imported. The full-page Sync review keeps exact targets and file actions visible before confirmation, including on narrow screens.
+
 ## What it manages
 
 | Area | Main operations |

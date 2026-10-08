@@ -36,6 +36,7 @@ import {
   inventorySourceOptions,
 } from "./inventory-onboarding.js";
 import type { Page } from "./product-model.js";
+import { browserWorkbenchLocale } from "./workbench-labels.js";
 
 const STATE_LABELS: Record<InventoryCandidateState, string> = {
   ready: "Ready",
@@ -52,11 +53,15 @@ export type InventorySecretAdoptionViewState =
   | "failed";
 
 export function InventoryPage(props: { readonly onNavigate?: (page: Page) => void }) {
+  const zh = browserWorkbenchLocale() === "zh-CN";
   const [onboarding, setOnboarding] = useState<InventoryOnboardingState>(() =>
     createInventoryOnboardingState(),
   );
   const [filters, setFilters] = useState<InventoryFilters>(EMPTY_INVENTORY_FILTERS);
   const [reloadKey, setReloadKey] = useState(0);
+  const [projectRoot, setProjectRoot] = useState("");
+  const [activeProjectRoot, setActiveProjectRoot] = useState("");
+  const [detailId, setDetailId] = useState<string | null>(null);
   const [scan, setScan] = useState<{
     readonly completed: number;
     readonly total: number;
@@ -77,20 +82,24 @@ export function InventoryPage(props: { readonly onNavigate?: (page: Page) => voi
     setScan(null);
     setOnboarding((current) => inventoryLoading(current));
     setAdoption({ candidateId: null, state: "idle", plan: null });
-    streamInventory((event) => {
-      if (!alive) return;
-      if (event.type === "started")
-        setScan({ completed: 0, total: event.totalSources, candidates: [], findingCodes: [] });
-      if (event.type === "progress")
-        setScan({
-          completed: event.completedSources,
-          total: event.totalSources,
-          candidates: event.candidates,
-          findingCodes: event.findingCodes,
-        });
-      if (event.type === "reset" || event.type === "completed" || event.type === "failed")
-        setScan(null);
-    }, abort.signal)
+    streamInventory(
+      (event) => {
+        if (!alive) return;
+        if (event.type === "started")
+          setScan({ completed: 0, total: event.totalSources, candidates: [], findingCodes: [] });
+        if (event.type === "progress")
+          setScan({
+            completed: event.completedSources,
+            total: event.totalSources,
+            candidates: event.candidates,
+            findingCodes: event.findingCodes,
+          });
+        if (event.type === "reset" || event.type === "completed" || event.type === "failed")
+          setScan(null);
+      },
+      abort.signal,
+      { dir: activeProjectRoot || undefined },
+    )
       .then((result) => {
         if (alive) setOnboarding((current) => inventoryLoaded(current, result));
       })
@@ -107,16 +116,20 @@ export function InventoryPage(props: { readonly onNavigate?: (page: Page) => voi
   }, [reloadKey]);
 
   function refreshInventory() {
+    setActiveProjectRoot(projectRoot.trim());
     setOnboarding((current) => inventoryLoading(current));
     setReloadKey((value) => value + 1);
   }
 
   async function planSelectedImport() {
-    if (!canPlanInventoryImport(onboarding)) return;
+    if (!canPlanInventoryImport(onboarding) || projectRoot.trim() !== activeProjectRoot) return;
     const candidateIds = [...onboarding.selectedCandidateIds].sort();
     setOnboarding((current) => inventoryPlanning(current));
     try {
-      const planned = await planInventoryStoreImport({ candidateIds });
+      const planned = await planInventoryStoreImport({
+        candidateIds,
+        dir: activeProjectRoot || undefined,
+      });
       setOnboarding((current) => inventoryImportPlanned(current, planned));
     } catch (error) {
       setOnboarding((current) => inventoryImportFailed(current, error));
@@ -151,6 +164,7 @@ export function InventoryPage(props: { readonly onNavigate?: (page: Page) => voi
         candidateId: candidate.id,
         selector: offer.selector,
         provider: adoptionProvider,
+        dir: activeProjectRoot || undefined,
       });
       setAdoption({ candidateId: candidate.id, state: "review", plan });
     } catch {
@@ -204,10 +218,24 @@ export function InventoryPage(props: { readonly onNavigate?: (page: Page) => voi
     onboarding.phase === "applying";
   const stale =
     onboarding.result !== null && (onboarding.phase === "loading" || onboarding.phase === "failed");
+  const scopeChanged = projectRoot.trim() !== activeProjectRoot;
+  const detail =
+    visibleCandidates.find((candidate) => candidate.id === detailId) ??
+    visibleCandidates[0] ??
+    null;
 
   return (
     <div className="page-stack">
       <div className="top-actions">
+        <label className="field-row stacked inventory-project-input">
+          <span>工程目录（可选；留空仅扫描用户范围）</span>
+          <input
+            type="text"
+            value={projectRoot}
+            placeholder="/absolute/path/to/project"
+            onChange={(event) => setProjectRoot(event.target.value)}
+          />
+        </label>
         <button
           type="button"
           className="action secondary"
@@ -215,18 +243,26 @@ export function InventoryPage(props: { readonly onNavigate?: (page: Page) => voi
           disabled={busy}
         >
           <DashboardIcon name="scan" />
-          {onboarding.phase === "loading" ? "Refreshing..." : "Refresh Inventory"}
+          {onboarding.phase === "loading"
+            ? zh
+              ? "正在扫描…"
+              : "Refreshing..."
+            : zh
+              ? "重新扫描"
+              : "Refresh Inventory"}
         </button>
         {result ? (
           <button
             type="button"
             className="action"
             onClick={planSelectedImport}
-            disabled={!canPlanInventoryImport(onboarding)}
+            disabled={scopeChanged || !canPlanInventoryImport(onboarding)}
           >
             {onboarding.phase === "planning"
-              ? "Planning..."
-              : `Review import (${onboarding.selectedCandidateIds.length})`}
+              ? zh
+                ? "正在生成计划…"
+                : "Planning..."
+              : `${zh ? "审查导入" : "Review import"} (${onboarding.selectedCandidateIds.length})`}
           </button>
         ) : null}
       </div>
@@ -238,22 +274,35 @@ export function InventoryPage(props: { readonly onNavigate?: (page: Page) => voi
       ) : null}
 
       {scan ? (
-        <section className="panel" aria-label="Inventory scan progress" aria-live="polite">
+        <section
+          className="panel inventory-scan"
+          aria-label="Inventory scan progress"
+          aria-live="polite"
+        >
           <h3>
-            Scanning sources · {scan.completed}/{scan.total}
+            {zh ? "正在扫描 Agent 来源…" : "Scanning sources"}{" "}
+            <small>
+              {zh
+                ? `已检查 ${scan.completed} / ${scan.total} 个来源`
+                : `· ${scan.completed}/${scan.total}`}
+            </small>
           </h3>
+          <progress max={Math.max(1, scan.total)} value={scan.completed} />
           <p>
-            Pending candidates are provisional. Review and import are available after the final
-            result.
+            {zh
+              ? "扫描完成前，候选仅供查看；导入将在最终结果确认后开放。"
+              : "Pending candidates are view-only until the authoritative refresh completes."}
           </p>
           {scan.findingCodes.length > 0 ? (
-            <p className="warning-banner">Source findings: {scan.findingCodes.join(", ")}</p>
+            <p className="warning-banner">
+              {zh ? "来源发现" : "Source findings"}: {scan.findingCodes.join(", ")}
+            </p>
           ) : null}
-          <ul>
+          <ul className="inventory-provisional-list">
             {scan.candidates.map((candidate) => (
               <li key={candidate.id}>
-                {candidate.kind} · {candidate.id.slice(-12)} · {candidate.sourceCount} source(s) ·
-                Pending
+                <span className="tag blue">{candidate.kind}</span> · {candidate.id.slice(-12)} ·{" "}
+                {candidate.sourceCount} {zh ? "个来源 · 临时发现" : "sources · Pending"}
               </li>
             ))}
           </ul>
@@ -262,49 +311,123 @@ export function InventoryPage(props: { readonly onNavigate?: (page: Page) => voi
 
       {stale ? (
         <p className="warning-banner">
-          Previous Inventory result is stale while refresh is incomplete. Review it only; refresh
-          again before taking action.
+          {zh
+            ? "上次扫描结果已过期；本次扫描完成前仅供查看。"
+            : "Previous Inventory result is stale while refresh is incomplete. Review it only; refresh again before taking action."}
         </p>
       ) : null}
+      {scopeChanged && (
+        <p className="warning-banner">工程范围已更改。请重新扫描，确认最终结果后再选择导入。</p>
+      )}
 
       {result?.completeness !== "complete" && result ? (
         <p className="warning-banner">
-          Inventory is {result.completeness}. Review the preserved candidates and findings, then
-          refresh before planning an import.
+          {zh
+            ? `扫描结果为${result.completeness === "partial" ? "部分完成" : result.completeness}；可查看候选及问题，但须完整扫描后才能导入。`
+            : `Inventory is ${result.completeness}. Review the preserved candidates and findings, then refresh before planning an import.`}
         </p>
       ) : null}
 
       {result ? (
-        <>
-          <InventoryFilterBar filters={filters} result={result} onChange={setFilters} />
-          <InventoryResultView
-            result={result}
-            candidates={visibleCandidates}
-            selectedCandidateIds={onboarding.selectedCandidateIds}
-            selectionDisabled={
-              busy ||
-              onboarding.phase === "failed" ||
-              onboarding.phase === "confirmation" ||
-              result.completeness !== "complete"
-            }
-            adoptionDisabled={
-              busy ||
-              onboarding.phase === "failed" ||
-              onboarding.phase === "confirmation" ||
-              result.completeness !== "complete"
-            }
-            onSelectionChange={(candidateId, selected) =>
-              setOnboarding((current) => inventorySelectionChanged(current, candidateId, selected))
-            }
-            adoptionProvider={adoptionProvider}
-            adoptionCandidateId={adoption.candidateId}
-            adoptionState={adoption.state}
-            adoptionMessage={adoption.message}
-            onAdoptionProviderChange={setAdoptionProvider}
-            onPlanAdoption={reviewSecretAdoption}
-            onApplyAdoption={confirmSecretAdoption}
-          />
-        </>
+        <div className="inventory-layout">
+          <div className="inventory-main">
+            <InventoryFilterBar filters={filters} result={result} onChange={setFilters} />
+            <InventoryResultView
+              result={result}
+              candidates={visibleCandidates}
+              onInspect={(candidateId) => setDetailId(candidateId)}
+              selectedCandidateIds={onboarding.selectedCandidateIds}
+              selectionDisabled={
+                busy ||
+                scopeChanged ||
+                onboarding.phase === "failed" ||
+                onboarding.phase === "confirmation" ||
+                result.completeness !== "complete"
+              }
+              adoptionDisabled={
+                busy ||
+                scopeChanged ||
+                onboarding.phase === "failed" ||
+                onboarding.phase === "confirmation" ||
+                result.completeness !== "complete"
+              }
+              onSelectionChange={(candidateId, selected) =>
+                setOnboarding((current) =>
+                  inventorySelectionChanged(current, candidateId, selected),
+                )
+              }
+              adoptionProvider={adoptionProvider}
+              adoptionCandidateId={adoption.candidateId}
+              adoptionState={adoption.state}
+              adoptionMessage={adoption.message}
+              onAdoptionProviderChange={setAdoptionProvider}
+              onPlanAdoption={reviewSecretAdoption}
+              onApplyAdoption={confirmSecretAdoption}
+            />
+          </div>
+          <aside className="panel inventory-detail" aria-label="发现的配置详情">
+            {detail ? (
+              <>
+                <h3>{detail.name}</h3>
+                <p>
+                  {detail.kind} · {detail.id}
+                </p>
+                <dl>
+                  <dt>状态</dt>
+                  <dd>
+                    <span className={`tag ${stateTone(detail.state)}`}>
+                      {STATE_LABELS[detail.state]}
+                    </span>
+                  </dd>
+                  <dt>来源数</dt>
+                  <dd>{detail.sources.length}</dd>
+                  <dt>适用 Agent</dt>
+                  <dd>
+                    {detail.relatedAdapters.map((agent) => agent.displayName).join(", ") ||
+                      "未返回"}
+                  </dd>
+                  <dt>Store 匹配</dt>
+                  <dd>
+                    {detail.managedMatch
+                      ? `${detail.managedMatch.resourceId}@${detail.managedMatch.revisionId}`
+                      : "尚未入库"}
+                  </dd>
+                </dl>
+                <h4>来源位置</h4>
+                {detail.sources.map((source) => (
+                  <p className="mono" key={source.id}>
+                    {source.location}
+                  </p>
+                ))}
+                <h4>发现备注</h4>
+                <p>
+                  {detail.findings.length
+                    ? detail.findings
+                        .map((finding) => `${finding.code} · ${finding.remediation}`)
+                        .join("；")
+                    : "无发现项"}
+                </p>
+                <button
+                  type="button"
+                  className="action"
+                  disabled={
+                    scopeChanged ||
+                    !canPlanInventoryImport(onboarding) ||
+                    !onboarding.selectedCandidateIds.includes(detail.id)
+                  }
+                  onClick={planSelectedImport}
+                >
+                  预览导入 Store
+                </button>
+                <p>仅写入 Store；目标同步需单独审查。扫描未完成或结果不完整时不可导入。</p>
+              </>
+            ) : (
+              <p className="empty-state">
+                {visibleCandidates.length === 0 ? "没有匹配的配置。" : "选择候选以查看详情。"}
+              </p>
+            )}
+          </aside>
+        </div>
       ) : onboarding.phase === "failed" ? (
         <p className="error-banner">Inventory refresh failed. Use Refresh Inventory to retry.</p>
       ) : (
@@ -373,13 +496,14 @@ function InventoryFilterBar(props: {
   readonly result: InventoryRefreshResult;
   readonly onChange: (filters: InventoryFilters) => void;
 }) {
+  const zh = browserWorkbenchLocale() === "zh-CN";
   const { filters, result } = props;
   const update = <Key extends keyof InventoryFilters>(key: Key, value: InventoryFilters[Key]) =>
     props.onChange({ ...filters, [key]: value });
   return (
     <section className="panel inventory-filter-grid" aria-label="Inventory filters">
       <div className="inventory-filter-field">
-        <label htmlFor="inventory-filter-kind">Kind</label>
+        <label htmlFor="inventory-filter-kind">{zh ? "类型" : "Kind"}</label>
         <select
           id="inventory-filter-kind"
           value={filters.kind}
@@ -387,20 +511,20 @@ function InventoryFilterBar(props: {
             update("kind", event.currentTarget.value as InventoryFilters["kind"])
           }
         >
-          <option value="all">All kinds</option>
+          <option value="all">{zh ? "全部类型" : "All kinds"}</option>
           <option value="skills">Skills</option>
           <option value="mcp">MCP</option>
           <option value="rules">Rules</option>
         </select>
       </div>
       <div className="inventory-filter-field">
-        <label htmlFor="inventory-filter-source">Source</label>
+        <label htmlFor="inventory-filter-source">{zh ? "来源" : "Source"}</label>
         <select
           id="inventory-filter-source"
           value={filters.sourceId}
           onChange={(event) => update("sourceId", event.currentTarget.value)}
         >
-          <option value="all">All sources</option>
+          <option value="all">{zh ? "全部来源" : "All sources"}</option>
           {inventorySourceOptions(result).map((option) => (
             <option key={option.id} value={option.id}>
               {option.label}
@@ -409,13 +533,13 @@ function InventoryFilterBar(props: {
         </select>
       </div>
       <div className="inventory-filter-field">
-        <label htmlFor="inventory-filter-adapter">Adapter</label>
+        <label htmlFor="inventory-filter-adapter">{zh ? "Agent" : "Adapter"}</label>
         <select
           id="inventory-filter-adapter"
           value={filters.adapterId}
           onChange={(event) => update("adapterId", event.currentTarget.value)}
         >
-          <option value="all">All adapters</option>
+          <option value="all">{zh ? "全部 Agent" : "All adapters"}</option>
           {inventoryAdapterOptions(result).map((option) => (
             <option key={option.id} value={option.id}>
               {option.label}
@@ -424,7 +548,7 @@ function InventoryFilterBar(props: {
         </select>
       </div>
       <div className="inventory-filter-field">
-        <label htmlFor="inventory-filter-state">State</label>
+        <label htmlFor="inventory-filter-state">{zh ? "状态" : "State"}</label>
         <select
           id="inventory-filter-state"
           value={filters.state}
@@ -432,10 +556,10 @@ function InventoryFilterBar(props: {
             update("state", event.currentTarget.value as InventoryFilters["state"])
           }
         >
-          <option value="all">All states</option>
-          <option value="ready">Ready</option>
-          <option value="needs-attention">Needs attention</option>
-          <option value="in-store">In Store</option>
+          <option value="all">{zh ? "全部状态" : "All states"}</option>
+          <option value="ready">{zh ? "可导入" : "Ready"}</option>
+          <option value="needs-attention">{zh ? "需处理" : "Needs attention"}</option>
+          <option value="in-store">{zh ? "已入库" : "In Store"}</option>
         </select>
       </div>
     </section>
@@ -449,6 +573,7 @@ export function InventoryResultView(props: {
   readonly selectionDisabled?: boolean;
   readonly adoptionDisabled?: boolean;
   readonly onSelectionChange?: (candidateId: string, selected: boolean) => void;
+  readonly onInspect?: (candidateId: string) => void;
   readonly adoptionProvider?: "vault" | "keychain";
   readonly adoptionCandidateId?: string | null;
   readonly adoptionState?: InventorySecretAdoptionViewState;
@@ -460,26 +585,31 @@ export function InventoryResultView(props: {
   ) => void;
   readonly onApplyAdoption?: () => void;
 }) {
+  const zh = browserWorkbenchLocale() === "zh-CN";
   const { result } = props;
   const candidates = props.candidates ?? result.candidates;
   const selected = new Set(props.selectedCandidateIds ?? []);
   return (
     <>
       <section className="stat-grid" aria-label="Inventory summary">
-        <InventoryMetric label="Candidates" value={result.counts.total} />
-        <InventoryMetric label="Ready" value={result.counts.ready} />
-        <InventoryMetric label="Needs attention" value={result.counts.needsAttention} />
-        <InventoryMetric label="In Store" value={result.counts.inStore} />
+        <InventoryMetric label={zh ? "候选配置" : "Candidates"} value={result.counts.total} />
+        <InventoryMetric label={zh ? "可导入" : "Ready"} value={result.counts.ready} />
+        <InventoryMetric
+          label={zh ? "需处理" : "Needs attention"}
+          value={result.counts.needsAttention}
+        />
+        <InventoryMetric label={zh ? "已入库" : "In Store"} value={result.counts.inStore} />
       </section>
       <section className="panel">
         <div className="panel-header">
           <div>
             <h3>
-              <DashboardIcon name="artifacts" /> Unified Inventory
+              <DashboardIcon name="artifacts" /> {zh ? "统一发现结果" : "Unified Inventory"}
             </h3>
             <p>
-              Inventory is {result.completeness}; {result.counts.observedSources} sources observed,{" "}
-              {result.counts.failedSources} failed. {candidates.length} candidate(s) match filters.
+              {zh
+                ? `扫描${result.completeness === "complete" ? "已完成" : "部分完成"}；已观察 ${result.counts.observedSources} 个来源，失败 ${result.counts.failedSources} 个；筛选后 ${candidates.length} 项候选。`
+                : `Inventory is ${result.completeness}; ${result.counts.observedSources} sources observed, ${result.counts.failedSources} failed. ${candidates.length} candidate(s) match filters.`}
             </p>
           </div>
         </div>
@@ -487,12 +617,12 @@ export function InventoryResultView(props: {
           <table>
             <thead>
               <tr>
-                <th>Import</th>
-                <th>Resource</th>
-                <th>State</th>
-                <th>Sources</th>
-                <th>Adapters</th>
-                <th>Findings</th>
+                <th>{zh ? "导入" : "Import"}</th>
+                <th>{zh ? "资源" : "Resource"}</th>
+                <th>{zh ? "状态" : "State"}</th>
+                <th>{zh ? "来源" : "Sources"}</th>
+                <th>{zh ? "相关 Agent" : "Adapters"}</th>
+                <th>{zh ? "发现项" : "Findings"}</th>
               </tr>
             </thead>
             <tbody>
@@ -510,7 +640,13 @@ export function InventoryResultView(props: {
                     />
                   </td>
                   <td>
-                    <strong>{candidate.name}</strong>
+                    <button
+                      type="button"
+                      className="link-button inventory-resource-name"
+                      onClick={() => props.onInspect?.(candidate.id)}
+                    >
+                      {candidate.name}
+                    </button>
                     <span className="muted-row mono">{candidate.kind}</span>
                     {candidate.managedMatch ? (
                       <span className="muted-row mono">
@@ -520,10 +656,22 @@ export function InventoryResultView(props: {
                   </td>
                   <td>
                     <span className={`tag ${stateTone(candidate.state)}`}>
-                      {STATE_LABELS[candidate.state]}
+                      {zh
+                        ? candidate.state === "ready"
+                          ? "可导入"
+                          : candidate.state === "in-store"
+                            ? "已入库"
+                            : "需处理"
+                        : STATE_LABELS[candidate.state]}
                     </span>
                     <span className="muted-row">
-                      {candidate.defaultSelected ? "Core default" : "Not a Core default"}
+                      {candidate.defaultSelected
+                        ? zh
+                          ? "Core 默认"
+                          : "Core default"
+                        : zh
+                          ? "非 Core 默认"
+                          : "Not a Core default"}
                     </span>
                   </td>
                   <td>
@@ -553,7 +701,7 @@ export function InventoryResultView(props: {
                   </td>
                   <td>
                     {candidate.findings.length === 0 ? (
-                      <span className="muted">None</span>
+                      <span className="muted">{zh ? "无" : "None"}</span>
                     ) : (
                       candidate.findings.map((finding) => (
                         <div key={`${finding.code}:${finding.sourceId ?? "candidate"}`}>
@@ -597,7 +745,7 @@ export function InventoryResultView(props: {
         {result.coverage ? (
           <details>
             <summary>
-              Discovery coverage · bounded {result.resolutionContext ?? "user"} scope
+              {zh ? "扫描覆盖范围" : "Discovery coverage"} · {result.resolutionContext ?? "user"}
             </summary>
             {result.coverage.map((coverage) => (
               <p

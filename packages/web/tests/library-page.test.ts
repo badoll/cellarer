@@ -123,7 +123,7 @@ describe("mounted library selection", () => {
     await act(async () => choose("Preview"));
     expect(plannedBodies).toEqual([
       expect.objectContaining({
-        resources: { ids: ["rules/gamma", "skills/alpha"] },
+        resources: { ids: ["rules/gamma", "skills/alpha"], kinds: ["rules", "skills"] },
       }),
     ]);
   });

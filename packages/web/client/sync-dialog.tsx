@@ -8,6 +8,7 @@ import {
   buildSyncSelection,
   isProjectDirMissing,
   type SyncRequest,
+  syncKindsForIntent,
   syncRequestKey,
 } from "./sync-selection.js";
 import { browserWorkbenchLocale } from "./workbench-labels.js";
@@ -18,8 +19,13 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+function isSharedTarget(action: DistributePlan["actions"][number]): boolean {
+  return (action.consumerAgents?.filter((agent) => agent !== action.agent).length ?? 0) > 0;
+}
+
 export function SyncDialog(props: {
   open: boolean;
+  presentation?: "dialog" | "page";
   kinds?: Capability[];
   collections?: string[];
   resourceIds?: string[];
@@ -38,12 +44,13 @@ export function SyncDialog(props: {
   const [applying, setApplying] = useState(false);
   const generation = useRef(0);
   const busy = useRef(false);
+  const kinds = syncKindsForIntent(props.resourceIds, props.kinds);
 
   const selection = buildSyncSelection({
     agents,
     destination,
     dir,
-    kinds: props.kinds,
+    kinds,
     collections: props.collections,
     resourceIds: props.resourceIds,
   });
@@ -152,16 +159,18 @@ export function SyncDialog(props: {
   }
 
   return (
-    <div className="modal-backdrop" role="presentation">
+    <div
+      className={props.presentation === "page" ? "sync-review-page" : "modal-backdrop"}
+      role="presentation"
+    >
       <section
-        className="modal sync-modal"
-        role="dialog"
-        aria-modal="true"
+        className={props.presentation === "page" ? "sync-review-surface" : "modal sync-modal"}
+        role={props.presentation === "page" ? "region" : "dialog"}
         aria-label={zh ? "同步到 Agent" : "Sync to Agents"}
       >
         <div className="panel-header modal-header">
           <div>
-            <h3>{zh ? "同步到 Agent" : "Sync to Agents"}</h3>
+            <h3>{zh ? "选择目标并审查计划" : "Select target and review plan"}</h3>
             <p>
               {zh
                 ? "应用所选资源前，先预览写入 Agent 目标的计划。"
@@ -173,115 +182,242 @@ export function SyncDialog(props: {
           </button>
         </div>
 
-        <div className="sync-dialog-grid">
-          <label className="field-row stacked">
-            <span>{zh ? "目标 Agent" : "Target agents"}</span>
-            <input
-              type="text"
+        {props.presentation === "page" && (
+          <div className="sync-selection-return">
+            <button
+              type="button"
+              className="link-button"
               disabled={applying}
-              value={agents}
-              onChange={(event) => {
-                setAgents(event.target.value);
-              }}
-            />
-          </label>
-          <div className="sync-resource-summary">
-            <span>{zh ? "资源" : "Resources"}</span>
-            <strong>
-              {zh
-                ? props.resourceIds
-                  ? `精确资源：${props.resourceIds.join(", ")}`
-                  : props.collections?.length
-                    ? `分组：${props.collections.join(", ")}`
-                    : "Store 默认选择"
-                : selection.resourceSummary}
-            </strong>
-            <p>
-              {zh
-                ? props.collections?.length
-                  ? `所选分组：${props.collections.join(", ")}`
-                  : "不隐式扩展筛选结果"
-                : selection.collectionSummary}
-            </p>
-            <p>
-              {zh
-                ? "仅同步匹配的 Store 资源；发现的配置须先导入。"
-                : "Syncs matching Store resources. Discovered resources must be imported first."}
-            </p>
+              onClick={props.onClose}
+            >
+              {zh ? "更改资源选择" : "Change selection"}
+            </button>
           </div>
-        </div>
+        )}
 
-        <fieldset className="segmented sync-destination" disabled={applying}>
-          <legend className="visually-hidden">{zh ? "目标位置" : "Destination"}</legend>
-          {(["user", "project"] as Destination[]).map((item) => (
-            <label className={destination === item ? "selected" : ""} key={item}>
-              <input
-                type="radio"
-                checked={destination === item}
-                onChange={() => {
-                  setDestination(item);
-                }}
+        <div className="sync-review-layout">
+          <div className="sync-review-main">
+            <div className="sync-dialog-grid">
+              <label className="field-row stacked">
+                <span>{zh ? "目标 Agent" : "Target agents"}</span>
+                <input
+                  type="text"
+                  disabled={applying}
+                  value={agents}
+                  onChange={(event) => {
+                    setAgents(event.target.value);
+                  }}
+                />
+              </label>
+              <div className="sync-resource-summary">
+                <span>{zh ? "资源" : "Resources"}</span>
+                <strong>
+                  {zh
+                    ? props.resourceIds
+                      ? `精确资源：${props.resourceIds.join(", ")}`
+                      : props.collections?.length
+                        ? `分组：${props.collections.join(", ")}`
+                        : "Store 默认选择"
+                    : selection.resourceSummary}
+                </strong>
+                <p>
+                  {zh
+                    ? props.collections?.length
+                      ? `所选分组：${props.collections.join(", ")}`
+                      : "不隐式扩展筛选结果"
+                    : selection.collectionSummary}
+                </p>
+                <p>
+                  {zh
+                    ? "仅同步匹配的 Store 资源；发现的配置须先导入。"
+                    : "Syncs matching Store resources. Discovered resources must be imported first."}
+                </p>
+              </div>
+            </div>
+
+            <fieldset className="segmented sync-destination" disabled={applying}>
+              <legend className="visually-hidden">{zh ? "目标位置" : "Destination"}</legend>
+              {(["user", "project"] as Destination[]).map((item) => (
+                <label className={destination === item ? "selected" : ""} key={item}>
+                  <input
+                    type="radio"
+                    checked={destination === item}
+                    onChange={() => {
+                      setDestination(item);
+                    }}
+                  />
+                  {zh ? (item === "user" ? "用户" : "项目") : destinationLabel(item)}
+                </label>
+              ))}
+            </fieldset>
+
+            {destination === "project" && (
+              <label className="field-row stacked project-dir-row">
+                <span>{zh ? "项目根目录" : "Project root"}</span>
+                <input
+                  className="dir-input"
+                  type="text"
+                  placeholder={zh ? "项目根目录绝对路径" : "Project root absolute path"}
+                  disabled={applying}
+                  value={dir}
+                  onChange={(event) => {
+                    setDir(event.target.value);
+                  }}
+                />
+              </label>
+            )}
+
+            <details className="sync-agent-options">
+              <summary>
+                {zh ? "选择已注册 Agent 目标" : "Choose registered agent targets"} ·{" "}
+                {request.agents.join(", ") || (zh ? "未选择" : "None")}
+              </summary>
+              <AgentPicker
+                value={request.agents}
+                onChange={(ids) => setAgents(ids.join(", "))}
+                scope={destination === "project" ? "project" : "global"}
+                dir={dir}
+                kinds={kinds ?? []}
+                disabled={applying}
               />
-              {zh ? (item === "user" ? "用户" : "项目") : destinationLabel(item)}
-            </label>
-          ))}
-        </fieldset>
+            </details>
+            {props.presentation !== "page" && (
+              <div className="button-row">
+                <button
+                  type="button"
+                  className="action secondary"
+                  disabled={!canPreview}
+                  onClick={preview}
+                >
+                  {previewing ? (zh ? "正在预览…" : "Previewing...") : zh ? "预览" : "Preview"}
+                </button>
+                <button type="button" className="action" disabled={!canApply} onClick={applySync}>
+                  {applying ? (zh ? "正在应用…" : "Applying...") : zh ? "应用" : "Apply"}
+                </button>
+              </div>
+            )}
 
-        {destination === "project" && (
-          <label className="field-row stacked project-dir-row">
-            <span>{zh ? "项目根目录" : "Project root"}</span>
-            <input
-              className="dir-input"
-              type="text"
-              placeholder={zh ? "项目根目录绝对路径" : "Project root absolute path"}
-              disabled={applying}
-              value={dir}
-              onChange={(event) => {
-                setDir(event.target.value);
-              }}
-            />
-          </label>
-        )}
-
-        <AgentPicker
-          value={request.agents}
-          onChange={(ids) => setAgents(ids.join(", "))}
-          scope={destination === "project" ? "project" : "global"}
-          dir={dir}
-          kinds={props.kinds ?? ["rules", "mcp", "skills"]}
-          disabled={applying}
-        />
-        <div className="button-row">
-          <button
-            type="button"
-            className="action secondary"
-            disabled={!canPreview}
-            onClick={preview}
-          >
-            {previewing ? (zh ? "正在预览…" : "Previewing...") : zh ? "预览" : "Preview"}
-          </button>
-          <button type="button" className="action" disabled={!canApply} onClick={applySync}>
-            {applying ? (zh ? "正在应用…" : "Applying...") : zh ? "应用" : "Apply"}
-          </button>
+            {dirMissing && (
+              <p className="warn">
+                {zh
+                  ? "项目同步需要项目根目录。"
+                  : "Project-level sync requires a project root path."}
+              </p>
+            )}
+            {!hasAgents && (
+              <p className="warn">
+                {zh ? "至少输入一个目标 Agent。" : "Enter at least one target agent."}
+              </p>
+            )}
+            {error && (
+              <section className="api-error compact">
+                <strong>{zh ? "本地 API 错误" : "Local API error"}</strong>
+                <p>{error}</p>
+              </section>
+            )}
+            {plan && <SyncPlanTable plan={plan} zh={zh} />}
+          </div>
+          <aside className="sync-review-aside" aria-label={zh ? "审查摘要" : "Review summary"}>
+            <h3>{zh ? "审查摘要" : "Review summary"}</h3>
+            <dl className="review-facts">
+              <div>
+                <dt>Agent</dt>
+                <dd>{request.agents.join(", ") || (zh ? "未选择" : "Not selected")}</dd>
+              </div>
+              <div>
+                <dt>{zh ? "范围" : "Scope"}</dt>
+                <dd>
+                  {destination === "project"
+                    ? zh
+                      ? "当前工程"
+                      : "Project"
+                    : zh
+                      ? "用户范围"
+                      : "User"}
+                </dd>
+              </div>
+              {destination === "project" && (
+                <div>
+                  <dt>{zh ? "工程目录" : "Project root"}</dt>
+                  <dd className="mono">{dir || (zh ? "未填写" : "Missing")}</dd>
+                </div>
+              )}
+              <div>
+                <dt>{zh ? "选择" : "Selection"}</dt>
+                <dd className="mono">
+                  {props.resourceIds?.length
+                    ? props.resourceIds.join(", ")
+                    : props.collections?.length
+                      ? `${zh ? "分组" : "Group"}: ${props.collections.join(", ")}`
+                      : zh
+                        ? "Store 默认选择"
+                        : "Store defaults"}
+                </dd>
+              </div>
+              <div>
+                <dt>{zh ? "计划版本" : "Plan revision"}</dt>
+                <dd>
+                  {mutationPlan
+                    ? `Store r${mutationPlan.baseRevision}`
+                    : zh
+                      ? "预览后显示"
+                      : "Shown after preview"}
+                </dd>
+              </div>
+            </dl>
+            {plan && (
+              <>
+                <div className="review-aside-section">
+                  <h4>{zh ? "文件操作" : "File actions"}</h4>
+                  <p>
+                    {zh ? "写入" : "Writes"}{" "}
+                    {plan.actions.filter((action) => action.op !== "skip").length} ·{" "}
+                    {zh ? "跳过" : "Skips"}{" "}
+                    {plan.actions.filter((action) => action.op === "skip").length} ·{" "}
+                    {zh ? "冲突" : "Conflicts"} {plan.conflicts?.length ?? 0}
+                  </p>
+                </div>
+                {plan.actions.some(isSharedTarget) && (
+                  <div className="review-aside-section">
+                    <h4>{zh ? "共享目标影响" : "Shared targets"}</h4>
+                    {plan.actions.filter(isSharedTarget).map((action) => (
+                      <p className="mono" key={`${action.target}:${action.agent}`}>
+                        {action.target} · {action.consumerAgents?.join(", ")}
+                      </p>
+                    ))}
+                  </div>
+                )}
+                <div className="review-aside-section">
+                  <h4>{zh ? "确认前" : "Before confirmation"}</h4>
+                  <p>
+                    {zh
+                      ? "确认后只提交当前审查过的原始计划。应用后仍需单独验证文件状态与原生 Agent 加载。"
+                      : "Confirmation submits this reviewed plan. Verify files and native loading separately."}
+                  </p>
+                </div>
+              </>
+            )}
+            <div className="review-aside-actions">
+              <button
+                type="button"
+                className="action secondary"
+                disabled={!canPreview}
+                onClick={preview}
+              >
+                {mutationPlan ? (zh ? "重新预览" : "Preview again") : zh ? "预览计划" : "Preview"}
+              </button>
+              <button type="button" className="action" disabled={!canApply} onClick={applySync}>
+                {applying
+                  ? zh
+                    ? "正在应用…"
+                    : "Applying..."
+                  : zh
+                    ? "确认并应用当前计划"
+                    : "Confirm and apply current plan"}
+              </button>
+            </div>
+          </aside>
         </div>
-
-        {dirMissing && (
-          <p className="warn">
-            {zh ? "项目同步需要项目根目录。" : "Project-level sync requires a project root path."}
-          </p>
-        )}
-        {!hasAgents && (
-          <p className="warn">
-            {zh ? "至少输入一个目标 Agent。" : "Enter at least one target agent."}
-          </p>
-        )}
-        {error && (
-          <section className="api-error compact">
-            <strong>{zh ? "本地 API 错误" : "Local API error"}</strong>
-            <p>{error}</p>
-          </section>
-        )}
-        {plan && <SyncPlanTable plan={plan} zh={zh} />}
       </section>
     </div>
   );
@@ -290,8 +426,26 @@ export function SyncDialog(props: {
 function SyncPlanTable(props: { plan: DistributePlan; zh: boolean }) {
   return (
     <section className="sync-plan">
+      <div className="sync-metrics">
+        <div>
+          <strong>{props.plan.actions.filter((action) => action.op !== "skip").length}</strong>
+          <span>{props.zh ? "将写入" : "Writes"}</span>
+        </div>
+        <div>
+          <strong>{props.plan.actions.filter((action) => action.op === "skip").length}</strong>
+          <span>{props.zh ? "跳过" : "Skips"}</span>
+        </div>
+        <div>
+          <strong>{props.plan.conflicts?.length ?? 0}</strong>
+          <span>{props.zh ? "冲突" : "Conflicts"}</span>
+        </div>
+        <div>
+          <strong>{props.plan.actions.filter(isSharedTarget).length}</strong>
+          <span>{props.zh ? "共享目标" : "Shared targets"}</span>
+        </div>
+      </div>
       <div className="section-header">
-        <h3>{props.zh ? "计划预览" : "Preview"}</h3>
+        <h3>{props.zh ? "文件级变更计划" : "File action plan"}</h3>
         <span className="tag neutral">
           {props.plan.actions.length} {props.zh ? "项操作" : "actions"}
         </span>
@@ -327,7 +481,24 @@ function SyncPlanTable(props: { plan: DistributePlan; zh: boolean }) {
                       {action.op}
                     </span>
                   </td>
-                  <td className="path-cell mono">{action.target}</td>
+                  <td className="path-cell mono">
+                    {action.target}
+                    {action.preview && (
+                      <details className="action-diff">
+                        <summary>{props.zh ? "查看差异" : "Inspect difference"}</summary>
+                        <div className="diff-columns">
+                          <div>
+                            <strong>{props.zh ? "当前" : "Before"}</strong>
+                            <pre>{action.preview.before ?? (props.zh ? "无文件" : "No file")}</pre>
+                          </div>
+                          <div>
+                            <strong>{props.zh ? "计划写入" : "After"}</strong>
+                            <pre>{action.preview.after ?? (props.zh ? "无文件" : "No file")}</pre>
+                          </div>
+                        </div>
+                      </details>
+                    )}
+                  </td>
                   <td>
                     {action.reason ?? (props.zh ? "可执行" : "Ready")}
                     {action.ownership && (
@@ -383,14 +554,12 @@ function SyncPlanTable(props: { plan: DistributePlan; zh: boolean }) {
           {finding.provider}.
         </p>
       ))}
-      {props.plan.actions
-        .filter((action) => action.consumerAgents?.length)
-        .map((action) => (
-          <p className="muted" key={`${action.agent}:${action.target}:consumers`}>
-            {props.zh ? "共享目标" : "Shared target"} {action.target}:{" "}
-            {props.zh ? "使用方" : "consumers"} {action.consumerAgents?.join(", ")}.
-          </p>
-        ))}
+      {props.plan.actions.filter(isSharedTarget).map((action) => (
+        <p className="muted" key={`${action.agent}:${action.target}:consumers`}>
+          {props.zh ? "共享目标" : "Shared target"} {action.target}:{" "}
+          {props.zh ? "使用方" : "consumers"} {action.consumerAgents?.join(", ")}.
+        </p>
+      ))}
     </section>
   );
 }

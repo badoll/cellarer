@@ -64,7 +64,7 @@ export function LibraryPage({
     () => librarySelection(resources, visible, selectedIds),
     [resources, visible, selectedIds],
   );
-  const detail = stored.find((resource) => resource.id === detailId) ?? null;
+  const detail = stored.find((resource) => resource.id === detailId) ?? stored[0] ?? null;
   const groups = [...new Set(stored.flatMap((resource) => resource.membership.collections))].sort();
 
   return (
@@ -213,13 +213,13 @@ export function LibraryPage({
                   <table className="resource-table library-table">
                     <thead>
                       <tr>
-                        <th>{zh ? "选择" : "Select"}</th>
-                        <th>{zh ? "类型" : "Type"}</th>
                         <th>{zh ? "名称" : "Name"}</th>
-                        <th>{labels.intent.group}</th>
+                        <th>{zh ? "类型" : "Type"}</th>
+                        <th>ID</th>
                         <th>{zh ? "来源" : "Source"}</th>
                         <th>{zh ? "Store 版本" : "Store revision"}</th>
-                        <th>{zh ? "目标" : "Targets"}</th>
+                        <th>{zh ? "状态" : "State"}</th>
+                        <th>{zh ? "操作" : "Action"}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -238,9 +238,6 @@ export function LibraryPage({
                                 )
                               }
                             />
-                          </td>
-                          <td>{resource.kind}</td>
-                          <td>
                             <button
                               type="button"
                               className="link-button"
@@ -248,15 +245,47 @@ export function LibraryPage({
                             >
                               {resource.name}
                             </button>
-                            <small className="muted-row mono">{resource.id}</small>
                           </td>
                           <td>
-                            {resource.membership.collections.join(", ") ||
-                              (zh ? "默认" : "Default")}
+                            <span
+                              className={`tag ${resource.kind === "skills" ? "blue" : resource.kind === "mcp" ? "neutral" : "amber"}`}
+                            >
+                              {resource.kind === "skills"
+                                ? "Skills"
+                                : resource.kind === "mcp"
+                                  ? "MCP"
+                                  : "Rules"}
+                            </span>
                           </td>
+                          <td className="mono">{resource.id}</td>
                           <td>{resource.source}</td>
                           <td>{resource.currentRevision?.id ?? labels.status.unknown}</td>
-                          <td>{resource.usage.applied.length}</td>
+                          <td>
+                            <span
+                              className={`tag ${resource.validation.status === "invalid" ? "red" : resource.usage.applied.length ? "green" : "blue"}`}
+                            >
+                              {resource.validation.status === "invalid"
+                                ? zh
+                                  ? "需关注"
+                                  : "Needs attention"
+                                : resource.usage.applied.length
+                                  ? zh
+                                    ? "已入库 · 有目标"
+                                    : "Stored · used"
+                                  : zh
+                                    ? "已入库 · 未观察到目标"
+                                    : "Stored · no target observed"}
+                            </span>
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="link-button"
+                              onClick={() => setDetailId(resource.id)}
+                            >
+                              {zh ? "详情" : "Details"}
+                            </button>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -304,8 +333,14 @@ function LibraryDetail({
       aria-label={zh ? "配置详情" : "Configuration details"}
     >
       <h3>{resource.name}</h3>
-      <p className="mono">{resource.id}</p>
+      <p>
+        {zh
+          ? "Store 中的精确资源及当前使用证据"
+          : "Exact stored resource and current usage evidence"}
+      </p>
       <dl>
+        <dt>ID</dt>
+        <dd className="mono">{resource.id}</dd>
         <dt>{zh ? "类型" : "Type"}</dt>
         <dd>{resource.kind}</dd>
         <dt>{zh ? "来源" : "Source"}</dt>
@@ -330,6 +365,11 @@ function LibraryDetail({
               ))}
         </dd>
       </dl>
+      <p className="library-detail-note">
+        {zh
+          ? "Store 记录与目标文件、原生 Agent 加载分别验证。"
+          : "Store, target files, and native loading require separate checks."}
+      </p>
       <ResourceWorkflows key={resource.id} resource={resource} onChanged={onChanged} />
     </section>
   );

@@ -48,6 +48,8 @@ export function OperationHistoryPage() {
   const [detailLoaded, setDetailLoaded] = useState(false);
   const [error, setError] = useState("");
   const [selectedId, setSelectedId] = useState("");
+  const [query, setQuery] = useState("");
+  const [outcomeFilter, setOutcomeFilter] = useState<"all" | "success" | "other">("all");
   const [reload, setReload] = useState(0);
   const [recoverConfirmation, setRecoverConfirmation] = useState(false);
   const [recovering, setRecovering] = useState(false);
@@ -111,6 +113,15 @@ export function OperationHistoryPage() {
   }, [selectedId, reload]);
 
   const selectedAgents = uniqueList(agents);
+  const visibleOperations = (operations ?? []).filter((operation) => {
+    const matchesText = `${operation.operation} ${operation.operationId} ${operation.outcome}`
+      .toLowerCase()
+      .includes(query.toLowerCase());
+    const success = operation.outcome === "success" || operation.outcome === "completed";
+    return (
+      matchesText && (outcomeFilter === "all" || (outcomeFilter === "success" ? success : !success))
+    );
+  });
   const selectedArtifacts = uniqueList(artifactIds);
   const contextReady = selectedAgents.length > 0 && (scope === "global" || !!dir.trim());
   const targetContext = {
@@ -188,58 +199,162 @@ export function OperationHistoryPage() {
         </p>
       )}
       {message && <p role="status">{message}</p>}
-      <section className="panel" aria-label={zh ? "操作回执" : "Operation receipts"}>
-        <h3>{zh ? "操作回执" : "Operation receipts"}</h3>
-        <p>
-          {zh
-            ? "以下是历史结果；当前目标需单独验证。"
-            : "These are historical outcomes. Verify the current target separately."}
-        </p>
-        {!operations && (
-          <p>
-            {loaded
-              ? zh
-                ? "操作回执不可用。"
-                : "Operation receipts unavailable."
-              : zh
-                ? "正在加载操作…"
-                : "Loading operations..."}
-          </p>
-        )}
-        {operations?.length === 0 && <p>{zh ? "暂无操作回执。" : "No operation receipts yet."}</p>}
-        {operations?.map((operation) => (
-          <button
-            type="button"
-            className="history-entry"
-            key={operation.operationId}
-            onClick={() => setSelectedId(operation.operationId)}
-          >
-            <strong>{operation.operation}</strong> · {operation.outcome} · {operation.actionCount}{" "}
-            {zh ? "项操作" : "actions"} · {operation.completedAt}
-          </button>
-        ))}
-        {selectedId && !detailLoaded && (
-          <p>{zh ? "正在加载回执…" : "Loading selected receipt..."}</p>
-        )}
-        {selectedId && detailLoaded && !detail && (
-          <p>{zh ? "未找到所选回执。" : "Selected receipt was not found."}</p>
-        )}
-        {detail && (
-          <div className="history-detail">
-            <h4>
-              {zh ? "回执" : "Receipt"} {detail.operationId}
-            </h4>
-            <p>
-              {detail.outcome} · {detail.recoveryStatus}
-            </p>
-            {detail.actionReceipts.map((action) => (
-              <p key={action.actionId}>
-                {action.outcome} · {action.target}
-              </p>
-            ))}
+      <div className="history-workbench">
+        <section className="panel" aria-label={zh ? "操作回执" : "Operation receipts"}>
+          <div className="history-tabs">
+            <button
+              type="button"
+              aria-pressed={outcomeFilter === "all"}
+              onClick={() => setOutcomeFilter("all")}
+            >
+              全部 {operations?.length ?? 0}
+            </button>
+            <button
+              type="button"
+              aria-pressed={outcomeFilter === "other"}
+              onClick={() => setOutcomeFilter("other")}
+            >
+              其他结果
+            </button>
+            <button
+              type="button"
+              aria-pressed={outcomeFilter === "success"}
+              onClick={() => setOutcomeFilter("success")}
+            >
+              已完成
+            </button>
           </div>
-        )}
-      </section>
+          <label className="field-row stacked">
+            <span>{zh ? "搜索操作" : "Search operations"}</span>
+            <input
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={zh ? "操作类型或 ID" : "Operation type or ID"}
+            />
+          </label>
+          <p>
+            {zh
+              ? "以下是历史结果；当前目标需单独验证。"
+              : "These are historical outcomes. Verify the current target separately."}
+          </p>
+          {!operations && (
+            <p>
+              {loaded
+                ? zh
+                  ? "操作回执不可用。"
+                  : "Operation receipts unavailable."
+                : zh
+                  ? "正在加载操作…"
+                  : "Loading operations..."}
+            </p>
+          )}
+          {operations?.length === 0 && (
+            <p>{zh ? "暂无操作回执。" : "No operation receipts yet."}</p>
+          )}
+          {operations && (
+            <div className="table-wrap">
+              <table className="history-table">
+                <thead>
+                  <tr>
+                    <th>{zh ? "时间" : "Time"}</th>
+                    <th>{zh ? "操作类型" : "Operation"}</th>
+                    <th>ID</th>
+                    <th>{zh ? "结果" : "Outcome"}</th>
+                    <th>{zh ? "文件动作" : "Actions"}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleOperations.map((operation) => (
+                    <tr
+                      key={operation.operationId}
+                      className={selectedId === operation.operationId ? "selected" : ""}
+                    >
+                      <td>{operation.completedAt}</td>
+                      <td>
+                        <button
+                          type="button"
+                          className="link-button"
+                          onClick={() => setSelectedId(operation.operationId)}
+                        >
+                          {operation.operation} · {operation.outcome}
+                        </button>
+                      </td>
+                      <td className="mono">{operation.operationId}</td>
+                      <td>
+                        <span
+                          className={`tag ${operation.outcome === "success" || operation.outcome === "completed" ? "green" : "amber"}`}
+                        >
+                          {operation.outcome}
+                        </span>
+                      </td>
+                      <td>{operation.actionCount}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {selectedId && !detailLoaded && (
+            <p>{zh ? "正在加载回执…" : "Loading selected receipt..."}</p>
+          )}
+          {selectedId && detailLoaded && !detail && (
+            <p>{zh ? "未找到所选回执。" : "Selected receipt was not found."}</p>
+          )}
+        </section>
+        <aside className="panel history-side" aria-label={zh ? "回执详情" : "Receipt detail"}>
+          {detail ? (
+            <>
+              <span className={`tag ${detail.recoveryStatus === "clean" ? "green" : "amber"}`}>
+                {detail.recoveryStatus === "clean"
+                  ? zh
+                    ? "已完成"
+                    : "Complete"
+                  : zh
+                    ? "需人工处理"
+                    : "Needs attention"}
+              </span>
+              <h3>{zh ? `回执 ${detail.operationId}` : `Receipt ${detail.operationId}`}</h3>
+              <p>
+                {zh
+                  ? "历史操作的执行结果与恢复证据"
+                  : "Historical operation result and recovery evidence"}
+              </p>
+              <dl>
+                <dt>{zh ? "操作时间" : "Completed"}</dt>
+                <dd>{detail.completedAt}</dd>
+                <dt>{zh ? "操作类型" : "Operation"}</dt>
+                <dd>{detail.operation}</dd>
+                <dt>ID</dt>
+                <dd className="mono">{detail.operationId}</dd>
+                <dt>{zh ? "结果" : "Outcome"}</dt>
+                <dd>{detail.outcome}</dd>
+                <dt>{zh ? "恢复状态" : "Recovery status"}</dt>
+                <dd>{detail.recoveryStatus}</dd>
+              </dl>
+              <h4>{zh ? "文件动作回执" : "Action receipts"}</h4>
+              {detail.actionReceipts.length ? (
+                detail.actionReceipts.map((action) => (
+                  <p className="mono" key={action.actionId}>
+                    {action.outcome} · {action.target}
+                  </p>
+                ))
+              ) : (
+                <p>{zh ? "没有文件动作。" : "No file actions."}</p>
+              )}
+              <p className="history-evidence-note">
+                {zh
+                  ? "回执不代表当前目标健康；请在下方按明确 Agent 与范围重新验证。"
+                  : "A receipt does not prove current target health. Verify the exact Agent and scope below."}
+              </p>
+            </>
+          ) : (
+            <p className="empty-state">
+              {zh ? "选择一条操作查看回执。" : "Select an operation to inspect its receipt."}
+            </p>
+          )}
+        </aside>
+      </div>
       <section className="panel" aria-label={zh ? "活动" : "Activity"}>
         <h3>{zh ? "活动" : "Activity"}</h3>
         {!activity && (

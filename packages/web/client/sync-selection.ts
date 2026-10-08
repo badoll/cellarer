@@ -31,6 +31,23 @@ export function isProjectDirMissing(destination: Destination, dir: string): bool
   return destination === "project" && dir.trim() === "";
 }
 
+export function syncKindsForIntent(
+  resourceIds?: readonly string[],
+  explicitKinds?: Capability[],
+): Capability[] | undefined {
+  if (explicitKinds) return explicitKinds;
+  if (!resourceIds) return undefined;
+  return [
+    ...new Set(
+      resourceIds
+        .map((id) => id.split("/", 1)[0])
+        .filter(
+          (kind): kind is Capability => kind === "rules" || kind === "mcp" || kind === "skills",
+        ),
+    ),
+  ];
+}
+
 export function buildSyncRequest(input: SyncRequestInput): SyncRequest {
   const kinds = nonEmptyArray(input.kinds);
   const collections = nonEmptyArray(input.collections);

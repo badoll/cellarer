@@ -76,6 +76,19 @@ export function OverviewPage({
   const resources: readonly ControlPlaneResourceDto[] = library
     ? storedResources(library.resources)
     : [];
+  const counts = {
+    skills: resources.filter((resource) => resource.kind === "skills").length,
+    mcp: resources.filter((resource) => resource.kind === "mcp").length,
+    rules: resources.filter((resource) => resource.kind === "rules").length,
+  };
+  const desired = summary?.distributionCoverage.reduce(
+    (count, group) => count + (group.desiredCount ?? 0),
+    0,
+  );
+  const applied = summary?.distributionCoverage.reduce(
+    (count, group) => count + (group.appliedCount ?? 0),
+    0,
+  );
   return (
     <div className="page-stack overview-page">
       {errors.map((error) => (
@@ -83,63 +96,171 @@ export function OverviewPage({
           {error}
         </p>
       ))}
+      <div className="overview-context-bar">
+        <span>
+          <strong>Store</strong> · {zh ? "本机" : "This device"}
+        </span>
+        <span>
+          <strong>{zh ? "当前范围" : "Current scope"}</strong> ·{" "}
+          {summary?.scope === "project"
+            ? (summary.dir ?? (zh ? "项目目录未返回" : "Project path unavailable"))
+            : zh
+              ? "用户范围"
+              : "User scope"}
+        </span>
+        <span>
+          {zh ? "最近汇总" : "Summary at"} · {summary?.generatedAt ?? (zh ? "正在加载" : "Loading")}
+        </span>
+      </div>
       <section className="overview-cards" aria-label={zh ? "当前证据" : "Current evidence"}>
         <article className="panel">
-          <h3>{zh ? "Store 配置" : "Stored configuration"}</h3>
-          <strong>{evidence.storedCount ?? labels.status.unknown}</strong>
-          <p>{zh ? "当前 Store 列表" : "Current Store list"}</p>
-          <button type="button" onClick={() => onOpenResource()}>
-            {labels.navigation.library}
-          </button>
-        </article>
-        <article className="panel">
-          <h3>{zh ? "检测到的 Agent" : "Detected Agents"}</h3>
-          <strong>{evidence.detectedAgents ?? labels.status.unknown}</strong>
-          <p>{zh ? "当前 Agent 汇总" : "Current Agent summary"}</p>
-          <button type="button" onClick={onSync}>
-            {zh ? "查看同步目标" : "Review sync targets"}
-          </button>
-        </article>
-        <article className="panel">
-          <h3>{zh ? "匹配的目标文件" : "Matching target files"}</h3>
-          <strong>{evidence.matchingTargets ?? labels.status.unknown}</strong>
+          <h3>{zh ? "已观察来源" : "Observed sources"}</h3>
+          <p>{zh ? "只读扫描与来源覆盖" : "Read-only Inventory coverage"}</p>
+          <strong>{zh ? "待查看" : "Inspect"}</strong>
           <p>
-            {zh ? "仅代表文件状态；原生加载未验证" : "File status only; native loading unverified"}
+            {zh
+              ? "打开 Inventory 查看最新完整度与候选；这里不将历史扫描当作当前结果。"
+              : "Open Inventory for current completeness and candidates."}
           </p>
-          <button type="button" onClick={onHistory}>
-            {labels.actions.verify}
+          <button type="button" className="link-button" onClick={onDiscover}>
+            {labels.actions.find} →
+          </button>
+        </article>
+        <article className="panel">
+          <h3>{zh ? "Store 中的配置" : "Store configuration"}</h3>
+          <p>{zh ? "本地已入库配置资源" : "Locally stored resources"}</p>
+          <strong>{evidence.storedCount ?? labels.status.unknown}</strong>
+          <div className="overview-kind-list">
+            <span>
+              Skills <b>{counts.skills}</b>
+            </span>
+            <span>
+              MCP <b>{counts.mcp}</b>
+            </span>
+            <span>
+              Rules <b>{counts.rules}</b>
+            </span>
+          </div>
+          <button type="button" className="link-button" onClick={() => onOpenResource()}>
+            {labels.navigation.library} →
+          </button>
+        </article>
+        <article className="panel">
+          <h3>{zh ? "目标配置" : "Target configuration"}</h3>
+          <p>{zh ? "期望、已应用与磁盘对比" : "Desired, applied, and disk evidence"}</p>
+          <strong>
+            {desired ?? labels.status.unknown} <small>{zh ? "期望" : "desired"}</small>
+          </strong>
+          <div className="overview-target-list">
+            <span>
+              {zh ? "已应用" : "Applied"} <b>{applied ?? labels.status.unknown}</b>
+            </span>
+            <span>
+              {zh ? "磁盘一致" : "Disk matching"}{" "}
+              <b>{evidence.matchingTargets ?? labels.status.unknown}</b>
+            </span>
+            <span>
+              {zh ? "待检查" : "Needs review"}{" "}
+              <b>{evidence.pendingTargets ?? labels.status.unknown}</b>
+            </span>
+          </div>
+          <button type="button" className="link-button" onClick={onSync}>
+            {zh ? "查看差异" : "Review differences"} →
+          </button>
+        </article>
+        <article className="panel">
+          <h3>{zh ? "原生运行状态" : "Native runtime"}</h3>
+          <p>{zh ? "Agent 的实际加载与生效" : "Actual Agent loading"}</p>
+          <strong className="overview-unverified">{zh ? "未验证" : "Unverified"}</strong>
+          <p>
+            {zh
+              ? "文件一致不能确认 Agent 已加载。请查看运行时证据。"
+              : "Files can match while native loading unverified."}
+          </p>
+          <button type="button" className="link-button" onClick={onHistory}>
+            {labels.actions.verify} →
           </button>
         </article>
       </section>
-      <section className="panel">
-        <h3>{zh ? "下一步" : "Next actions"}</h3>
-        <p>
-          {zh
-            ? "来源更新：未检查。请在配置库中检查单项；来源更新与目标同步分开。"
-            : "Source updates: not checked. Check an individual resource in the library; this is separate from target sync."}
-        </p>
-        <p>
-          {zh ? "目标待同步或缺失" : "Pending or missing targets"}:{" "}
-          {evidence.pendingTargets ?? labels.status.unknown}.{" "}
-          {zh ? "冲突：此汇总未提供" : "Conflicts: unavailable in this summary"}.{" "}
-          {zh ? "覆盖阻塞" : "Blocked coverage"}:{" "}
-          {evidence.blockedCoverage ?? labels.status.unknown}.
-        </p>
+      <section className="overview-next">
+        <div>
+          <h3>
+            {evidence.pendingTargets ?? labels.status.unknown}{" "}
+            {zh ? "个目标待检查" : "targets need review"}
+          </h3>
+          <p>
+            {zh
+              ? "目标文件状态以最新验证为准；来源版本更新须在配置库单独检查。"
+              : "Current verification determines target status; check source revisions separately. Conflicts: unavailable in this summary."}
+          </p>
+        </div>
         <div className="button-row">
-          <button type="button" onClick={onDiscover}>
-            {labels.actions.find}
+          <button type="button" className="action" onClick={onSync}>
+            {zh ? "预览同步" : "Preview sync"}
           </button>
-          <button type="button" onClick={() => onOpenResource()}>
-            {zh ? "查看 Store 版本" : "Review Store revisions"}
+          <button type="button" className="action secondary" onClick={onHistory}>
+            {zh ? "验证配置" : "Verify"}
           </button>
-          <button type="button" onClick={onSync}>
-            {zh ? "预览目标同步" : "Preview target sync"}
-          </button>
-          <button type="button" onClick={onHistory}>
+          <button type="button" className="action secondary" onClick={onHistory}>
             {labels.navigation.history}
           </button>
         </div>
       </section>
+      <div className="overview-bottom">
+        <section className="panel">
+          <h3>{zh ? "最近操作记录" : "Recent activity"}</h3>
+          <p>
+            {zh
+              ? "历史结果；当前目标状态需单独验证。"
+              : "Historical outcomes; verify current targets separately."}
+          </p>
+          {summary?.latestActivity?.length ? (
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>{zh ? "时间" : "Time"}</th>
+                    <th>{zh ? "操作" : "Action"}</th>
+                    <th>{zh ? "对象" : "Target"}</th>
+                    <th>{zh ? "说明" : "Summary"}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {summary.latestActivity.slice(0, 5).map((event) => (
+                    <tr key={event.id}>
+                      <td>{event.time}</td>
+                      <td>{event.action}</td>
+                      <td>{event.agents.join(", ") || "—"}</td>
+                      <td>{event.summary}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="empty-state">{zh ? "暂无操作记录" : "No activity yet"}</p>
+          )}
+        </section>
+        <div className="overview-explain">
+          <section className="panel">
+            <h3>{zh ? "关于配置与原生运行" : "Configuration and runtime"}</h3>
+            <p>
+              {zh
+                ? "Store 中的配置是期望内容；磁盘目标是已写入结果；两者各自需要证据。原生 Agent 是否加载仍须单独观察。"
+                : "Store intent, target files, and native loading require separate evidence."}
+            </p>
+          </section>
+          <section className="panel">
+            <h3>{zh ? "待处理事项" : "Next steps"}</h3>
+            <button type="button" className="link-button" onClick={onDiscover}>
+              {labels.actions.find} →
+            </button>
+            <button type="button" className="link-button" onClick={onSync}>
+              {zh ? "审查目标计划" : "Review target plan"} →
+            </button>
+          </section>
+        </div>
+      </div>
       {evidence.targetIssues && evidence.targetIssues.length > 0 && (
         <section className="panel" aria-label={zh ? "受影响目标" : "Affected targets"}>
           <h3>{zh ? "待检查目标" : "Targets needing review"}</h3>

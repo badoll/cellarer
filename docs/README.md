@@ -552,6 +552,13 @@ intent. **Add configuration** validates a local resource bundle and previews Sto
 sync an Agent target. Sync distinguishes exact IDs, one Group, one Profile, and Store defaults. The
 target picker shows Core detection and compatibility evidence; native unknown does not mean loaded.
 
+Inventory can scan an explicit project root as well as registered user sources. Changing that root
+invalidates the visible import selection until a new complete refresh; provisional and partial results
+remain view-only. The full-page Sync review shows the selected resources, Agent and scope, project
+root, Store revision, file actions, conflicts, available before/after previews, and shared consumers.
+Confirm applies that exact reviewed plan. On a narrow screen, review facts and file actions stack,
+and wide file tables scroll within their panels.
+
 Resource details offer source update checks, Store update previews, dependency inspection and
 non-cascading removal. Collections can be created and their exact membership replaced. Store and
 Collection updates never sync targets automatically; referenced dependencies block ordinary removal.

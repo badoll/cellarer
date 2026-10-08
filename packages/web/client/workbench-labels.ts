@@ -28,6 +28,8 @@ const labels = {
       agents: "Registered adapters, detected roots, and capability coverage.",
       history: "Inspect recorded operations and follow-up actions.",
       settings: "Store defaults, groups, adapters, and secret references.",
+      inventory: "Read-only candidates across bounded registered user and project sources.",
+      profiles: "Desired selections, reviewed reconciliation and consumer uninstall.",
     },
     actions: {
       find: "Find existing configuration",
@@ -76,6 +78,8 @@ const labels = {
       agents: "查看已注册适配器、检测到的目录和能力覆盖。",
       history: "查看操作记录、回执及后续动作。",
       settings: "管理 Store 默认设置、分组、适配器和密钥引用。",
+      inventory: "只读扫描已注册的用户与工程来源；完整结果确认后才可导入。",
+      profiles: "保存期望资源选择，并分别审查下发与验证目标。",
     },
     actions: {
       find: "查找已有配置",
@@ -105,6 +109,10 @@ export function workbenchLocale(language: string | undefined): WorkbenchLocale {
 }
 
 export function browserWorkbenchLocale(): WorkbenchLocale {
+  if (typeof location !== "undefined") {
+    const requested = new URLSearchParams(location.search).get("lang");
+    if (requested === "zh-CN" || requested === "en") return requested;
+  }
   return workbenchLocale(typeof navigator === "undefined" ? undefined : navigator.language);
 }
 

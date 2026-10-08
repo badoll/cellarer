@@ -56,6 +56,7 @@ describe("explicit sync workspace intent", () => {
     await act(async () => button("Choose target and preview").click());
     await act(async () => button("Preview").click());
     expect(plans).toEqual([expect.objectContaining({ resources: { collections: ["work"] } })]);
+    await act(async () => button("Change selection").click());
     await act(async () => button("Profile").click());
     expect(host.querySelector('[role="dialog"]')).toBeNull();
     expect(host.textContent).toContain("Profile reconciliation uses its separate Core contract");

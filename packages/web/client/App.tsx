@@ -83,13 +83,6 @@ const PAGE_META: Record<Page, { title: string; subtitle: string }> = {
   },
 };
 
-const SAFETY_ITEMS: { icon: DashboardIconName; label: string }[] = [
-  { icon: "home", label: "Local only" },
-  { icon: "host", label: "127.0.0.1" },
-  { icon: "database", label: "No database" },
-  { icon: "lock", label: "Secrets masked" },
-];
-
 const RESOURCE_STATE_LABELS: Record<ResourceState, string> = {
   managed: "Managed",
   discovered: "Discovered",
@@ -101,10 +94,12 @@ const RESOURCE_STATE_LABELS: Record<ResourceState, string> = {
 
 export function App() {
   const [page, setPage] = useState<Page>("library");
+  const [inventoryVisited, setInventoryVisited] = useState(false);
   const [libraryFocusId, setLibraryFocusId] = useState<string | undefined>();
   const labels = workbenchLabels(browserWorkbenchLocale());
   const navigate = (nextPage: Page) => {
     if (nextPage === "library") setLibraryFocusId(undefined);
+    if (nextPage === "inventory") setInventoryVisited(true);
     setPage(nextPage);
   };
   return (
@@ -142,13 +137,13 @@ export function App() {
           ))}
         </nav>
         <div className="local-card">
-          <span className="status-dot" />
+          <DashboardIcon name="database" />
           <div>
-            <strong>{browserWorkbenchLocale() === "zh-CN" ? "本地模式" : "Local mode"}</strong>
+            <strong>{browserWorkbenchLocale() === "zh-CN" ? "本地 Store" : "Local Store"}</strong>
             <p>
               {browserWorkbenchLocale() === "zh-CN"
-                ? "本机 API · 密钥已遮蔽"
-                : "Loopback API · masked secrets"}
+                ? "配置仅存于本机"
+                : "Configuration stays local"}
             </p>
           </div>
         </div>
@@ -172,7 +167,7 @@ export function App() {
           {page === "history" && <OperationHistoryPage />}
           {page === "dashboard" && (
             <OverviewPage
-              onDiscover={() => setPage("inventory")}
+              onDiscover={() => navigate("inventory")}
               onOpenResource={(id) => {
                 setLibraryFocusId(id);
                 setPage("library");
@@ -181,21 +176,25 @@ export function App() {
               onHistory={() => setPage("history")}
             />
           )}
-          {page === "inventory" && <InventoryPage onNavigate={navigate} />}
+          {inventoryVisited && (
+            <div hidden={page !== "inventory"}>
+              <InventoryPage onNavigate={navigate} />
+            </div>
+          )}
           {page === "profiles" && <ProfilesPage />}
           {page === "agents" && (
             <div className="page-stack">
               <button
                 type="button"
-                className="action secondary"
+                className="action secondary profile-entry"
                 onClick={() => setPage("profiles")}
               >
-                Profiles
+                {labels.navigation.profiles}
               </button>
-              <AgentsPage />
+              <AgentsPage onSync={() => setPage("sync")} />
             </div>
           )}
-          {page === "settings" && <SettingsPage />}
+          {page === "settings" && <SettingsPage onAgents={() => setPage("agents")} />}
         </div>
       </main>
     </div>
@@ -254,44 +253,64 @@ function AppHeader(props: {
 }) {
   const zh = browserWorkbenchLocale() === "zh-CN";
   return (
-    <header className="topbar">
-      <div className="topbar-title">
-        <p className="eyebrow">{zh ? "本地控制台" : "Local control plane"}</p>
-        <h2>{props.title}</h2>
-        <p>{props.subtitle}</p>
-      </div>
-      <div className="topbar-right">
-        <div className="status-row">
-          {SAFETY_ITEMS.map((item) => (
-            <span className="status-pill" key={item.label}>
-              <DashboardIcon name={item.icon} />
-              {zh
-                ? (
-                    {
-                      "Local only": "仅本地",
-                      "127.0.0.1": "127.0.0.1",
-                      "No database": "无需数据库",
-                      "Secrets masked": "密钥已遮蔽",
-                    } as Record<string, string>
-                  )[item.label]
-                : item.label}
-            </span>
-          ))}
-        </div>
-        <div className="top-actions compact-actions">
-          {props.page !== "settings" && (
+    <>
+      <header className="topbar">
+        <div className="evidence-flow">
+          {[
+            {
+              number: 1,
+              title: zh ? "发现" : "Discover",
+              detail: zh ? "从本地与项目中发现配置" : "Inspect local sources",
+              page: "inventory" as Page,
+            },
+            {
+              number: 2,
+              title: zh ? "入库" : "Store",
+              detail: zh ? "写入本地 Store，版本管理" : "Manage Store revisions",
+              page: "library" as Page,
+            },
+            {
+              number: 3,
+              title: zh ? "下发" : "Sync",
+              detail: zh ? "按需下发到 Agent / 项目" : "Review target writes",
+              page: "sync" as Page,
+            },
+            {
+              number: 4,
+              title: zh ? "验证" : "Verify",
+              detail: zh ? "检验生效与实际效果" : "Inspect observed evidence",
+              page: "history" as Page,
+            },
+          ].map((step) => (
             <button
               type="button"
-              className="action secondary"
-              onClick={() => props.onNavigate("settings")}
+              className={`flow-step ${step.number === 2 ? "current" : ""}`}
+              key={step.number}
+              onClick={() => props.onNavigate(step.page)}
             >
-              <DashboardIcon name="settings" />
-              {zh ? "设置" : "Settings"}
+              <span className="flow-number">{step.number}</span>
+              <span className="flow-copy">
+                <strong>{step.title}</strong>
+                <small>{step.detail}</small>
+              </span>
             </button>
-          )}
+          ))}
         </div>
+        <span className="flow-local">
+          {zh ? "本地运行　|　数据仅存于本机" : "Runs locally | Data stays here"}
+        </span>
+      </header>
+      <div className="page-heading">
+        {props.page === "profiles" && (
+          <p className="breadcrumb">{zh ? "Agent / 配置方案" : "Agent / Profiles"}</p>
+        )}
+        <h2>
+          {props.title}
+          {props.page === "sync" && zh ? " · 审查计划" : ""}
+        </h2>
+        <p>{props.subtitle}</p>
       </div>
-    </header>
+    </>
   );
 }
 

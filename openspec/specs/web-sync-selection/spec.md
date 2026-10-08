@@ -3,9 +3,7 @@
 ## Purpose
 
 Bind Library Collection filters and dialog selection to reviewed sync plans, preserving Store defaults and rejecting obsolete preview authority.
-
 ## Requirements
-
 ### Requirement: Selection changes invalidate preview authority
 The bundled client MUST bind preview state to the exact Agent set, destination/scope, normalized project root, resource intent and its exact IDs, kinds, group or Profile identifier, and current dialog/session. Any material selection change or dialog close/reopen MUST invalidate the prior plan; presentation-only filter changes that preserve the same intent MUST NOT authorize a different plan. An obsolete request MUST NOT overwrite current preview, error, busy state, or apply eligibility.
 
@@ -66,3 +64,18 @@ Agent Config Library type, text, and group filters MUST NOT silently determine a
 #### Scenario: Discovered resources are visible
 - **WHEN** Inventory-only candidates appear in discovery alongside stored resources
 - **THEN** the sync summary excludes those candidates and explains that they must be imported first
+
+### Requirement: Sync review has an inspectable full-page surface
+The Web client MUST provide a full workbench review of the current Core sync plan, showing exact Agent, scope, project root when applicable, resource intent, Store revision when reported, file-level actions and paths, available differences, conflicts, and shared-target effects. It MUST NOT offer post-preview action toggles that imply modification of the authorized plan.
+
+#### Scenario: Core returns a file plan
+- **WHEN** the user previews an exact selection for an Agent target
+- **THEN** the review displays that selection and every reported file action before enabling confirmation
+
+#### Scenario: Core reports a blocker or shared target
+- **WHEN** the preview includes a conflict, invalid ledger, secret finding, replacement, or shared physical target
+- **THEN** the review makes the reported effect visible and retains the original Core plan authority and blocker behavior
+
+#### Scenario: User changes selection after review
+- **WHEN** the Agent, scope, root, or selected resources change
+- **THEN** the prior preview is no longer confirmable and a fresh Core preview is required
